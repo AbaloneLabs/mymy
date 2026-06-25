@@ -179,12 +179,18 @@ HERMES_CLI_PATH=/home/mymy/.local/bin/hermes
 GitLab CI is configured in `.gitlab-ci.yml` for the shell runner tagged
 `Ubuntu Runner`. The pipeline runs:
 
-- Rust format, clippy (`-D warnings`), build, and tests
-- Web ESLint and production build
+- Repository whitespace and Docker Compose config checks
+- Rust format, clippy (`-D warnings`), build, tests, and RustSec audit
+- Web ESLint, Bun audit, and production build
+- API and web Docker image builds with smoke checks
 
 Rust jobs start an isolated `pgvector/pgvector:pg16` container, apply the SQL
 migrations, and then run `cargo` with `DATABASE_URL` set for `sqlx::query!`
 compile-time checks.
+
+The RustSec audit ignores `RUSTSEC-2023-0071` because it is pulled in through
+`sqlx-mysql`'s optional RSA authentication dependency while this project enables
+only PostgreSQL `sqlx` features.
 
 Registry publishing, deployment automation, and hosted monitoring are not
 configured in this repository. Those require a separate external infrastructure

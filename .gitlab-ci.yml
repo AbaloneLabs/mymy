@@ -3,7 +3,7 @@
 #
 # Target runner:
 #   - GitLab shell executor tagged "Ubuntu Runner"
-#   - Host tools: cargo, rustfmt, clippy, bun, docker
+#   - Host tools: cargo, rustfmt, clippy, cargo-audit, bun, docker, curl
 #
 # The Rust API uses sqlx::query! macros, so Rust compile jobs need a
 # live PostgreSQL schema. Each API job starts an isolated pgvector
@@ -13,6 +13,7 @@
 
 stages:
   - check
+  - audit
   - build
   - test
 
@@ -68,11 +69,35 @@ variables:
       bash -lc 'for migration in /migrations/*.sql; do echo "Applying $(basename "$migration")"; psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done'
 
 .api_db_after_script: &api_db_after_script
-  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" "mymy-ci-api-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
+
+.docker_api_after_script: &docker_api_after_script
+  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" "mymy-ci-api-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker rmi "mymy-api-ci:${CI_JOB_ID}" >/dev/null 2>&1 || true
+
+.docker_web_after_script: &docker_web_after_script
+  - docker rm -f "mymy-ci-web-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker rmi "mymy-web-ci:${CI_JOB_ID}" >/dev/null 2>&1 || true
 
 # ============================================================
 # CHECK
 # ============================================================
+
+check:repo:whitespace:
+  stage: check
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - git diff-tree --check --root -r "$CI_COMMIT_SHA"
+
+check:compose:config:
+  stage: check
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - docker compose config --quiet
 
 check:api:fmt:
   stage: check
@@ -102,6 +127,30 @@ check:web:lint:
     - bun run lint
 
 # ============================================================
+# AUDIT
+# ============================================================
+
+audit:api:
+  stage: audit
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - cd api
+    - cargo audit --version
+    # RUSTSEC-2023-0071 is pulled in through sqlx-mysql's optional RSA auth
+    # dependency. This project enables only PostgreSQL sqlx features.
+    - cargo audit --ignore RUSTSEC-2023-0071
+
+audit:web:
+  stage: audit
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - cd web
+    - bun install --frozen-lockfile
+    - bun audit
+
+# ============================================================
 # BUILD
 # ============================================================
 
@@ -123,6 +172,81 @@ build:web:
     - cd web
     - bun install --frozen-lockfile
     - bun run build
+
+build:docker:api:
+  stage: build
+  <<: *runner_tags
+  rules: *default_rules
+  before_script: *api_db_before_script
+  script:
+    - docker build --pull --network host --build-arg DATABASE_URL="$DATABASE_URL" -t "mymy-api-ci:${CI_JOB_ID}" api
+    - docker rm -f "mymy-ci-runtime-db-${CI_JOB_ID}" >/dev/null 2>&1 || true
+    - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
+    - docker network create "mymy-ci-net-${CI_JOB_ID}"
+    - |
+      docker run -d \
+        --name "mymy-ci-runtime-db-${CI_JOB_ID}" \
+        --network "mymy-ci-net-${CI_JOB_ID}" \
+        --network-alias db \
+        -e POSTGRES_USER="${POSTGRES_USER}" \
+        -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+        -e POSTGRES_DB="${POSTGRES_DB}" \
+        pgvector/pgvector:pg16
+    - |
+      for i in $(seq 1 60); do
+        if docker exec "mymy-ci-runtime-db-${CI_JOB_ID}" pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+          break
+        fi
+        if [ "$i" -eq 60 ]; then
+          docker logs "mymy-ci-runtime-db-${CI_JOB_ID}"
+          exit 1
+        fi
+        sleep 1
+      done
+    - |
+      docker run -d \
+        --name "mymy-ci-api-${CI_JOB_ID}" \
+        --network "mymy-ci-net-${CI_JOB_ID}" \
+        -e DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
+        -e PORT=33697 \
+        -e CORS_ORIGIN=http://localhost:33696 \
+        -e AUTH_COOKIE_SECURE=false \
+        -p 127.0.0.1::33697 \
+        "mymy-api-ci:${CI_JOB_ID}"
+    - export API_PORT="$(docker port "mymy-ci-api-${CI_JOB_ID}" 33697/tcp | sed 's/.*://')"
+    - |
+      for i in $(seq 1 60); do
+        if curl -fsS "http://127.0.0.1:${API_PORT}/api/health" >/dev/null; then
+          exit 0
+        fi
+        if [ "$i" -eq 60 ]; then
+          docker logs "mymy-ci-api-${CI_JOB_ID}"
+          exit 1
+        fi
+        sleep 1
+      done
+  after_script: *docker_api_after_script
+
+build:docker:web:
+  stage: build
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - docker build --pull -t "mymy-web-ci:${CI_JOB_ID}" web
+    - docker run -d --name "mymy-ci-web-${CI_JOB_ID}" --add-host=api:127.0.0.1 -p 127.0.0.1::80 "mymy-web-ci:${CI_JOB_ID}"
+    - export WEB_PORT="$(docker port "mymy-ci-web-${CI_JOB_ID}" 80/tcp | sed 's/.*://')"
+    - |
+      for i in $(seq 1 30); do
+        if curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -q '<div id="root"></div>'; then
+          exit 0
+        fi
+        if [ "$i" -eq 30 ]; then
+          docker logs "mymy-ci-web-${CI_JOB_ID}"
+          exit 1
+        fi
+        sleep 1
+      done
+  after_script: *docker_web_after_script
 
 # ============================================================
 # TEST
