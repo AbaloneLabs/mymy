@@ -181,6 +181,7 @@ GitLab CI is configured in `.gitlab-ci.yml` for the shell runner tagged
 
 - Repository whitespace and Docker Compose config checks
 - Rust format, clippy (`-D warnings`), build, tests, and RustSec audit
+- Secret scanning with gitleaks
 - Web ESLint, Bun audit, and production build
 - API and web Docker image builds with smoke checks
 

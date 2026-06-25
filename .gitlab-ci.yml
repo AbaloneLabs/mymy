@@ -141,6 +141,13 @@ audit:api:
     # dependency. This project enables only PostgreSQL sqlx features.
     - cargo audit --ignore RUSTSEC-2023-0071
 
+audit:secrets:
+  stage: audit
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - docker run --rm -v "$CI_PROJECT_DIR:/repo:ro" ghcr.io/gitleaks/gitleaks:latest detect --source=/repo --redact --exit-code 1 --log-opts="$CI_COMMIT_SHA"
+
 audit:web:
   stage: audit
   <<: *runner_tags
