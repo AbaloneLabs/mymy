@@ -1,0 +1,21 @@
+# Agent instructions
+AGENTS.md
+
+# Internal documents (local-only)
+plans/
+docs/
+
+# Environment files, including secrets
+.env
+.env.*
+!.env.example
+
+# Local-only runtime mounts and scratch files
+.local/
+
+# Rust build artifacts
+api/target/
+
+# Node / bun
+web/node_modules/
+web/dist/

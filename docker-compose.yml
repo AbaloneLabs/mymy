@@ -1,0 +1,94 @@
+# ============================================================
+# mymy — Docker Compose
+#
+# Services:
+#   - db   : PostgreSQL 16 + pgvector for mymy (port 33432)
+#   - web  : frontend SPA served by nginx (port 33696)
+#   - api  : Rust backend (port 33697)
+#
+# Port range: 33xxx, reserved for local mymy services.
+# ============================================================
+
+name: mymy
+
+services:
+  # ----------------------------------------------------------
+  # PostgreSQL 16 + pgvector.
+  # ----------------------------------------------------------
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mymy-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mymy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mymy}
+      POSTGRES_DB: ${POSTGRES_DB:-mymy}
+    ports:
+      - "33432:5432"
+    volumes:
+      - mymy-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mymy} -d ${POSTGRES_DB:-mymy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # Web frontend SPA.
+  # ----------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: mymy-web
+    restart: unless-stopped
+    ports:
+      - "33696:80"
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  # ----------------------------------------------------------
+  # API backend.
+  # ----------------------------------------------------------
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      # Use host network during build so sqlx query! macros can reach
+      # the db container's published port (localhost:33432) for type checking.
+      network: host
+    container_name: mymy-api
+    restart: unless-stopped
+    # Run as the host user so hermes subprocess file permissions line up
+    # (the mounted hermes venv/profiles are owned by uid 1000).
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mymy}:${POSTGRES_PASSWORD:-mymy}@db:5432/${POSTGRES_DB:-mymy}
+      PORT: "33697"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
+      # Override these in .env when Hermes CLI integration is used.
+      HERMES_HOME: /home/mymy/.hermes
+      HERMES_CLI_PATH: ${HERMES_CLI_PATH:-/home/mymy/.local/bin/hermes}
+      HOME: /home/mymy
+    ports:
+      - "33697:33697"
+    volumes:
+      # Defaults point at the host user's standard Hermes install paths
+      # (~/.hermes, ~/.local/bin, ~/.local/share/uv) so the integration works
+      # out of the box for standard installs. Override in .env for non-standard
+      # locations. If the path doesn't exist, Docker mounts an empty dir and
+      # Hermes features simply stay inactive (no crash).
+      - ${HERMES_HOME:-${HOME}/.hermes}:/home/mymy/.hermes
+      - ${HERMES_BIN_DIR:-${HOME}/.local/bin}:/home/mymy/.local/bin:ro
+      - ${UV_PYTHON_DIR:-${HOME}/.local/share/uv}:/home/mymy/.local/share/uv:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mymy-db-data:

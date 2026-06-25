@@ -1,0 +1,23 @@
+//! Application services.
+
+pub mod agent_ops;
+pub mod agent_systems;
+pub mod agents;
+pub mod audit;
+pub mod audit_logs;
+pub mod auth;
+pub mod calendar;
+pub mod chat;
+pub mod goals;
+pub mod hermes;
+pub mod hermes_chat;
+pub mod hermes_ops;
+pub mod knowledge;
+pub mod notes;
+pub mod projects;
+pub mod search;
+pub mod settings;
+pub mod task_statuses;
+pub mod tasks;
+pub mod transactions;
+pub mod versions;

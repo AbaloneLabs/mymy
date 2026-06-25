@@ -1,0 +1,213 @@
+//! mymy API — entry point.
+//!
+//! Starts an axum server on the configured port, runs DB migrations,
+//! and wires up all route handlers.
+
+mod config;
+mod error;
+mod handlers;
+mod middleware;
+mod models;
+mod services;
+mod state;
+
+use std::sync::Arc;
+
+use axum::middleware::from_fn_with_state;
+use axum::Router;
+use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::EnvFilter;
+
+use crate::config::Config;
+use crate::state::AppState;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("mymy_api=info,tower_http=info")),
+        )
+        .init();
+
+    let cfg = Config::from_env();
+    tracing::info!(port = cfg.port, "starting mymy-api");
+
+    // Connect to database
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&cfg.database_url)
+        .await?;
+
+    // Run migrations
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, "migration failed");
+            e
+        })?;
+    tracing::info!("database migrations applied");
+
+    let state = Arc::new(AppState {
+        db: pool,
+        config: cfg.clone(),
+    });
+
+    // Build router
+    let app = build_router(state.clone(), &cfg);
+
+    // Start server
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    tracing::info!("listening on {}", listener.local_addr()?);
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
+    let cors = middleware::cors_layer(&cfg.cors_origins);
+
+    Router::new()
+        .merge(handlers::routes())
+        .layer(from_fn_with_state(state.clone(), middleware::require_auth))
+        .layer(cors)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::Body;
+    use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+    use axum::http::{Method, Request, StatusCode};
+    use tower::util::ServiceExt;
+
+    use crate::services::auth::{clear_pin_failures, hash_pin};
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn auth_session_cookie_allows_and_revokes_protected_access(pool: sqlx::PgPool) {
+        let pin = "2468";
+        seed_pin(&pool, pin).await;
+
+        let cfg = test_config();
+        let state = Arc::new(AppState {
+            db: pool,
+            config: cfg.clone(),
+        });
+        let app = build_router(state, &cfg);
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/projects")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let verified = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/verify")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"pin":"{pin}"}}"#)))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(verified.status(), StatusCode::OK);
+
+        let session_cookie = verified
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("auth verify should set a session cookie")
+            .to_string();
+
+        let authorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/projects")
+                    .header(COOKIE, &session_cookie)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(authorized.status(), StatusCode::OK);
+
+        let logout = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/logout")
+                    .header(COOKIE, &session_cookie)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(logout.status(), StatusCode::OK);
+        assert!(
+            logout
+                .headers()
+                .get(SET_COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("Max-Age=0")),
+            "logout should clear the session cookie"
+        );
+
+        let revoked = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/projects")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn seed_pin(pool: &sqlx::PgPool, pin: &str) {
+        let hash = hash_pin(pin).expect("PIN hash should be created");
+        sqlx::query!(
+            "INSERT INTO app_meta (id, pin_hash) VALUES (true, $1)
+             ON CONFLICT (id) DO UPDATE SET pin_hash = $1",
+            hash
+        )
+        .execute(pool)
+        .await
+        .expect("test PIN should be seeded");
+
+        clear_pin_failures(pool)
+            .await
+            .expect("pin failures should be cleared");
+    }
+
+    fn test_config() -> Config {
+        Config {
+            database_url: "postgres://sqlx-test".to_string(),
+            port: 0,
+            cors_origins: Vec::new(),
+            hermes_cli_path: "hermes".to_string(),
+            auth_cookie_secure: false,
+        }
+    }
+}

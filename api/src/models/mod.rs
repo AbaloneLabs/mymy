@@ -1,0 +1,19 @@
+//! Domain models.
+
+pub mod agent;
+pub mod agent_ops;
+pub mod agent_system;
+pub mod audit;
+pub mod auth;
+pub mod calendar;
+pub mod chat;
+pub mod goal;
+pub mod knowledge;
+pub mod note;
+pub mod project;
+pub mod search;
+pub mod settings;
+pub mod task;
+pub mod task_status;
+pub mod transaction;
+pub mod version;

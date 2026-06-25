@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+
+
+:root {
+  /* Backgrounds / surfaces */
+  --bg: #08090a;
+  --surface: #101113;
+  --surface-hover: #16181c;
+  --surface-active: #1c1e22;
+
+  /* Text */
+  --text: #f7f8f8;
+  --text-dim: #8a8f98;
+  --text-muted: #8a8f98;
+  --text-faint: #62666d;
+
+  /* Borders */
+  --border: rgba(255, 255, 255, 0.07);
+  --border-hover: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Accent (Linear blue-violet) */
+  --accent: #5e6ad2;
+  --accent-hover: #6b76e0;
+  --accent-from: #5e6ad2;
+  --accent-to: #8b5cf6;
+
+  /* Status */
+  --status-active: #26d07c;
+  --status-success: #26d07c;
+  --status-idle: #62666d;
+  --status-error: #eb5757;
+
+  /* Typography */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Noto Sans KR", sans-serif;
+
+  /* Radius */
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-status-active: var(--status-active);
+  --color-status-idle: var(--status-idle);
+  --font-sans: var(--font-sans);
+}
+
+/* Base */
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+}
+
+/* Scrollbar — subtle, Linear-like */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: content-box;
+}
+
+/* Selection */
+::selection {
+  background: rgba(94, 106, 210, 0.3);
+}

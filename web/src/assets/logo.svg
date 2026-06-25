@@ -1,0 +1,37 @@
+<svg width="28" height="28" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mymy-base" x1="0" y1="0" x2="64" y2="64">
+      <stop stop-color="#5b63d6" /><stop offset="1" stop-color="#8b5cf6" />
+    </linearGradient>
+    <radialGradient id="mymy-a" cx="0.2" cy="0.15" r="0.6">
+      <stop stop-color="#818cf8" stop-opacity="0.7" /><stop offset="1" stop-color="#818cf8" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="mymy-b" cx="0.85" cy="0.9" r="0.6">
+      <stop stop-color="#c084fc" stop-opacity="0.6" /><stop offset="1" stop-color="#c084fc" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="mymy-ambient" cx="0.5" cy="0.55" r="0.55">
+      <stop stop-color="#a78bfa" stop-opacity="0.35" />
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="mymy-m" x1="14" y1="16" x2="50" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" /><stop offset="1" stop-color="#dbeafe" />
+    </linearGradient>
+    <linearGradient id="mymy-gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffffff" stop-opacity="0.28" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#mymy-base)" />
+  <rect width="64" height="64" rx="14" fill="url(#mymy-a)" />
+  <rect width="64" height="64" rx="14" fill="url(#mymy-b)" />
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="13.25" fill="none" stroke="#ffffff" stroke-opacity="0.2" stroke-width="0.75" />
+  <ellipse cx="32" cy="34" rx="26" ry="20" fill="url(#mymy-ambient)" />
+  <path d="M14 46 L14 16 L32 46 L50 16 L50 46" stroke="url(#mymy-m)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="14" cy="46" r="2.6" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="14" cy="16" r="2.6" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="32" cy="46" r="2.6" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="50" cy="16" r="2.6" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="50" cy="46" r="2.6" fill="#ffffff" fill-opacity="0.9" />
+  <rect width="64" height="64" rx="14" fill="url(#mymy-gloss)" />
+</svg>
