@@ -10,6 +10,10 @@ docs/
 .env.*
 !.env.example
 
+# Vendored third-party source (e.g. hermes-agent) for local analysis only.
+# Never commit external source trees.
+opensource/
+
 # Local-only runtime mounts and scratch files
 .local/
 

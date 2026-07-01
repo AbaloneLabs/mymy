@@ -52,6 +52,17 @@ services:
 
   # ----------------------------------------------------------
   # API backend.
+  #
+  # Path-preserving mount strategy:
+  # Hermes is installed as a Python venv on the host. A venv hardcodes
+  # absolute paths in several places (wrapper script `exec`, binary
+  # shebangs, python symlinks, pyvenv.cfg `home =`). If the host path
+  # differs from the container path, the venv cannot locate itself and
+  # the CLI fails with exit 127. To avoid this, we mount the host paths
+  # to the SAME absolute path inside the container and set HOME to the
+  # host user's home. `${HOME}` resolves per-user at compose time, so
+  # this is NOT a hardcoded personal path — it works for any user with
+  # a standard Hermes install (~/.hermes, ~/.local/bin).
   # ----------------------------------------------------------
   api:
     build:
@@ -63,7 +74,7 @@ services:
     container_name: mymy-api
     restart: unless-stopped
     # Run as the host user so hermes subprocess file permissions line up
-    # (the mounted hermes venv/profiles are owned by uid 1000).
+    # (the mounted hermes venv/profiles are owned by the host uid).
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-mymy}:${POSTGRES_PASSWORD:-mymy}@db:5432/${POSTGRES_DB:-mymy}
@@ -71,21 +82,27 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
-      # Override these in .env when Hermes CLI integration is used.
-      HERMES_HOME: /home/mymy/.hermes
-      HERMES_CLI_PATH: ${HERMES_CLI_PATH:-/home/mymy/.local/bin/hermes}
-      HOME: /home/mymy
+      # Path-preserving: set HOME to the host user's home so the venv's
+      # absolute paths resolve correctly inside the container.
+      HOME: ${HOME}
+      # Hermes paths resolve under the same HOME as on the host.
+      HERMES_HOME: ${HOME}/.hermes
+      HERMES_CLI_PATH: ${HOME}/.local/bin/hermes
     ports:
       - "33697:33697"
     volumes:
-      # Defaults point at the host user's standard Hermes install paths
-      # (~/.hermes, ~/.local/bin, ~/.local/share/uv) so the integration works
-      # out of the box for standard installs. Override in .env for non-standard
-      # locations. If the path doesn't exist, Docker mounts an empty dir and
+      # Mount host paths to the SAME absolute path so the Hermes venv's
+      # hardcoded absolute references (shebangs, pyvenv.cfg, wrapper exec)
+      # remain valid inside the container. ${HOME} is per-user, not a
+      # hardcoded personal path.
+      # These are mounted read-write because the Hermes agent runtime writes
+      # to them: it installs Node.js into ~/.hermes/node/ and symlinks the
+      # binary into ~/.local/bin/node, and may update the uv python cache.
+      # If a path doesn't exist on the host, Docker mounts an empty dir and
       # Hermes features simply stay inactive (no crash).
-      - ${HERMES_HOME:-${HOME}/.hermes}:/home/mymy/.hermes
-      - ${HERMES_BIN_DIR:-${HOME}/.local/bin}:/home/mymy/.local/bin:ro
-      - ${UV_PYTHON_DIR:-${HOME}/.local/share/uv}:/home/mymy/.local/share/uv:ro
+      - ${HERMES_HOME:-${HOME}/.hermes}:${HOME}/.hermes
+      - ${HERMES_BIN_DIR:-${HOME}/.local/bin}:${HOME}/.local/bin
+      - ${UV_PYTHON_DIR:-${HOME}/.local/share/uv}:${HOME}/.local/share/uv
     depends_on:
       db:
         condition: service_healthy

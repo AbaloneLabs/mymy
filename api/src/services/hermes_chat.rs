@@ -69,8 +69,11 @@ async fn run_hermes(mut cmd: Command, expect_session_id: bool) -> Result<ChatRes
         .spawn()
         .map_err(|e| ChatError::CliNotFound(format!("failed to spawn hermes CLI: {e}")))?;
 
-    // Apply a generous timeout for LLM responses.
-    let timeout = Duration::from_secs(180);
+    // Apply a generous timeout for LLM responses. Hermes retries transient
+    // provider errors (e.g. Z.AI overload 429s) with progressively longer
+    // backoff (30s → 60s → 90s → 120s), so the full retry sequence can take
+    // several minutes before either succeeding or giving up.
+    let timeout = Duration::from_secs(600);
     let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(ChatError::Io(e.to_string())),
@@ -79,10 +82,17 @@ async fn run_hermes(mut cmd: Command, expect_session_id: bool) -> Result<ChatRes
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Hermes prints its error messages (e.g. "API call failed: HTTP 429")
+        // to stdout, not stderr. Include both so the real cause surfaces.
+        let detail = if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
         return Err(ChatError::HermesFailed(format!(
             "hermes exited with status {}: {}",
-            output.status,
-            stderr.trim()
+            output.status, detail
         )));
     }
 
@@ -164,7 +174,7 @@ fn parse_session_id(stderr: &str) -> Option<String> {
 pub enum ChatError {
     #[error("hermes CLI not found: {0}")]
     CliNotFound(String),
-    #[error("hermes command timed out (no response within 180s)")]
+    #[error("hermes command timed out (no response within 600s)")]
     Timeout,
     #[error("hermes failed: {0}")]
     HermesFailed(String),

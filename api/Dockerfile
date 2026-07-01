@@ -39,15 +39,33 @@ WORKDIR /app
 # Runtime deps:
 #   ca-certificates — TLS for DB + outbound LLM calls
 #   bash            — hermes wrapper script uses bash
+#   curl, git, ssh, jq, xz-utils, file — required by the Hermes agent runtime.
+#     Hermes runs `hermes chat` as a subprocess, which invokes its own
+#     install/bootstrap scripts that shell out to curl (download Node.js),
+#     git (clone deps), ssh (remote ops), jq (JSON parsing), xz (extract
+#     .tar.xz tarballs), file (binary detection). Without these the
+#     subprocess exits with status 1 ("command not found").
 # Runtime glibc matches builder (bookworm), so no version mismatch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     bash \
+    curl \
+    git \
+    openssh-client \
+    jq \
+    xz-utils \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/mymy-api /usr/local/bin/mymy-api
 COPY --from=builder /app/migrations ./migrations
 
+# Entrypoint ensures the runtime HOME (set to the host user's home for the
+# path-preserving Hermes mount) exists before the API starts.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 33697
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["mymy-api"]

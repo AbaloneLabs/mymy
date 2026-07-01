@@ -27,7 +27,7 @@ import {
 } from "@dnd-kit/core";
 import { useKnowledgeBreadcrumb } from "@/features/knowledge/api";
 import { cn } from "@/lib/utils";
-import { extractHeadings, scrollToHeading } from "@/features/knowledge/utils";
+import { extractHeadings, scrollToHeading, type FlatNode } from "@/features/knowledge/utils";
 import type {
   KnowledgeArticle,
   KnowledgeNodeType,
@@ -442,7 +442,7 @@ interface EditorProps {
   draftNodeType: KnowledgeNodeType;
   draftParentId: string | null;
   saveStatus: "idle" | "saving" | "saved" | "error";
-  parentOptions: { id: string; title: string; depth: number }[];
+  parentOptions: FlatNode[];
   currentId: string | null;
   onTitle: (v: string) => void;
   onContent: (v: string) => void;
@@ -506,7 +506,7 @@ export function Editor(props: EditorProps) {
           >
             <option value="">{t("knowledge.none")}</option>
             {props.parentOptions
-              .filter((o) => o.id !== props.currentId)
+              .filter((o) => o.id !== props.currentId && o.nodeType === "category")
               .map((o) => (
                 <option key={o.id} value={o.id}>
                   {"  ".repeat(o.depth)}
@@ -538,9 +538,7 @@ export function Editor(props: EditorProps) {
       {/* Content editor / preview */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {props.draftNodeType === "category" ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--text-dim)]">
-            {t("knowledge.category")} — {props.draftTitle}
-          </div>
+          <div />
         ) : showPreview ? (
           <div className="h-full overflow-y-auto px-8 py-6">
             <div className="knowledge-prose mx-auto max-w-3xl">

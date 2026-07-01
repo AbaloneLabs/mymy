@@ -1,4 +1,4 @@
-import type { KnowledgeTreeNode } from "@/types/knowledge";
+import type { KnowledgeNodeType, KnowledgeTreeNode } from "@/types/knowledge";
 
 export interface TocItem {
   id: string;
@@ -6,13 +6,20 @@ export interface TocItem {
   level: number;
 }
 
+export interface FlatNode {
+  id: string;
+  title: string;
+  depth: number;
+  nodeType: KnowledgeNodeType;
+}
+
 export function flattenTree(
   nodes: KnowledgeTreeNode[],
   depth = 0,
-): { id: string; title: string; depth: number }[] {
-  const out: { id: string; title: string; depth: number }[] = [];
+): FlatNode[] {
+  const out: FlatNode[] = [];
   for (const node of nodes) {
-    out.push({ id: node.id, title: node.title, depth });
+    out.push({ id: node.id, title: node.title, depth, nodeType: node.nodeType });
     if (node.children.length > 0) {
       out.push(...flattenTree(node.children, depth + 1));
     }

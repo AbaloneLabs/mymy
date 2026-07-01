@@ -65,11 +65,20 @@ export function formatKey(key: string): string {
  * Format a sequence of keys (as stored in the shortcut store) into the
  * hotkey string understood by `react-hotkeys-hook`.
  *
- *   ["mod", "k"]      → "mod+k"
- *   ["g", "h"]        → "g,h"  (sequence)
+ * `react-hotkeys-hook` uses three separators:
+ *   - `+`  (splitKey)        — keys pressed simultaneously (a chord)
+ *   - `>`  (sequenceSplitKey) — keys pressed in sequence (g then h)
+ *   - `,`  (delimiter)        — alternative hotkeys (OR), NOT what we want
+ *
+ * So we must build the string based on the key type:
+ *   ["mod", "k"]         → "mod+k"      (chord)
+ *   ["mod", "shift", "l"] → "mod+shift+l" (chord)
+ *   ["g", "h"]           → "g>h"        (sequence)
+ *   ["t"]                → "t"          (single key)
  */
 export function toHotkeyString(keys: string[]): string {
-  return keys.join(",");
+  if (keys.length <= 1) return keys.join("");
+  return isSequence(keys) ? keys.join(">") : keys.join("+");
 }
 
 /**

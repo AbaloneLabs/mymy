@@ -12,6 +12,7 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useShortcutStore, DEFAULT_BINDINGS } from "@/store/shortcuts";
+import { toHotkeyString } from "@/lib/platform";
 import { useCommandPaletteStore } from "@/store/commandPalette";
 import { useCreateBus } from "@/store/createBus";
 import { useAuthStore } from "@/store/auth";
@@ -50,7 +51,7 @@ export function useGlobalShortcuts() {
   // --- Palette toggle: works everywhere (including form fields) ---
   const paletteKeys = getBinding("palette.toggle");
   useHotkeys(
-    paletteKeys.join(","),
+    toHotkeyString(paletteKeys),
     (e) => {
       e.preventDefault();
       togglePalette();
@@ -66,7 +67,7 @@ export function useGlobalShortcuts() {
   // --- Lock screen ---
   const lockKeys = getBinding("action.lock");
   useHotkeys(
-    lockKeys.join(","),
+    toHotkeyString(lockKeys),
     (e) => {
       e.preventDefault();
       lock();
@@ -89,7 +90,7 @@ export function useGlobalShortcuts() {
     const keys = getBinding(def.actionId);
     const path = NAV_PATHS[def.actionId];
     useHotkeys(
-      keys.join(","),
+      toHotkeyString(keys),
       (e) => {
         e.preventDefault();
         if (path) navigate(path);
@@ -112,7 +113,7 @@ export function useGlobalShortcuts() {
     const keys = getBinding(def.actionId);
     const actionId = def.actionId;
     useHotkeys(
-      keys.join(","),
+      toHotkeyString(keys),
       (e) => {
         e.preventDefault();
         triggerCreate(actionId);

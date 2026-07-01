@@ -230,6 +230,12 @@ pub async fn create(
         None => None,
     };
 
+    // Enforce the hierarchy rule: a parent must be a category (folder).
+    // Articles are always leaf nodes and cannot have children.
+    if let Some(pid) = parent_uuid {
+        validate_parent_is_category(&state.db, pid).await?;
+    }
+
     // Resolve the project. Only meaningful on root nodes; children inherit
     // the project from their root ancestor through the tree fetch.
     let project_uuid = match req.project_id.as_deref() {
@@ -358,7 +364,9 @@ pub async fn update(
     };
 
     // If the parent is changing, guard against cycles: the new parent must
-    // not be the node itself or one of its descendants.
+    // not be the node itself or one of its descendants. Additionally, the
+    // new parent must be a category (folder) — articles are always leaf
+    // nodes and cannot have children.
     if let Some(Some(new_parent)) = parent_uuid {
         if new_parent == id {
             return Err(AppError::BadRequest(
@@ -366,6 +374,7 @@ pub async fn update(
             ));
         }
         check_cycle(&state.db, id, new_parent).await?;
+        validate_parent_is_category(&state.db, new_parent).await?;
     }
 
     // Read the pre-update state (for change summary + version checkpoint).
@@ -519,6 +528,7 @@ pub async fn move_node(
             ));
         }
         check_cycle(&state.db, id, new_parent).await?;
+        validate_parent_is_category(&state.db, new_parent).await?;
     }
 
     // Apply parent_id change only when the key was present in the request.
@@ -809,6 +819,31 @@ fn reject_cycle(creates_cycle: bool) -> AppResult<()> {
     Ok(())
 }
 
+/// Validate that a parent node exists and is a category (folder).
+///
+/// Documents and folders may only be nested under a folder (or at the root
+/// level, which is handled by a `None` parent_id). This enforces the rule
+/// that articles are always leaf nodes and cannot have children.
+async fn validate_parent_is_category(db: &sqlx::PgPool, parent_id: Uuid) -> AppResult<()> {
+    let row = sqlx::query!(
+        r#"SELECT node_type AS "node_type!"
+           FROM knowledge_articles WHERE id = $1"#,
+        parent_id,
+    )
+    .fetch_optional(db)
+    .await?;
+
+    match row {
+        None => Err(AppError::BadRequest(format!(
+            "parent node {parent_id} does not exist"
+        ))),
+        Some(r) if r.node_type != "category" => Err(AppError::BadRequest(
+            "a node can only be nested under a category (folder)".to_string(),
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 /// Parse a `project_id` query param into the sentinel triple-state.
 ///
 /// - absent / None  → `None`               (no filter)
@@ -970,5 +1005,193 @@ mod tests {
         let err = reject_cycle(true).expect_err("cycle should be rejected");
         assert!(matches!(err, AppError::BadRequest(_)));
         assert!(reject_cycle(false).is_ok());
+    }
+
+    // ---- DB integration tests for parent-type validation ----
+
+    use crate::config::Config;
+    use crate::state::AppState;
+
+    /// Insert a knowledge node directly into the DB for test setup.
+    async fn seed_node(
+        pool: &sqlx::PgPool,
+        id: Uuid,
+        parent_id: Option<Uuid>,
+        node_type: &str,
+        title: &str,
+    ) {
+        // Build a slug from the node type + last 8 hex chars of the uuid so
+        // every seed is unique within its parent.
+        let slug = format!("{}-{}", node_type, id.simple().to_string().split_off(28));
+        sqlx::query!(
+            r#"INSERT INTO knowledge_articles (id, parent_id, node_type, title, slug)
+               VALUES ($1, $2, $3, $4, $5)"#,
+            id,
+            parent_id,
+            node_type,
+            title,
+            slug,
+        )
+        .execute(pool)
+        .await
+        .expect("node should be seeded");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn validate_parent_accepts_category(pool: sqlx::PgPool) {
+        let cat = Uuid::new_v4();
+        seed_node(&pool, cat, None, "category", "Folder").await;
+
+        validate_parent_is_category(&pool, cat)
+            .await
+            .expect("category parent should be valid");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn validate_parent_rejects_article(pool: sqlx::PgPool) {
+        let doc = Uuid::new_v4();
+        seed_node(&pool, doc, None, "article", "Doc").await;
+
+        let err = validate_parent_is_category(&pool, doc)
+            .await
+            .expect_err("article parent should be rejected");
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn validate_parent_rejects_nonexistent(pool: sqlx::PgPool) {
+        let missing = Uuid::new_v4();
+        let err = validate_parent_is_category(&pool, missing)
+            .await
+            .expect_err("nonexistent parent should be rejected");
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_allows_category_parent(pool: sqlx::PgPool) {
+        let cat = Uuid::new_v4();
+        seed_node(&pool, cat, None, "category", "Folder").await;
+
+        let state = AppState::new(pool, test_config());
+
+        let res = create(
+            &state,
+            CreateKnowledgeArticleRequest {
+                parent_id: Some(cat.to_string()),
+                project_id: None,
+                node_type: Some("article".to_string()),
+                title: "Child Doc".to_string(),
+                slug: None,
+                content: None,
+                excerpt: None,
+                tags: vec![],
+                status: None,
+                sort_order: None,
+            },
+        )
+        .await;
+
+        assert!(res.is_ok(), "creating under a category should succeed");
+        assert_eq!(
+            res.unwrap().article.parent_id.as_deref(),
+            Some(cat.to_string().as_str())
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_rejects_article_parent(pool: sqlx::PgPool) {
+        let doc = Uuid::new_v4();
+        seed_node(&pool, doc, None, "article", "Doc").await;
+
+        let state = AppState::new(pool, test_config());
+
+        let err = create(
+            &state,
+            CreateKnowledgeArticleRequest {
+                parent_id: Some(doc.to_string()),
+                project_id: None,
+                node_type: Some("article".to_string()),
+                title: "Nested Doc".to_string(),
+                slug: None,
+                content: None,
+                excerpt: None,
+                tags: vec![],
+                status: None,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect_err("creating under an article should be rejected");
+
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_rejects_article_parent(pool: sqlx::PgPool) {
+        let cat = Uuid::new_v4();
+        let doc_a = Uuid::new_v4();
+        let doc_b = Uuid::new_v4();
+        seed_node(&pool, cat, None, "category", "Folder").await;
+        seed_node(&pool, doc_a, Some(cat), "article", "Doc A").await;
+        seed_node(&pool, doc_b, Some(cat), "article", "Doc B").await;
+
+        let state = AppState::new(pool, test_config());
+
+        // Attempt to move doc_b under doc_a (an article) — must be rejected.
+        let err = update(
+            &state,
+            doc_b,
+            UpdateKnowledgeArticleRequest {
+                parent_id: Some(Some(doc_a.to_string())),
+                node_type: None,
+                title: None,
+                slug: None,
+                content: None,
+                excerpt: None,
+                tags: None,
+                status: None,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect_err("moving under an article should be rejected");
+
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn move_node_rejects_article_parent(pool: sqlx::PgPool) {
+        let cat = Uuid::new_v4();
+        let doc_a = Uuid::new_v4();
+        let doc_b = Uuid::new_v4();
+        seed_node(&pool, cat, None, "category", "Folder").await;
+        seed_node(&pool, doc_a, Some(cat), "article", "Doc A").await;
+        seed_node(&pool, doc_b, Some(cat), "article", "Doc B").await;
+
+        let state = AppState::new(pool, test_config());
+
+        let err = move_node(
+            &state,
+            doc_b,
+            MoveKnowledgeArticleRequest {
+                parent_id: Some(Some(doc_a.to_string())),
+                project_id: None,
+                sort_order: None,
+            },
+        )
+        .await
+        .expect_err("moving under an article should be rejected");
+
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    fn test_config() -> Config {
+        Config {
+            database_url: "postgres://sqlx-test".to_string(),
+            port: 0,
+            cors_origins: Vec::new(),
+            hermes_cli_path: "hermes".to_string(),
+            auth_cookie_secure: false,
+        }
     }
 }
