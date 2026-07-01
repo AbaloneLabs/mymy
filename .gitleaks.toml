@@ -1,0 +1,23 @@
+# gitleaks configuration for mymy.
+#
+# Extends the default ruleset but adds an allowlist so test fixtures that use
+# obviously-fake API keys do not trip the generic-api-key detector. Real
+# secrets must never be committed; this only suppresses known test-only
+# placeholders that are clearly non-functional (e.g. "sk-key-1-123456789").
+
+title = "mymy gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow test-only fake API keys"
+regexes = [
+    # Explicitly-fake test keys used in unit/integration tests. These are
+    # non-functional placeholders that only exist to exercise the encryption
+    # and CRUD code paths.
+    '''sk-key-[0-9]-123456789''',
+    '''sk-secret-123456789''',
+    '''sk-test-[a-z0-9]+''',
+    '''sk-ant-test[a-z0-9-]*''',
+]
