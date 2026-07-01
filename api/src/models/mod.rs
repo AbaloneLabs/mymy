@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod chat;
 pub mod goal;
 pub mod knowledge;
+pub mod llm_provider;
 pub mod note;
 pub mod project;
 pub mod search;

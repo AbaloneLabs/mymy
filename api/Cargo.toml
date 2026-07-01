@@ -26,6 +26,16 @@ serde_yaml = "0.9"
 # Auth
 argon2 = "0.5"
 
+# Async utilities (agent runtime)
+async-trait = "0.1"
+futures = "0.3"
+async-stream = "0.3"
+bytes = "1"
+
+# Crypto (API key encryption at rest)
+aes-gcm = "0.10"
+hkdf = "0.12"
+
 # Utilities
 thiserror = "2"
 anyhow = "1"
@@ -40,8 +50,8 @@ sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# HTTP client (optional hermes REST probing)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# HTTP client (agent runtime + hermes REST probing)
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod chat;
 pub mod goals;
 pub mod knowledge;
+pub mod llm_providers;
 pub mod notes;
 pub mod projects;
 pub mod search;
@@ -38,6 +39,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(calendar::routes())
         .merge(notes::routes())
         .merge(knowledge::routes())
+        .merge(llm_providers::routes())
         .merge(search::routes())
         .merge(tasks::routes())
         .merge(task_statuses::routes())

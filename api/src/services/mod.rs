@@ -13,6 +13,7 @@ pub mod hermes;
 pub mod hermes_chat;
 pub mod hermes_ops;
 pub mod knowledge;
+pub mod llm_providers;
 pub mod notes;
 pub mod projects;
 pub mod search;

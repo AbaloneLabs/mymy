@@ -5,6 +5,7 @@ import { SectionCard } from "@/components/settings/SectionCard";
 import { PinChangeForm } from "@/components/settings/PinChangeForm";
 import { AgentSystemSection } from "@/components/settings/AgentSystemSection";
 import { GitSystemSection } from "@/components/settings/GitSystemSection";
+import { LlmProviderSection } from "@/components/settings/LlmProviderSection";
 import { AuditLogSection } from "@/components/settings/AuditLogSection";
 import { TaskStatusManager } from "@/components/settings/TaskStatusManager";
 import { useSettingsStore } from "@/store/settings";
@@ -40,6 +41,7 @@ type SettingsTab =
   | "notes"
   | "tasks"
   | "agents"
+  | "models"
   | "git"
   | "audit"
   | "about";
@@ -52,6 +54,7 @@ const VALID_TABS: SettingsTab[] = [
   "notes",
   "tasks",
   "agents",
+  "models",
   "git",
   "audit",
   "about",
@@ -61,7 +64,7 @@ const VALID_TABS: SettingsTab[] = [
 const TAB_GROUPS: { tabs: SettingsTab[] }[] = [
   { tabs: ["general", "pin"] },
   { tabs: ["chat", "calendar", "notes", "tasks"] },
-  { tabs: ["agents", "git"] },
+  { tabs: ["agents", "models", "git"] },
   { tabs: ["audit"] },
   { tabs: ["about"] },
 ];
@@ -141,6 +144,14 @@ export default function Settings() {
                   description={t("settings.agentSystem.description")}
                 >
                   <AgentSystemSection />
+                </SectionCard>
+              )}
+              {activeTab === "models" && (
+                <SectionCard
+                  title={t("settings.models.title")}
+                  description={t("settings.models.description")}
+                >
+                  <LlmProviderSection />
                 </SectionCard>
               )}
               {activeTab === "git" && (

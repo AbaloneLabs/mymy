@@ -3,6 +3,7 @@
 //! Starts an axum server on the configured port, runs DB migrations,
 //! and wires up all route handlers.
 
+mod agent;
 mod config;
 mod error;
 mod handlers;
@@ -50,10 +51,7 @@ async fn main() -> anyhow::Result<()> {
         })?;
     tracing::info!("database migrations applied");
 
-    let state = Arc::new(AppState {
-        db: pool,
-        config: cfg.clone(),
-    });
+    let state = Arc::new(AppState::new(pool, cfg.clone()));
 
     // Build router
     let app = build_router(state.clone(), &cfg);
@@ -94,10 +92,7 @@ mod tests {
         seed_pin(&pool, pin).await;
 
         let cfg = test_config();
-        let state = Arc::new(AppState {
-            db: pool,
-            config: cfg.clone(),
-        });
+        let state = Arc::new(AppState::new(pool, cfg.clone()));
         let app = build_router(state, &cfg);
 
         let unauthorized = app

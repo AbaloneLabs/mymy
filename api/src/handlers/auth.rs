@@ -14,6 +14,7 @@ use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
 
+use crate::agent::crypto;
 use crate::error::{AppError, AppResult};
 use crate::models::auth::{
     AuthStatusResponse, LogoutResponse, PinChangeRequest, PinChangeResponse, PinVerifyRequest,
@@ -61,6 +62,11 @@ pub async fn auth_verify(
 
     let mut headers = HeaderMap::new();
     if let Some(session) = session {
+        // Cache the HKDF-derived encryption key for this session so that
+        // API key encrypt/decrypt operations don't need to re-prompt for PIN.
+        let enc_key = crypto::derive_key(&req.pin);
+        *state.encryption_key.write().await = Some(enc_key);
+
         headers.insert(
             SET_COOKIE,
             HeaderValue::from_str(&session_cookie(&session, state.config.auth_cookie_secure))
@@ -86,6 +92,9 @@ pub async fn auth_logout(
         revoke_session(&state.db, token).await?;
     }
 
+    // Clear the cached encryption key on logout.
+    *state.encryption_key.write().await = None;
+
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         SET_COOKIE,
@@ -101,7 +110,18 @@ pub async fn auth_change_pin(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PinChangeRequest>,
 ) -> AppResult<Json<PinChangeResponse>> {
+    // Re-encrypt all LLM provider API keys with the new PIN-derived key.
+    // This must happen before the PIN hash is updated, so we can derive
+    // the old key from the current PIN.
+    let old_key = crypto::derive_key(&req.current);
+    let new_key = crypto::derive_key(&req.next);
+    crate::services::llm_providers::reencrypt_all_keys(&state.db, &old_key, &new_key).await?;
+
     change_pin(&state.db, &req.current, &req.next).await?;
+
+    // Update the cached encryption key so subsequent requests use the new key.
+    *state.encryption_key.write().await = Some(new_key);
+
     Ok(Json(PinChangeResponse { success: true }))
 }
 
