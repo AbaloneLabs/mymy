@@ -45,11 +45,15 @@ variables:
       -p 127.0.0.1::5432 \
       pgvector/pgvector:pg16
 
-    for i in $(seq 1 60); do
-      if docker exec "${CI_DB_CONTAINER}" pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+    # Wait until PostgreSQL is genuinely query-ready, not just TCP-ready.
+    # pgvector's image runs init scripts (extension install) after the port
+    # opens, so pg_isready alone races. Poll a real SELECT instead.
+    for i in $(seq 1 90); do
+      if docker exec "${CI_DB_CONTAINER}" \
+           psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT 1" >/dev/null 2>&1; then
         break
       fi
-      if [ "$i" -eq 60 ]; then
+      if [ "$i" -eq 90 ]; then
         docker logs "${CI_DB_CONTAINER}"
         exit 1
       fi
@@ -59,14 +63,28 @@ variables:
     export CI_DB_PORT="$(docker port "${CI_DB_CONTAINER}" 5432/tcp | sed 's/.*://')"
     export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${CI_DB_PORT}/${POSTGRES_DB}"
 
-    docker run --rm \
-      --network "container:${CI_DB_CONTAINER}" \
-      -e POSTGRES_USER="${POSTGRES_USER}" \
-      -e POSTGRES_DB="${POSTGRES_DB}" \
-      -e PGPASSWORD="${POSTGRES_PASSWORD}" \
-      -v "${CI_PROJECT_DIR}/api/migrations:/migrations:ro" \
-      postgres:16 \
-      bash -lc 'for migration in /migrations/*.sql; do echo "Applying $(basename "$migration")"; psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done'
+    # Apply migrations with a retry wrapper. The first connection from the
+    # ephemeral psql container can still race the DB's final accept loop,
+    # so retry the whole batch a few times until it succeeds cleanly.
+    for attempt in $(seq 1 5); do
+      if docker run --rm \
+        --network "container:${CI_DB_CONTAINER}" \
+        -e POSTGRES_USER="${POSTGRES_USER}" \
+        -e POSTGRES_DB="${POSTGRES_DB}" \
+        -e PGPASSWORD="${POSTGRES_PASSWORD}" \
+        -v "${CI_PROJECT_DIR}/api/migrations:/migrations:ro" \
+        postgres:16 \
+        bash -lc 'for migration in /migrations/*.sql; do echo "Applying $(basename "$migration")"; psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"; done'; then
+        break
+      fi
+      if [ "$attempt" -eq 5 ]; then
+        echo "Migration application failed after 5 attempts"
+        docker logs "${CI_DB_CONTAINER}"
+        exit 1
+      fi
+      echo "Migration attempt ${attempt} failed, retrying in 3s..."
+      sleep 3
+    done
 
 .api_db_after_script: &api_db_after_script
   - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" "mymy-ci-api-${CI_JOB_ID}" >/dev/null 2>&1 || true
