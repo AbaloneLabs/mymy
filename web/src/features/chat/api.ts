@@ -2,7 +2,7 @@
  * TanStack Query hooks for this domain.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { API_BASE, ApiError, api } from "@/lib/api";
 import type { ChatMessage, ChatSession } from "@/types/chat";
 
 /* -------------------------------------------------- Chat */
@@ -12,11 +12,6 @@ interface ChatSessionsResponse {
 }
 interface ChatMessagesResponse {
   messages: ChatMessage[];
-}
-interface SendMessageResponse {
-  userMessage: ChatMessage;
-  agentMessage: ChatMessage;
-  session: ChatSession;
 }
 
 export function useChatSessions(projectId?: string, profile?: string) {
@@ -64,21 +59,85 @@ export function useChatMessages(sessionId: string | undefined) {
   });
 }
 
-export function useSendMessage(sessionId: string | undefined) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (text: string) =>
-      api.post<SendMessageResponse>(
-        `/chat/sessions/${sessionId}/messages`,
-        { text },
-      ),
-    onSuccess: () => {
-      qc.invalidateQueries({
-        queryKey: ["chat", "messages", sessionId],
-      });
-      qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-    },
+export type ChatSseEvent =
+  | { type: "user_message"; message: ChatMessage }
+  | { type: "text_delta"; content: string }
+  | { type: "reasoning_delta"; content: string }
+  | { type: "tool_call_start"; call_id: string; tool_name: string; arguments: string }
+  | { type: "tool_call_finish"; call_id: string; result: string; error?: string | null }
+  | { type: "turn_completed"; finish_reason: string; usage: unknown }
+  | { type: "context_compressing" }
+  | {
+      type: "done";
+      assistant_message?: ChatMessage | null;
+      session: ChatSession;
+      total_api_calls: number;
+      total_tool_calls: number;
+    }
+  | { type: "error"; message: string };
+
+export async function streamChatMessage(
+  sessionId: string,
+  text: string,
+  onEvent: (event: ChatSseEvent) => void,
+) {
+  const response = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
   });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      window.dispatchEvent(new Event("mymy:unauthorized"));
+    }
+    const body = await response.text();
+    let parsed: unknown;
+    try {
+      parsed = body ? JSON.parse(body) : null;
+    } catch {
+      parsed = body;
+    }
+    const message =
+      parsed && typeof parsed === "object" && "error" in parsed
+        ? String((parsed as { error: unknown }).error)
+        : response.statusText;
+    throw new ApiError(response.status, message, parsed);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("stream response body is not readable");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const event = parseSseFrame(frame);
+      if (event) onEvent(event);
+    }
+  }
+
+  if (buffer.trim()) {
+    const event = parseSseFrame(buffer);
+    if (event) onEvent(event);
+  }
+}
+
+function parseSseFrame(frame: string): ChatSseEvent | null {
+  const dataLines = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+  if (dataLines.length === 0) return null;
+  return JSON.parse(dataLines.join("\n")) as ChatSseEvent;
 }
 
 export function useDeleteChatSession(projectId?: string) {

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Send, Loader2, AlertCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { useChatMessages, useSendMessage } from "@/features/chat/api";
+import { streamChatMessage, useChatMessages, type ChatSseEvent } from "@/features/chat/api";
 import type { ChatMessage } from "@/types/chat";
 
 interface ChatPanelProps {
@@ -24,12 +26,24 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamError, setStreamError] = useState(false);
+  const [streamUserMessage, setStreamUserMessage] = useState<ChatMessage | null>(null);
+  const [streamAssistantText, setStreamAssistantText] = useState("");
+  const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const qc = useQueryClient();
 
   const { data, isLoading, isError } = useChatMessages(sessionId ?? undefined);
-  const sendMessage = useSendMessage(sessionId ?? undefined);
 
   const messages: ChatMessage[] = data?.messages ?? [];
+  const visibleMessages = [
+    ...messages,
+    ...(streamUserMessage ? [streamUserMessage] : []),
+    ...(streamAssistantText
+      ? [makeStreamingAssistantMessage(sessionId ?? "", streamAssistantText)]
+      : []),
+  ];
 
   // Auto-scroll to bottom on new messages.
   useEffect(() => {
@@ -37,15 +51,37 @@ export function ChatPanel({
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages.length, sendMessage.isPending]);
+  }, [visibleMessages.length, streamAssistantText, isStreaming]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = text.trim();
-    if (!trimmed || !sessionId || sendMessage.isPending) return;
-    sendMessage.mutate(trimmed, {
-      onSuccess: () => setText(""),
-    });
+    if (!trimmed || !sessionId || isStreaming) return;
+    setText("");
+    setIsStreaming(true);
+    setStreamError(false);
+    setStreamUserMessage(null);
+    setStreamAssistantText("");
+    setToolEvents([]);
+
+    try {
+      await streamChatMessage(sessionId, trimmed, (event) => {
+        handleStreamEvent(event, {
+          setStreamUserMessage,
+          setStreamAssistantText,
+          setToolEvents,
+        });
+      });
+      await qc.invalidateQueries({ queryKey: ["chat", "messages", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+      setStreamUserMessage(null);
+      setStreamAssistantText("");
+      setToolEvents([]);
+    } catch {
+      setStreamError(true);
+    } finally {
+      setIsStreaming(false);
+    }
   };
 
   const initial = agentName?.trim().charAt(0).toUpperCase() ?? "?";
@@ -106,12 +142,16 @@ export function ChatPanel({
           <SessionDivider label={t("chat.newSessionDivider")} />
         )}
 
-        {messages.map((msg) => (
+        {visibleMessages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
+        {toolEvents.map((event) => (
+          <ToolEventRow key={event.id} event={event} />
+        ))}
+
         {/* Typing indicator while waiting for agent response */}
-        {sendMessage.isPending && (
+        {isStreaming && !streamAssistantText && (
           <div className="flex items-center gap-2 pl-1">
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]" strokeWidth={1.75} />
             <span className="text-xs text-[var(--text-muted)]">{t("chat.agentTyping")}</span>
@@ -119,7 +159,7 @@ export function ChatPanel({
         )}
 
         {/* Error */}
-        {sendMessage.isError && (
+        {streamError && (
           <div className="flex items-center gap-2 rounded-md border border-[var(--status-error)] bg-[var(--surface)] px-3 py-2">
             <AlertCircle className="h-4 w-4 text-[var(--status-error)]" strokeWidth={1.5} />
             <span className="text-xs text-[var(--status-error)]">{t("chat.error")}</span>
@@ -144,7 +184,7 @@ export function ChatPanel({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              handleSubmit(e);
+              void handleSubmit(e);
             }
           }}
           placeholder={t("chat.inputPlaceholder")}
@@ -159,16 +199,16 @@ export function ChatPanel({
         />
         <button
           type="submit"
-          disabled={!text.trim() || sendMessage.isPending}
+          disabled={!text.trim() || isStreaming}
           className={cn(
             "flex h-10 shrink-0 items-center gap-1.5 rounded-lg px-4 text-sm font-medium",
             "transition-colors duration-150",
-            text.trim() && !sendMessage.isPending
+            text.trim() && !isStreaming
               ? "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
               : "cursor-not-allowed bg-[var(--surface-active)] text-[var(--text-faint)]"
           )}
         >
-          {sendMessage.isPending ? (
+          {isStreaming ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} />
               {t("chat.sending")}
@@ -188,6 +228,7 @@ export function ChatPanel({
 /** A single message bubble — user (right, accent) or agent (left, surface). */
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
+  const isTool = message.role === "tool";
   return (
     <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
       <div
@@ -195,6 +236,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           "max-w-[80%] whitespace-pre-wrap rounded-lg px-3.5 py-2 text-sm leading-relaxed",
           isUser
             ? "bg-[var(--accent)] text-white"
+            : isTool
+              ? "border border-[var(--border)] bg-[var(--bg)] font-mono text-xs text-[var(--text-muted)]"
             : "border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
         )}
       >
@@ -202,6 +245,82 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     </div>
   );
+}
+
+interface ToolEvent {
+  id: string;
+  name: string;
+  status: "running" | "done";
+  detail: string;
+}
+
+function ToolEventRow({ event }: { event: ToolEvent }) {
+  return (
+    <div className="max-w-[80%] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-muted)]">
+      <div className="flex items-center gap-2">
+        {event.status === "running" && (
+          <Loader2 className="h-3 w-3 animate-spin" strokeWidth={1.5} />
+        )}
+        <span className="font-medium text-[var(--text)]">{event.name}</span>
+        <span>{event.status}</span>
+      </div>
+      {event.detail && (
+        <pre className="mt-1 max-h-24 overflow-hidden whitespace-pre-wrap font-mono text-[11px]">
+          {event.detail}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function makeStreamingAssistantMessage(sessionId: string, content: string): ChatMessage {
+  return {
+    id: "streaming-assistant",
+    sessionId,
+    role: "assistant",
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function handleStreamEvent(
+  event: ChatSseEvent,
+  setters: {
+    setStreamUserMessage: (message: ChatMessage | null) => void;
+    setStreamAssistantText: Dispatch<SetStateAction<string>>;
+    setToolEvents: Dispatch<SetStateAction<ToolEvent[]>>;
+  },
+) {
+  switch (event.type) {
+    case "user_message":
+      setters.setStreamUserMessage(event.message);
+      break;
+    case "text_delta":
+      setters.setStreamAssistantText((current) => current + event.content);
+      break;
+    case "tool_call_start":
+      setters.setToolEvents((current) => [
+        ...current,
+        {
+          id: event.call_id,
+          name: event.tool_name,
+          status: "running",
+          detail: event.arguments,
+        },
+      ]);
+      break;
+    case "tool_call_finish":
+      setters.setToolEvents((current) =>
+        current.map((item) =>
+          item.id === event.call_id
+            ? { ...item, status: "done", detail: event.error ?? event.result }
+            : item,
+        ),
+      );
+      break;
+    case "error":
+      throw new Error(event.message);
+  }
 }
 
 /** Horizontal divider marking a new session boundary. */

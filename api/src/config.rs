@@ -8,8 +8,6 @@ pub struct Config {
     pub port: u16,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Vec<String>,
-    /// Path to the hermes CLI binary (for chat subprocess calls).
-    pub hermes_cli_path: String,
     /// Whether auth cookies should include the Secure attribute.
     pub auth_cookie_secure: bool,
 }
@@ -36,7 +34,6 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let hermes_cli_path = env::var("HERMES_CLI_PATH").unwrap_or_else(|_| "hermes".to_string());
         let auth_cookie_secure = env::var("AUTH_COOKIE_SECURE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -46,7 +43,6 @@ impl Config {
             database_url,
             port,
             cors_origins,
-            hermes_cli_path,
             auth_cookie_secure,
         }
     }

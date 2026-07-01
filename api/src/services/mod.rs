@@ -10,7 +10,6 @@ pub mod calendar;
 pub mod chat;
 pub mod goals;
 pub mod hermes;
-pub mod hermes_chat;
 pub mod hermes_ops;
 pub mod knowledge;
 pub mod llm_providers;

@@ -5,7 +5,7 @@
  * production via nginx proxy, or http://localhost:33697/api in dev).
  */
 
-const API_BASE =
+export const API_BASE =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "/api";
 
 export class ApiError extends Error {

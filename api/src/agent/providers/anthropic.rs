@@ -459,14 +459,14 @@ fn parse_anthropic_sse(
                             }
                         }
                     }
-                    AnthropicEvent::ContentBlockDelta { delta, .. } => {
+                    AnthropicEvent::ContentBlockDelta { index, delta } => {
                         match delta {
                             ContentBlockDelta::TextDelta { text } => {
                                 yield StreamDelta::Text(text);
                             }
                             ContentBlockDelta::InputJsonDelta { partial_json } => {
                                 yield StreamDelta::ToolCallArguments {
-                                    index: 0, // index tracked by caller via ToolCallStart
+                                    index,
                                     fragment: partial_json,
                                 };
                             }

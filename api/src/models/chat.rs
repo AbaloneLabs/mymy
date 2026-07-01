@@ -4,12 +4,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Message role: user or agent.
+use crate::agent::providers::types::{FinishReason, ToolCall, Usage};
+
+/// Message role for persisted native agent chat messages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
-    Agent,
+    #[serde(alias = "agent")]
+    Assistant,
+    Tool,
+    System,
 }
 
 /// Session status.
@@ -50,7 +55,30 @@ pub struct ChatMessage {
     pub session_id: String,
     pub role: MessageRole,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDto {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+impl From<&ToolCall> for ToolCallDto {
+    fn from(call: &ToolCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        }
+    }
 }
 
 // ============================================================
@@ -73,11 +101,41 @@ pub struct ChatMessagesResponse {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendMessageResponse {
-    pub user_message: ChatMessage,
-    pub agent_message: ChatMessage,
-    pub session: ChatSession,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatSseEvent {
+    UserMessage {
+        message: Box<ChatMessage>,
+    },
+    TextDelta {
+        content: String,
+    },
+    ReasoningDelta {
+        content: String,
+    },
+    ToolCallStart {
+        call_id: String,
+        tool_name: String,
+        arguments: String,
+    },
+    ToolCallFinish {
+        call_id: String,
+        result: String,
+        error: Option<String>,
+    },
+    TurnCompleted {
+        finish_reason: FinishReason,
+        usage: Usage,
+    },
+    ContextCompressing,
+    Done {
+        assistant_message: Option<Box<ChatMessage>>,
+        session: Box<ChatSession>,
+        total_api_calls: u32,
+        total_tool_calls: u32,
+    },
+    Error {
+        message: String,
+    },
 }
 
 // ============================================================

@@ -617,7 +617,6 @@ mod tests {
                 database_url: String::new(),
                 port: 0,
                 cors_origins: vec![],
-                hermes_cli_path: String::new(),
                 auth_cookie_secure: false,
             },
         )

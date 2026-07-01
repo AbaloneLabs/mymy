@@ -258,7 +258,6 @@ mod tests {
             database_url: "postgres://sqlx-test".to_string(),
             port: 0,
             cors_origins: Vec::new(),
-            hermes_cli_path: "hermes".to_string(),
             auth_cookie_secure: false,
         }
     }

@@ -46,6 +46,44 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+impl Message {
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::User,
+            content: Some(content.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: Some(content.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn assistant_with_tools(content: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content,
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::Tool,
+            content: Some(content.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {

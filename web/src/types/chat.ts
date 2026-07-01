@@ -1,7 +1,7 @@
 
 
 
-export type MessageRole = "user" | "agent";
+export type MessageRole = "user" | "assistant" | "tool" | "system";
 
 
 export type SessionStatus = "active" | "archived";
@@ -31,5 +31,14 @@ export interface ChatMessage {
   sessionId: string;
   role: MessageRole;
   content: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  metadata?: unknown;
   createdAt: string;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
 }

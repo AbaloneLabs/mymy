@@ -1,20 +1,32 @@
-//! Chat domain operations via Hermes CLI.
+//! Chat domain operations backed by the native Rust agent runtime.
+//!
+//! Session CRUD remains in PostgreSQL, but message execution no longer calls
+//! the Hermes CLI. Each send operation resolves the default LLM provider,
+//! assembles the native tool registry and prompt, then lets the HTTP handler
+//! stream agent-loop events to the browser.
+
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::agent::context::ContextManager;
+use crate::agent::loop_engine::{AgentLoop, LoopConfig};
+use crate::agent::prompt::{build_system_prompt, PromptConfig};
+use crate::agent::providers::{self, LlmProvider, Message, MessageRole as AgentMessageRole};
+use crate::agent::tools::builtin::{register_all, register_safe_defaults, BuiltinToolConfig};
+use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{
     ChatMessage, ChatMessagesResponse, ChatSession, ChatSessionResponse, ChatSessionsResponse,
-    CreateSessionRequest, MessageRole, SendMessageRequest, SendMessageResponse, SessionStatus,
+    CreateSessionRequest, MessageRole, SendMessageRequest, SessionStatus, ToolCallDto,
 };
 use crate::services::audit::log_audit_safe;
-use crate::services::hermes_chat;
+use crate::services::llm_providers;
 use crate::state::AppState;
 
-/// A chat session row.
 #[derive(Debug, FromRow)]
 struct ChatSessionRow {
     id: Uuid,
@@ -29,17 +41,18 @@ struct ChatSessionRow {
     updated_at: DateTime<Utc>,
 }
 
-/// A chat message row.
 #[derive(Debug, FromRow)]
 struct ChatMessageRow {
     id: Uuid,
     session_id: Uuid,
     role: String,
     content: String,
+    tool_calls: Option<serde_json::Value>,
+    tool_call_id: Option<String>,
+    metadata: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
 }
 
-/// Query params for GET /api/chat/sessions.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionQuery {
@@ -47,23 +60,26 @@ pub struct SessionQuery {
     pub profile: Option<String>,
 }
 
-/// GET /api/chat/sessions?projectId={id}&profile={profile}
-///
-/// Returns chat sessions, optionally filtered by project and/or agent profile.
+pub struct PreparedNativeTurn {
+    pub session_id: Uuid,
+    pub messages: Vec<Message>,
+    pub agent_message_start: usize,
+    pub agent_loop: AgentLoop,
+    pub system_prompt: String,
+    pub user_message: ChatMessage,
+}
+
 pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatSessionsResponse> {
-    // Parse project_id once if present.
     let project_uuid = match q.project_id.as_deref() {
         Some(pid) => Some(
             Uuid::parse_str(pid)
-                .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?,
+                .map_err(|err| AppError::BadRequest(format!("invalid projectId: {err}")))?,
         ),
         None => None,
     };
 
-    // sqlx compile-time macros need distinct query strings per combination,
-    // so we branch on (project, profile) presence (4 cases).
     let rows = match (project_uuid, q.profile.as_deref()) {
-        (Some(pid), Some(prof)) => {
+        (Some(pid), Some(profile)) => {
             sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
@@ -72,7 +88,7 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                    WHERE project_id = $1 AND profile = $2
                    ORDER BY created_at DESC"#,
                 pid,
-                prof,
+                profile,
             )
             .fetch_all(&state.db)
             .await?
@@ -90,7 +106,7 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
             .fetch_all(&state.db)
             .await?
         }
-        (None, Some(prof)) => {
+        (None, Some(profile)) => {
             sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
@@ -98,7 +114,7 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                    FROM chat_sessions
                    WHERE profile = $1
                    ORDER BY created_at DESC"#,
-                prof,
+                profile,
             )
             .fetch_all(&state.db)
             .await?
@@ -116,15 +132,11 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
         }
     };
 
-    let sessions = rows.into_iter().map(row_to_session).collect();
-    Ok(ChatSessionsResponse { sessions })
+    Ok(ChatSessionsResponse {
+        sessions: rows.into_iter().map(row_to_session).collect(),
+    })
 }
 
-/// POST /api/chat/sessions
-///
-/// Creates a new (empty) chat session. `project_id` is optional to support
-/// general (non-project) conversations. The hermes session id is obtained
-/// on the first message.
 pub async fn create_session(
     state: &AppState,
     req: CreateSessionRequest,
@@ -132,8 +144,7 @@ pub async fn create_session(
     let project_id = match req.project_id {
         Some(ref pid) => {
             let uuid = Uuid::parse_str(pid)
-                .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?;
-            // Verify the project exists.
+                .map_err(|err| AppError::BadRequest(format!("invalid projectId: {err}")))?;
             sqlx::query!(r#"SELECT 1 AS x FROM projects WHERE id = $1"#, uuid)
                 .fetch_optional(&state.db)
                 .await?
@@ -144,22 +155,18 @@ pub async fn create_session(
     };
 
     let id = Uuid::new_v4();
-    let agent_id = format!("hermes-{}", req.profile);
-
     sqlx::query!(
         r#"INSERT INTO chat_sessions
              (id, project_id, agent_id, profile, status, message_count)
-           VALUES ($1, $2, $3, $4, 'active', 0)"#,
+           VALUES ($1, $2, 'native-default', $3, 'active', 0)"#,
         id,
         project_id,
-        agent_id,
         req.profile,
     )
     .execute(&state.db)
     .await?;
 
-    let row = fetch_session(state, id).await?;
-    let session = row_to_session(row);
+    let session = row_to_session(fetch_session(state, id).await?);
     log_audit_safe(
         &state.db,
         "user",
@@ -175,104 +182,56 @@ pub async fn create_session(
     Ok(ChatSessionResponse { session })
 }
 
-/// GET /api/chat/sessions/{id}/messages
-///
-/// Returns all messages in a session, oldest first.
 pub async fn get_messages(state: &AppState, id: Uuid) -> AppResult<ChatMessagesResponse> {
-    // Verify session exists.
     let _ = fetch_session(state, id).await?;
-
-    let rows = sqlx::query_as!(
-        ChatMessageRow,
-        r#"SELECT id, session_id, role, content, created_at
-           FROM chat_messages
-           WHERE session_id = $1
-           ORDER BY created_at ASC"#,
-        id
-    )
-    .fetch_all(&state.db)
-    .await?;
-
-    let messages = rows.into_iter().map(row_to_message).collect();
-    Ok(ChatMessagesResponse { messages })
+    let rows = fetch_message_rows(state, id).await?;
+    Ok(ChatMessagesResponse {
+        messages: rows.into_iter().map(row_to_message).collect(),
+    })
 }
 
-/// POST /api/chat/sessions/{id}/messages
-///
-/// Sends a message to the session. On the first message, creates a new hermes
-/// session and stores the returned session id. On subsequent messages, resumes
-/// the existing hermes session.
-pub async fn send_message(
+pub async fn prepare_native_turn(
     state: &AppState,
     id: Uuid,
     req: SendMessageRequest,
-) -> AppResult<SendMessageResponse> {
-    let text = req.text.trim();
+) -> AppResult<PreparedNativeTurn> {
+    let text = req.text.trim().to_string();
     if text.is_empty() {
         return Err(AppError::BadRequest("message text cannot be empty".into()));
     }
 
     let session = fetch_session(state, id).await?;
-    let cli = &state.config.hermes_cli_path;
+    let provider_config = llm_providers::resolve_default_config(state).await?;
+    let provider: Arc<dyn LlmProvider> = Arc::from(providers::create_provider(&provider_config));
 
-    // Call hermes: new session if no hermes_session_id yet, else resume.
-    let result = if let Some(ref hsid) = session.hermes_session_id {
-        tracing::info!(session_id = %id, hermes_session_id = %hsid, "resuming hermes session");
-        hermes_chat::send_resume(cli, &session.profile, hsid, text)
-            .await
-            .map_err(chat_err_to_app)?
-    } else {
-        tracing::info!(session_id = %id, "starting new hermes session");
-        hermes_chat::send_new(cli, &session.profile, text)
-            .await
-            .map_err(chat_err_to_app)?
-    };
+    let working_dir = std::env::current_dir()
+        .map_err(|err| AppError::Internal(format!("failed to resolve working directory: {err}")))?;
+    let mut registry = ToolRegistry::new();
+    register_all(&mut registry, &BuiltinToolConfig::new(working_dir.clone()));
+    register_safe_defaults(&mut registry);
+    let registry = Arc::new(registry);
 
-    // If this was the first message, persist the hermes session id.
-    if let Some(ref new_hsid) = result.session_id {
-        if session.hermes_session_id.is_none() {
-            sqlx::query!(
-                r#"UPDATE chat_sessions SET hermes_session_id = $2, updated_at = now()
-                   WHERE id = $1"#,
-                id,
-                new_hsid,
-            )
-            .execute(&state.db)
-            .await?;
-        }
-    }
+    let system_prompt = build_system_prompt(&PromptConfig {
+        soul_md_path: None,
+        working_dir,
+        memory_md_path: None,
+        user_md_path: None,
+        available_tool_names: registry.available_tool_names(),
+        model: provider_config.model.clone(),
+        system_message: None,
+    });
 
-    // Derive a title from the first user message if none yet.
-    let title = derive_title(text);
+    let rows = fetch_message_rows(state, id).await?;
+    let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
 
-    // Insert both the user message and the agent response.
-    let user_msg_id = Uuid::new_v4();
-    let agent_msg_id = Uuid::new_v4();
+    let user_message = insert_user_message(state, id, &text).await?;
+    messages.push(Message::user(text.clone()));
+    let agent_message_start = messages.len();
 
-    sqlx::query!(
-        r#"INSERT INTO chat_messages (id, session_id, role, content)
-           VALUES ($1, $2, 'user', $3)"#,
-        user_msg_id,
-        id,
-        text,
-    )
-    .execute(&state.db)
-    .await?;
-
-    sqlx::query!(
-        r#"INSERT INTO chat_messages (id, session_id, role, content)
-           VALUES ($1, $2, 'agent', $3)"#,
-        agent_msg_id,
-        id,
-        result.response,
-    )
-    .execute(&state.db)
-    .await?;
-
-    // Bump message_count by 2, set title if it was empty.
+    let title = derive_title(&text);
     sqlx::query!(
         r#"UPDATE chat_sessions SET
-             message_count = message_count + 2,
+             message_count = message_count + 1,
              title = COALESCE(NULLIF(title, ''), $2),
              updated_at = now()
            WHERE id = $1"#,
@@ -282,35 +241,87 @@ pub async fn send_message(
     .execute(&state.db)
     .await?;
 
-    // Fetch the persisted messages + updated session.
-    let user_row = fetch_message(state, user_msg_id).await?;
-    let agent_row = fetch_message(state, agent_msg_id).await?;
-    let session_row = fetch_session(state, id).await?;
+    let context_manager =
+        ContextManager::for_model(&provider_config.model, provider_config.max_tokens);
+    let agent_loop = AgentLoop::new(
+        provider,
+        registry,
+        LoopConfig::default(),
+        Some(context_manager),
+    );
 
-    // Audit-log the agent response as an agent-initiated create. The user
-    // message itself is not audited (the agent's reply is the meaningful
-    // action from the agent system).
-    log_audit_safe(
-        &state.db,
-        "agent",
-        &format!("agent:{}", session.profile),
-        "create",
-        "chat_message",
-        Some(&agent_msg_id.to_string()),
-        Some(serde_json::json!({ "after": { "sessionId": id.to_string(), "role": "agent" } })),
-    )
-    .await;
+    tracing::info!(
+        session_id = %id,
+        profile = %session.profile,
+        model = %provider_config.model,
+        "prepared native chat turn"
+    );
 
-    Ok(SendMessageResponse {
-        user_message: row_to_message(user_row),
-        agent_message: row_to_message(agent_row),
-        session: row_to_session(session_row),
+    Ok(PreparedNativeTurn {
+        session_id: id,
+        messages,
+        agent_message_start,
+        agent_loop,
+        system_prompt,
+        user_message,
     })
 }
 
-/// DELETE /api/chat/sessions/{id}
-///
-/// Deletes a session and all its messages (cascades).
+pub async fn save_agent_messages(
+    state: &AppState,
+    session_id: Uuid,
+    messages: &[Message],
+) -> AppResult<Option<ChatMessage>> {
+    let mut last_assistant = None;
+    let mut saved_count = 0_i32;
+
+    for message in messages {
+        let role = match message.role {
+            AgentMessageRole::Assistant => MessageRole::Assistant,
+            AgentMessageRole::Tool => MessageRole::Tool,
+            AgentMessageRole::System => MessageRole::System,
+            AgentMessageRole::User => continue,
+        };
+        let saved = insert_agent_message(state, session_id, role, message).await?;
+        if role == MessageRole::Assistant {
+            last_assistant = Some(saved.clone());
+        }
+        saved_count += 1;
+    }
+
+    if saved_count > 0 {
+        sqlx::query!(
+            r#"UPDATE chat_sessions SET
+                 message_count = message_count + $2,
+                 updated_at = now()
+               WHERE id = $1"#,
+            session_id,
+            saved_count,
+        )
+        .execute(&state.db)
+        .await?;
+    }
+
+    if let Some(ref assistant) = last_assistant {
+        log_audit_safe(
+            &state.db,
+            "agent",
+            "agent:native",
+            "create",
+            "chat_message",
+            Some(&assistant.id),
+            Some(serde_json::json!({ "after": { "sessionId": session_id.to_string(), "role": "assistant" } })),
+        )
+        .await;
+    }
+
+    Ok(last_assistant)
+}
+
+pub async fn fetch_session_response(state: &AppState, id: Uuid) -> AppResult<ChatSession> {
+    fetch_session(state, id).await.map(row_to_session)
+}
+
 pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
     let result = sqlx::query!("DELETE FROM chat_sessions WHERE id = $1", id)
         .execute(&state.db)
@@ -333,9 +344,7 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
     Ok(true)
 }
 
-// ---- helpers ----
-
-async fn fetch_session(state: &AppState, id: Uuid) -> Result<ChatSessionRow, AppError> {
+async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> {
     sqlx::query_as!(
         ChatSessionRow,
         r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
@@ -348,16 +357,93 @@ async fn fetch_session(state: &AppState, id: Uuid) -> Result<ChatSessionRow, App
     .ok_or_else(|| AppError::NotFound(format!("session {id} not found")))
 }
 
-async fn fetch_message(state: &AppState, id: Uuid) -> Result<ChatMessageRow, AppError> {
-    sqlx::query_as!(
+async fn fetch_message_rows(state: &AppState, id: Uuid) -> AppResult<Vec<ChatMessageRow>> {
+    Ok(sqlx::query_as!(
         ChatMessageRow,
-        r#"SELECT id, session_id, role, content, created_at
+        r#"SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at
+           FROM chat_messages
+           WHERE session_id = $1
+           ORDER BY created_at ASC"#,
+        id
+    )
+    .fetch_all(&state.db)
+    .await?)
+}
+
+async fn insert_user_message(
+    state: &AppState,
+    session_id: Uuid,
+    text: &str,
+) -> AppResult<ChatMessage> {
+    let id = Uuid::new_v4();
+    sqlx::query!(
+        r#"INSERT INTO chat_messages (id, session_id, role, content)
+           VALUES ($1, $2, 'user', $3)"#,
+        id,
+        session_id,
+        text,
+    )
+    .execute(&state.db)
+    .await?;
+
+    let row = sqlx::query_as!(
+        ChatMessageRow,
+        r#"SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at
            FROM chat_messages WHERE id = $1"#,
         id
     )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::Internal(format!("message {id} not found after insert")))
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row_to_message(row))
+}
+
+async fn insert_agent_message(
+    state: &AppState,
+    session_id: Uuid,
+    role: MessageRole,
+    message: &Message,
+) -> AppResult<ChatMessage> {
+    let id = Uuid::new_v4();
+    let content = message.content.clone().unwrap_or_default();
+    let tool_calls = if message.tool_calls.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_value(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(ToolCallDto::from)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|err| AppError::Internal(format!("tool call serialization failed: {err}")))?,
+        )
+    };
+    let role_str = role_to_db(role);
+
+    sqlx::query!(
+        r#"INSERT INTO chat_messages
+             (id, session_id, role, content, tool_calls, tool_call_id)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+        id,
+        session_id,
+        role_str,
+        content,
+        tool_calls,
+        message.tool_call_id.as_deref(),
+    )
+    .execute(&state.db)
+    .await?;
+
+    let row = sqlx::query_as!(
+        ChatMessageRow,
+        r#"SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at
+           FROM chat_messages WHERE id = $1"#,
+        id
+    )
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row_to_message(row))
 }
 
 fn row_to_session(row: ChatSessionRow) -> ChatSession {
@@ -367,7 +453,7 @@ fn row_to_session(row: ChatSessionRow) -> ChatSession {
     };
     ChatSession {
         id: row.id.to_string(),
-        project_id: row.project_id.map(|u| u.to_string()),
+        project_id: row.project_id.map(|id| id.to_string()),
         hermes_session_id: row.hermes_session_id,
         agent_id: row.agent_id,
         profile: row.profile,
@@ -380,41 +466,69 @@ fn row_to_session(row: ChatSessionRow) -> ChatSession {
 }
 
 fn row_to_message(row: ChatMessageRow) -> ChatMessage {
-    let role = match row.role.as_str() {
-        "agent" => MessageRole::Agent,
-        _ => MessageRole::User,
-    };
     ChatMessage {
         id: row.id.to_string(),
         session_id: row.session_id.to_string(),
-        role,
+        role: db_role_to_model(&row.role),
         content: row.content,
+        tool_calls: row
+            .tool_calls
+            .and_then(|value| serde_json::from_value::<Vec<ToolCallDto>>(value).ok()),
+        tool_call_id: row.tool_call_id,
+        metadata: row.metadata,
         created_at: row.created_at.to_rfc3339(),
     }
 }
 
-/// Derive a session title from the first message (first 30 chars).
-fn derive_title(text: &str) -> String {
-    let t = text.trim();
-    if t.chars().count() <= 30 {
-        t.to_string()
-    } else {
-        let truncated: String = t.chars().take(30).collect();
-        format!("{truncated}…")
+fn row_to_agent_message(row: &ChatMessageRow) -> Message {
+    Message {
+        role: match db_role_to_model(&row.role) {
+            MessageRole::User => AgentMessageRole::User,
+            MessageRole::Assistant => AgentMessageRole::Assistant,
+            MessageRole::Tool => AgentMessageRole::Tool,
+            MessageRole::System => AgentMessageRole::System,
+        },
+        content: Some(row.content.clone()).filter(|content| !content.is_empty()),
+        tool_calls: row
+            .tool_calls
+            .clone()
+            .and_then(|value| serde_json::from_value::<Vec<ToolCallDto>>(value).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|call| crate::agent::providers::ToolCall {
+                id: call.id,
+                name: call.name,
+                arguments: call.arguments,
+            })
+            .collect(),
+        tool_call_id: row.tool_call_id.clone(),
     }
 }
 
-/// Map a hermes chat error to an AppError.
-fn chat_err_to_app(e: hermes_chat::ChatError) -> AppError {
-    use hermes_chat::ChatError;
-    match e {
-        ChatError::CliNotFound(msg) => AppError::Internal(format!(
-            "{msg}. Ensure the hermes CLI is installed and HERMES_CLI_PATH is set."
-        )),
-        ChatError::Timeout => {
-            AppError::Internal("hermes did not respond within 180 seconds".into())
-        }
-        ChatError::HermesFailed(msg) => AppError::Internal(format!("hermes error: {msg}")),
-        ChatError::Io(msg) => AppError::Internal(format!("io error: {msg}")),
+fn db_role_to_model(role: &str) -> MessageRole {
+    match role {
+        "user" => MessageRole::User,
+        "tool" => MessageRole::Tool,
+        "system" => MessageRole::System,
+        _ => MessageRole::Assistant,
+    }
+}
+
+fn role_to_db(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+        MessageRole::System => "system",
+    }
+}
+
+fn derive_title(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= 30 {
+        trimmed.to_string()
+    } else {
+        let truncated: String = trimmed.chars().take(30).collect();
+        format!("{truncated}…")
     }
 }
