@@ -1,14 +1,25 @@
 import { useState } from "react";
 import { Plus, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useLlmProviders } from "@/features/llm-providers/api";
+import {
+  useLlmProviderRateLimits,
+  useLlmProviders,
+} from "@/features/llm-providers/api";
 import { LlmProviderCard } from "./LlmProviderCard";
 import { LlmProviderAddForm } from "./LlmProviderAddForm";
+import { MoaPresetSection } from "./MoaPresetSection";
 
 export function LlmProviderSection() {
   const { t } = useTranslation();
   const { data, isLoading } = useLlmProviders();
+  const { data: rateLimitData } = useLlmProviderRateLimits();
   const providers = data?.providers ?? [];
+  const rateLimits = new Map(
+    (rateLimitData?.providers ?? []).map((status) => [
+      status.providerId,
+      status,
+    ]),
+  );
   const [adding, setAdding] = useState(false);
 
   return (
@@ -43,7 +54,11 @@ export function LlmProviderSection() {
       {/* Provider cards */}
       <div className="space-y-2">
         {providers.map((provider) => (
-          <LlmProviderCard key={provider.id} provider={provider} />
+          <LlmProviderCard
+            key={provider.id}
+            provider={provider}
+            rateLimitStatus={rateLimits.get(provider.id)}
+          />
         ))}
       </div>
 
@@ -51,6 +66,8 @@ export function LlmProviderSection() {
       {adding && (
         <LlmProviderAddForm onClose={() => setAdding(false)} />
       )}
+
+      <MoaPresetSection />
     </div>
   );
 }

@@ -1192,6 +1192,9 @@ mod tests {
             cors_origins: Vec::new(),
             agent_data_dir: std::env::temp_dir().join("mymy-test-agent"),
             auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 50,
         }
     }
 }

@@ -4,7 +4,8 @@
 
 use crate::error::AppResult;
 use crate::models::settings::{
-    AppSettings, GitSystemConfig, GitSystemType, Language, SettingsResponse, UpdateSettingsRequest,
+    AppSettings, GitSystemConfig, GitSystemType, Language, SecurityStatusResponse,
+    SettingsResponse, UpdateSettingsRequest,
 };
 use crate::services::agent_systems as agent_systems_service;
 use crate::services::audit::log_audit_safe;
@@ -82,6 +83,15 @@ pub async fn get_settings(state: &AppState) -> AppResult<SettingsResponse> {
             agent_systems,
             git_systems,
         },
+    })
+}
+
+pub async fn security_status(_state: &AppState) -> AppResult<SecurityStatusResponse> {
+    Ok(SecurityStatusResponse {
+        redaction_enabled: true,
+        filesystem_guard_enabled: true,
+        tls_validation_enabled: true,
+        secret_sources: crate::agent::security::source_statuses().await,
     })
 }
 

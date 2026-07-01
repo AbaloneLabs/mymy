@@ -3,8 +3,11 @@
 //! See: web/src/types/index.ts (ChatSession, ChatMessage interfaces)
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
+use crate::agent::clarify::ClarifyRequest;
 use crate::agent::providers::types::{FinishReason, ToolCall, Usage};
+use crate::agent::security::ApprovalRequest;
 
 /// Message role for persisted native agent chat messages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +125,12 @@ pub enum ChatSseEvent {
         result: String,
         error: Option<String>,
     },
+    ApprovalRequired {
+        request: ApprovalRequest,
+    },
+    Clarify {
+        request: ClarifyRequest,
+    },
     TurnCompleted {
         finish_reason: FinishReason,
         usage: Usage,
@@ -160,8 +169,40 @@ fn default_profile() -> String {
 
 /// Payload for sending a message to a chat session.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub text: String,
+    #[serde(default)]
+    pub use_moa: bool,
+    #[serde(default)]
+    pub moa_preset_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApprovalDecisionRequest {
+    pub decision: crate::agent::security::ApprovalDecision,
+    #[serde(default)]
+    pub remember: crate::agent::security::ApprovalRemember,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct YoloModeRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClarifyAnswerRequest {
+    pub answer: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClarifyAnswerResponse {
+    pub success: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApprovalDecisionResponse {
+    pub success: bool,
 }
 
 #[derive(Debug, Serialize)]

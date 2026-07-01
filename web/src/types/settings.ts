@@ -116,3 +116,30 @@ export interface ModelInfo {
 }
 
 export type ModelListSource = "live" | "curated" | "error";
+
+export interface CredentialRateLimitStatus {
+  credentialId?: string;
+  label: string;
+  status: "ok" | "exhausted" | "dead" | string;
+  resetAt?: string;
+  resetAfterSecs?: number;
+  requestCount: number;
+}
+
+export interface ProviderRateLimitStatus {
+  providerId: string;
+  label: string;
+  credentials: CredentialRateLimitStatus[];
+}
+
+export interface SecretSourceStatus {
+  name: string;
+  configured: boolean;
+}
+
+export interface SecurityStatus {
+  redactionEnabled: boolean;
+  filesystemGuardEnabled: boolean;
+  tlsValidationEnabled: boolean;
+  secretSources: SecretSourceStatus[];
+}

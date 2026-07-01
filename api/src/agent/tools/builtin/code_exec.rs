@@ -5,17 +5,19 @@
 //! environment, a workspace working directory, timeout limits, and redacted
 //! output, but OS-level isolation requires a future Docker backend.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::process::Command;
 
 use super::{truncate_chars, BuiltinToolConfig};
-use crate::agent::security::{detect_dangerous_command, redact_terminal_output, Severity};
+use crate::agent::sandbox::{ExecOptions, SandboxManager, SandboxRpcHandler};
+use crate::agent::security::{
+    detect_dangerous_command, ensure_read_allowed, is_sensitive_path, redact_sensitive_text,
+    redact_terminal_output, Severity,
+};
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
@@ -24,6 +26,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_STDOUT_CHARS: usize = 50_000;
 const MAX_STDERR_CHARS: usize = 10_000;
+const MAX_RPC_CALLS: usize = 50;
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     registry.register(ToolEntry {
@@ -37,6 +40,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {
                     "code": { "type": "string" },
                     "language": { "type": "string", "enum": ["python"], "default": "python" },
+                    "cwd": { "type": "string", "description": "Optional workspace-relative working directory." },
                     "timeout": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS }
                 },
                 "required": ["code"]
@@ -44,7 +48,14 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         handler: Arc::new(CodeExecTool {
             working_dir: config.working_dir.clone(),
-            scratch_dir: config.agent_data_dir.join("sandbox"),
+            scratch_dir: config
+                .agent_data_dir
+                .join("sandbox")
+                .join(config.session_id.map_or_else(
+                    || "standalone".to_string(),
+                    |session_id| session_id.to_string(),
+                )),
+            allowed_tools: sandbox_allowed_tools(),
         }),
     });
 }
@@ -52,6 +63,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 struct CodeExecTool {
     working_dir: PathBuf,
     scratch_dir: PathBuf,
+    allowed_tools: HashSet<String>,
 }
 
 #[async_trait]
@@ -85,59 +97,350 @@ impl ToolHandler for CodeExecTool {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
+        let cwd = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cwd| !cwd.is_empty())
+            .map(PathBuf::from);
 
-        tokio::fs::create_dir_all(&self.scratch_dir)
+        let sandbox = SandboxManager::local(self.working_dir.clone(), self.scratch_dir.clone());
+        let helper_dir = self.scratch_dir.join("python");
+        tokio::fs::create_dir_all(&helper_dir)
             .await
-            .map_err(|err| ToolError::Execution(format!("scratch dir create failed: {err}")))?;
-        let script = self
-            .scratch_dir
-            .join(format!("exec-{}.py", uuid::Uuid::new_v4()));
-        tokio::fs::write(&script, code)
+            .map_err(|err| ToolError::Execution(format!("helper dir create failed: {err}")))?;
+        tokio::fs::write(helper_dir.join("mymy_tools.py"), python_tool_stub())
             .await
-            .map_err(|err| ToolError::Execution(format!("script write failed: {err}")))?;
+            .map_err(|err| ToolError::Execution(format!("helper write failed: {err}")))?;
+        let rpc = sandbox
+            .start_rpc(
+                MAX_RPC_CALLS,
+                Arc::new(CodeRpcHandler {
+                    root: self.working_dir.clone(),
+                    allowed_tools: self.allowed_tools.clone(),
+                }),
+            )
+            .await
+            .map_err(|err| ToolError::Execution(err.to_string()))?;
+        let mut extra_env = BTreeMap::new();
+        extra_env.insert(
+            "MYMY_TOOLS_RPC_PATH".to_string(),
+            rpc.socket_path().display().to_string(),
+        );
+        extra_env.insert("PYTHONPATH".to_string(), helper_dir.display().to_string());
+        let output = sandbox
+            .execute_local(ExecOptions {
+                language: language.to_string(),
+                code: code.to_string(),
+                cwd,
+                timeout_secs,
+                extra_env,
+            })
+            .await
+            .map_err(|err| ToolError::Execution(err.to_string()))?;
 
-        let output = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            Command::new("python3")
-                .arg(&script)
-                .current_dir(&self.working_dir)
-                .env_clear()
-                .envs(scrubbed_env())
-                .output(),
-        )
-        .await
-        .map_err(|_| ToolError::Execution(format!("code timed out after {timeout_secs}s")))?
-        .map_err(|err| ToolError::Unavailable(format!("python3 execution failed: {err}")))?;
-
-        let _ = tokio::fs::remove_file(&script).await;
         Ok(tool_result(&serde_json::json!({
-            "success": output.status.success(),
-            "stdout": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stdout)), MAX_STDOUT_CHARS),
-            "stderr": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stderr)), MAX_STDERR_CHARS),
-            "exit_code": output.status.code().unwrap_or(-1),
+            "success": output.success,
+            "stdout": truncate_chars(&redact_terminal_output(&output.stdout), MAX_STDOUT_CHARS),
+            "stderr": truncate_chars(&redact_terminal_output(&output.stderr), MAX_STDERR_CHARS),
+            "exit_code": output.exit_code,
+            "cwd": output.cwd,
+            "allowed_tools": self.allowed_tools.iter().cloned().collect::<Vec<_>>(),
         })))
     }
 }
 
-fn scrubbed_env() -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    for key in ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ"] {
-        if let Ok(value) = std::env::var(key) {
-            env.insert(key.to_string(), value);
+struct CodeRpcHandler {
+    root: PathBuf,
+    allowed_tools: HashSet<String>,
+}
+
+#[async_trait]
+impl SandboxRpcHandler for CodeRpcHandler {
+    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        if !self.allowed_tools.contains(tool) {
+            return Err(format!("tool is not allowed in sandbox RPC: {tool}"));
+        }
+        match tool {
+            "read_file" => self.read_file(args).await,
+            "search_files" => self.search_files(args).await,
+            _ => Err(format!("unsupported sandbox RPC tool: {tool}")),
         }
     }
-    env.insert("PYTHONNOUSERSITE".to_string(), "1".to_string());
-    env
+}
+
+impl CodeRpcHandler {
+    async fn read_file(&self, args: Value) -> Result<Value, String> {
+        let path = required_arg(&args, "path")?;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(500)
+            .clamp(1, 1_000) as usize;
+        let offset = args
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .max(1) as usize;
+        let resolved = resolve_existing(&self.root, path)?;
+        ensure_read_allowed(&resolved).map_err(|err| err.to_string())?;
+        let content = tokio::fs::read_to_string(&resolved)
+            .await
+            .map_err(|err| format!("read failed: {err}"))?;
+        let lines: Vec<&str> = content.lines().collect();
+        let start = offset.saturating_sub(1).min(lines.len());
+        let end = (start + limit).min(lines.len());
+        let content = (start..end)
+            .map(|idx| format!("{}:{}", idx + 1, lines[idx]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(serde_json::json!({
+            "path": resolved.display().to_string(),
+            "content": redact_sensitive_text(&content),
+            "total_lines": lines.len(),
+        }))
+    }
+
+    async fn search_files(&self, args: Value) -> Result<Value, String> {
+        let query = required_arg(&args, "query")?;
+        if query.is_empty() {
+            return Err("query cannot be empty".to_string());
+        }
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 100) as usize;
+        let start = args
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| resolve_existing(&self.root, path))
+            .transpose()?
+            .unwrap_or_else(|| self.root.clone());
+        let mut matches = Vec::new();
+        search_dir(&self.root, &start, query, limit, &mut matches)?;
+        Ok(serde_json::json!({ "matches": matches }))
+    }
+}
+
+fn sandbox_allowed_tools() -> HashSet<String> {
+    let configured = std::env::var("SANDBOX_ALLOWED_TOOLS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|tool| !tool.is_empty())
+                .map(ToString::to_string)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_else(|| {
+            ["read_file", "search_files"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect()
+        });
+    configured
+        .into_iter()
+        .filter(|tool| matches!(tool.as_str(), "read_file" | "search_files"))
+        .collect()
+}
+
+fn required_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing {key}"))
+}
+
+fn resolve_existing(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("workspace cannot be resolved: {err}"))?;
+    let path = Path::new(raw);
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|err| format!("path cannot be resolved: {err}"))?;
+    if !canonical.starts_with(&root) {
+        return Err(format!("path escapes workspace: {raw}"));
+    }
+    Ok(canonical)
+}
+
+fn search_dir(
+    root: &Path,
+    dir: &Path,
+    query: &str,
+    limit: usize,
+    matches: &mut Vec<Value>,
+) -> Result<(), String> {
+    if matches.len() >= limit {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(dir).map_err(|err| format!("read_dir failed: {err}"))?;
+    for entry in entries {
+        if matches.len() >= limit {
+            break;
+        }
+        let entry = entry.map_err(|err| format!("dir entry failed: {err}"))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if matches!(
+            file_name.as_ref(),
+            ".git" | "target" | "node_modules" | "dist"
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("file type failed: {err}"))?;
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+        if !canonical.starts_with(root) || is_sensitive_path(&canonical) {
+            continue;
+        }
+        if file_type.is_dir() {
+            search_dir(root, &canonical, query, limit, matches)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&canonical) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            if line.contains(query) {
+                matches.push(serde_json::json!({
+                    "path": canonical.display().to_string(),
+                    "line": idx + 1,
+                    "preview": redact_sensitive_text(line.trim()),
+                }));
+                if matches.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn python_tool_stub() -> &'static str {
+    r#"import json
+import os
+import socket
+
+
+def call_tool(name, **kwargs):
+    socket_path = os.environ.get("MYMY_TOOLS_RPC_PATH")
+    if not socket_path:
+        raise RuntimeError("MYMY_TOOLS_RPC_PATH is not configured")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(socket_path)
+        client.sendall((json.dumps({"tool": name, "args": kwargs}) + "\n").encode("utf-8"))
+        response = b""
+        while not response.endswith(b"\n"):
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            response += chunk
+    payload = json.loads(response.decode("utf-8"))
+    if not payload.get("ok"):
+        raise RuntimeError(payload.get("error", "tool RPC failed"))
+    return payload.get("result")
+
+
+def read_file(path, offset=1, limit=500):
+    return call_tool("read_file", path=path, offset=offset, limit=limit)
+
+
+def search_files(query, path=None, limit=50):
+    args = {"query": query, "limit": limit}
+    if path is not None:
+        args["path"] = path
+    return call_tool("search_files", **args)
+"#
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn scrubbed_env_excludes_secret_names() {
-        let env = scrubbed_env();
-        assert!(!env.keys().any(|key| key.contains("TOKEN")));
-        assert!(env.contains_key("PYTHONNOUSERSITE"));
+    fn temp_dir(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("mymy-code-exec-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn test_tool(workspace: PathBuf, scratch: PathBuf) -> CodeExecTool {
+        CodeExecTool {
+            working_dir: workspace,
+            scratch_dir: scratch,
+            allowed_tools: ["read_file", "search_files"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn python_can_call_allowed_tools_via_rpc() {
+        let workspace = temp_dir("workspace");
+        let scratch = temp_dir("scratch");
+        std::fs::write(workspace.join("sample.txt"), "needle\nsecond").unwrap();
+        let tool = test_tool(workspace.clone(), scratch.clone());
+
+        let output = tool
+            .execute(&serde_json::json!({
+                "code": r#"import json
+import mymy_tools
+print(mymy_tools.read_file("sample.txt")["content"])
+print(len(mymy_tools.search_files("needle")["matches"]))
+"#
+            }))
+            .await
+            .unwrap();
+        let parsed = serde_json::from_str::<Value>(&output).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("needle"));
+        assert!(parsed["stdout"].as_str().unwrap().contains("1"));
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(scratch);
+    }
+
+    #[tokio::test]
+    async fn cwd_persists_across_calls_in_same_scratch_session() {
+        let workspace = temp_dir("workspace");
+        let scratch = temp_dir("scratch");
+        std::fs::create_dir_all(workspace.join("nested")).unwrap();
+        let tool = test_tool(workspace.clone(), scratch.clone());
+
+        tool.execute(&serde_json::json!({
+            "code": r#"import os
+os.chdir("nested")
+"#
+        }))
+        .await
+        .unwrap();
+        let output = tool
+            .execute(&serde_json::json!({
+                "code": r#"import os
+print(os.path.basename(os.getcwd()))
+"#
+            }))
+            .await
+            .unwrap();
+        let parsed = serde_json::from_str::<Value>(&output).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("nested"));
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(scratch);
     }
 }

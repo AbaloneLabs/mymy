@@ -9,6 +9,7 @@ import type {
   LlmProviderPreset,
   ModelInfo,
   ModelListSource,
+  ProviderRateLimitStatus,
 } from "@/types/settings";
 
 /* -------------------------------------------------- LLM Providers */
@@ -42,6 +43,18 @@ export function useLlmProviders() {
   return useQuery({
     queryKey: ["llm-providers"],
     queryFn: () => api.get<LlmProvidersResponse>("/llm-providers"),
+  });
+}
+
+interface RateLimitStatusResponse {
+  providers: ProviderRateLimitStatus[];
+}
+
+export function useLlmProviderRateLimits() {
+  return useQuery({
+    queryKey: ["llm-providers", "rate-limits"],
+    queryFn: () => api.get<RateLimitStatusResponse>("/llm-providers/rate-limits"),
+    refetchInterval: 30_000,
   });
 }
 

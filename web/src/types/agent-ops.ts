@@ -29,6 +29,21 @@ export interface CronResponse {
   status: CronStatus;
 }
 
+export interface CronResult {
+  id: string;
+  jobId: string;
+  jobTitle: string;
+  mode: string;
+  status: "success" | "error" | "silent";
+  output: string;
+  outputPath?: string | null;
+  createdAt: string;
+}
+
+export interface CronResultsResponse {
+  results: CronResult[];
+}
+
 
 export interface GatewayStatus {
   running: boolean;

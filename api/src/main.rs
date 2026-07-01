@@ -26,6 +26,7 @@ use crate::state::AppState;
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
+        .event_format(agent::security::RedactingFormatter)
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("mymy_api=info,tower_http=info")),
@@ -53,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("database migrations applied");
 
     let state = Arc::new(AppState::new(pool, cfg.clone()));
+    let _cron_ticker = services::cron::start_cron_ticker(state.clone());
 
     // Build router
     let app = build_router(state.clone(), &cfg);
@@ -261,6 +263,9 @@ mod tests {
             cors_origins: Vec::new(),
             agent_data_dir: std::env::temp_dir().join("mymy-test-agent"),
             auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 50,
         }
     }
 }

@@ -6,6 +6,7 @@
 //! runtime can evolve without leaking provider-specific details into
 //! orchestration.
 
+pub mod clarify;
 pub mod context;
 pub mod crypto;
 pub mod loop_engine;
@@ -13,6 +14,7 @@ pub mod memory;
 pub mod prompt;
 pub mod providers;
 pub mod runtime;
+pub mod sandbox;
 pub mod scheduler;
 pub mod security;
 pub mod skills;

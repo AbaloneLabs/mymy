@@ -10,7 +10,11 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ApiFormat, LlmProvider } from "@/types/settings";
+import type {
+  ApiFormat,
+  LlmProvider,
+  ProviderRateLimitStatus,
+} from "@/types/settings";
 import {
   useUpdateLlmProvider,
   useDeleteLlmProvider,
@@ -24,9 +28,13 @@ import { cn } from "@/lib/utils";
 
 interface LlmProviderCardProps {
   provider: LlmProvider;
+  rateLimitStatus?: ProviderRateLimitStatus;
 }
 
-export function LlmProviderCard({ provider }: LlmProviderCardProps) {
+export function LlmProviderCard({
+  provider,
+  rateLimitStatus,
+}: LlmProviderCardProps) {
   const { t } = useTranslation();
   const updateMutation = useUpdateLlmProvider();
   const deleteMutation = useDeleteLlmProvider();
@@ -178,7 +186,7 @@ export function LlmProviderCard({ provider }: LlmProviderCardProps) {
         {editing ? (
           <EditFields draft={draft} setDraft={setDraft} />
         ) : (
-          <ViewFields provider={provider} />
+          <ViewFields provider={provider} rateLimitStatus={rateLimitStatus} />
         )}
       </div>
 
@@ -268,21 +276,59 @@ export function LlmProviderCard({ provider }: LlmProviderCardProps) {
   );
 }
 
-function ViewFields({ provider }: { provider: LlmProvider }) {
+function ViewFields({
+  provider,
+  rateLimitStatus,
+}: {
+  provider: LlmProvider;
+  rateLimitStatus?: ProviderRateLimitStatus;
+}) {
   const { t } = useTranslation();
+  const credentials = rateLimitStatus?.credentials ?? [];
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-      <Field
-        label={t("settings.models.format")}
-        value={provider.api_format.toUpperCase()}
-      />
-      <Field label={t("settings.models.baseUrl")} value={provider.base_url} />
-      <Field label={t("settings.models.apiKey")} value={provider.api_key_hint} />
-      <Field
-        label={t("settings.models.maxTokens")}
-        value={String(provider.max_tokens)}
-      />
-    </dl>
+    <div className="space-y-2">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+        <Field
+          label={t("settings.models.format")}
+          value={provider.api_format.toUpperCase()}
+        />
+        <Field label={t("settings.models.baseUrl")} value={provider.base_url} />
+        <Field label={t("settings.models.apiKey")} value={provider.api_key_hint} />
+        <Field
+          label={t("settings.models.maxTokens")}
+          value={String(provider.max_tokens)}
+        />
+      </dl>
+      {credentials.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {credentials.map((credential) => (
+            <span
+              key={credential.credentialId ?? "primary"}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs",
+                credential.status === "ok"
+                  ? "border-[var(--status-success)]/30 text-[var(--status-success)]"
+                  : credential.status === "dead"
+                    ? "border-[var(--status-error)]/30 text-[var(--status-error)]"
+                    : "border-[var(--status-warning)]/30 text-[var(--status-warning)]",
+              )}
+            >
+              {credential.label}
+              <span className="text-[var(--text-faint)]">
+                {credential.status === "exhausted" &&
+                credential.resetAfterSecs !== undefined
+                  ? t("settings.models.cooldown", {
+                      seconds: credential.resetAfterSecs,
+                    })
+                  : t(`settings.models.credentialStatus.${credential.status}`, {
+                      defaultValue: credential.status,
+                    })}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

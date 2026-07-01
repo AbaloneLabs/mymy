@@ -29,6 +29,7 @@ use super::{
     map_http_error, parse_retry_after, Message, MessageRole, ProviderConfig, ProviderError,
     ToolSchema,
 };
+use crate::agent::runtime::CACHE_BREAKPOINT;
 
 // ============================================================
 // Provider implementation
@@ -147,10 +148,25 @@ struct MessagesRequest {
     messages: Vec<AnthropicMessage>,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<Vec<SystemBlock>>,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<AnthropicTool>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemBlock {
+    #[serde(rename = "type")]
+    block_type: &'static str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    control_type: &'static str,
 }
 
 /// Anthropic message format.
@@ -223,12 +239,41 @@ impl MessagesRequest {
             system: if system_prompt.is_empty() {
                 None
             } else {
-                Some(system_prompt.to_string())
+                Some(system_blocks(system_prompt))
             },
             stream: true,
             tools: anthropic_tools,
         }
     }
+}
+
+fn system_blocks(system_prompt: &str) -> Vec<SystemBlock> {
+    if let Some((stable, volatile)) = system_prompt.split_once(CACHE_BREAKPOINT) {
+        let mut blocks = Vec::new();
+        if !stable.trim().is_empty() {
+            blocks.push(SystemBlock {
+                block_type: "text",
+                text: stable.trim_end().to_string(),
+                cache_control: Some(CacheControl {
+                    control_type: "ephemeral",
+                }),
+            });
+        }
+        if !volatile.trim().is_empty() {
+            blocks.push(SystemBlock {
+                block_type: "text",
+                text: volatile.trim_start().to_string(),
+                cache_control: None,
+            });
+        }
+        return blocks;
+    }
+
+    vec![SystemBlock {
+        block_type: "text",
+        text: system_prompt.to_string(),
+        cache_control: None,
+    }]
 }
 
 /// Convert a canonical [`Message`] to Anthropic's format.
@@ -586,9 +631,27 @@ mod tests {
     #[test]
     fn system_prompt_is_top_level() {
         let body = MessagesRequest::build("claude-sonnet-4-5", 1024, "Be helpful.", &[], &[]);
-        assert_eq!(body.system.as_deref(), Some("Be helpful."));
+        let system = body.system.as_ref().unwrap();
+        assert_eq!(system[0].text, "Be helpful.");
         // No system message in the messages array.
         assert!(body.messages.is_empty());
+    }
+
+    #[test]
+    fn cache_breakpoint_adds_anthropic_cache_control() {
+        let body = MessagesRequest::build(
+            "claude-sonnet-4-5",
+            1024,
+            &format!("stable{CACHE_BREAKPOINT}volatile"),
+            &[],
+            &[],
+        );
+        let system = body.system.as_ref().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0].text, "stable");
+        assert!(system[0].cache_control.is_some());
+        assert_eq!(system[1].text, "volatile");
+        assert!(system[1].cache_control.is_none());
     }
 
     #[test]

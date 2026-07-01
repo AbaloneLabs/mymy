@@ -4,7 +4,7 @@
 export type AuditLogActorType = "user" | "agent";
 
 
-export type AuditLogAction = "create" | "update" | "delete";
+export type AuditLogAction = "create" | "update" | "delete" | "deny" | "redact";
 
 
 export interface AuditLog {

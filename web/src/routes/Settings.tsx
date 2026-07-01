@@ -6,6 +6,9 @@ import { PinChangeForm } from "@/components/settings/PinChangeForm";
 import { AgentSystemSection } from "@/components/settings/AgentSystemSection";
 import { GitSystemSection } from "@/components/settings/GitSystemSection";
 import { LlmProviderSection } from "@/components/settings/LlmProviderSection";
+import { ExtensionsSection } from "@/components/settings/ExtensionsSection";
+import { SkillsSection } from "@/components/settings/SkillsSection";
+import { SecuritySection } from "@/components/settings/SecuritySection";
 import { AuditLogSection } from "@/components/settings/AuditLogSection";
 import { TaskStatusManager } from "@/components/settings/TaskStatusManager";
 import { useSettingsStore } from "@/store/settings";
@@ -42,6 +45,9 @@ type SettingsTab =
   | "tasks"
   | "agents"
   | "models"
+  | "skills"
+  | "extensions"
+  | "security"
   | "git"
   | "audit"
   | "about";
@@ -55,6 +61,9 @@ const VALID_TABS: SettingsTab[] = [
   "tasks",
   "agents",
   "models",
+  "skills",
+  "extensions",
+  "security",
   "git",
   "audit",
   "about",
@@ -64,7 +73,7 @@ const VALID_TABS: SettingsTab[] = [
 const TAB_GROUPS: { tabs: SettingsTab[] }[] = [
   { tabs: ["general", "pin"] },
   { tabs: ["chat", "calendar", "notes", "tasks"] },
-  { tabs: ["agents", "models", "git"] },
+  { tabs: ["agents", "models", "skills", "extensions", "security", "git"] },
   { tabs: ["audit"] },
   { tabs: ["about"] },
 ];
@@ -154,12 +163,36 @@ export default function Settings() {
                   <LlmProviderSection />
                 </SectionCard>
               )}
+              {activeTab === "skills" && (
+                <SectionCard
+                  title={t("settings.skills.title")}
+                  description={t("settings.skills.description")}
+                >
+                  <SkillsSection />
+                </SectionCard>
+              )}
+              {activeTab === "extensions" && (
+                <SectionCard
+                  title={t("settings.extensions.title")}
+                  description={t("settings.extensions.description")}
+                >
+                  <ExtensionsSection />
+                </SectionCard>
+              )}
               {activeTab === "git" && (
                 <SectionCard
                   title={t("settings.git.title")}
                   description={t("settings.git.description")}
                 >
                   <GitSystemSection />
+                </SectionCard>
+              )}
+              {activeTab === "security" && (
+                <SectionCard
+                  title={t("settings.security.title")}
+                  description={t("settings.security.description")}
+                >
+                  <SecuritySection />
                 </SectionCard>
               )}
               {activeTab === "audit" && (

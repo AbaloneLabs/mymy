@@ -9,14 +9,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
 
 use super::{truncate_chars, BuiltinToolConfig};
+use crate::agent::providers::types::{ModelInfo, StreamDelta};
+use crate::agent::providers::{LlmProvider, Message, ProviderError, ToolSchema};
 use crate::agent::runtime::{
     apply_cache_breakpoint, parse_rate_limit_headers, scrub_thinking_blocks, CredentialPool,
-    CredentialStatus, PooledCredential, SelectionStrategy,
+    CredentialStatus, MoaConfig, MoaParticipant, MoaProposerOutput, MoaResult, PooledCredential,
+    SelectionStrategy,
 };
 use crate::agent::security::redact::mask_secret;
 use crate::agent::security::{redact_sensitive_text, SecretString};
@@ -256,7 +260,10 @@ impl ToolHandler for RuntimeStatusTool {
     async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
         let mut headers = HashMap::new();
         headers.insert("x-ratelimit-limit-requests".to_string(), "0".to_string());
-        let rate_limits = parse_rate_limit_headers(&headers);
+        let mut rate_limits = parse_rate_limit_headers(&headers);
+        let throttled = rate_limits.is_throttled();
+        let recovery_secs = rate_limits.soonest_recovery_secs();
+        rate_limits.record_usage(1, 0);
         let mut pool = CredentialPool::new(
             vec![PooledCredential {
                 label: "diagnostic".to_string(),
@@ -268,17 +275,55 @@ impl ToolHandler for RuntimeStatusTool {
         );
         let acquired = pool.acquire(chrono::Utc::now());
         pool.mark_exhausted("diagnostic", 1, chrono::Utc::now());
+        let _moa_runner = crate::agent::runtime::run_moa_turn;
+        let moa_participant = MoaParticipant {
+            label: "diagnostic".to_string(),
+            provider: Arc::new(RuntimeDiagnosticProvider),
+        };
+        let moa_config = MoaConfig::default();
+        let moa_shape = MoaResult {
+            proposer_outputs: vec![MoaProposerOutput {
+                label: moa_participant.label,
+                content: "proposal".to_string(),
+            }],
+            aggregated: "aggregate".to_string(),
+        };
         Ok(tool_result(&serde_json::json!({
             "success": true,
             "cache_breakpoint_marker": apply_cache_breakpoint("stable", "volatile").contains("mymy-cache-breakpoint"),
             "rate_limits": rate_limits,
+            "rate_limit_throttled": throttled,
+            "rate_limit_recovery_secs": recovery_secs,
             "credential_pool": {
                 "strategy": "least_used",
                 "available": acquired.is_some(),
                 "masked_example": mask_secret("sk-diagnostic-placeholder")
             },
+            "moa": {
+                "runner_available": true,
+                "max_concurrent_default": moa_config.max_concurrent,
+                "diagnostic_shape": moa_shape
+            },
             "thinking_scrubber": scrub_thinking_blocks("visible <think>hidden</think>")
         })))
+    }
+}
+
+struct RuntimeDiagnosticProvider;
+
+#[async_trait]
+impl LlmProvider for RuntimeDiagnosticProvider {
+    async fn stream(
+        &self,
+        _system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> Result<BoxStream<'_, Result<StreamDelta, ProviderError>>, ProviderError> {
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(Vec::new())
     }
 }
 

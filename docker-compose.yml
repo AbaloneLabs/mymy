@@ -73,9 +73,6 @@ services:
       network: host
     container_name: mymy-api
     restart: unless-stopped
-    # Run as the host user so hermes subprocess file permissions line up
-    # (the mounted hermes venv/profiles are owned by the host uid).
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-mymy}:${POSTGRES_PASSWORD:-mymy}@db:5432/${POSTGRES_DB:-mymy}
       PORT: "33697"
@@ -83,6 +80,8 @@ services:
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       MYMY_AGENT_DATA_DIR: /app/data/agent
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
       # Path-preserving: set HOME to the host user's home so the venv's
       # absolute paths resolve correctly inside the container.
       HOME: ${HOME}

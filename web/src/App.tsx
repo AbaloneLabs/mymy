@@ -10,6 +10,7 @@ const Chat = lazy(() => import("@/routes/Chat"));
 const CalendarPage = lazy(() => import("@/routes/CalendarPage"));
 const NotesPage = lazy(() => import("@/routes/NotesPage"));
 const KnowledgePage = lazy(() => import("@/routes/KnowledgePage"));
+const JourneyPage = lazy(() => import("@/routes/JourneyPage"));
 const ProjectDetail = lazy(() => import("@/routes/ProjectDetail"));
 const TasksPage = lazy(() => import("@/routes/TasksPage"));
 const AgentsPage = lazy(() => import("@/routes/AgentsPage"));
@@ -80,6 +81,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <KnowledgePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/journey"
+            element={
+              <ProtectedRoute>
+                <JourneyPage />
               </ProtectedRoute>
             }
           />

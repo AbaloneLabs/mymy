@@ -16,8 +16,10 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::models::llm_provider::{
-    CreateLlmProviderRequest, FetchModelsRequest, FetchModelsResponse, LlmProviderResponse,
-    LlmProvidersResponse, TestConnectionResponse, UpdateLlmProviderRequest,
+    AgentCredentialsResponse, CreateAgentCredentialRequest, CreateLlmProviderRequest,
+    FetchModelsRequest, FetchModelsResponse, LlmProviderResponse, LlmProvidersResponse,
+    RateLimitStatusResponse, TestConnectionResponse, UpdateAgentCredentialRequest,
+    UpdateLlmProviderRequest,
 };
 use crate::services::llm_providers as svc;
 use crate::state::AppState;
@@ -25,6 +27,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/llm-providers/models", post(fetch_models))
+        .route("/api/llm-providers/rate-limits", get(rate_limits))
         .route(
             "/api/llm-providers",
             get(list_providers).post(create_provider),
@@ -32,6 +35,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/llm-providers/{id}",
             patch(update_provider).delete(delete_provider),
+        )
+        .route(
+            "/api/llm-providers/{id}/credentials",
+            get(list_credentials).post(create_credential),
+        )
+        .route(
+            "/api/llm-providers/{id}/credentials/{credential_id}",
+            patch(update_credential).delete(delete_credential),
         )
         .route("/api/llm-providers/{id}/test", post(test_provider))
         .route("/api/llm-providers/{id}/default", post(set_default))
@@ -88,6 +99,45 @@ pub async fn set_default(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     let resp = svc::set_default(&state, id).await?;
+    Ok(Json(serde_json::to_value(resp).unwrap_or_default()))
+}
+
+pub async fn list_credentials(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<AgentCredentialsResponse>> {
+    Ok(Json(svc::list_credentials(&state, id).await?))
+}
+
+pub async fn rate_limits(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<RateLimitStatusResponse>> {
+    Ok(Json(svc::list_rate_limit_status(&state).await?))
+}
+
+pub async fn create_credential(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CreateAgentCredentialRequest>,
+) -> AppResult<Json<AgentCredentialsResponse>> {
+    Ok(Json(svc::create_credential(&state, id, req).await?))
+}
+
+pub async fn update_credential(
+    State(state): State<Arc<AppState>>,
+    Path((id, credential_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<UpdateAgentCredentialRequest>,
+) -> AppResult<Json<AgentCredentialsResponse>> {
+    Ok(Json(
+        svc::update_credential(&state, id, credential_id, req).await?,
+    ))
+}
+
+pub async fn delete_credential(
+    State(state): State<Arc<AppState>>,
+    Path((id, credential_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<serde_json::Value>> {
+    let resp = svc::delete_credential(&state, id, credential_id).await?;
     Ok(Json(serde_json::to_value(resp).unwrap_or_default()))
 }
 

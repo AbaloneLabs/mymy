@@ -7,6 +7,8 @@
 
 use sqlx::PgPool;
 
+use crate::agent::security::redact_sensitive_text;
+
 /// Record a single audit log entry.
 ///
 /// Returns `Err` only if the DB INSERT fails; callers that want to ignore
@@ -63,4 +65,21 @@ pub async fn log_audit_safe(
     {
         tracing::warn!(error = ?e, %entity_type, %action, "failed to write audit log");
     }
+}
+
+pub async fn log_security_denial_safe(db: &PgPool, operation: &str, path: &str, reason: &str) {
+    log_audit_safe(
+        db,
+        "agent",
+        "agent:native",
+        "deny",
+        "filesystem_guard",
+        Some(&redact_sensitive_text(path)),
+        Some(serde_json::json!({
+            "operation": operation,
+            "path": redact_sensitive_text(path),
+            "reason": redact_sensitive_text(reason),
+        })),
+    )
+    .await;
 }

@@ -5,9 +5,11 @@
 //! assembles the native tool registry and prompt, then lets the HTTP handler
 //! stream agent-loop events to the browser.
 
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::{stream::BoxStream, StreamExt};
 use serde::Deserialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -16,9 +18,13 @@ use crate::agent::context::ContextManager;
 use crate::agent::loop_engine::{AgentLoop, LoopConfig};
 use crate::agent::memory::MemoryStore;
 use crate::agent::prompt::{build_system_prompt, PromptConfig};
+use crate::agent::providers::types::ModelInfo;
 use crate::agent::providers::{self, LlmProvider, Message, MessageRole as AgentMessageRole};
-use crate::agent::skills::SkillRegistry;
-use crate::agent::tools::builtin::{register_all, register_safe_defaults, BuiltinToolConfig};
+use crate::agent::providers::{ProviderError, StreamDelta, ToolSchema};
+use crate::agent::runtime::{MoaConfig, MoaParticipant};
+use crate::agent::security::redact_sensitive_text;
+use crate::agent::skills::{BundleRegistry, SkillRegistry};
+use crate::agent::tools::builtin::{mcp, register_all, register_safe_defaults, BuiltinToolConfig};
 use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{
@@ -66,9 +72,22 @@ pub struct PreparedNativeTurn {
     pub session_id: Uuid,
     pub messages: Vec<Message>,
     pub agent_message_start: usize,
-    pub agent_loop: AgentLoop,
+    pub execution: PreparedExecution,
     pub system_prompt: String,
     pub user_message: ChatMessage,
+}
+
+pub enum PreparedExecution {
+    Agent(AgentLoop),
+    Moa(PreparedMoaTurn),
+}
+
+pub struct PreparedMoaTurn {
+    pub preset_id: Uuid,
+    pub preset_name: String,
+    pub proposers: Vec<MoaParticipant>,
+    pub aggregator: MoaParticipant,
+    pub config: MoaConfig,
 }
 
 pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatSessionsResponse> {
@@ -203,21 +222,38 @@ pub async fn prepare_native_turn(
     }
 
     let session = fetch_session(state, id).await?;
-    let provider_config = llm_providers::resolve_default_config(state).await?;
-    let provider: Arc<dyn LlmProvider> = Arc::from(providers::create_provider(&provider_config));
+    let use_moa = req.use_moa;
+    let moa_runtime = if use_moa {
+        Some(crate::services::moa::resolve_runtime_preset(state, req.moa_preset_id).await?)
+    } else {
+        None
+    };
+    let default_runtime = if moa_runtime.is_none() {
+        let provider_id = llm_providers::resolve_default_provider_id(state).await?;
+        Some((
+            provider_id,
+            llm_providers::resolve_runtime_config(state, provider_id).await?,
+        ))
+    } else {
+        None
+    };
 
     let working_dir = std::env::current_dir()
         .map_err(|err| AppError::Internal(format!("failed to resolve working directory: {err}")))?;
     let mut registry = ToolRegistry::new();
-    register_all(
-        &mut registry,
-        &BuiltinToolConfig::for_session(
-            working_dir.clone(),
-            state.config.agent_data_dir.clone(),
-            id,
-            state.db.clone(),
-        ),
+    let extension_settings_key = state.encryption_key.read().await.as_ref().copied();
+    let builtin_config = BuiltinToolConfig::for_session(
+        working_dir.clone(),
+        state.config.agent_data_dir.clone(),
+        id,
+        state.db.clone(),
+        extension_settings_key,
     );
+    register_all(&mut registry, &builtin_config);
+    crate::services::extensions::register_runtime_extensions(&mut registry, state).await?;
+    if let Err(err) = mcp::register_dynamic_tools(&mut registry, &builtin_config).await {
+        tracing::warn!(error = %err, "MCP dynamic tool registration failed");
+    }
     register_safe_defaults(&mut registry);
     let registry = Arc::new(registry);
     let memory_dir = state.config.agent_data_dir.join("memory");
@@ -245,16 +281,29 @@ pub async fn prepare_native_turn(
         working_dir,
         memory_md_path: None,
         user_md_path: None,
-        available_tool_names: registry.available_tool_names(),
-        model: provider_config.model.clone(),
+        available_tool_names: if use_moa {
+            Vec::new()
+        } else {
+            registry.available_tool_names()
+        },
+        model: moa_runtime
+            .as_ref()
+            .map(|preset| preset.aggregator_provider.model.clone())
+            .or_else(|| {
+                default_runtime
+                    .as_ref()
+                    .map(|(_, config)| config.model.clone())
+            })
+            .unwrap_or_else(|| "unknown".to_string()),
         system_message: (!system_blocks.is_empty()).then(|| system_blocks.join("\n\n")),
     });
 
     let rows = fetch_message_rows(state, id).await?;
     let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
+    let agent_user_text = resolve_skill_invocation(state, &text, id).await?;
 
     let user_message = insert_user_message(state, id, &text).await?;
-    messages.push(Message::user(text.clone()));
+    messages.push(Message::user(agent_user_text));
     let agent_message_start = messages.len();
 
     let title = derive_title(&text);
@@ -270,19 +319,71 @@ pub async fn prepare_native_turn(
     .execute(&state.db)
     .await?;
 
-    let context_manager =
-        ContextManager::for_model(&provider_config.model, provider_config.max_tokens);
-    let agent_loop = AgentLoop::new(
-        provider,
-        registry,
-        LoopConfig::default(),
-        Some(context_manager),
-    );
+    let execution = if let Some(runtime) = moa_runtime {
+        let proposers = runtime
+            .proposer_providers
+            .iter()
+            .map(|provider| {
+                Ok(MoaParticipant {
+                    label: format!("{} ({})", provider.label, provider.model),
+                    provider: Arc::new(DbRotatingProvider {
+                        state: state.clone(),
+                        provider_id: parse_runtime_provider_id(&provider.id)?,
+                    }),
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let aggregator = MoaParticipant {
+            label: format!(
+                "{} ({})",
+                runtime.aggregator_provider.label, runtime.aggregator_provider.model
+            ),
+            provider: Arc::new(DbRotatingProvider {
+                state: state.clone(),
+                provider_id: parse_runtime_provider_id(&runtime.aggregator_provider.id)?,
+            }),
+        };
+        PreparedExecution::Moa(PreparedMoaTurn {
+            preset_id: runtime.id,
+            preset_name: runtime.name,
+            proposers,
+            aggregator,
+            config: MoaConfig {
+                max_concurrent: runtime.max_concurrent,
+                aggregation_prompt: runtime.aggregation_prompt,
+            },
+        })
+    } else {
+        let (provider_id, provider_config) = default_runtime
+            .ok_or_else(|| AppError::Internal("default provider resolution missing".into()))?;
+        let provider: Arc<dyn LlmProvider> = Arc::new(DbRotatingProvider {
+            state: state.clone(),
+            provider_id,
+        });
+        let context_manager =
+            ContextManager::for_model(&provider_config.model, provider_config.max_tokens);
+        let agent_loop = AgentLoop::new(
+            provider,
+            registry,
+            LoopConfig::default(),
+            Some(context_manager),
+        )
+        .with_approval_gate(id, state.approval_gate.clone())
+        .with_clarify_gate(id, state.clarify_gate.clone())
+        .with_todo_path(
+            state
+                .config
+                .agent_data_dir
+                .join("todos")
+                .join(format!("{id}.json")),
+        );
+        PreparedExecution::Agent(agent_loop)
+    };
 
     tracing::info!(
         session_id = %id,
         profile = %session.profile,
-        model = %provider_config.model,
+        moa = use_moa,
         "prepared native chat turn"
     );
 
@@ -290,10 +391,79 @@ pub async fn prepare_native_turn(
         session_id: id,
         messages,
         agent_message_start,
-        agent_loop,
+        execution,
         system_prompt,
         user_message,
     })
+}
+
+fn parse_runtime_provider_id(id: &str) -> AppResult<Uuid> {
+    Uuid::parse_str(id)
+        .map_err(|err| AppError::Internal(format!("invalid runtime provider id: {err}")))
+}
+
+async fn resolve_skill_invocation(
+    state: &AppState,
+    text: &str,
+    session_id: Uuid,
+) -> AppResult<String> {
+    let Some((slash_name, user_instruction)) = split_slash_invocation(text) else {
+        return Ok(text.to_string());
+    };
+    let skills = SkillRegistry::new(state.config.agent_data_dir.join("skills"));
+    let bundles = BundleRegistry::new(
+        state.config.agent_data_dir.join("skill-bundles"),
+        skills.clone(),
+    );
+    let config = crate::services::skills::load_config(state)?;
+    let session_id = session_id.to_string();
+
+    if let Some(bundle) = bundles
+        .resolve(slash_name)
+        .map_err(|err| map_skill_io("skill bundle resolve failed", err))?
+    {
+        return bundles
+            .build_invocation_message(&bundle, user_instruction, &session_id, &config)
+            .await
+            .map_err(|err| map_skill_io("skill bundle invocation failed", err));
+    }
+
+    if let Some(skill) = skills
+        .resolve_slash(slash_name)
+        .map_err(|err| map_skill_io("skill resolve failed", err))?
+    {
+        return skills
+            .build_invocation_message(&skill.name, user_instruction, &session_id, &config)
+            .await
+            .map_err(|err| map_skill_io("skill invocation failed", err));
+    }
+
+    Ok(text.to_string())
+}
+
+fn split_slash_invocation(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix('/')?.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let command_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let slash_name = &rest[..command_end];
+    if slash_name.is_empty() {
+        return None;
+    }
+    Some((slash_name, rest[command_end..].trim_start()))
+}
+
+fn map_skill_io(context: &str, err: io::Error) -> AppError {
+    let message = format!("{context}: {err}");
+    match err.kind() {
+        io::ErrorKind::AlreadyExists
+        | io::ErrorKind::InvalidData
+        | io::ErrorKind::InvalidInput
+        | io::ErrorKind::PermissionDenied => AppError::BadRequest(message),
+        io::ErrorKind::NotFound => AppError::NotFound(message),
+        _ => AppError::Internal(message),
+    }
 }
 
 pub async fn save_agent_messages(
@@ -433,7 +603,7 @@ async fn insert_agent_message(
     message: &Message,
 ) -> AppResult<ChatMessage> {
     let id = Uuid::new_v4();
-    let content = message.content.clone().unwrap_or_default();
+    let content = redact_sensitive_text(&message.content.clone().unwrap_or_default());
     let tool_calls = if message.tool_calls.is_empty() {
         None
     } else {
@@ -442,7 +612,11 @@ async fn insert_agent_message(
                 message
                     .tool_calls
                     .iter()
-                    .map(ToolCallDto::from)
+                    .map(|call| ToolCallDto {
+                        id: redact_sensitive_text(&call.id),
+                        name: call.name.clone(),
+                        arguments: redact_sensitive_text(&call.arguments),
+                    })
                     .collect::<Vec<_>>(),
             )
             .map_err(|err| AppError::Internal(format!("tool call serialization failed: {err}")))?,
@@ -559,5 +733,124 @@ fn derive_title(text: &str) -> String {
     } else {
         let truncated: String = trimmed.chars().take(30).collect();
         format!("{truncated}…")
+    }
+}
+
+struct DbRotatingProvider {
+    state: AppState,
+    provider_id: Uuid,
+}
+
+#[async_trait]
+impl LlmProvider for DbRotatingProvider {
+    async fn stream(
+        &self,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> Result<BoxStream<'_, Result<StreamDelta, ProviderError>>, ProviderError> {
+        let state = self.state.clone();
+        let provider_id = self.provider_id;
+        let system_prompt = system_prompt.to_string();
+        let messages = messages.to_vec();
+        let tools = tools.to_vec();
+        let stream = async_stream::stream! {
+            let mut last_error = None;
+            for attempt in 1..=3 {
+                let resolved = match llm_providers::resolve_runtime_config_with_credential(&state, provider_id).await {
+                    Ok(resolved) => resolved,
+                    Err(err) => {
+                        yield Err(ProviderError::InvalidResponse(format!("provider config resolution failed: {err}")));
+                        return;
+                    }
+                };
+                let credential_id = resolved.credential_id;
+                let provider = providers::create_provider(&resolved.config);
+                let mut inner = match provider.stream(&system_prompt, &messages, &tools).await {
+                    Ok(inner) => inner,
+                    Err(ProviderError::RateLimited { retry_after_secs }) => {
+                        if let Err(err) = llm_providers::mark_credential_rate_limited(
+                            &state,
+                            provider_id,
+                            credential_id,
+                            retry_after_secs,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
+                        }
+                        last_error = Some(ProviderError::RateLimited { retry_after_secs });
+                        if attempt < 3 && credential_id.is_some() {
+                            continue;
+                        }
+                        break;
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                };
+                while let Some(delta) = inner.next().await {
+                    if let Err(ProviderError::RateLimited { retry_after_secs }) = &delta {
+                        if let Err(err) = llm_providers::mark_credential_rate_limited(
+                            &state,
+                            provider_id,
+                            credential_id,
+                            *retry_after_secs,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
+                        }
+                    }
+                    yield delta;
+                }
+                return;
+            }
+            yield Err(last_error.unwrap_or(ProviderError::RateLimited {
+                retry_after_secs: Some(60),
+            }));
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            let resolved = llm_providers::resolve_runtime_config_with_credential(
+                &self.state,
+                self.provider_id,
+            )
+            .await
+            .map_err(|err| {
+                ProviderError::InvalidResponse(format!("provider config resolution failed: {err}"))
+            })?;
+            let credential_id = resolved.credential_id;
+            let provider = providers::create_provider(&resolved.config);
+            match provider.list_models().await {
+                Ok(models) => return Ok(models),
+                Err(ProviderError::RateLimited { retry_after_secs }) => {
+                    if let Err(err) = llm_providers::mark_credential_rate_limited(
+                        &self.state,
+                        self.provider_id,
+                        credential_id,
+                        retry_after_secs,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
+                    }
+                    last_error = Some(ProviderError::RateLimited { retry_after_secs });
+                    if attempt < 3 && credential_id.is_some() {
+                        continue;
+                    }
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.unwrap_or(ProviderError::RateLimited {
+            retry_after_secs: Some(60),
+        }))
     }
 }

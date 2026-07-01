@@ -48,6 +48,12 @@ export function AuditLogSection() {
     setAction(v);
     setOffset(0);
   }
+  function selectSecurityDenials() {
+    setActorType("agent");
+    setEntityType("filesystem_guard");
+    setAction("deny");
+    setOffset(0);
+  }
 
   return (
     <div className="space-y-4">
@@ -72,6 +78,16 @@ export function AuditLogSection() {
           />
         </FilterGroup>
 
+        <FilterChip
+          label={t("settings.audit.security")}
+          active={
+            actorType === "agent" &&
+            entityType === "filesystem_guard" &&
+            action === "deny"
+          }
+          onClick={selectSecurityDenials}
+        />
+
         {/* Entity type filter */}
         <FilterSelect
           ariaLabel={t("settings.audit.entityType")}
@@ -90,6 +106,7 @@ export function AuditLogSection() {
             { value: "agent_session", label: "Agent Session" },
             { value: "settings", label: "Settings" },
             { value: "pin", label: "PIN" },
+            { value: "filesystem_guard", label: "Filesystem Guard" },
           ]}
         />
 
@@ -103,6 +120,8 @@ export function AuditLogSection() {
             { value: "create", label: t("settings.audit.created") },
             { value: "update", label: t("settings.audit.updated") },
             { value: "delete", label: t("settings.audit.deleted") },
+            { value: "deny", label: t("settings.audit.denied") },
+            { value: "redact", label: t("settings.audit.redacted") },
           ]}
         />
 
@@ -197,7 +216,11 @@ function TimelineItem({
         ? t("settings.audit.updated")
         : log.action === "delete"
           ? t("settings.audit.deleted")
-          : log.action;
+          : log.action === "deny"
+            ? t("settings.audit.denied")
+            : log.action === "redact"
+              ? t("settings.audit.redacted")
+              : log.action;
 
   return (
     <li className="relative pb-5">
@@ -211,7 +234,11 @@ function TimelineItem({
               ? "bg-amber-500"
               : log.action === "delete"
                 ? "bg-rose-500"
-                : "bg-[var(--text-faint)]",
+                : log.action === "deny"
+                  ? "bg-red-500"
+                  : log.action === "redact"
+                    ? "bg-sky-500"
+                    : "bg-[var(--text-faint)]",
         )}
       />
 

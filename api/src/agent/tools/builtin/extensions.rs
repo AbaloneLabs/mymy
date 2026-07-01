@@ -46,6 +46,10 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     let Ok(extensions) = load_extensions(&path) else {
         return;
     };
+    register_configs(registry, extensions);
+}
+
+pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionConfig>) {
     for extension in extensions.into_iter().filter(|extension| extension.enabled) {
         match extension.settings.clone() {
             ExtensionSettings::Webhook { .. } => registry.register(ToolEntry {
@@ -73,22 +77,32 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     }
 }
 
+pub async fn execute_config(extension: ExtensionConfig, args: &Value) -> Result<String, ToolError> {
+    match extension.settings.clone() {
+        ExtensionSettings::Webhook { .. } => WebhookExtensionTool { extension }.execute(args).await,
+        ExtensionSettings::Script { .. } => ScriptExtensionTool { extension }.execute(args).await,
+        ExtensionSettings::McpServer { .. } => Err(ToolError::Unavailable(
+            "MCP server extensions are tested through the MCP client".to_string(),
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ExtensionConfig {
-    id: uuid::Uuid,
-    kind: ExtensionKind,
-    name: String,
-    description: String,
-    enabled: bool,
+pub struct ExtensionConfig {
+    pub id: uuid::Uuid,
+    pub kind: ExtensionKind,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
     #[serde(default = "default_parameters")]
-    parameters: Value,
+    pub parameters: Value,
     #[serde(flatten)]
-    settings: ExtensionSettings,
+    pub settings: ExtensionSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ExtensionKind {
+pub enum ExtensionKind {
     Webhook,
     Script,
     McpServer,
@@ -96,7 +110,7 @@ enum ExtensionKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ExtensionSettings {
+pub enum ExtensionSettings {
     Webhook {
         url: String,
         #[serde(default = "default_method")]
@@ -117,6 +131,18 @@ enum ExtensionSettings {
     },
     McpServer {
         transport: String,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        env: BTreeMap<String, SecretString>,
+        #[serde(default)]
+        headers: BTreeMap<String, SecretString>,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
     },
 }
 

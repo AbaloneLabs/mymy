@@ -10,6 +10,7 @@ pub mod chat;
 pub mod goal;
 pub mod knowledge;
 pub mod llm_provider;
+pub mod moa;
 pub mod note;
 pub mod project;
 pub mod search;

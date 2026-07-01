@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::BuiltinToolConfig;
+use crate::agent::scheduler::{jobs_path, CronStore};
 use crate::agent::skills::{
     extract_user_instruction_from_skill_message, BundleRegistry, SkillBundle, SkillRegistry,
     SkillsConfig,
@@ -69,19 +70,24 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["create", "patch", "delete", "write_file", "remove_file"] },
+                    "action": { "type": "string", "enum": ["create", "patch", "delete", "write_file", "remove_file", "pin", "unpin", "curate"] },
                     "name": { "type": "string" },
                     "category": { "type": "string" },
                     "content": { "type": "string" },
                     "old_string": { "type": "string" },
                     "new_string": { "type": "string" },
                     "file_path": { "type": "string" },
-                    "archive": { "type": "boolean", "default": true }
+                    "archive": { "type": "boolean", "default": true },
+                    "stale_days": { "type": "integer", "minimum": 1, "default": 30 },
+                    "archive_days": { "type": "integer", "minimum": 1, "default": 90 }
                 },
-                "required": ["action", "name"]
+                "required": ["action"]
             }),
         ),
-        handler: Arc::new(SkillManageTool { skills }),
+        handler: Arc::new(SkillManageTool {
+            skills,
+            cron_store: CronStore::new(jobs_path(&config.agent_data_dir)),
+        }),
     });
 
     let skills = Arc::new(SkillRegistry::new(config.agent_data_dir.join("skills")));
@@ -265,49 +271,76 @@ impl ToolHandler for SkillViewTool {
 
 struct SkillManageTool {
     skills: Arc<SkillRegistry>,
+    cron_store: CronStore,
 }
 
 #[async_trait]
 impl ToolHandler for SkillManageTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
         let action = required_str(args, "action")?;
-        let name = required_str(args, "name")?;
         let result = match action {
             "create" => self
                 .skills
                 .create(
-                    name,
+                    required_str(args, "name")?,
                     args.get("category").and_then(Value::as_str),
                     required_str(args, "content")?,
                 )
-                .map(|()| serde_json::json!({ "created": name })),
+                .map(|()| serde_json::json!({ "created": required_str(args, "name").unwrap_or("") })),
             "patch" => self
                 .skills
                 .patch(
-                    name,
+                    required_str(args, "name")?,
                     required_str(args, "old_string")?,
                     required_str(args, "new_string")?,
                 )
-                .map(|()| serde_json::json!({ "patched": name })),
+                .map(|()| serde_json::json!({ "patched": required_str(args, "name").unwrap_or("") })),
             "delete" => self
                 .skills
                 .delete(
-                    name,
+                    required_str(args, "name")?,
                     args.get("archive").and_then(Value::as_bool).unwrap_or(true),
                 )
-                .map(|path| serde_json::json!({ "removed": name, "path": path })),
+                .map(|path| serde_json::json!({ "removed": required_str(args, "name").unwrap_or(""), "path": path })),
             "write_file" => self
                 .skills
                 .write_support_file(
-                    name,
+                    required_str(args, "name")?,
                     required_str(args, "file_path")?,
                     required_str(args, "content")?,
                 )
                 .map(|path| serde_json::json!({ "written": path })),
             "remove_file" => self
                 .skills
-                .remove_support_file(name, required_str(args, "file_path")?)
+                .remove_support_file(required_str(args, "name")?, required_str(args, "file_path")?)
                 .map(|path| serde_json::json!({ "removed": path })),
+            "pin" => self
+                .skills
+                .set_pinned(required_str(args, "name")?, true)
+                .map(|pins| serde_json::json!({ "pinned": required_str(args, "name").unwrap_or(""), "pins": pins })),
+            "unpin" => self
+                .skills
+                .set_pinned(required_str(args, "name")?, false)
+                .map(|pins| serde_json::json!({ "unpinned": required_str(args, "name").unwrap_or(""), "pins": pins })),
+            "curate" => {
+                let referenced = self
+                    .cron_store
+                    .referenced_skill_names()
+                    .map_err(|err| ToolError::Execution(format!("cron refs failed: {err}")))?;
+                let stale_days = args
+                    .get("stale_days")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(30)
+                    .max(1);
+                let archive_days = args
+                    .get("archive_days")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(90)
+                    .max(stale_days + 1);
+                self.skills
+                    .curate(&referenced, stale_days, archive_days)
+                    .map(|report| serde_json::json!(report))
+            }
             _ => return Err(ToolError::InvalidArgs("invalid action".to_string())),
         }
         .map_err(|err| ToolError::Execution(format!("skill manage failed: {err}")))?;

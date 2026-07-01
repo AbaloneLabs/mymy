@@ -291,8 +291,8 @@ pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<
 /// - other → HttpStatus (raw body for debugging)
 pub(crate) fn map_http_error(status: u16, body: String, retry_after: Option<u64>) -> ProviderError {
     match status {
-        401 | 403 => ProviderError::Auth(format!("HTTP {status}: {}", truncate(&body, 200))),
-        429 => ProviderError::RateLimited {
+        401 => ProviderError::Auth(format!("HTTP {status}: {}", truncate(&body, 200))),
+        403 | 429 => ProviderError::RateLimited {
             retry_after_secs: retry_after,
         },
         _ => ProviderError::HttpStatus { status, body },

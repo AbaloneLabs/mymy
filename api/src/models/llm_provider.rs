@@ -113,6 +113,63 @@ pub struct SetDefaultResponse {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCredential {
+    pub id: String,
+    pub provider_id: String,
+    pub label: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<String>,
+    pub request_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentCredentialsResponse {
+    pub credentials: Vec<AgentCredential>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRateLimitStatus {
+    pub provider_id: String,
+    pub label: String,
+    pub credentials: Vec<CredentialRateLimitStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialRateLimitStatus {
+    pub credential_id: Option<String>,
+    pub label: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_after_secs: Option<i64>,
+    pub request_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitStatusResponse {
+    pub providers: Vec<ProviderRateLimitStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentCredentialRequest {
+    pub label: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentCredentialRequest {
+    pub status: Option<String>,
+}
+
 // ---- Model fetch (GET /models proxy) ----
 
 /// Request body for fetching models from a provider.

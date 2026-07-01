@@ -39,6 +39,7 @@ WORKDIR /app
 # Runtime deps:
 #   ca-certificates — TLS for DB + outbound LLM calls
 #   bash            — hermes wrapper script uses bash
+#   gosu            — drop from root to the host UID after fixing /app/data ownership
 #   curl, git, ssh, jq, xz-utils, file — required by the Hermes agent runtime.
 #     Hermes runs `hermes chat` as a subprocess, which invokes its own
 #     install/bootstrap scripts that shell out to curl (download Node.js),
@@ -49,6 +50,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     bash \
+    gosu \
     curl \
     git \
     openssh-client \

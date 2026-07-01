@@ -3,9 +3,9 @@
 mod agent_tools;
 mod code_exec;
 mod cron;
-mod extensions;
+pub mod extensions;
 mod file;
-mod mcp;
+pub mod mcp;
 mod memory;
 mod skills;
 mod terminal;
@@ -23,6 +23,7 @@ pub struct BuiltinToolConfig {
     pub agent_data_dir: PathBuf,
     pub session_id: Option<uuid::Uuid>,
     pub db: Option<PgPool>,
+    pub extension_settings_key: Option<[u8; 32]>,
 }
 
 impl BuiltinToolConfig {
@@ -31,12 +32,14 @@ impl BuiltinToolConfig {
         agent_data_dir: PathBuf,
         session_id: uuid::Uuid,
         db: PgPool,
+        extension_settings_key: Option<[u8; 32]>,
     ) -> Self {
         Self {
             working_dir,
             agent_data_dir,
             session_id: Some(session_id),
             db: Some(db),
+            extension_settings_key,
         }
     }
 }

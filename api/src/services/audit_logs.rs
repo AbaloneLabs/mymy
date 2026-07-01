@@ -107,7 +107,7 @@ fn validate_actor_type(t: &str) -> AppResult<()> {
 }
 
 fn validate_action(a: &str) -> AppResult<()> {
-    if matches!(a, "create" | "update" | "delete") {
+    if matches!(a, "create" | "update" | "delete" | "deny" | "redact") {
         Ok(())
     } else {
         Err(AppError::BadRequest(format!("invalid action: {a}")))

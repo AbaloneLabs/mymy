@@ -44,6 +44,15 @@ pub struct SettingsResponse {
     pub settings: AppSettings,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityStatusResponse {
+    pub redaction_enabled: bool,
+    pub filesystem_guard_enabled: bool,
+    pub tls_validation_enabled: bool,
+    pub secret_sources: Vec<crate::agent::security::SecretSourceStatus>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsRequest {
     pub language: Option<Language>,

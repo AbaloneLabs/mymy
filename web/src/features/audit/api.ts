@@ -12,7 +12,7 @@ import type { AuditLogsResponse } from "@/types/audit";
  *
  * @param actorType   Filter by "user" or "agent".
  * @param entityType  Filter by entity type (e.g. "note", "task").
- * @param action      Filter by "create", "update", or "delete".
+ * @param action      Filter by "create", "update", "delete", "deny", or "redact".
  * @param startDate   Inclusive start (ISO 8601).
  * @param endDate     Exclusive end (ISO 8601).
  * @param limit       Page size (default 50, max 200).

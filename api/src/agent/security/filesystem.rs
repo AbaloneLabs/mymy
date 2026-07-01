@@ -11,6 +11,11 @@ use crate::agent::tools::ToolError;
 const SENSITIVE_NAMES: &[&str] = &[
     ".env",
     ".envrc",
+    ".bash_profile",
+    ".bashrc",
+    ".profile",
+    ".zprofile",
+    ".zshrc",
     ".npmrc",
     ".pypirc",
     ".git-credentials",
@@ -75,7 +80,7 @@ pub fn is_sensitive_path(path: &Path) -> bool {
         if SENSITIVE_NAMES.iter().any(|name| value == *name) {
             return true;
         }
-        if value.starts_with(".env.") {
+        if value.starts_with(".env.") && !is_env_template(&value) {
             return true;
         }
         if value.ends_with(".pem") || value.ends_with(".key") {
@@ -83,6 +88,15 @@ pub fn is_sensitive_path(path: &Path) -> bool {
         }
     }
     in_sensitive_dir
+}
+
+fn is_env_template(value: &str) -> bool {
+    matches!(
+        value,
+        ".env.example" | ".env.sample" | ".env.template" | ".env.defaults"
+    ) || value.ends_with(".example")
+        || value.ends_with(".sample")
+        || value.ends_with(".template")
 }
 
 #[cfg(test)]
@@ -95,6 +109,10 @@ mod tests {
         assert!(is_sensitive_path(Path::new("/workspace/.env.local")));
         assert!(is_sensitive_path(Path::new("/workspace/.ssh/id_ed25519")));
         assert!(is_sensitive_path(Path::new("/workspace/cert.pem")));
+        assert!(!is_sensitive_path(Path::new("/workspace/.env.example")));
+        assert!(!is_sensitive_path(Path::new(
+            "/workspace/.env.production.example"
+        )));
     }
 
     #[test]

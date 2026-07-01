@@ -7,13 +7,20 @@ pub mod audit;
 pub mod auth;
 pub mod calendar;
 pub mod chat;
+pub mod cron;
+pub mod extensions;
 pub mod goals;
+pub mod journey;
 pub mod knowledge;
 pub mod llm_providers;
+pub mod mcp;
+pub mod media;
+pub mod moa;
 pub mod notes;
 pub mod projects;
 pub mod search;
 pub mod settings;
+pub mod skills;
 pub mod task_statuses;
 pub mod tasks;
 pub mod transactions;
@@ -35,12 +42,19 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(agents::routes())
         .merge(projects::routes())
         .merge(chat::routes())
+        .merge(cron::routes())
+        .merge(extensions::routes())
         .merge(settings::routes())
         .merge(calendar::routes())
         .merge(notes::routes())
         .merge(knowledge::routes())
+        .merge(journey::routes())
         .merge(llm_providers::routes())
+        .merge(media::routes())
+        .merge(mcp::routes())
+        .merge(moa::routes())
         .merge(search::routes())
+        .merge(skills::routes())
         .merge(tasks::routes())
         .merge(task_statuses::routes())
         .merge(goals::routes())

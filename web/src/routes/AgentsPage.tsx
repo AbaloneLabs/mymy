@@ -107,14 +107,14 @@ export default function AgentsPage() {
 
           {/* Content panel */}
           <div className="flex-1 overflow-y-auto p-6">
-            {!instanceId ? (
+            {activeTab === "cron" ? (
+              <CronTab instanceId={instanceId} profile={profile} />
+            ) : !instanceId ? (
               <div className="flex h-full items-center justify-center text-sm text-[var(--text-muted)]">
                 {t("agents.noInstances")}
               </div>
             ) : activeTab === "overview" ? (
               <OverviewTab instanceId={instanceId} profile={profile} />
-            ) : activeTab === "cron" ? (
-              <CronTab instanceId={instanceId} profile={profile} />
             ) : activeTab === "sessions" ? (
               <SessionsTab instanceId={instanceId} profile={profile} />
             ) : activeTab === "skills" ? (

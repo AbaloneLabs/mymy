@@ -3,7 +3,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { AppSettings, Language } from "@/types/settings";
+import type { AppSettings, Language, SecurityStatus } from "@/types/settings";
 
 /* -------------------------------------------------- Settings */
 
@@ -24,5 +24,12 @@ export function useUpdateLanguage() {
     mutationFn: (language: Language) =>
       api.patch<{ settings: AppSettings }>("/settings", { language }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useSecurityStatus() {
+  return useQuery({
+    queryKey: ["settings", "security"],
+    queryFn: () => api.get<SecurityStatus>("/settings/security"),
   });
 }

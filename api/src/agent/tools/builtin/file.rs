@@ -18,6 +18,7 @@ use crate::agent::security::{
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
+use crate::services::audit::log_security_denial_safe;
 
 const MAX_READ_LINES: usize = 1_000;
 const DEFAULT_READ_LINES: usize = 500;
@@ -44,6 +45,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         handler: Arc::new(ReadFileTool {
             paths: Arc::clone(&paths),
+            db: config.db.clone(),
         }),
     });
 
@@ -85,6 +87,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         handler: Arc::new(WriteFileTool {
             paths: Arc::clone(&paths),
+            db: config.db.clone(),
         }),
     });
 
@@ -104,7 +107,10 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["path", "old_string", "new_string"]
             }),
         ),
-        handler: Arc::new(PatchFileTool { paths }),
+        handler: Arc::new(PatchFileTool {
+            paths,
+            db: config.db.clone(),
+        }),
     });
 }
 
@@ -169,6 +175,7 @@ impl PathPolicy {
 
 struct ReadFileTool {
     paths: Arc<PathPolicy>,
+    db: Option<sqlx::PgPool>,
 }
 
 #[async_trait]
@@ -186,7 +193,10 @@ impl ToolHandler for ReadFileTool {
             .unwrap_or(DEFAULT_READ_LINES as u64)
             .clamp(1, MAX_READ_LINES as u64) as usize;
         let resolved = self.paths.resolve_existing(path)?;
-        ensure_read_allowed(&resolved)?;
+        if let Err(err) = ensure_read_allowed(&resolved) {
+            audit_guardrail_denial(self.db.as_ref(), "read", &resolved, &err).await;
+            return Err(err);
+        }
         let content = tokio::fs::read_to_string(&resolved)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
@@ -211,15 +221,31 @@ impl ToolHandler for ReadFileTool {
 
 struct WriteFileTool {
     paths: Arc<PathPolicy>,
+    db: Option<sqlx::PgPool>,
 }
 
 #[async_trait]
 impl ToolHandler for WriteFileTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        self.write(args, true).await
+    }
+
+    async fn execute_approved(&self, args: &Value) -> Result<String, ToolError> {
+        self.write(args, false).await
+    }
+}
+
+impl WriteFileTool {
+    async fn write(&self, args: &Value, guard_sensitive_path: bool) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
         let resolved = self.paths.resolve_for_write(path)?;
-        ensure_write_allowed(&resolved)?;
+        if guard_sensitive_path {
+            if let Err(err) = ensure_write_allowed(&resolved) {
+                audit_guardrail_denial(self.db.as_ref(), "write", &resolved, &err).await;
+                return Err(err);
+            }
+        }
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -238,16 +264,32 @@ impl ToolHandler for WriteFileTool {
 
 struct PatchFileTool {
     paths: Arc<PathPolicy>,
+    db: Option<sqlx::PgPool>,
 }
 
 #[async_trait]
 impl ToolHandler for PatchFileTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        self.patch(args, true).await
+    }
+
+    async fn execute_approved(&self, args: &Value) -> Result<String, ToolError> {
+        self.patch(args, false).await
+    }
+}
+
+impl PatchFileTool {
+    async fn patch(&self, args: &Value, guard_sensitive_path: bool) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let old_string = required_str(args, "old_string")?;
         let new_string = required_str(args, "new_string")?;
         let resolved = self.paths.resolve_existing(path)?;
-        ensure_write_allowed(&resolved)?;
+        if guard_sensitive_path {
+            if let Err(err) = ensure_write_allowed(&resolved) {
+                audit_guardrail_denial(self.db.as_ref(), "patch", &resolved, &err).await;
+                return Err(err);
+            }
+        }
         let content = tokio::fs::read_to_string(&resolved)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
@@ -387,6 +429,23 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidArgs(format!("missing {key}")))
+}
+
+async fn audit_guardrail_denial(
+    db: Option<&sqlx::PgPool>,
+    operation: &str,
+    path: &Path,
+    error: &ToolError,
+) {
+    if let Some(db) = db {
+        log_security_denial_safe(
+            db,
+            operation,
+            &path.display().to_string(),
+            &error.to_string(),
+        )
+        .await;
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

@@ -13,6 +13,12 @@ pub struct Config {
     pub agent_data_dir: PathBuf,
     /// Whether auth cookies should include the Secure attribute.
     pub auth_cookie_secure: bool,
+    /// Cron ticker interval in seconds.
+    pub cron_tick_interval_secs: u64,
+    /// IANA timezone used for cron expression scheduling.
+    pub cron_timezone: String,
+    /// Maximum number of output files retained per cron job.
+    pub cron_output_keep: usize,
 }
 
 impl Config {
@@ -44,6 +50,17 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(false);
+        let cron_tick_interval_secs = env::var("MYMY_CRON_TICK_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(60);
+        let cron_timezone = env::var("MYMY_CRON_TIMEZONE").unwrap_or_else(|_| "UTC".to_string());
+        let cron_output_keep = env::var("MYMY_CRON_OUTPUT_KEEP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(50);
 
         Self {
             database_url,
@@ -51,6 +68,9 @@ impl Config {
             cors_origins,
             agent_data_dir,
             auth_cookie_secure,
+            cron_tick_interval_secs,
+            cron_timezone,
+            cron_output_keep,
         }
     }
 }

@@ -5,14 +5,21 @@
 //! tool implementations so every execution path can share the same redaction,
 //! path guard, dangerous-command detection, and prompt-injection scanning.
 
+pub mod approval;
 pub mod dangerous;
 pub mod filesystem;
 pub mod redact;
+pub mod secrets;
 pub mod threat;
 pub mod tls;
 
-pub use dangerous::{detect_dangerous_command, Severity};
+pub use approval::{ApprovalDecision, ApprovalGate, ApprovalRemember, ApprovalRequest};
+pub use dangerous::{detect_dangerous_command, DangerousMatch, Severity};
 pub use filesystem::{ensure_read_allowed, ensure_write_allowed, is_sensitive_path};
-pub use redact::{redact_sensitive_text, redact_terminal_output, SecretString};
+pub use redact::{
+    redact_sensitive_text, redact_terminal_output, register_secret, RedactingFormatter,
+    SecretString,
+};
+pub use secrets::{source_statuses, SecretSourceStatus};
 pub use threat::{scan_for_threats, ThreatScope};
 pub use tls::verify_ca_bundle;
