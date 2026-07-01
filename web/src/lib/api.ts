@@ -39,6 +39,10 @@ async function request<T>(
   const data = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("mymy:unauthorized"));
+    }
+
     const message =
       (data && (data.error || data.message)) || res.statusText;
     throw new ApiError(res.status, message, data);

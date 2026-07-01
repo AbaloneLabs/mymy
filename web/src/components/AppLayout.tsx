@@ -15,11 +15,11 @@ import {
   Lock,
   Command,
 } from "lucide-react";
-import { useAuthStore } from "@/store/auth";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { TopBar } from "@/components/TopBar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
+import { useLockApp } from "@/hooks/useLockApp";
 import { cn } from "@/lib/utils";
 import logoUrl from "@/assets/logo.svg";
 
@@ -31,7 +31,7 @@ interface AppLayoutProps {
 export function AppLayout({ children }: AppLayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const lock = useAuthStore((s) => s.lock);
+  const lock = useLockApp();
   const { t } = useTranslation();
 
   // Register all global keyboard shortcuts (navigation sequences,

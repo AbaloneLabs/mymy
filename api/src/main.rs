@@ -79,7 +79,7 @@ fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
 mod tests {
     use super::*;
 
-    use axum::body::Body;
+    use axum::body::{to_bytes, Body};
     use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
     use axum::http::{Method, Request, StatusCode};
     use tower::util::ServiceExt;
@@ -178,6 +178,63 @@ mod tests {
             .await
             .expect("request should complete");
         assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn auth_status_requires_cached_encryption_key(pool: sqlx::PgPool) {
+        let pin = "2468";
+        seed_pin(&pool, pin).await;
+
+        let cfg = test_config();
+        let state = Arc::new(AppState::new(pool, cfg.clone()));
+        let app = build_router(state.clone(), &cfg);
+
+        let verified = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/verify")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"pin":"{pin}"}}"#)))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(verified.status(), StatusCode::OK);
+
+        let session_cookie = verified
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("auth verify should set a session cookie")
+            .to_string();
+
+        // Simulate a server restart: the DB-backed session survives, but the
+        // PIN-derived encryption key is intentionally memory-only and must be
+        // restored through explicit PIN verification.
+        *state.encryption_key.write().await = None;
+
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/auth/status")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(status.status(), StatusCode::OK);
+
+        let body = to_bytes(status.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("status should return JSON");
+        assert_eq!(json["authenticated"], false);
     }
 
     async fn seed_pin(pool: &sqlx::PgPool, pin: &str) {

@@ -1,6 +1,7 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { useLockApp } from "@/hooks/useLockApp";
 
 const PinScreen = lazy(() => import("@/routes/PinScreen"));
 const Dashboard = lazy(() => import("@/routes/Dashboard"));
@@ -24,9 +25,21 @@ function RouteFallback() {
   );
 }
 
+function UnauthorizedListener() {
+  const lock = useLockApp();
+
+  useEffect(() => {
+    window.addEventListener("mymy:unauthorized", lock);
+    return () => window.removeEventListener("mymy:unauthorized", lock);
+  }, [lock]);
+
+  return null;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
+      <UnauthorizedListener />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/pin" element={<PinScreen />} />

@@ -6,11 +6,10 @@ import { useAuthStore } from "@/store/auth";
 
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const setAuthState = useAuthStore((s) => s.setAuthState);
   const status = usePinStatus();
   const serverAuthenticated = status.data?.authenticated;
-  const authenticated = serverAuthenticated ?? isAuthenticated;
+  const authenticated = serverAuthenticated === true;
 
   useEffect(() => {
     if (serverAuthenticated !== undefined) {
@@ -18,7 +17,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
     }
   }, [serverAuthenticated, setAuthState]);
 
-  if (status.isLoading && !isAuthenticated) {
+  if (status.isLoading) {
     return null;
   }
 

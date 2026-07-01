@@ -24,7 +24,7 @@ import {
 import { useCommandPaletteStore } from "@/store/commandPalette";
 import { useShortcutStore } from "@/store/shortcuts";
 import { useCreateBus } from "@/store/createBus";
-import { useAuthStore } from "@/store/auth";
+import { useLockApp } from "@/hooks/useLockApp";
 import { ShortcutHint } from "@/components/ShortcutHint";
 import { cn } from "@/lib/utils";
 
@@ -38,7 +38,7 @@ export function CommandPalette() {
   const closePalette = useCommandPaletteStore((s) => s.close);
   const getBinding = useShortcutStore((s) => s.getBinding);
   const triggerCreate = useCreateBus((s) => s.triggerCreate);
-  const lock = useAuthStore((s) => s.lock);
+  const lock = useLockApp();
 
   // Close on Escape is handled by cmdk; also close on route change.
   useEffect(() => {

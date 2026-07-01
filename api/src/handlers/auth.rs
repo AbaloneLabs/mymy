@@ -44,7 +44,12 @@ pub async fn auth_status(
     headers: HeaderMap,
 ) -> AppResult<Json<AuthStatusResponse>> {
     ensure_pin_initialized(&state.db).await?;
-    let authenticated = session_is_valid(&state, &headers).await?;
+    // A valid cookie is not enough after a server restart because encrypted
+    // LLM provider keys require the PIN-derived key that only exists in
+    // memory after an explicit PIN verification. Treat that state as locked
+    // so provider setup does not fail later with a confusing 401.
+    let authenticated =
+        session_is_valid(&state, &headers).await? && state.encryption_key.read().await.is_some();
 
     Ok(Json(AuthStatusResponse {
         initialized: true,

@@ -15,7 +15,7 @@ import { useShortcutStore, DEFAULT_BINDINGS } from "@/store/shortcuts";
 import { toHotkeyString } from "@/lib/platform";
 import { useCommandPaletteStore } from "@/store/commandPalette";
 import { useCreateBus } from "@/store/createBus";
-import { useAuthStore } from "@/store/auth";
+import { useLockApp } from "@/hooks/useLockApp";
 
 /** Routes where the corresponding single-key create action is active. */
 const CONTEXT_CREATE_ROUTES: Record<string, string> = {
@@ -46,7 +46,7 @@ export function useGlobalShortcuts() {
   const getBinding = useShortcutStore((s) => s.getBinding);
   const togglePalette = useCommandPaletteStore((s) => s.toggle);
   const triggerCreate = useCreateBus((s) => s.triggerCreate);
-  const lock = useAuthStore((s) => s.lock);
+  const lock = useLockApp();
 
   // --- Palette toggle: works everywhere (including form fields) ---
   const paletteKeys = getBinding("palette.toggle");
