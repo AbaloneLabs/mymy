@@ -284,6 +284,8 @@ struct Delta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Vec<DeltaToolCall>,
 }
 
@@ -384,6 +386,11 @@ fn parse_sse_stream(
                     if let Some(text) = choice.delta.content {
                         if !text.is_empty() {
                             yield StreamDelta::Text(text);
+                        }
+                    }
+                    if let Some(text) = choice.delta.reasoning_content {
+                        if !text.is_empty() {
+                            yield StreamDelta::Reasoning(text);
                         }
                     }
 
@@ -577,6 +584,23 @@ mod tests {
             }
         }
         assert_eq!(texts, vec!["Hello", " world"]);
+    }
+
+    #[tokio::test]
+    async fn sse_parser_handles_reasoning_content() {
+        use bytes::Bytes;
+        let raw = b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\ndata: [DONE]\n\n";
+        let chunks: Vec<Result<Bytes, reqwest::Error>> = vec![Ok(Bytes::from_static(raw))];
+        let stream = parse_sse_stream(futures::stream::iter(chunks));
+        futures::pin_mut!(stream);
+
+        let mut reasoning = Vec::new();
+        while let Some(Ok(delta)) = stream.next().await {
+            if let StreamDelta::Reasoning(t) = delta {
+                reasoning.push(t);
+            }
+        }
+        assert_eq!(reasoning, vec!["thinking"]);
     }
 
     #[tokio::test]

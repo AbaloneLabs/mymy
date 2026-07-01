@@ -57,6 +57,10 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, entry: ToolEntry) {
+        if self.tools.contains_key(&entry.name) {
+            tracing::warn!(tool = %entry.name, "duplicate tool registration ignored");
+            return;
+        }
         self.tools.insert(entry.name.clone(), entry);
     }
 

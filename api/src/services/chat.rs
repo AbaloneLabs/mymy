@@ -14,8 +14,10 @@ use uuid::Uuid;
 
 use crate::agent::context::ContextManager;
 use crate::agent::loop_engine::{AgentLoop, LoopConfig};
+use crate::agent::memory::MemoryStore;
 use crate::agent::prompt::{build_system_prompt, PromptConfig};
 use crate::agent::providers::{self, LlmProvider, Message, MessageRole as AgentMessageRole};
+use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::builtin::{register_all, register_safe_defaults, BuiltinToolConfig};
 use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
@@ -207,9 +209,36 @@ pub async fn prepare_native_turn(
     let working_dir = std::env::current_dir()
         .map_err(|err| AppError::Internal(format!("failed to resolve working directory: {err}")))?;
     let mut registry = ToolRegistry::new();
-    register_all(&mut registry, &BuiltinToolConfig::new(working_dir.clone()));
+    register_all(
+        &mut registry,
+        &BuiltinToolConfig::for_session(
+            working_dir.clone(),
+            state.config.agent_data_dir.clone(),
+            id,
+            state.db.clone(),
+        ),
+    );
     register_safe_defaults(&mut registry);
     let registry = Arc::new(registry);
+    let memory_dir = state.config.agent_data_dir.join("memory");
+    let memory_snapshot = MemoryStore::load(memory_dir)
+        .ok()
+        .map(|store| store.snapshot().clone());
+    let skill_index = SkillRegistry::new(state.config.agent_data_dir.join("skills"))
+        .system_prompt_index()
+        .ok();
+    let mut system_blocks = Vec::new();
+    if let Some(index) = skill_index.filter(|index| !index.trim().is_empty()) {
+        system_blocks.push(index);
+    }
+    if let Some(snapshot) = memory_snapshot {
+        if !snapshot.user.trim().is_empty() {
+            system_blocks.push(format!("USER.md:\n{}", snapshot.user));
+        }
+        if !snapshot.memory.trim().is_empty() {
+            system_blocks.push(format!("MEMORY.md:\n{}", snapshot.memory));
+        }
+    }
 
     let system_prompt = build_system_prompt(&PromptConfig {
         soul_md_path: None,
@@ -218,7 +247,7 @@ pub async fn prepare_native_turn(
         user_md_path: None,
         available_tool_names: registry.available_tool_names(),
         model: provider_config.model.clone(),
-        system_message: None,
+        system_message: (!system_blocks.is_empty()).then(|| system_blocks.join("\n\n")),
     });
 
     let rows = fetch_message_rows(state, id).await?;

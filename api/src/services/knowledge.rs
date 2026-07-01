@@ -1190,6 +1190,7 @@ mod tests {
             database_url: "postgres://sqlx-test".to_string(),
             port: 0,
             cors_origins: Vec::new(),
+            agent_data_dir: std::env::temp_dir().join("mymy-test-agent"),
             auth_cookie_secure: false,
         }
     }

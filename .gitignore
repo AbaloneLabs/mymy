@@ -16,6 +16,8 @@ opensource/
 
 # Local-only runtime mounts and scratch files
 .local/
+data/
+api/data/
 
 # Rust build artifacts
 api/target/

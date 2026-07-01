@@ -1,6 +1,7 @@
 //! Environment configuration loaded at startup.
 
 use std::env;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -8,6 +9,8 @@ pub struct Config {
     pub port: u16,
     /// Comma-separated list of allowed CORS origins.
     pub cors_origins: Vec<String>,
+    /// Directory for native agent runtime state such as memory, skills, cron jobs, and extensions.
+    pub agent_data_dir: PathBuf,
     /// Whether auth cookies should include the Secure attribute.
     pub auth_cookie_secure: bool,
 }
@@ -34,6 +37,9 @@ impl Config {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let agent_data_dir = env::var("MYMY_AGENT_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("data/agent"));
         let auth_cookie_secure = env::var("AUTH_COOKIE_SECURE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -43,6 +49,7 @@ impl Config {
             database_url,
             port,
             cors_origins,
+            agent_data_dir,
             auth_cookie_secure,
         }
     }

@@ -13,6 +13,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use super::{truncate_chars, BuiltinToolConfig};
+use crate::agent::security::{detect_dangerous_command, redact_terminal_output, Severity};
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
@@ -55,6 +56,16 @@ impl ToolHandler for TerminalTool {
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("missing command".to_string()))?;
+        if let Some(matched) = detect_dangerous_command(command) {
+            let action = match matched.severity {
+                Severity::Hardline => "blocked",
+                Severity::Dangerous => "requires approval",
+            };
+            return Err(ToolError::Unavailable(format!(
+                "{action}: {} ({})",
+                matched.description, matched.pattern_key
+            )));
+        }
         let timeout_secs = args
             .get("timeout")
             .and_then(Value::as_u64)
@@ -65,7 +76,7 @@ impl ToolHandler for TerminalTool {
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .unwrap_or_else(|| self.working_dir.clone());
-        ensure_directory(&workdir)?;
+        let workdir = ensure_directory(&self.working_dir, &workdir)?;
 
         let child = Command::new("bash")
             .arg("-c")
@@ -79,21 +90,35 @@ impl ToolHandler for TerminalTool {
             .map_err(|err| ToolError::Execution(format!("failed to run command: {err}")))?;
 
         Ok(tool_result(&serde_json::json!({
-            "stdout": truncate_chars(&String::from_utf8_lossy(&output.stdout), MAX_OUTPUT_CHARS),
-            "stderr": truncate_chars(&String::from_utf8_lossy(&output.stderr), MAX_OUTPUT_CHARS),
+            "stdout": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stdout)), MAX_OUTPUT_CHARS),
+            "stderr": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stderr)), MAX_OUTPUT_CHARS),
             "exit_code": output.status.code().unwrap_or(-1),
         })))
     }
 }
 
-fn ensure_directory(path: &Path) -> Result<(), ToolError> {
-    if path.is_dir() {
-        Ok(())
+fn ensure_directory(root: &Path, path: &Path) -> Result<PathBuf, ToolError> {
+    let root = std::fs::canonicalize(root)
+        .map_err(|err| ToolError::InvalidArgs(format!("workspace cannot be resolved: {err}")))?;
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
     } else {
+        root.join(path)
+    };
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|err| ToolError::InvalidArgs(format!("workdir cannot be resolved: {err}")))?;
+    if !canonical.is_dir() {
         Err(ToolError::InvalidArgs(format!(
             "workdir is not a directory: {}",
+            canonical.display()
+        )))
+    } else if !canonical.starts_with(root) {
+        Err(ToolError::InvalidArgs(format!(
+            "workdir escapes workspace: {}",
             path.display()
         )))
+    } else {
+        Ok(canonical)
     }
 }
 
@@ -114,5 +139,30 @@ mod tests {
             serde_json::from_str::<Value>(&output).unwrap()["stdout"],
             "hello"
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_blocks_dangerous_command() {
+        let tool = TerminalTool {
+            working_dir: std::env::current_dir().unwrap(),
+        };
+        let err = tool
+            .execute(&serde_json::json!({"command":"rm -rf target/tmp"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("requires approval"));
+    }
+
+    #[tokio::test]
+    async fn terminal_redacts_secret_shaped_output() {
+        let tool = TerminalTool {
+            working_dir: std::env::current_dir().unwrap(),
+        };
+        let output = tool
+            .execute(&serde_json::json!({"command":"printf 'API_KEY=sk-abcdefghijklmnop'"}))
+            .await
+            .unwrap();
+        let parsed = serde_json::from_str::<Value>(&output).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("[REDACTED]"));
     }
 }

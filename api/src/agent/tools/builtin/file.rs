@@ -12,6 +12,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{truncate_chars, BuiltinToolConfig};
+use crate::agent::security::{
+    ensure_read_allowed, ensure_write_allowed, is_sensitive_path, redact_sensitive_text,
+};
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
@@ -183,6 +186,7 @@ impl ToolHandler for ReadFileTool {
             .unwrap_or(DEFAULT_READ_LINES as u64)
             .clamp(1, MAX_READ_LINES as u64) as usize;
         let resolved = self.paths.resolve_existing(path)?;
+        ensure_read_allowed(&resolved)?;
         let content = tokio::fs::read_to_string(&resolved)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
@@ -193,6 +197,7 @@ impl ToolHandler for ReadFileTool {
             .map(|idx| format!("{}:{}", idx + 1, lines[idx]))
             .collect::<Vec<_>>()
             .join("\n");
+        let numbered = redact_sensitive_text(&numbered);
 
         Ok(tool_result(&serde_json::json!({
             "path": resolved.display().to_string(),
@@ -214,6 +219,7 @@ impl ToolHandler for WriteFileTool {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
         let resolved = self.paths.resolve_for_write(path)?;
+        ensure_write_allowed(&resolved)?;
         if let Some(parent) = resolved.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -241,6 +247,7 @@ impl ToolHandler for PatchFileTool {
         let old_string = required_str(args, "old_string")?;
         let new_string = required_str(args, "new_string")?;
         let resolved = self.paths.resolve_existing(path)?;
+        ensure_write_allowed(&resolved)?;
         let content = tokio::fs::read_to_string(&resolved)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
@@ -332,6 +339,9 @@ fn search_dir(
         if !canonical.starts_with(root) {
             continue;
         }
+        if is_sensitive_path(&canonical) {
+            continue;
+        }
         if file_type.is_dir() {
             search_dir(root, &canonical, query, limit, results)?;
             continue;
@@ -347,7 +357,7 @@ fn search_dir(
                 results.push(serde_json::json!({
                     "path": canonical.display().to_string(),
                     "line": idx + 1,
-                    "preview": truncate_chars(line.trim(), 300),
+                    "preview": truncate_chars(&redact_sensitive_text(line.trim()), 300),
                 }));
                 if results.len() >= limit {
                     break;
@@ -402,6 +412,20 @@ mod tests {
         let root = std::env::current_dir().unwrap();
         let policy = PathPolicy::new(root);
         assert!(policy.resolve_for_write("../outside").is_err());
+    }
+
+    #[test]
+    fn sensitive_files_are_blocked() {
+        let temp_root =
+            std::env::temp_dir().join(format!("mymy-file-tool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        std::fs::write(temp_root.join(".env"), "TOKEN=secret").unwrap();
+
+        let policy = PathPolicy::new(temp_root.clone());
+        let resolved = policy.resolve_existing(".env").unwrap();
+        assert!(ensure_read_allowed(&resolved).is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[cfg(unix)]

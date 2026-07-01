@@ -617,6 +617,7 @@ mod tests {
                 database_url: String::new(),
                 port: 0,
                 cors_origins: vec![],
+                agent_data_dir: std::env::temp_dir().join("mymy-test-agent"),
                 auth_cookie_secure: false,
             },
         )
