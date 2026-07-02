@@ -213,7 +213,9 @@ export function LlmProviderCard({
             {!isTesting && testResult && !testResult.ok && (
               <span className="flex items-center gap-1.5 text-[var(--status-error)]">
                 <AlertCircle className="h-3 w-3" strokeWidth={1.5} />
-                {t("settings.models.testFailed", { error: testResult.error ?? "Error" })}
+                {t("settings.models.testError", {
+                  message: testResult.error ?? "Error",
+                })}
               </span>
             )}
             {!isTesting && !testResult && (
@@ -252,7 +254,7 @@ export function LlmProviderCard({
       {confirmDelete && (
         <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-[var(--status-error)]/30 bg-[var(--status-error)]/5 px-3 py-2">
           <span className="text-xs text-[var(--text-muted)]">
-            {t("settings.models.confirmDelete", { label: provider.label })}
+            {t("settings.models.deleteConfirmTitle", { name: provider.label })}
           </span>
           <div className="flex items-center gap-1">
             <button
