@@ -34,6 +34,8 @@ pub struct Project {
     pub git_remote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_system: Option<GitSystem>,
+    pub drive_slug: String,
+    pub drive_path: String,
     pub status: ProjectStatus,
     pub created_at: String,
     pub updated_at: String,

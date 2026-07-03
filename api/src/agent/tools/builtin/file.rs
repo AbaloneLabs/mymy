@@ -1,9 +1,9 @@
 //! Filesystem tools for the native agent.
 //!
-//! Paths are constrained to the configured working directory. This keeps the
-//! tools useful for project work while avoiding accidental reads or writes
-//! outside the intended workspace before Phase 8 introduces a richer approval
-//! and sandbox policy.
+//! Paths are constrained to the agent workspace plus explicit Drive roots.
+//! The policy mirrors the sandbox mount layout: the private agent workspace is
+//! the default root for relative paths, while shared and project directories are
+//! available only when the session grants them.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -25,7 +25,10 @@ const DEFAULT_READ_LINES: usize = 500;
 const MAX_SEARCH_RESULTS: usize = 100;
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
-    let paths = Arc::new(PathPolicy::new(config.working_dir.clone()));
+    let paths = Arc::new(PathPolicy::new(
+        config.working_dir.clone(),
+        config.allowed_roots.clone(),
+    ));
 
     registry.register(ToolEntry {
         name: "read_file".to_string(),
@@ -117,12 +120,24 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 #[derive(Debug)]
 struct PathPolicy {
     root: PathBuf,
+    allowed_roots: Vec<PathBuf>,
 }
 
 impl PathPolicy {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, allowed_roots: Vec<PathBuf>) -> Self {
         let root = std::fs::canonicalize(&root).unwrap_or_else(|_| normalize_path(&root));
-        Self { root }
+        let mut all_roots = vec![root.clone()];
+        all_roots.extend(
+            allowed_roots
+                .into_iter()
+                .map(|path| std::fs::canonicalize(&path).unwrap_or_else(|_| normalize_path(&path))),
+        );
+        all_roots.sort();
+        all_roots.dedup();
+        Self {
+            root,
+            allowed_roots: all_roots,
+        }
     }
 
     fn resolve_existing(&self, raw: &str) -> Result<PathBuf, ToolError> {
@@ -164,12 +179,16 @@ impl PathPolicy {
     }
 
     fn ensure_inside(&self, path: &Path, raw: &str) -> Result<(), ToolError> {
-        if path.starts_with(&self.root) {
+        if self.is_inside(path) {
             return Ok(());
         }
         Err(ToolError::InvalidArgs(format!(
             "path escapes workspace: {raw}"
         )))
+    }
+
+    fn is_inside(&self, path: &Path) -> bool {
+        self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
 }
 
@@ -339,13 +358,13 @@ impl ToolHandler for SearchFilesTool {
             )));
         }
         let mut results = Vec::new();
-        search_dir(&self.paths.root, &start, query, limit, &mut results)?;
+        search_dir(&self.paths, &start, query, limit, &mut results)?;
         Ok(tool_result(&serde_json::json!({ "matches": results })))
     }
 }
 
 fn search_dir(
-    root: &Path,
+    paths: &PathPolicy,
     dir: &Path,
     query: &str,
     limit: usize,
@@ -378,14 +397,14 @@ fn search_dir(
         let Ok(canonical) = std::fs::canonicalize(&path) else {
             continue;
         };
-        if !canonical.starts_with(root) {
+        if !paths.is_inside(&canonical) {
             continue;
         }
         if is_sensitive_path(&canonical) {
             continue;
         }
         if file_type.is_dir() {
-            search_dir(root, &canonical, query, limit, results)?;
+            search_dir(paths, &canonical, query, limit, results)?;
             continue;
         }
         if !canonical.is_file() {
@@ -469,7 +488,7 @@ mod tests {
     #[test]
     fn path_policy_rejects_workspace_escape() {
         let root = std::env::current_dir().unwrap();
-        let policy = PathPolicy::new(root);
+        let policy = PathPolicy::new(root, Vec::new());
         assert!(policy.resolve_for_write("../outside").is_err());
     }
 
@@ -480,7 +499,7 @@ mod tests {
         std::fs::create_dir_all(&temp_root).unwrap();
         std::fs::write(temp_root.join(".env"), "TOKEN=secret").unwrap();
 
-        let policy = PathPolicy::new(temp_root.clone());
+        let policy = PathPolicy::new(temp_root.clone(), Vec::new());
         let resolved = policy.resolve_existing(".env").unwrap();
         assert!(ensure_read_allowed(&resolved).is_err());
 
@@ -498,7 +517,7 @@ mod tests {
         std::fs::write(&outside, "secret").unwrap();
         std::os::unix::fs::symlink(&outside, temp_root.join("outside-link")).unwrap();
 
-        let policy = PathPolicy::new(temp_root.clone());
+        let policy = PathPolicy::new(temp_root.clone(), Vec::new());
         assert!(policy.resolve_existing("outside-link").is_err());
         assert!(policy.resolve_for_write("outside-link").is_err());
 

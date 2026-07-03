@@ -40,6 +40,7 @@ export const DEFAULT_BINDINGS: ShortcutDefinition[] = [
   { actionId: "navigate.knowledge", defaultKeys: ["g", "k"], category: "navigation" },
   { actionId: "navigate.agents", defaultKeys: ["g", "a"], category: "navigation" },
   { actionId: "navigate.finance", defaultKeys: ["g", "f"], category: "navigation" },
+  { actionId: "navigate.drive", defaultKeys: ["g", "d"], category: "navigation" },
   { actionId: "navigate.goals", defaultKeys: ["g", "o"], category: "navigation" },
   { actionId: "navigate.settings", defaultKeys: ["g", "s"], category: "navigation" },
   { actionId: "navigate.shortcuts", defaultKeys: ["g", "u"], category: "navigation" },

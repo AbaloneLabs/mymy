@@ -2,14 +2,18 @@
 export type AgentStatus = "active" | "idle" | "offline";
 
 
-export type AgentSource = "hermes" | "openclaw";
+export type AgentSource = "native" | "hermes" | "openclaw";
 
 
 export type AgentModel = "qwen" | "openai" | "anthropic" | "local" | "unknown";
 
+export type SandboxStatus = "pending" | "ready" | "reconciling" | "failed";
+
 
 export interface Agent {
   id: string;
+
+  profile: string;
 
   name: string;
 
@@ -26,6 +30,12 @@ export interface Agent {
   avatarUrl?: string;
 
   profilePath?: string;
+
+  drivePath: string;
+
+  sandboxUid?: number;
+
+  sandboxStatus: SandboxStatus;
 
   lastActiveAt?: string;
 }

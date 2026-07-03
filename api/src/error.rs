@@ -28,6 +28,9 @@ pub enum AppError {
 
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl IntoResponse for AppError {
@@ -47,6 +50,10 @@ impl IntoResponse for AppError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "database error".to_string(),
                 )
+            }
+            AppError::Io(e) => {
+                tracing::error!(error = ?e, "io error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "io error".to_string())
             }
         };
 

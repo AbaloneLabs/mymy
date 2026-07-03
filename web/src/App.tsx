@@ -15,6 +15,7 @@ const ProjectDetail = lazy(() => import("@/routes/ProjectDetail"));
 const TasksPage = lazy(() => import("@/routes/TasksPage"));
 const AgentsPage = lazy(() => import("@/routes/AgentsPage"));
 const FinancePage = lazy(() => import("@/routes/FinancePage"));
+const DrivePage = lazy(() => import("@/routes/DrivePage"));
 const GoalsPage = lazy(() => import("@/routes/GoalsPage"));
 const ShortcutsPage = lazy(() => import("@/routes/ShortcutsPage"));
 
@@ -113,6 +114,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <FinancePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/drive"
+            element={
+              <ProtectedRoute>
+                <DrivePage />
               </ProtectedRoute>
             }
           />

@@ -20,11 +20,12 @@ const NATIVE_CRON_QUERY_KEY = ["agent-ops", "cron", "native"] as const;
 /* -------------------------------------------------- Agent Ops (Hermes) */
 
 /**
- * Fetch cron jobs + scheduler status for an agent system instance.
+ * Fetch native cron jobs + scheduler status.
  * Polls every 30s for near-real-time scheduler status.
  *
- * The `profile` param scopes the query to a specific Hermes profile
- * (e.g. "default", "elena") — this is how the TopBar agent filter works.
+ * Cron jobs are currently global. `instanceId` and `profile` remain in the
+ * signature so agent-scoped tabs can share the same panel component until
+ * backend job scoping is added.
  */
 export function useCronJobs(
   instanceId: string | null,
@@ -371,5 +372,44 @@ export function useAgentEnvironment(
     enabled: Boolean(instanceId),
     refetchInterval: 120_000,
     refetchIntervalInBackground: false,
+  });
+}
+
+export interface PromptFile {
+  path: string;
+  exists: boolean;
+  content: string;
+  updatedAt?: string;
+}
+
+export interface AgentPromptsResponse {
+  profile: string;
+  agentsMd: PromptFile;
+  soulMd: PromptFile;
+}
+
+export interface UpdateAgentPromptsRequest {
+  agentsMd?: string;
+  soulMd?: string;
+}
+
+export function useAgentPrompts(profile: string | null) {
+  const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  return useQuery({
+    queryKey: ["agent-prompts", profile],
+    queryFn: () => api.get<AgentPromptsResponse>(`/agent-prompts${params}`),
+    enabled: Boolean(profile),
+  });
+}
+
+export function useUpdateAgentPrompts(profile: string | null) {
+  const qc = useQueryClient();
+  const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  return useMutation({
+    mutationFn: (body: UpdateAgentPromptsRequest) =>
+      api.put<AgentPromptsResponse>(`/agent-prompts${params}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agent-prompts", profile] });
+    },
   });
 }

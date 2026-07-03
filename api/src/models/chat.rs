@@ -159,12 +159,8 @@ pub enum ChatSseEvent {
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub project_id: Option<String>,
-    #[serde(default = "default_profile")]
-    pub profile: String,
-}
-
-fn default_profile() -> String {
-    "default".to_string()
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Payload for sending a message to a chat session.

@@ -19,6 +19,12 @@ pub struct Config {
     pub cron_timezone: String,
     /// Maximum number of output files retained per cron job.
     pub cron_output_keep: usize,
+    /// Optional S3 bucket used by the Drive sync layer.
+    pub drive_s3_bucket: Option<String>,
+    /// Optional S3 region used by the Drive sync layer.
+    pub drive_s3_region: Option<String>,
+    /// Optional S3-compatible endpoint for self-hosted object storage.
+    pub drive_s3_endpoint: Option<String>,
 }
 
 impl Config {
@@ -61,6 +67,9 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .filter(|value| *value > 0)
             .unwrap_or(50);
+        let drive_s3_bucket = env_optional("MYMY_DRIVE_S3_BUCKET");
+        let drive_s3_region = env_optional("MYMY_DRIVE_S3_REGION");
+        let drive_s3_endpoint = env_optional("MYMY_DRIVE_S3_ENDPOINT");
 
         Self {
             database_url,
@@ -71,6 +80,16 @@ impl Config {
             cron_tick_interval_secs,
             cron_timezone,
             cron_output_keep,
+            drive_s3_bucket,
+            drive_s3_region,
+            drive_s3_endpoint,
         }
     }
+}
+
+fn env_optional(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

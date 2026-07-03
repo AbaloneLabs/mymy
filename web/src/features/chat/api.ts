@@ -36,7 +36,7 @@ export function useCreateChatSession() {
     mutationFn: (vars: { projectId?: string; profile?: string }) =>
       api.post<{ session: ChatSession }>("/chat/sessions", {
         projectId: vars.projectId ?? null,
-        profile: vars.profile ?? "default",
+        profile: vars.profile ?? null,
       }),
     onSuccess: (_data, vars) => {
       // Invalidate both the project-scoped (if any) and global session lists.

@@ -11,6 +11,7 @@ import {
   Network,
   Bot,
   Wallet,
+  HardDrive,
   Target,
   Settings,
   Lock,
@@ -187,4 +188,5 @@ const NAV_ITEMS = [
   { id: "goals", labelKey: "nav.goals", icon: Target, path: "/goals", enabled: true },
   { id: "agents", labelKey: "nav.agents", icon: Bot, path: "/agents", enabled: true },
   { id: "finance", labelKey: "nav.finance", icon: Wallet, path: "/finance", enabled: true },
+  { id: "drive", labelKey: "nav.drive", icon: HardDrive, path: "/drive", enabled: true },
 ] as const;

@@ -10,6 +10,7 @@ use crate::models::project::{
     UpdateProjectRequest,
 };
 use crate::services::audit::log_audit_safe;
+use crate::services::drive;
 use crate::state::AppState;
 
 /// A project workspace unit row.
@@ -20,6 +21,8 @@ struct ProjectRow {
     description: Option<String>,
     git_remote: Option<String>,
     git_system: Option<String>,
+    drive_slug: String,
+    drive_path: String,
     status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -31,13 +34,24 @@ struct ProjectRow {
 pub async fn list_projects(state: &AppState) -> AppResult<ProjectsResponse> {
     let rows = sqlx::query_as!(
         ProjectRow,
-        r#"SELECT id, name, description, git_remote, git_system, status,
+        r#"SELECT id, name, description, git_remote, git_system, drive_slug, drive_path, status,
                   created_at, updated_at
            FROM projects
            ORDER BY created_at DESC"#
     )
     .fetch_all(&state.db)
     .await?;
+
+    for row in &rows {
+        if let Err(err) = drive::ensure_project_workspace(state, &row.drive_slug) {
+            tracing::warn!(
+                project_id = %row.id,
+                drive_slug = %row.drive_slug,
+                error = %err,
+                "failed to reconcile project drive workspace"
+            );
+        }
+    }
 
     let projects = rows.into_iter().map(row_to_project).collect();
     Ok(ProjectsResponse { projects })
@@ -49,7 +63,7 @@ pub async fn list_projects(state: &AppState) -> AppResult<ProjectsResponse> {
 pub async fn get_project(state: &AppState, id: Uuid) -> AppResult<ProjectResponse> {
     let row = sqlx::query_as!(
         ProjectRow,
-        r#"SELECT id, name, description, git_remote, git_system, status,
+        r#"SELECT id, name, description, git_remote, git_system, drive_slug, drive_path, status,
                   created_at, updated_at
            FROM projects WHERE id = $1"#,
         id
@@ -70,24 +84,30 @@ pub async fn create_project(
 ) -> AppResult<ProjectResponse> {
     let id = Uuid::new_v4();
     let git_system_str = req.git_system.map(gs_to_str);
+    let drive_slug = drive::project_drive_slug(&req.name, id);
+    let drive_path = drive::logical_project_path(&drive_slug);
 
     sqlx::query!(
         r#"INSERT INTO projects
-             (id, name, description, git_remote, git_system, status)
-           VALUES ($1, $2, $3, $4, $5, 'active')"#,
+             (id, name, description, git_remote, git_system, drive_slug, drive_path, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')"#,
         id,
         req.name,
         req.description.as_deref(),
         req.git_remote.as_deref(),
         git_system_str.as_deref(),
+        drive_slug,
+        drive_path,
     )
     .execute(&state.db)
     .await?;
 
+    drive::ensure_project_workspace(state, &drive_slug)?;
+
     // Fetch back the created row.
     let row = sqlx::query_as!(
         ProjectRow,
-        r#"SELECT id, name, description, git_remote, git_system, status,
+        r#"SELECT id, name, description, git_remote, git_system, drive_slug, drive_path, status,
                   created_at, updated_at
            FROM projects WHERE id = $1"#,
         id
@@ -148,7 +168,7 @@ pub async fn update_project(
 
     let row = sqlx::query_as!(
         ProjectRow,
-        r#"SELECT id, name, description, git_remote, git_system, status,
+        r#"SELECT id, name, description, git_remote, git_system, drive_slug, drive_path, status,
                   created_at, updated_at
            FROM projects WHERE id = $1"#,
         id
@@ -215,6 +235,8 @@ fn row_to_project(row: ProjectRow) -> Project {
         description: row.description,
         git_remote: row.git_remote,
         git_system,
+        drive_slug: row.drive_slug,
+        drive_path: row.drive_path,
         status,
         created_at: row.created_at.to_rfc3339(),
         updated_at: row.updated_at.to_rfc3339(),

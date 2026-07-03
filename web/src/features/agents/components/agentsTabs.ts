@@ -1,39 +1,37 @@
 import {
   Activity,
   Bot,
-  Brain,
   Clock,
-  KeyRound,
   MessageSquare,
-  Puzzle,
-  UserCircle,
+  ScrollText,
+  Users,
 } from "lucide-react";
 
 export type AgentsTab =
+  | "agents"
   | "overview"
-  | "cron"
+  | "jobs"
   | "sessions"
-  | "skills"
-  | "memory"
-  | "identity"
-  | "environment";
+  | "prompt";
 
-export const VALID_TABS: AgentsTab[] = [
+export const ALL_AGENT_TABS: AgentsTab[] = [
   "overview",
-  "cron",
+  "agents",
   "sessions",
-  "skills",
-  "memory",
-  "identity",
-  "environment",
+  "jobs",
+];
+
+export const SINGLE_AGENT_TABS: AgentsTab[] = [
+  "overview",
+  "sessions",
+  "jobs",
+  "prompt",
 ];
 
 export const TAB_ICONS: Record<AgentsTab, typeof Bot> = {
+  agents: Users,
   overview: Activity,
-  cron: Clock,
+  jobs: Clock,
   sessions: MessageSquare,
-  skills: Puzzle,
-  memory: Brain,
-  identity: UserCircle,
-  environment: KeyRound,
+  prompt: ScrollText,
 };

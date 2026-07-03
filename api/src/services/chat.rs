@@ -24,14 +24,18 @@ use crate::agent::providers::{ProviderError, StreamDelta, ToolSchema};
 use crate::agent::runtime::{MoaConfig, MoaParticipant};
 use crate::agent::security::redact_sensitive_text;
 use crate::agent::skills::{BundleRegistry, SkillRegistry};
-use crate::agent::tools::builtin::{mcp, register_all, register_safe_defaults, BuiltinToolConfig};
+use crate::agent::tools::builtin::{
+    mcp, register_all, register_safe_defaults, BuiltinSessionConfig, BuiltinToolConfig,
+};
 use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{
     ChatMessage, ChatMessagesResponse, ChatSession, ChatSessionResponse, ChatSessionsResponse,
     CreateSessionRequest, MessageRole, SendMessageRequest, SessionStatus, ToolCallDto,
 };
+use crate::services::agents;
 use crate::services::audit::log_audit_safe;
+use crate::services::drive;
 use crate::services::llm_providers;
 use crate::state::AppState;
 
@@ -59,6 +63,11 @@ struct ChatMessageRow {
     tool_call_id: Option<String>,
     metadata: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
+}
+
+struct AgentWorkspaceMetadata {
+    name: String,
+    role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,59 +108,56 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
         None => None,
     };
 
-    let rows = match (project_uuid, q.profile.as_deref()) {
-        (Some(pid), Some(profile)) => {
-            sqlx::query_as!(
+    let rows =
+        match (project_uuid, q.profile.as_deref()) {
+            (Some(pid), Some(profile)) => sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
-                          status, message_count, created_at, updated_at
-                   FROM chat_sessions
-                   WHERE project_id = $1 AND profile = $2
-                   ORDER BY created_at DESC"#,
+                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                          s.status, s.message_count, s.created_at, s.updated_at
+                   FROM chat_sessions s
+                   INNER JOIN native_agents a ON a.profile = s.profile
+                   WHERE s.project_id = $1 AND s.profile = $2
+                   ORDER BY s.created_at DESC"#,
                 pid,
                 profile,
             )
             .fetch_all(&state.db)
-            .await?
-        }
-        (Some(pid), None) => {
-            sqlx::query_as!(
+            .await?,
+            (Some(pid), None) => sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
-                          status, message_count, created_at, updated_at
-                   FROM chat_sessions
-                   WHERE project_id = $1
-                   ORDER BY created_at DESC"#,
+                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                          s.status, s.message_count, s.created_at, s.updated_at
+                   FROM chat_sessions s
+                   INNER JOIN native_agents a ON a.profile = s.profile
+                   WHERE s.project_id = $1
+                   ORDER BY s.created_at DESC"#,
                 pid,
             )
             .fetch_all(&state.db)
-            .await?
-        }
-        (None, Some(profile)) => {
-            sqlx::query_as!(
+            .await?,
+            (None, Some(profile)) => sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
-                          status, message_count, created_at, updated_at
-                   FROM chat_sessions
-                   WHERE profile = $1
-                   ORDER BY created_at DESC"#,
+                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                          s.status, s.message_count, s.created_at, s.updated_at
+                   FROM chat_sessions s
+                   INNER JOIN native_agents a ON a.profile = s.profile
+                   WHERE s.profile = $1
+                   ORDER BY s.created_at DESC"#,
                 profile,
             )
             .fetch_all(&state.db)
-            .await?
-        }
-        (None, None) => {
-            sqlx::query_as!(
+            .await?,
+            (None, None) => sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
-                          status, message_count, created_at, updated_at
-                   FROM chat_sessions
-                   ORDER BY created_at DESC"#
+                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                          s.status, s.message_count, s.created_at, s.updated_at
+                   FROM chat_sessions s
+                   INNER JOIN native_agents a ON a.profile = s.profile
+                   ORDER BY s.created_at DESC"#
             )
             .fetch_all(&state.db)
-            .await?
-        }
-    };
+            .await?,
+        };
 
     Ok(ChatSessionsResponse {
         sessions: rows.into_iter().map(row_to_session).collect(),
@@ -175,14 +181,17 @@ pub async fn create_session(
         None => None,
     };
 
+    let profile = resolve_session_profile(state, req.profile).await?;
+    let agent_id = format!("native-{profile}");
     let id = Uuid::new_v4();
     sqlx::query!(
         r#"INSERT INTO chat_sessions
              (id, project_id, agent_id, profile, status, message_count)
-           VALUES ($1, $2, 'native-default', $3, 'active', 0)"#,
+           VALUES ($1, $2, $3, $4, 'active', 0)"#,
         id,
         project_id,
-        req.profile,
+        agent_id,
+        profile,
     )
     .execute(&state.db)
     .await?;
@@ -201,6 +210,32 @@ pub async fn create_session(
     )
     .await;
     Ok(ChatSessionResponse { session })
+}
+
+async fn resolve_session_profile(
+    state: &AppState,
+    requested_profile: Option<String>,
+) -> AppResult<String> {
+    let profile = match requested_profile {
+        Some(value) if !value.trim().is_empty() => agents::normalize_agent_profile(value.trim())?,
+        _ => agents::first_agent_profile(state).await?.ok_or_else(|| {
+            AppError::BadRequest(
+                "cannot create chat session without a configured agent".to_string(),
+            )
+        })?,
+    };
+
+    let exists =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM native_agents WHERE profile = $1")
+            .bind(&profile)
+            .fetch_one(&state.db)
+            .await?;
+    if exists == 0 {
+        return Err(AppError::NotFound(format!(
+            "agent profile {profile} not found"
+        )));
+    }
+    Ok(profile)
 }
 
 pub async fn get_messages(state: &AppState, id: Uuid) -> AppResult<ChatMessagesResponse> {
@@ -238,17 +273,36 @@ pub async fn prepare_native_turn(
         None
     };
 
-    let working_dir = std::env::current_dir()
-        .map_err(|err| AppError::Internal(format!("failed to resolve working directory: {err}")))?;
+    let agent_meta = fetch_agent_workspace_metadata(state, &session.profile).await?;
+    drive::ensure_agent_workspace(
+        state,
+        &session.profile,
+        &agent_meta.name,
+        Some(&agent_meta.role),
+    )?;
+    let working_dir = drive::agent_workspace_path(&state.config.agent_data_dir, &session.profile);
+    let mut allowed_roots = vec![drive::shared_root(&state.config.agent_data_dir)];
+    if let Some(project_id) = session.project_id {
+        if let Some(project_slug) = fetch_project_drive_slug(state, project_id).await? {
+            drive::ensure_project_workspace(state, &project_slug)?;
+            allowed_roots.push(drive::project_workspace_path(
+                &state.config.agent_data_dir,
+                &project_slug,
+            ));
+        }
+    }
     let mut registry = ToolRegistry::new();
     let extension_settings_key = state.encryption_key.read().await.as_ref().copied();
-    let builtin_config = BuiltinToolConfig::for_session(
-        working_dir.clone(),
-        state.config.agent_data_dir.clone(),
-        id,
-        state.db.clone(),
+    let builtin_config = BuiltinToolConfig::for_session(BuiltinSessionConfig {
+        working_dir: working_dir.clone(),
+        allowed_roots: allowed_roots.clone(),
+        agent_data_dir: state.config.agent_data_dir.clone(),
+        session_id: id,
+        agent_profile: session.profile.clone(),
+        project_id: session.project_id,
+        db: state.db.clone(),
         extension_settings_key,
-    );
+    });
     register_all(&mut registry, &builtin_config);
     crate::services::extensions::register_runtime_extensions(&mut registry, state).await?;
     if let Err(err) = mcp::register_dynamic_tools(&mut registry, &builtin_config).await {
@@ -275,9 +329,21 @@ pub async fn prepare_native_turn(
             system_blocks.push(format!("MEMORY.md:\n{}", snapshot.memory));
         }
     }
+    system_blocks.push(format!(
+        "DRIVE.md:\nAgent workspace: /drive/agents/{}\nShared workspace: /drive/shared\nProject workspaces are available only when the current chat session is linked to a project.\nThe runtime current directory is {}.",
+        session.profile,
+        working_dir.display()
+    ));
 
     let system_prompt = build_system_prompt(&PromptConfig {
-        soul_md_path: None,
+        soul_md_path: Some(crate::services::agent_prompts::soul_md_path(
+            &state.config.agent_data_dir,
+            &session.profile,
+        )?),
+        agents_md_path: Some(crate::services::agent_prompts::agents_md_path(
+            &state.config.agent_data_dir,
+            &session.profile,
+        )?),
         working_dir,
         memory_md_path: None,
         user_md_path: None,
@@ -554,6 +620,30 @@ async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> 
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("session {id} not found")))
+}
+
+async fn fetch_agent_workspace_metadata(
+    state: &AppState,
+    profile: &str,
+) -> AppResult<AgentWorkspaceMetadata> {
+    let row = sqlx::query!(
+        r#"SELECT name, role FROM native_agents WHERE profile = $1"#,
+        profile
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("agent profile {profile} not found")))?;
+    Ok(AgentWorkspaceMetadata {
+        name: row.name,
+        role: row.role,
+    })
+}
+
+async fn fetch_project_drive_slug(state: &AppState, id: Uuid) -> AppResult<Option<String>> {
+    sqlx::query_scalar!(r#"SELECT drive_slug FROM projects WHERE id = $1"#, id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::Database)
 }
 
 async fn fetch_message_rows(state: &AppState, id: Uuid) -> AppResult<Vec<ChatMessageRow>> {

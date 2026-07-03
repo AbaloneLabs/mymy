@@ -47,6 +47,7 @@ dotenvy = "0.15"
 hex = "0.4"
 sha2 = "0.10"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Logging
 tracing = "0.1"

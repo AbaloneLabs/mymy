@@ -5,13 +5,14 @@
 //! are simply omitted; that keeps unimplemented integrations visibly empty
 //! instead of inventing sample content.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::agent::security::{scan_for_threats, ThreatScope};
 
 #[derive(Debug, Clone)]
 pub struct PromptConfig {
     pub soul_md_path: Option<PathBuf>,
+    pub agents_md_path: Option<PathBuf>,
     pub working_dir: PathBuf,
     pub memory_md_path: Option<PathBuf>,
     pub user_md_path: Option<PathBuf>,
@@ -35,7 +36,7 @@ pub fn build_system_prompt(config: &PromptConfig) -> String {
         parts.push(guidance);
     }
 
-    let context = load_context_files(&config.working_dir);
+    let context = load_context_files(config);
     if !context.is_empty() {
         parts.push(context);
     }
@@ -93,10 +94,25 @@ fn build_tool_guidance(tool_names: &[String]) -> String {
     parts.join("\n")
 }
 
-fn load_context_files(working_dir: &Path) -> String {
+fn load_context_files(config: &PromptConfig) -> String {
     let mut blocks = Vec::new();
+    let explicit_agents = config.agents_md_path.as_ref();
+    if let Some(path) = explicit_agents {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if !content.trim().is_empty() {
+                blocks.push(format!(
+                    "Context file: AGENTS.md\n{}",
+                    sanitize_prompt_block("AGENTS.md", &content, ThreatScope::Context)
+                ));
+            }
+        }
+    }
+
     for name in ["AGENTS.md", ".cursorrules"] {
-        let path = working_dir.join(name);
+        let path = config.working_dir.join(name);
+        if explicit_agents.is_some_and(|agents_path| agents_path == &path) {
+            continue;
+        }
         if let Ok(content) = std::fs::read_to_string(&path) {
             if !content.trim().is_empty() {
                 blocks.push(format!(
@@ -150,6 +166,7 @@ mod tests {
     fn prompt_contains_identity_and_metadata() {
         let prompt = build_system_prompt(&PromptConfig {
             soul_md_path: None,
+            agents_md_path: None,
             working_dir: std::env::current_dir().unwrap(),
             memory_md_path: None,
             user_md_path: None,

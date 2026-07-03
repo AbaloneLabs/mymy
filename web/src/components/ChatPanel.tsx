@@ -234,7 +234,7 @@ export function ChatPanel({
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-[var(--text)]">
-            {agentName ?? t("chat.defaultAgent")}
+            {agentName ?? t("agents.title")}
           </div>
           {agentRole && (
             <div className="truncate text-xs text-[var(--text-muted)]">

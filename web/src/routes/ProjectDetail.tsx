@@ -54,12 +54,10 @@ export default function ProjectDetail() {
   const agentMap = useMemo(() => {
     const m = new Map<string, { name: string; role: string }>();
     for (const a of agentsData?.agents ?? []) {
-      const profile = a.id.replace(/^hermes-/, "");
-      m.set(profile, { name: a.name, role: a.role });
+      m.set(a.profile, { name: a.name, role: a.role });
     }
-    m.set("default", { name: "Default", role: t("chat.defaultAgent") });
     return m;
-  }, [agentsData, t]);
+  }, [agentsData]);
 
   const handleChatAboutProject = () => {
     if (id) {
@@ -229,7 +227,7 @@ export default function ProjectDetail() {
                             {session.title || t("chat.newSession")}
                           </div>
                           <div className="text-[11px] text-[var(--text-faint)]">
-                            {agent?.name ?? "Default"} ·{" "}
+                            {agent?.name ?? session.profile} ·{" "}
                             {t("projectDetail.messageCount", {
                               count: session.messageCount,
                             })}

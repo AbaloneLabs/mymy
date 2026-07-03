@@ -47,6 +47,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         handler: Arc::new(TerminalTool {
             working_dir: config.working_dir.clone(),
+            allowed_roots: allowed_roots(&config.working_dir, &config.allowed_roots),
             db: config.db.clone(),
         }),
     });
@@ -54,6 +55,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
 struct TerminalTool {
     working_dir: PathBuf,
+    allowed_roots: Vec<PathBuf>,
     db: Option<sqlx::PgPool>,
 }
 
@@ -79,8 +81,8 @@ impl TerminalTool {
             .and_then(Value::as_str)
             .map(PathBuf::from)
             .unwrap_or_else(|| self.working_dir.clone());
-        let workdir = ensure_directory(&self.working_dir, &workdir)?;
-        check_redirected_paths(self.db.as_ref(), command, &workdir).await?;
+        let workdir = ensure_directory(&self.working_dir, &self.allowed_roots, &workdir)?;
+        check_redirected_paths(self.db.as_ref(), command, &workdir, &self.allowed_roots).await?;
 
         if let Some(matched) = detect_dangerous_command(command) {
             match matched.severity {
@@ -128,9 +130,11 @@ async fn check_redirected_paths(
     db: Option<&sqlx::PgPool>,
     command: &str,
     workdir: &Path,
+    allowed_roots: &[PathBuf],
 ) -> Result<(), ToolError> {
     for target in redirected_targets(output_redirection_regex(), command) {
         let path = resolve_shell_path(workdir, &target);
+        ensure_path_inside_roots(&path, allowed_roots, false)?;
         if let Err(error) = ensure_write_allowed(&path) {
             audit_terminal_denial(db, "terminal_write_redirect", &path, &error).await;
             return Err(error);
@@ -138,6 +142,7 @@ async fn check_redirected_paths(
     }
     for target in redirected_targets(input_redirection_regex(), command) {
         let path = resolve_shell_path(workdir, &target);
+        ensure_path_inside_roots(&path, allowed_roots, true)?;
         if let Err(error) = ensure_read_allowed(&path) {
             audit_terminal_denial(db, "terminal_read_redirect", &path, &error).await;
             return Err(error);
@@ -205,7 +210,11 @@ async fn audit_terminal_denial(
     }
 }
 
-fn ensure_directory(root: &Path, path: &Path) -> Result<PathBuf, ToolError> {
+fn ensure_directory(
+    root: &Path,
+    allowed_roots: &[PathBuf],
+    path: &Path,
+) -> Result<PathBuf, ToolError> {
     let root = std::fs::canonicalize(root)
         .map_err(|err| ToolError::InvalidArgs(format!("workspace cannot be resolved: {err}")))?;
     let resolved = if path.is_absolute() {
@@ -220,13 +229,67 @@ fn ensure_directory(root: &Path, path: &Path) -> Result<PathBuf, ToolError> {
             "workdir is not a directory: {}",
             canonical.display()
         )))
-    } else if !canonical.starts_with(root) {
+    } else if !allowed_roots
+        .iter()
+        .any(|allowed| canonical.starts_with(allowed))
+        && !canonical.starts_with(root)
+    {
         Err(ToolError::InvalidArgs(format!(
             "workdir escapes workspace: {}",
             path.display()
         )))
     } else {
         Ok(canonical)
+    }
+}
+
+fn allowed_roots(root: &Path, extra_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = vec![std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())];
+    roots.extend(
+        extra_roots
+            .iter()
+            .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
+    );
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn ensure_path_inside_roots(
+    path: &Path,
+    allowed_roots: &[PathBuf],
+    must_exist: bool,
+) -> Result<(), ToolError> {
+    let resolved = if must_exist || path.exists() {
+        std::fs::canonicalize(path)
+            .map_err(|err| ToolError::InvalidArgs(format!("path cannot be resolved: {err}")))?
+    } else {
+        let ancestor = nearest_existing_ancestor(path)?;
+        std::fs::canonicalize(ancestor).map_err(|err| {
+            ToolError::InvalidArgs(format!("path ancestor cannot be resolved: {err}"))
+        })?
+    };
+    if allowed_roots.iter().any(|root| resolved.starts_with(root)) {
+        return Ok(());
+    }
+    Err(ToolError::InvalidArgs(format!(
+        "path escapes workspace: {}",
+        path.display()
+    )))
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, ToolError> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err(ToolError::InvalidArgs(format!(
+                "path has no existing ancestor: {}",
+                path.display()
+            )));
+        }
     }
 }
 
@@ -238,6 +301,7 @@ mod tests {
     async fn terminal_runs_harmless_command() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
+            allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
             db: None,
         };
         let output = tool
@@ -254,6 +318,7 @@ mod tests {
     async fn terminal_blocks_dangerous_command() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
+            allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
             db: None,
         };
         let err = tool
@@ -267,6 +332,7 @@ mod tests {
     async fn terminal_runs_dangerous_command_after_approval() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
+            allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
             db: None,
         };
         let output = tool
@@ -283,6 +349,7 @@ mod tests {
     async fn terminal_redacts_secret_shaped_output() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
+            allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
             db: None,
         };
         let output = tool
@@ -297,6 +364,7 @@ mod tests {
     async fn terminal_blocks_sensitive_output_redirection() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
+            allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
             db: None,
         };
         let err = tool

@@ -633,11 +633,16 @@ async fn execute_job(state: &AppState, job: &CronJob) -> AppResult<String> {
 }
 
 async fn execute_agent_job(state: &AppState, job: &CronJob) -> AppResult<String> {
+    let profile = crate::services::agents::first_agent_profile(state)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest("cannot run agent job without a configured agent".to_string())
+        })?;
     let session = chat_service::create_session(
         state,
         CreateSessionRequest {
             project_id: None,
-            profile: "default".to_string(),
+            profile: Some(profile),
         },
     )
     .await?

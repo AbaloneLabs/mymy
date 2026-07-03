@@ -10,6 +10,10 @@ export interface Project {
 
   gitSystem?: GitSystemType;
 
+  driveSlug: string;
+
+  drivePath: string;
+
   status: "active" | "archived";
 
   agentCount?: number;

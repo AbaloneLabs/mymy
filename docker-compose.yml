@@ -79,6 +79,9 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       MYMY_AGENT_DATA_DIR: /app/data/agent
+      MYMY_DRIVE_S3_BUCKET: ${MYMY_DRIVE_S3_BUCKET:-}
+      MYMY_DRIVE_S3_REGION: ${MYMY_DRIVE_S3_REGION:-}
+      MYMY_DRIVE_S3_ENDPOINT: ${MYMY_DRIVE_S3_ENDPOINT:-}
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}

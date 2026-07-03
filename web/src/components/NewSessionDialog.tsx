@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useAgents } from "@/features/agents/api";
 import { useProjects } from "@/features/projects/api";
+import { useProjectContext } from "@/store/projectContext";
 import type { Agent } from "@/types/agents";
 
 interface NewSessionDialogProps {
@@ -25,24 +26,37 @@ export function NewSessionDialog({
   const { t } = useTranslation();
   const { data: agentsData } = useAgents();
   const { data: projectsData } = useProjects();
+  const selectedAgentProfile = useProjectContext(
+    (s) => s.selectedAgentProfile,
+  );
 
   const agents = agentsData?.agents ?? [];
   const projects = (projectsData?.projects ?? []).filter(
     (p) => p.status === "active",
   );
 
-  // Default selected agent: first discovered agent.
-  const [selectedProfile, setSelectedProfile] = useState<string>(
-    agents.length > 0 ? agents[0].id.replace(/^hermes-/, "") : "default",
-  );
+  const contextProfile =
+    selectedAgentProfile &&
+    agents.some((a) => a.profile === selectedAgentProfile)
+      ? selectedAgentProfile
+      : "";
+  // Start empty until the user changes selection; sessions must belong to a real agent.
+  const [selectedProfile, setSelectedProfile] = useState<string>("");
+  const localProfile =
+    selectedProfile && agents.some((a) => a.profile === selectedProfile)
+      ? selectedProfile
+      : "";
+  const effectiveSelectedProfile =
+    localProfile || contextProfile || agents[0]?.profile || "";
   // Default selected project: the pre-selected one, or none (General).
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     projectId ?? null,
   );
 
   const handleCreate = () => {
+    if (!effectiveSelectedProfile) return;
     onCreate({
-      profile: selectedProfile,
+      profile: effectiveSelectedProfile,
       projectId: selectedProjectId ?? undefined,
     });
   };
@@ -88,10 +102,8 @@ export function NewSessionDialog({
               <AgentOption
                 key={agent.id}
                 agent={agent}
-                selected={selectedProfile === agent.id.replace(/^hermes-/, "")}
-                onSelect={() =>
-                  setSelectedProfile(agent.id.replace(/^hermes-/, ""))
-                }
+                selected={effectiveSelectedProfile === agent.profile}
+                onSelect={() => setSelectedProfile(agent.profile)}
               />
             ))}
           </div>
@@ -139,7 +151,7 @@ export function NewSessionDialog({
           <button
             type="button"
             onClick={handleCreate}
-            disabled={isPending}
+            disabled={isPending || !effectiveSelectedProfile}
             className={cn(
               "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-150",
               "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]",

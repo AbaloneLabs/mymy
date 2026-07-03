@@ -944,6 +944,9 @@ mod tests {
                 cron_tick_interval_secs: 60,
                 cron_timezone: "UTC".to_string(),
                 cron_output_keep: 50,
+                drive_s3_bucket: None,
+                drive_s3_region: None,
+                drive_s3_endpoint: None,
             },
         )
     }

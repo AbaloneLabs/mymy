@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { FolderGit2, Bot, ChevronDown, Check } from "lucide-react";
 import { useProjects } from "@/features/projects/api";
@@ -35,15 +35,23 @@ export function TopBar() {
 
   const projects = projectsData?.projects ?? [];
   const activeProjects = projects.filter((p) => p.status === "active");
-  const agents = agentsData?.agents ?? [];
+  const agents = useMemo(() => agentsData?.agents ?? [], [agentsData]);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
   const projectLabel = selectedProject ? selectedProject.name : t("chat.allProjects");
 
-  const selectedAgent = agents.find(
-    (a) => a.id.replace(/^hermes-/, "") === selectedAgentProfile,
-  );
+  const selectedAgent = agents.find((a) => a.profile === selectedAgentProfile);
   const agentLabel = selectedAgent ? selectedAgent.name : t("nav.allAgents");
+
+  useEffect(() => {
+    if (
+      selectedAgentProfile &&
+      agentsData &&
+      !agents.some((a) => a.profile === selectedAgentProfile)
+    ) {
+      setSelectedAgentProfile(null);
+    }
+  }, [agents, agentsData, selectedAgentProfile, setSelectedAgentProfile]);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -200,7 +208,7 @@ export function TopBar() {
 
               {/* Individual agents */}
               {agents.map((a) => {
-                const profile = a.id.replace(/^hermes-/, "");
+                const profile = a.profile;
                 return (
                   <button
                     key={a.id}

@@ -8,6 +8,7 @@ import {
   BookOpen,
   Bot,
   Wallet,
+  HardDrive,
   Target,
   Settings,
   Keyboard,
@@ -121,6 +122,13 @@ export const DEFAULT_COMMANDS: CommandAction[] = [
     icon: Wallet,
     category: "navigation",
     perform: (ctx) => ctx.navigate("/finance"),
+  },
+  {
+    id: "navigate.drive",
+    labelKey: "commandPalette.commands.goDrive",
+    icon: HardDrive,
+    category: "navigation",
+    perform: (ctx) => ctx.navigate("/drive"),
   },
   {
     id: "navigate.goals",

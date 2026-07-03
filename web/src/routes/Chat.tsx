@@ -17,27 +17,35 @@ export default function Chat() {
   const { t } = useTranslation();
 
   // Project + agent context from TopBar dropdowns.
-  const { selectedProjectId, selectedAgentProfile } = useProjectContext();
+  const {
+    selectedProjectId,
+    selectedAgentProfile,
+    setSelectedAgentProfile,
+  } = useProjectContext();
   const isAllMode = selectedProjectId === null;
+
+  // Agents lookup (profile -> agent) for display and scope validation.
+  const { data: agentsData } = useAgents();
+  const agents = useMemo(() => agentsData?.agents ?? [], [agentsData]);
+  const activeAgentProfile =
+    selectedAgentProfile && agents.some((agent) => agent.profile === selectedAgentProfile)
+      ? selectedAgentProfile
+      : undefined;
 
   // Sessions filtered by selected project (null = all) and agent profile (null = all).
   const { data, isLoading } = useChatSessions(
     selectedProjectId ?? undefined,
-    selectedAgentProfile ?? undefined,
+    activeAgentProfile,
   );
   const sessions: ChatSession[] = data?.sessions ?? [];
 
-  // Agents lookup (profile -> agent) for display.
-  const { data: agentsData } = useAgents();
   const agentMap = useMemo(() => {
     const m = new Map<string, { name: string; role: string }>();
-    for (const a of agentsData?.agents ?? []) {
-      const profile = a.id.replace(/^hermes-/, "");
-      m.set(profile, { name: a.name, role: a.role });
+    for (const a of agents) {
+      m.set(a.profile, { name: a.name, role: a.role });
     }
-    m.set("default", { name: "Default", role: t("chat.defaultAgent") });
     return m;
-  }, [agentsData, t]);
+  }, [agents]);
 
   // Projects lookup map (id -> name) for badge display (ALL mode only).
   const { data: projectsData } = useProjects();
@@ -95,6 +103,16 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (createNonce > 0) setShowDialog(true);
   }, [createNonce]);
+
+  useEffect(() => {
+    if (
+      selectedAgentProfile &&
+      agentsData &&
+      !agents.some((agent) => agent.profile === selectedAgentProfile)
+    ) {
+      setSelectedAgentProfile(null);
+    }
+  }, [agents, agentsData, selectedAgentProfile, setSelectedAgentProfile]);
 
   return (
     <AppLayout>
@@ -221,8 +239,17 @@ export default function Chat() {
           <ChatPanel
             sessionId={effectiveSessionId}
             isNewSession={isNewSession}
-            agentName={effectiveSession ? agentMap.get(effectiveSession.profile)?.name : undefined}
-            agentRole={effectiveSession ? agentMap.get(effectiveSession.profile)?.role : undefined}
+            agentName={
+              effectiveSession
+                ? agentMap.get(effectiveSession.profile)?.name ??
+                  effectiveSession.profile
+                : undefined
+            }
+            agentRole={
+              effectiveSession
+                ? agentMap.get(effectiveSession.profile)?.role
+                : undefined
+            }
           />
         </div>
       </div>

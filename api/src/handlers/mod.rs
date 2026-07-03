@@ -1,6 +1,7 @@
 //! Route handlers module.
 
 pub mod agent_ops;
+pub mod agent_prompts;
 pub mod agent_systems;
 pub mod agents;
 pub mod audit;
@@ -8,6 +9,7 @@ pub mod auth;
 pub mod calendar;
 pub mod chat;
 pub mod cron;
+pub mod drive;
 pub mod extensions;
 pub mod goals;
 pub mod journey;
@@ -17,6 +19,7 @@ pub mod mcp;
 pub mod media;
 pub mod moa;
 pub mod notes;
+pub mod previews;
 pub mod projects;
 pub mod search;
 pub mod settings;
@@ -37,16 +40,19 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(auth::routes())
+        .merge(agent_prompts::routes())
         .merge(agent_systems::routes())
         .merge(agent_ops::routes())
         .merge(agents::routes())
         .merge(projects::routes())
+        .merge(drive::routes())
         .merge(chat::routes())
         .merge(cron::routes())
         .merge(extensions::routes())
         .merge(settings::routes())
         .merge(calendar::routes())
         .merge(notes::routes())
+        .merge(previews::routes())
         .merge(knowledge::routes())
         .merge(journey::routes())
         .merge(llm_providers::routes())

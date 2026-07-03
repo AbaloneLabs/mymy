@@ -7,6 +7,7 @@ pub mod extensions;
 mod file;
 pub mod mcp;
 mod memory;
+mod preview;
 mod skills;
 mod terminal;
 mod web;
@@ -20,26 +21,38 @@ use super::ToolRegistry;
 #[derive(Debug, Clone)]
 pub struct BuiltinToolConfig {
     pub working_dir: PathBuf,
+    pub allowed_roots: Vec<PathBuf>,
     pub agent_data_dir: PathBuf,
     pub session_id: Option<uuid::Uuid>,
+    pub agent_profile: Option<String>,
+    pub project_id: Option<uuid::Uuid>,
     pub db: Option<PgPool>,
     pub extension_settings_key: Option<[u8; 32]>,
 }
 
+#[derive(Debug)]
+pub struct BuiltinSessionConfig {
+    pub working_dir: PathBuf,
+    pub allowed_roots: Vec<PathBuf>,
+    pub agent_data_dir: PathBuf,
+    pub session_id: uuid::Uuid,
+    pub agent_profile: String,
+    pub project_id: Option<uuid::Uuid>,
+    pub db: PgPool,
+    pub extension_settings_key: Option<[u8; 32]>,
+}
+
 impl BuiltinToolConfig {
-    pub fn for_session(
-        working_dir: PathBuf,
-        agent_data_dir: PathBuf,
-        session_id: uuid::Uuid,
-        db: PgPool,
-        extension_settings_key: Option<[u8; 32]>,
-    ) -> Self {
+    pub fn for_session(config: BuiltinSessionConfig) -> Self {
         Self {
-            working_dir,
-            agent_data_dir,
-            session_id: Some(session_id),
-            db: Some(db),
-            extension_settings_key,
+            working_dir: config.working_dir,
+            allowed_roots: config.allowed_roots,
+            agent_data_dir: config.agent_data_dir,
+            session_id: Some(config.session_id),
+            agent_profile: Some(config.agent_profile),
+            project_id: config.project_id,
+            db: Some(config.db),
+            extension_settings_key: config.extension_settings_key,
         }
     }
 }
@@ -52,6 +65,7 @@ pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     extensions::register(registry, config);
     cron::register(registry, config);
     memory::register(registry, config);
+    preview::register(registry, config);
     skills::register(registry, config);
     terminal::register(registry, config);
     web::register(registry);

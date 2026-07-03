@@ -188,7 +188,7 @@ export function CronTab({
   profile,
 }: {
   instanceId: string | null;
-  profile: string;
+  profile: string | null;
 }) {
   const { t } = useTranslation();
   const { data, isLoading, isError } = useCronJobs(instanceId, profile);

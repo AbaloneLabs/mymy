@@ -4,9 +4,9 @@
 
 # mymy
 
-**An AI Agent Management Platform for Solo Entrepreneurs**
+**A local AI agent workspace for solo operators**
 
-Manage AI agents (Hermes, OpenClaw) and run projects connected to your Git systems — all from one focused workspace built for the solo business owner.
+Manage native LLM agents, their project workspaces, prompts, files, previews, notes, tasks, finance, and goals from one focused local app.
 
 [English](README.md) · [한국어](README.ko.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
@@ -20,11 +20,13 @@ Manage AI agents (Hermes, OpenClaw) and run projects connected to your Git syste
 
 ## ✨ Overview
 
-**mymy** brings your AI agents and code projects together into a single, calm interface. Instead of juggling terminals, browser tabs, and config files, you get one dashboard to:
+**mymy** brings your AI agents, project files, and operating data into a single local interface. Instead of juggling terminals, browser tabs, prompts, and scattered files, you get one workspace to:
 
-- **See your agents at a glance** — who's active, who's idle, what they're running
-- **Enter projects** connected to GitHub, GitLab, or Gitea
-- **Chat with agents**, take notes, and manage your calendar — all in one place
+- **Create native agents** backed by registered LLM providers
+- **Keep agent work inside Drive** under `/drive/agents`, `/drive/projects`, and `/drive/shared`
+- **Edit prompts** (`AGENTS.md`, `SOUL.md`) from the agent UI and the Drive tab
+- **Open files and previews** for generated markdown, images, media, PDFs, docx text, and local dev servers
+- **Chat with agents**, take notes, track tasks/goals/finance, and manage your calendar
 - **Stay locked & private** with PIN-based access (no cloud accounts, no login flows)
 
 It's designed for the **one-person business** — the developer-founder who wears every hat and delegates the rest to agents.
@@ -34,12 +36,15 @@ It's designed for the **one-person business** — the developer-founder who wear
 | | Feature | Description |
 |---|---------|-------------|
 | 🔐 | **PIN Authentication** | Server-side PIN sessions with an HttpOnly cookie. Default PIN `mymy`, changeable in settings. |
-| 🤖 | **Agent Management** | View all your Hermes / OpenClaw agents with live status, avatars, and roles. |
-| 📁 | **Project Workspace** | Projects linked to Git remotes — enter, organize, and assign agents. |
-| 💬 | **Chat** | Chat with agents, organized into sessions tied to projects or general topics. |
+| 🤖 | **Native Agent Management** | Create/delete agents, edit prompts, select the active agent globally, and run chat sessions against registered LLM providers. |
+| 📁 | **Drive Workspace** | Browse and edit `/drive/projects`, `/drive/agents`, and `/drive/shared`; view md, docx text, images, audio, video, and PDFs. |
+| 🧱 | **Sandbox Runtime Model** | Agent tools resolve paths through Drive-scoped roots so each agent sees its own workspace plus shared/project roots. |
+| 🖥️ | **Preview Proxy** | Agents can register local dev-server ports with `register_preview`; the UI opens tokenized preview URLs. |
+| 📁 | **Project Workspace** | Projects get stable Drive folders and can be linked to chats and work sessions. |
+| 💬 | **Chat** | Chat with native agents, organized into sessions tied to projects or general topics. |
 | 📅 | **Calendar** | Schedule and manage events, linked to projects. |
 | 📝 | **Notes** | Markdown notes with full-text search (PostgreSQL FTS), tags, and pinning. |
-| ⚙️ | **Settings** | Configure agent systems (multi-instance: local + remote) and Git integrations. |
+| ⚙️ | **Settings** | Configure PIN, LLM providers, agent systems, extensions, skills, and Git integrations. |
 | 🌐 | **i18n** | Full UI in English, Korean, Chinese, and Japanese. |
 | 🎨 | **Linear-style UI** | A focused dark theme inspired by Linear — easy on the eyes for all-day use. |
 
@@ -50,9 +55,9 @@ It's designed for the **one-person business** — the developer-founder who wear
 | **Frontend** | Vite · React 19 · TypeScript | SPA, no SSR needed |
 | **Styling** | Tailwind CSS v4 | CSS-variable design tokens |
 | **State** | Zustand · TanStack Query · React Router | Auth + settings (localStorage), server state (React Query) |
-| **Backend** | Rust · axum | REST API, server-side auth sessions, domain services, local agent CLI adapters |
+| **Backend** | Rust · axum | REST API, server-side auth sessions, native agent runtime, Drive, preview proxy |
 | **Database** | PostgreSQL 16 + pgvector | Full-text + semantic search in one DB |
-| **Infra** | Docker Compose | One command to run everything |
+| **Infra** | Docker Compose | One command to run the app, DB, API data volume, and Drive storage |
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -71,9 +76,10 @@ It's designed for the **one-person business** — the developer-founder who wear
                     ┌──────────▼──────────┐
                     │  Rust API (:33697)  │
                     │  • Auth sessions    │
-                    │  • Agent systems    │
+                    │  • Native agents    │
                     │  • Projects CRUD    │
-                    │  • Chat (Hermes)    │
+                    │  • LLM chat runtime │
+                    │  • Drive + previews │
                     │  • Calendar         │
                     │  • Notes + FTS      │
                     └──────────┬──────────┘
@@ -81,8 +87,8 @@ It's designed for the **one-person business** — the developer-founder who wear
               ┌────────────────┼────────────────┐
               │                │                │
        ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
-       │ PostgreSQL  │  │   Hermes    │  │  OpenClaw   │
-       │ + pgvector  │  │   CLI       │  │  (planned)  │
+       │ PostgreSQL  │  │ Local Drive │  │   S3 sync   │
+       │ + pgvector  │  │ volume      │  │  provider   │
        │ (:33432)    │  │             │  │             │
        └─────────────┘  └─────────────┘  └─────────────┘
 ```
@@ -147,7 +153,8 @@ App configuration is split between environment variables and the in-app
 | Section | What you configure |
 |---------|-------------------|
 | **General** | Change your PIN |
-| **Agent Systems** | Add Hermes/OpenClaw instances (local auto-detected, remote manual) |
+| **Models / LLM Providers** | Register OpenAI-compatible, Anthropic, Ollama, or local provider endpoints |
+| **Agent Systems** | Manage legacy Hermes/OpenClaw instances when needed |
 | **Git Integrations** | Connect GitHub, GitLab, Gitea (host, port, SSH alias) |
 | **About** | Version & port info |
 
@@ -161,10 +168,40 @@ returned by the settings API.
 - Repeated invalid PIN attempts are rate-limited with a short lockout.
 - Set `AUTH_COOKIE_SECURE=true` only when the API is served over HTTPS.
 
+### Drive, Sandbox, and Previews
+
+The API stores Drive data under `MYMY_AGENT_DATA_DIR`:
+
+```text
+/drive
+  /projects/<project-slug>     project workspaces
+  /agents/<agent-profile>      private agent workspace with AGENTS.md and SOUL.md
+  /shared                      cross-agent shared files
+```
+
+Native agent file tools resolve paths only inside the current agent workspace
+plus explicitly granted shared/project roots. Other agents' private folders are
+not granted as tool roots.
+
+Development servers started by an agent can be exposed through preview
+endpoints. The runtime tool `register_preview` accepts a local forwarded port
+and creates a tokenized `/api/previews/<token>` URL. The proxy only accepts
+loopback `http://127.0.0.1:<port>` / `localhost` targets to avoid becoming an
+open proxy.
+
+Optional S3 provider settings:
+
+```bash
+MYMY_DRIVE_S3_BUCKET=
+MYMY_DRIVE_S3_REGION=
+MYMY_DRIVE_S3_ENDPOINT=
+```
+
+When these are unset, Drive uses only the local Docker volume.
+
 ### Docker and Hermes
 
-Docker Compose starts without host-specific Hermes paths. By default it mounts
-empty ignored directories under `.local/hermes/*`. To enable Hermes CLI
+Docker Compose still supports optional legacy Hermes paths. To enable Hermes CLI
 integration inside Docker, set these in `.env`:
 
 ```bash
@@ -221,10 +258,16 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Knowledge base (hierarchical markdown articles)
 - [x] Finance (transactions and period summaries)
 - [x] Goals / OKR tracking
+- [x] Native LLM provider-backed agents
+- [x] Drive tab with file browsing/editing and media viewers
+- [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
+- [x] Tokenized preview proxy for agent-started local servers
 - [x] i18n (English, Korean, Chinese, Japanese)
 
 ### Planned
 - [ ] Home dashboard overview (widgets, activity feed, stats)
+- [ ] Firecracker microVM runner backend for stronger OS-level isolation
+- [ ] S3 object synchronization worker for Drive sync jobs
 - [ ] CRM / client management (contacts & relationships)
 - [ ] Time tracking
 - [ ] Agent automation routines (presets)

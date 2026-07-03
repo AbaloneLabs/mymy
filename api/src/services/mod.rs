@@ -1,6 +1,7 @@
 //! Application services.
 
 pub mod agent_ops;
+pub mod agent_prompts;
 pub mod agent_systems;
 pub mod agents;
 pub mod audit;
@@ -9,6 +10,7 @@ pub mod auth;
 pub mod calendar;
 pub mod chat;
 pub mod cron;
+pub mod drive;
 pub mod extensions;
 pub mod goals;
 pub mod hermes;
@@ -19,6 +21,7 @@ pub mod llm_providers;
 pub mod mcp;
 pub mod moa;
 pub mod notes;
+pub mod previews;
 pub mod projects;
 pub mod search;
 pub mod settings;
