@@ -44,6 +44,7 @@ WORKDIR /app
 #   python3, nodejs, npm — baseline sandbox runtimes for agent scripts and
 #     development servers such as `python3 -m http.server` or `npm run dev`.
 #   procps — lightweight process inspection inside the runner container.
+#   iproute2 — tap network setup for the Firecracker backend.
 #   bubblewrap — process isolation backend used by mymy-sandbox-runner when
 #     Firecracker assets are not configured.
 #     Hermes runs `hermes chat` as a subprocess, which invokes its own
@@ -66,6 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     procps \
+    iproute2 \
     bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 

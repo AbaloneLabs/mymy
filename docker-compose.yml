@@ -119,10 +119,10 @@ services:
   # ----------------------------------------------------------
   # Sandboxed process runner.
   #
-  # Default mode is bubblewrap so the stack works without Firecracker kernel
-  # and rootfs assets. Firecracker mode is supported by configuration and
-  # returns failed status until FIRECRACKER_BIN, FIRECRACKER_KERNEL_IMAGE, and
-  # FIRECRACKER_ROOTFS_IMAGE are provided.
+  # Default mode is bubblewrap so the stack works without Firecracker kernel,
+  # rootfs, and guest SSH assets. Firecracker mode uses /dev/kvm plus a tap
+  # device and keeps the same runner API contract for command execution,
+  # managed background processes, and preview forwarding.
   # ----------------------------------------------------------
   sandbox-runner:
     image: mymy-api
@@ -142,14 +142,31 @@ services:
       MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
       MYMY_SANDBOX_UID: "1000"
       MYMY_SANDBOX_GID: "1000"
+      FIRECRACKER_BIN: ${FIRECRACKER_BIN:-}
+      FIRECRACKER_KERNEL_IMAGE: ${FIRECRACKER_KERNEL_IMAGE:-}
+      FIRECRACKER_ROOTFS_IMAGE: ${FIRECRACKER_ROOTFS_IMAGE:-}
+      FIRECRACKER_SSH_KEY_PATH: ${FIRECRACKER_SSH_KEY_PATH:-}
+      FIRECRACKER_WORK_DIR: ${FIRECRACKER_WORK_DIR:-/app/data/agent/firecracker-vms}
+      FIRECRACKER_GUEST_USER: ${FIRECRACKER_GUEST_USER:-root}
+      FIRECRACKER_VCPU_COUNT: ${FIRECRACKER_VCPU_COUNT:-1}
+      FIRECRACKER_MEM_SIZE_MIB: ${FIRECRACKER_MEM_SIZE_MIB:-512}
+      FIRECRACKER_BOOT_TIMEOUT_SECS: ${FIRECRACKER_BOOT_TIMEOUT_SECS:-30}
       RUST_LOG: ${RUST_LOG:-mymy_sandbox_runner=info,tower_http=info}
       HOME: /tmp
     ports:
       - "33698:33698"
     volumes:
       - mymy-api-data:/app/data
+      - ${FIRECRACKER_ASSETS_DIR:-./data/firecracker-assets}:/app/data/agent/firecracker-assets:ro
+    devices:
       - /dev/kvm:/dev/kvm
-    privileged: true
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
 
 volumes:
   mymy-db-data:

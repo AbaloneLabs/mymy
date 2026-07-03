@@ -88,10 +88,19 @@
 - [ ] timeout이 걸리는 코드는 제한 시간 후 중단된다.
 - [ ] sandbox RPC를 통해 builtin tool 호출이 가능하다.
 - [ ] 실행 결과에 민감정보가 포함되면 redaction이 적용된다.
+- [ ] terminal/code execution의 runner cwd가 `/drive/agents/<profile>` 같은 logical path로 표시된다.
 - [ ] agent file tool은 `/drive/agents/<profile>`, `/drive/shared`, 연결된 `/drive/projects/<project>` 밖의 경로를 거부한다.
 - [ ] 다른 agent의 private workspace 경로 읽기/쓰기 시도가 차단된다.
 - [ ] agent 생성 시 Drive workspace와 `AGENTS.md`, `SOUL.md`가 생성된다.
 - [ ] agent 삭제 시 workspace가 즉시 영구 삭제되지 않고 복구 가능한 위치로 이동된다.
+- [ ] terminal tool의 `background=true`가 실제 managed process를 생성한다.
+- [ ] managed process의 `list_processes`, `read_process_logs`, `stop_process`가 현재 agent 범위에서만 동작한다.
+- [ ] managed process가 포트를 열면 preview endpoint가 생성되고 브라우저에서 접근된다.
+- [ ] bubblewrap child 안에서 `/dev/kvm` 같은 runner 장치가 보이지 않는다.
+- [ ] `scripts/prepare-firecracker-assets.sh`로 Firecracker 자산을 준비할 수 있다.
+- [ ] Firecracker 모드에서 foreground command가 VM 안에서 실행되고 writable Drive root 변경이 host Drive로 돌아온다.
+- [ ] Firecracker 모드에서 background server가 VM 안에서 실행되고 preview proxy를 통해 접근된다.
+- [ ] Firecracker process 중지 시 SSH process, Firecracker process, tap interface, preview proxy가 정리된다.
 
 ## 10-1. Drive / Preview
 

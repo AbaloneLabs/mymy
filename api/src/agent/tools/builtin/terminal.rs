@@ -26,7 +26,8 @@ use crate::agent::tools::{
 };
 use crate::services::audit::log_security_denial_safe;
 use crate::services::sandbox_runner::{
-    RunnerClient, RunnerExecuteRequest, RunnerRoot, RunnerStartProcessRequest,
+    logical_path_for_runner, RunnerClient, RunnerExecuteRequest, RunnerRoot,
+    RunnerStartProcessRequest,
 };
 
 const MAX_OUTPUT_CHARS: usize = 16_000;
@@ -292,6 +293,7 @@ impl TerminalTool {
             .await
             .map_err(|err| ToolError::Execution(format!("runner process failed: {err}")))?;
         let pid = response.pid.map(|value| value as i32);
+        let logical_cwd = logical_path_for_runner(workdir);
         let metadata = serde_json::json!({
             "runnerStatus": response.status.clone(),
             "forwardedUrl": response.forwarded_url.clone(),
@@ -306,7 +308,7 @@ impl TerminalTool {
             agent_profile,
             self.project_id,
             command,
-            workdir.display().to_string(),
+            logical_cwd,
             pid,
             metadata,
         )

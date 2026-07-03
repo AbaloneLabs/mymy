@@ -23,8 +23,8 @@ use crate::models::sandbox::{
 use crate::services::agents;
 use crate::services::drive;
 use crate::services::sandbox_runner::{
-    roots_for_runner, RunnerClient, RunnerExecuteRequest, RunnerProcessSummary, RunnerRoot,
-    RunnerStartProcessRequest,
+    logical_path_for_runner, roots_for_runner, RunnerClient, RunnerExecuteRequest,
+    RunnerProcessSummary, RunnerRoot, RunnerStartProcessRequest,
 };
 use crate::state::AppState;
 
@@ -306,6 +306,7 @@ pub async fn start_process(
         })
         .await?;
     let pid = runner_response.pid.map(|value| value as i32);
+    let logical_cwd = logical_path_for_runner(&cwd);
     let metadata = serde_json::json!({
         "runnerStatus": runner_response.status.clone(),
         "forwardedUrl": runner_response.forwarded_url.clone(),
@@ -320,7 +321,7 @@ pub async fn start_process(
         &workspace.agent_profile,
         workspace.project_id,
         command,
-        cwd.display().to_string(),
+        logical_cwd,
         pid,
         metadata,
     )

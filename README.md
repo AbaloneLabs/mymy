@@ -57,7 +57,7 @@ It's designed for the **one-person business** — the developer-founder who wear
 | **Styling** | Tailwind CSS v4 | CSS-variable design tokens |
 | **State** | Zustand · TanStack Query · React Router | Auth + settings (localStorage), server state (React Query) |
 | **Backend** | Rust · axum | REST API, server-side auth sessions, native agent runtime, Drive, preview proxy |
-| **Sandbox runner** | Rust · axum · bubblewrap | Isolated command/process execution with optional Firecracker configuration surface |
+| **Sandbox runner** | Rust · axum · bubblewrap · Firecracker | Isolated command/process execution, managed processes, and preview forwarding |
 | **Database** | PostgreSQL 16 + pgvector | Full-text + semantic search in one DB |
 | **Infra** | Docker Compose | One command to run the app, DB, API data volume, Drive storage, and sandbox runner |
 
@@ -199,20 +199,39 @@ approval gate.
 
 In the default Compose setup, the runner uses bubblewrap to create PID, IPC,
 UTS, and mount isolation, mounts the selected agent workspace plus shared/project
-roots, and keeps process logs under the Drive data volume. The bubblewrap child
-receives only minimal `/dev` nodes (`null`, `zero`, `full`, `random`,
-`urandom`) instead of the runner container's full device surface. User
-namespaces can be enabled separately when the deployment provides an
+roots at logical `/drive/...` paths, and keeps process logs under the Drive data
+volume. The bubblewrap child receives only minimal `/dev` nodes (`null`, `zero`,
+`full`, `random`, `urandom`) instead of the runner container's device surface.
+User namespaces can be enabled separately when the deployment provides an
 idmapped/rootfs setup that can write Drive data.
 
-Firecracker mode is exposed through configuration for deployments that provide
-VM assets and host orchestration, but the default local stack uses bubblewrap:
+Firecracker mode is available when the deployment provides a Firecracker binary,
+guest kernel, ext4 rootfs, and SSH key. The runner creates one VM per foreground
+command or managed background process, copies only the allowed Drive roots into
+the guest, runs the command over SSH, copies writable roots back on exit/stop,
+and opens an in-runner TCP proxy for preview ports so existing
+`/api/previews/<token>` URLs continue to work. The default local stack still
+uses bubblewrap because Firecracker needs host KVM and guest assets:
 
 ```bash
 MYMY_SANDBOX_MODE=bubblewrap
 MYMY_SANDBOX_UNSHARE_USER=false
 MYMY_SANDBOX_RUNNER_URL=http://sandbox-runner:33698
 MYMY_SANDBOX_PREVIEW_HOST=sandbox-runner
+```
+
+For Firecracker, prepare assets on the host and mount them read-only into the
+runner:
+
+```bash
+scripts/prepare-firecracker-assets.sh ./data/firecracker-assets
+
+MYMY_SANDBOX_MODE=firecracker
+FIRECRACKER_ASSETS_DIR=./data/firecracker-assets
+FIRECRACKER_BIN=/app/data/agent/firecracker-assets/firecracker
+FIRECRACKER_KERNEL_IMAGE=/app/data/agent/firecracker-assets/vmlinux
+FIRECRACKER_ROOTFS_IMAGE=/app/data/agent/firecracker-assets/rootfs.ext4
+FIRECRACKER_SSH_KEY_PATH=/app/data/agent/firecracker-assets/id_rsa
 ```
 
 Development servers started by an agent can be exposed through preview
@@ -300,13 +319,14 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
 - [x] Tokenized preview proxy for agent-started local servers
 - [x] Bubblewrap-backed sandbox runner for agent commands and long-running processes
+- [x] Firecracker-backed sandbox runner for VM-isolated commands, managed processes, and preview forwarding
 - [x] Native file-write, terminal, code-execution, and managed process tools with approval gates
 - [x] S3 object synchronization worker for Drive sync jobs
 - [x] i18n (English, Korean, Chinese, Japanese)
 
 ### Planned
 - [ ] Home dashboard overview (widgets, activity feed, stats)
-- [ ] Firecracker microVM host assets and lifecycle orchestration for stronger VM-backed isolation
+- [ ] Firecracker production hardening with jailer/cgroup policies and reusable VM pools
 - [ ] CRM / client management (contacts & relationships)
 - [ ] Time tracking
 - [ ] Agent automation routines (presets)

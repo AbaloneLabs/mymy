@@ -115,6 +115,18 @@ pub fn roots_for_runner(primary_root: &Path, extra_roots: &[PathBuf]) -> Vec<Run
     roots
 }
 
+pub fn logical_path_for_runner(path: &Path) -> String {
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if let Some(index) = components.iter().position(|component| component == "drive") {
+        let suffix = components[index..].join("/");
+        return format!("/{suffix}");
+    }
+    path.display().to_string()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerExecuteRequest {
@@ -148,9 +160,35 @@ impl RunnerRoot {
         let path = path.display().to_string();
         Self {
             host_path: path.clone(),
-            mount_path: path,
+            mount_path: logical_path_for_runner(Path::new(&path)),
             writable: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logical_path_for_runner;
+    use std::path::Path;
+
+    #[test]
+    fn maps_drive_paths_to_logical_mounts() {
+        assert_eq!(
+            logical_path_for_runner(Path::new("/app/data/agent/drive/agents/elena")),
+            "/drive/agents/elena"
+        );
+        assert_eq!(
+            logical_path_for_runner(Path::new("/app/data/agent/drive/shared")),
+            "/drive/shared"
+        );
+    }
+
+    #[test]
+    fn leaves_non_drive_paths_physical() {
+        assert_eq!(
+            logical_path_for_runner(Path::new("/app/data/agent/sandbox/job")),
+            "/app/data/agent/sandbox/job"
+        );
     }
 }
 
