@@ -1,8 +1,9 @@
 //! Preview registration tool for sandboxed development servers.
 //!
 //! Agents can start a server inside their workspace and then register the
-//! forwarded loopback port here. The HTTP proxy enforces the same loopback-only
-//! target policy, so the tool cannot be used as an arbitrary network proxy.
+//! forwarded port here. The HTTP proxy only allows loopback targets or the
+//! configured sandbox runner host, so the tool cannot be used as an arbitrary
+//! network proxy.
 
 use std::sync::Arc;
 
@@ -38,6 +39,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),
             project_id: config.project_id,
+            preview_host: config.sandbox_preview_host.clone(),
         }),
     });
 }
@@ -46,6 +48,7 @@ struct RegisterPreviewTool {
     db: Option<sqlx::PgPool>,
     agent_profile: Option<String>,
     project_id: Option<Uuid>,
+    preview_host: String,
 }
 
 #[async_trait]
@@ -80,7 +83,7 @@ impl ToolHandler for RegisterPreviewTool {
             ));
         }
 
-        let target_url = format!("http://127.0.0.1:{port}");
+        let target_url = format!("http://{}:{port}", self.preview_host);
         let token = Uuid::new_v4().simple().to_string();
         let row = sqlx::query!(
             r#"INSERT INTO preview_endpoints

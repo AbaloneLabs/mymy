@@ -15,6 +15,7 @@ pub mod moa;
 pub mod note;
 pub mod preview;
 pub mod project;
+pub mod sandbox;
 pub mod search;
 pub mod settings;
 pub mod task;

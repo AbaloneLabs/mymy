@@ -1,10 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, API_BASE } from "@/lib/api";
+import { api, API_BASE, ApiError } from "@/lib/api";
 import type {
   CreatePreviewEndpointInput,
   DriveFileResponse,
   DriveListResponse,
   DriveProvidersResponse,
+  DriveRestoreResponse,
+  DriveSyncJobsResponse,
+  DriveTrashResponse,
+  DriveUploadResponse,
   PreviewEndpoint,
   PreviewEndpointsResponse,
 } from "@/types/drive";
@@ -37,6 +41,13 @@ export function useDriveProviders() {
   });
 }
 
+export function useDriveSyncJobs() {
+  return useQuery({
+    queryKey: ["drive", "sync-jobs"],
+    queryFn: () => api.get<DriveSyncJobsResponse>("/drive/sync-jobs"),
+  });
+}
+
 export function useWriteDriveFile() {
   const qc = useQueryClient();
   return useMutation({
@@ -45,6 +56,7 @@ export function useWriteDriveFile() {
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["drive", "file", variables.path] });
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
+      qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
     },
   });
 }
@@ -64,7 +76,49 @@ export function useDeleteDrivePath() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
       qc.invalidateQueries({ queryKey: ["drive", "file"] });
+      qc.invalidateQueries({ queryKey: ["drive", "trash"] });
+      qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
     },
+  });
+}
+
+export function useUploadDriveFiles() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, files }: { path: string; files: File[] }) =>
+      uploadDriveFiles(path, files),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["drive", "list"] });
+      qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
+    },
+  });
+}
+
+export function useDriveTrash() {
+  return useQuery({
+    queryKey: ["drive", "trash"],
+    queryFn: () => api.get<DriveTrashResponse>("/drive/trash"),
+  });
+}
+
+export function useRestoreDriveTrash() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<DriveRestoreResponse>(`/drive/trash/${id}/restore`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["drive", "list"] });
+      qc.invalidateQueries({ queryKey: ["drive", "trash"] });
+      qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
+    },
+  });
+}
+
+export function usePurgeDriveTrash() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<{ success: boolean }>(`/drive/trash/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["drive", "trash"] }),
   });
 }
 
@@ -105,4 +159,27 @@ export function driveBlobUrl(path: string) {
 
 export function previewUrl(token: string) {
   return `${API_BASE}/previews/${token}`;
+}
+
+async function uploadDriveFiles(path: string, files: File[]) {
+  const form = new FormData();
+  form.append("path", path);
+  for (const file of files) {
+    form.append("file", file, file.name);
+  }
+  const res = await fetch(`${API_BASE}/drive/upload`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("mymy:unauthorized"));
+    }
+    const message = (data && (data.error || data.message)) || res.statusText;
+    throw new ApiError(res.status, message, data);
+  }
+  return data as DriveUploadResponse;
 }

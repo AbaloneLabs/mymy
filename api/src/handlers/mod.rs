@@ -21,6 +21,7 @@ pub mod moa;
 pub mod notes;
 pub mod previews;
 pub mod projects;
+pub mod sandbox;
 pub mod search;
 pub mod settings;
 pub mod skills;
@@ -46,6 +47,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(agents::routes())
         .merge(projects::routes())
         .merge(drive::routes())
+        .merge(sandbox::routes())
         .merge(chat::routes())
         .merge(cron::routes())
         .merge(extensions::routes())

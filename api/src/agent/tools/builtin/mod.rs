@@ -26,6 +26,8 @@ pub struct BuiltinToolConfig {
     pub session_id: Option<uuid::Uuid>,
     pub agent_profile: Option<String>,
     pub project_id: Option<uuid::Uuid>,
+    pub sandbox_runner_url: Option<String>,
+    pub sandbox_preview_host: String,
     pub db: Option<PgPool>,
     pub extension_settings_key: Option<[u8; 32]>,
 }
@@ -38,6 +40,8 @@ pub struct BuiltinSessionConfig {
     pub session_id: uuid::Uuid,
     pub agent_profile: String,
     pub project_id: Option<uuid::Uuid>,
+    pub sandbox_runner_url: Option<String>,
+    pub sandbox_preview_host: String,
     pub db: PgPool,
     pub extension_settings_key: Option<[u8; 32]>,
 }
@@ -51,6 +55,8 @@ impl BuiltinToolConfig {
             session_id: Some(config.session_id),
             agent_profile: Some(config.agent_profile),
             project_id: config.project_id,
+            sandbox_runner_url: config.sandbox_runner_url,
+            sandbox_preview_host: config.sandbox_preview_host,
             db: Some(config.db),
             extension_settings_key: config.extension_settings_key,
         }

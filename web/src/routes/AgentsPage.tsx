@@ -9,6 +9,7 @@ import {
   AllAgentsTab,
   NativeSessionsTab,
   PromptTab,
+  SandboxProcessesTab,
 } from "@/features/agents/components/AgentsNativePanels";
 import { CronTab, TabButton } from "@/features/agents/components/AgentsPanels";
 import {
@@ -118,7 +119,10 @@ export default function AgentsPage() {
               ) : activeTab === "sessions" ? (
                 <NativeSessionsTab profile={null} agents={agents} />
               ) : (
-                <CronTab instanceId={null} profile={null} />
+                <div className="space-y-6">
+                  <SandboxProcessesTab profile={null} agents={agents} />
+                  <CronTab instanceId={null} profile={null} />
+                </div>
               )
             ) : activeTab === "overview" ? (
               <AgentOverviewTab
@@ -133,7 +137,13 @@ export default function AgentsPage() {
             ) : activeTab === "prompt" ? (
               <PromptTab profile={activeAgentProfile} />
             ) : (
-              <CronTab instanceId={null} profile={activeAgentProfile} />
+              <div className="space-y-6">
+                <SandboxProcessesTab
+                  profile={activeAgentProfile}
+                  agents={agents}
+                />
+                <CronTab instanceId={null} profile={activeAgentProfile} />
+              </div>
             )}
           </main>
         </div>

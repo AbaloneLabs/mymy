@@ -25,6 +25,10 @@ pub struct Config {
     pub drive_s3_region: Option<String>,
     /// Optional S3-compatible endpoint for self-hosted object storage.
     pub drive_s3_endpoint: Option<String>,
+    /// Optional sandbox runner HTTP endpoint.
+    pub sandbox_runner_url: Option<String>,
+    /// Hostname the API uses for runner-started preview servers.
+    pub sandbox_preview_host: String,
 }
 
 impl Config {
@@ -70,6 +74,12 @@ impl Config {
         let drive_s3_bucket = env_optional("MYMY_DRIVE_S3_BUCKET");
         let drive_s3_region = env_optional("MYMY_DRIVE_S3_REGION");
         let drive_s3_endpoint = env_optional("MYMY_DRIVE_S3_ENDPOINT");
+        let sandbox_runner_url = env_optional("MYMY_SANDBOX_RUNNER_URL");
+        let sandbox_preview_host = env::var("MYMY_SANDBOX_PREVIEW_HOST")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
 
         Self {
             database_url,
@@ -83,6 +93,8 @@ impl Config {
             drive_s3_bucket,
             drive_s3_region,
             drive_s3_endpoint,
+            sandbox_runner_url,
+            sandbox_preview_host,
         }
     }
 }

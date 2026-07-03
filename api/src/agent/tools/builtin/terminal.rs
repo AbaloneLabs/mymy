@@ -23,6 +23,7 @@ use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 use crate::services::audit::log_security_denial_safe;
+use crate::services::sandbox_runner::{RunnerClient, RunnerExecuteRequest, RunnerRoot};
 
 const MAX_OUTPUT_CHARS: usize = 16_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -48,6 +49,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         handler: Arc::new(TerminalTool {
             working_dir: config.working_dir.clone(),
             allowed_roots: allowed_roots(&config.working_dir, &config.allowed_roots),
+            runner_url: config.sandbox_runner_url.clone(),
             db: config.db.clone(),
         }),
     });
@@ -56,6 +58,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 struct TerminalTool {
     working_dir: PathBuf,
     allowed_roots: Vec<PathBuf>,
+    runner_url: Option<String>,
     db: Option<sqlx::PgPool>,
 }
 
@@ -106,6 +109,30 @@ impl TerminalTool {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
+
+        if let Some(runner_url) = &self.runner_url {
+            let response = RunnerClient::new(runner_url.clone())
+                .execute(&RunnerExecuteRequest {
+                    command: command.to_string(),
+                    cwd: workdir.display().to_string(),
+                    roots: self
+                        .allowed_roots
+                        .iter()
+                        .map(|root| RunnerRoot::writable(root))
+                        .collect(),
+                    timeout_secs: Some(timeout_secs),
+                    env: None,
+                })
+                .await
+                .map_err(|err| ToolError::Execution(format!("runner execution failed: {err}")))?;
+            return Ok(tool_result(&serde_json::json!({
+                "stdout": truncate_chars(&redact_terminal_output(&response.stdout), MAX_OUTPUT_CHARS),
+                "stderr": truncate_chars(&redact_terminal_output(&response.stderr), MAX_OUTPUT_CHARS),
+                "exit_code": response.exit_code,
+                "sandbox": "runner",
+                "cwd": response.cwd,
+            })));
+        }
 
         let child = Command::new("bash")
             .arg("-c")
@@ -302,6 +329,7 @@ mod tests {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
+            runner_url: None,
             db: None,
         };
         let output = tool
@@ -319,6 +347,7 @@ mod tests {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
+            runner_url: None,
             db: None,
         };
         let err = tool
@@ -333,6 +362,7 @@ mod tests {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
+            runner_url: None,
             db: None,
         };
         let output = tool
@@ -350,6 +380,7 @@ mod tests {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
+            runner_url: None,
             db: None,
         };
         let output = tool
@@ -365,6 +396,7 @@ mod tests {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
+            runner_url: None,
             db: None,
         };
         let err = tool

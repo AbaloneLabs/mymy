@@ -1198,6 +1198,8 @@ mod tests {
             drive_s3_bucket: None,
             drive_s3_region: None,
             drive_s3_endpoint: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
         }
     }
 }

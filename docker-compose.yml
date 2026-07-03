@@ -5,6 +5,7 @@
 #   - db   : PostgreSQL 16 + pgvector for mymy (port 33432)
 #   - web  : frontend SPA served by nginx (port 33696)
 #   - api  : Rust backend (port 33697)
+#   - sandbox-runner : isolated agent process runner (port 33698)
 #
 # Port range: 33xxx, reserved for local mymy services.
 # ============================================================
@@ -82,6 +83,8 @@ services:
       MYMY_DRIVE_S3_BUCKET: ${MYMY_DRIVE_S3_BUCKET:-}
       MYMY_DRIVE_S3_REGION: ${MYMY_DRIVE_S3_REGION:-}
       MYMY_DRIVE_S3_ENDPOINT: ${MYMY_DRIVE_S3_ENDPOINT:-}
+      MYMY_SANDBOX_RUNNER_URL: http://sandbox-runner:33698
+      MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
@@ -110,6 +113,43 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      sandbox-runner:
+        condition: service_started
+
+  # ----------------------------------------------------------
+  # Sandboxed process runner.
+  #
+  # Default mode is bubblewrap so the stack works without Firecracker kernel
+  # and rootfs assets. Firecracker mode is supported by configuration and
+  # returns failed status until FIRECRACKER_BIN, FIRECRACKER_KERNEL_IMAGE, and
+  # FIRECRACKER_ROOTFS_IMAGE are provided.
+  # ----------------------------------------------------------
+  sandbox-runner:
+    image: mymy-api
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      network: host
+    container_name: mymy-sandbox-runner
+    restart: unless-stopped
+    entrypoint: ["mymy-sandbox-runner"]
+    command: []
+    environment:
+      PORT: "33698"
+      MYMY_SANDBOX_MODE: ${MYMY_SANDBOX_MODE:-bubblewrap}
+      MYMY_SANDBOX_UNSHARE_USER: ${MYMY_SANDBOX_UNSHARE_USER:-false}
+      MYMY_RUNNER_DATA_ROOT: /app/data/agent
+      MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
+      MYMY_SANDBOX_UID: "1000"
+      MYMY_SANDBOX_GID: "1000"
+      RUST_LOG: ${RUST_LOG:-mymy_sandbox_runner=info,tower_http=info}
+      HOME: /tmp
+    ports:
+      - "33698:33698"
+    volumes:
+      - mymy-api-data:/app/data
+      - /dev/kvm:/dev/kvm
+    privileged: true
 
 volumes:
   mymy-db-data:

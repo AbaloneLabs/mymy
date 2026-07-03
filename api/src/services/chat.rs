@@ -300,6 +300,8 @@ pub async fn prepare_native_turn(
         session_id: id,
         agent_profile: session.profile.clone(),
         project_id: session.project_id,
+        sandbox_runner_url: state.config.sandbox_runner_url.clone(),
+        sandbox_preview_host: state.config.sandbox_preview_host.clone(),
         db: state.db.clone(),
         extension_settings_key,
     });

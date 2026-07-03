@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -13,8 +13,10 @@ import {
   Music,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Trash2,
+  Upload,
   Video,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -30,7 +32,12 @@ import {
   useDriveFile,
   useDriveList,
   useDriveProviders,
+  useDriveSyncJobs,
+  useDriveTrash,
+  usePurgeDriveTrash,
   usePreviewEndpoints,
+  useRestoreDriveTrash,
+  useUploadDriveFiles,
   useWriteDriveFile,
 } from "@/features/drive/api";
 import { cn } from "@/lib/utils";
@@ -42,6 +49,7 @@ const ROOT_PATH = "/drive";
 export default function DrivePage() {
   const { t } = useTranslation();
   const selectedAgentProfile = useProjectContext((s) => s.selectedAgentProfile);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [path, setPath] = useState(ROOT_PATH);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
@@ -52,10 +60,15 @@ export default function DrivePage() {
   const list = useDriveList(path);
   const file = useDriveFile(selectedFilePath);
   const providers = useDriveProviders();
+  const trash = useDriveTrash();
+  const syncJobs = useDriveSyncJobs();
   const previews = usePreviewEndpoints(selectedAgentProfile);
   const agents = useAgents();
   const createFolder = useCreateDriveFolder();
   const deletePath = useDeleteDrivePath();
+  const uploadFiles = useUploadDriveFiles();
+  const restoreTrash = useRestoreDriveTrash();
+  const purgeTrash = usePurgeDriveTrash();
   const createPreview = useCreatePreviewEndpoint();
   const deletePreview = useDeletePreviewEndpoint();
 
@@ -95,6 +108,15 @@ export default function DrivePage() {
         if (selectedFilePath === targetPath) setSelectedFilePath(null);
       },
     });
+  }
+
+  function handleUpload(files: FileList | null) {
+    const selected = Array.from(files ?? []);
+    if (selected.length === 0) return;
+    uploadFiles.mutate({ path, files: selected });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   }
 
   function handleCreatePreview() {
@@ -146,6 +168,26 @@ export default function DrivePage() {
             title={t("common.refresh", { defaultValue: "Refresh" })}
           >
             <RefreshCw className="h-4 w-4" strokeWidth={1.5} />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => handleUpload(event.currentTarget.files)}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadFiles.isPending}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+            title={t("drive.upload")}
+          >
+            {uploadFiles.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.5} />
+            ) : (
+              <Upload className="h-4 w-4" strokeWidth={1.5} />
+            )}
           </button>
         </header>
 
@@ -239,6 +281,98 @@ export default function DrivePage() {
                     )}
                   </div>
                 ))}
+              </div>
+            </section>
+
+            <section>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">{t("drive.trash")}</h2>
+                <button
+                  type="button"
+                  onClick={() => trash.refetch()}
+                  className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  title={t("common.refresh")}
+                >
+                  <RefreshCw className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {(trash.data?.entries ?? []).slice(0, 6).map((entry) => (
+                  <div key={entry.id} className="rounded-md border border-[var(--border)] p-3">
+                    <div className="flex items-start gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-[var(--text)]">
+                          {entry.originalPath}
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--text-muted)]">
+                          {formatBytes(entry.size)} · {formatDate(entry.deletedAt)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => restoreTrash.mutate(entry.id)}
+                        disabled={restoreTrash.isPending}
+                        className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t("drive.restore")}
+                      >
+                        <RotateCcw className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => purgeTrash.mutate(entry.id)}
+                        disabled={purgeTrash.isPending}
+                        className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                        title={t("drive.purge")}
+                      >
+                        <Trash2 className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!trash.isLoading && (trash.data?.entries ?? []).length === 0 && (
+                  <p className="rounded-md border border-dashed border-[var(--border)] px-3 py-4 text-center text-sm text-[var(--text-faint)]">
+                    {t("drive.trashEmpty")}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">{t("drive.syncJobs")}</h2>
+                <button
+                  type="button"
+                  onClick={() => syncJobs.refetch()}
+                  className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  title={t("common.refresh")}
+                >
+                  <RefreshCw className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
+                </button>
+              </div>
+              <div className="space-y-2">
+                {(syncJobs.data?.jobs ?? []).slice(0, 6).map((job) => (
+                  <div key={job.id} className="rounded-md border border-[var(--border)] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium text-[var(--text)]">
+                        {job.operation}
+                      </span>
+                      <StatusPill status={job.status} />
+                    </div>
+                    <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
+                      {job.drivePath}
+                    </p>
+                    {job.error && (
+                      <p className="mt-1 line-clamp-2 text-xs text-[var(--status-error)]">
+                        {job.error}
+                      </p>
+                    )}
+                  </div>
+                ))}
+                {!syncJobs.isLoading && (syncJobs.data?.jobs ?? []).length === 0 && (
+                  <p className="rounded-md border border-dashed border-[var(--border)] px-3 py-4 text-center text-sm text-[var(--text-faint)]">
+                    {t("drive.syncEmpty")}
+                  </p>
+                )}
               </div>
             </section>
 
@@ -464,6 +598,20 @@ function LoadingLine({ label }: { label: string }) {
   );
 }
 
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "done"
+      ? "bg-[var(--status-success-bg)] text-[var(--status-success)]"
+      : status === "failed"
+        ? "bg-[var(--status-error)]/10 text-[var(--status-error)]"
+        : "bg-[var(--surface-hover)] text-[var(--text-muted)]";
+  return (
+    <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium", tone)}>
+      {status}
+    </span>
+  );
+}
+
 function iconForEntry(entry: DriveEntry) {
   if (entry.mimeType.startsWith("image/")) return ImageIcon;
   if (entry.mimeType.startsWith("video/")) return Video;
@@ -494,4 +642,13 @@ function formatBytes(size: number) {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }

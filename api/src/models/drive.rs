@@ -74,6 +74,74 @@ pub struct DriveMutationResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DriveUploadResponse {
+    pub success: bool,
+    pub files: Vec<DriveEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveTrashResponse {
+    pub entries: Vec<DriveTrashEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveTrashEntry {
+    pub id: String,
+    pub original_path: String,
+    pub trash_path: String,
+    pub kind: DriveEntryKind,
+    pub size: u64,
+    pub deleted_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveRestoreResponse {
+    pub success: bool,
+    pub restored_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveSyncJobsResponse {
+    pub jobs: Vec<DriveSyncJob>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveSyncJob {
+    pub id: String,
+    pub provider: DriveProviderKind,
+    pub drive_path: String,
+    pub operation: DriveSyncOperation,
+    pub status: DriveSyncStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DriveSyncOperation {
+    Upload,
+    Download,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DriveSyncStatus {
+    Pending,
+    Running,
+    Failed,
+    Done,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DriveProvidersResponse {
     pub providers: Vec<DriveProviderStatus>,
 }

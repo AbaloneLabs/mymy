@@ -24,12 +24,12 @@ RUN mkdir -p src && echo "fn main() {}" > src/dummy.rs
 COPY src ./src
 COPY migrations ./migrations
 
-# Build release binary.
+# Build release binaries.
 # sqlx query! macros require DATABASE_URL at compile time for type checking.
 # docker-compose builds with network:host, so localhost:33432 reaches the db.
 ARG DATABASE_URL=postgres://mymy:mymy@localhost:33432/mymy
 ENV DATABASE_URL=${DATABASE_URL}
-RUN cargo build --release --bin mymy-api
+RUN cargo build --release --bin mymy-api --bin mymy-sandbox-runner
 
 # ---- Runtime ----
 FROM debian:bookworm-slim AS runtime
@@ -41,6 +41,11 @@ WORKDIR /app
 #   bash            — hermes wrapper script uses bash
 #   gosu            — drop from root to the host UID after fixing /app/data ownership
 #   curl, git, ssh, jq, xz-utils, file — required by the Hermes agent runtime.
+#   python3, nodejs, npm — baseline sandbox runtimes for agent scripts and
+#     development servers such as `python3 -m http.server` or `npm run dev`.
+#   procps — lightweight process inspection inside the runner container.
+#   bubblewrap — process isolation backend used by mymy-sandbox-runner when
+#     Firecracker assets are not configured.
 #     Hermes runs `hermes chat` as a subprocess, which invokes its own
 #     install/bootstrap scripts that shell out to curl (download Node.js),
 #     git (clone deps), ssh (remote ops), jq (JSON parsing), xz (extract
@@ -57,9 +62,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     xz-utils \
     file \
+    python3 \
+    nodejs \
+    npm \
+    procps \
+    bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/mymy-api /usr/local/bin/mymy-api
+COPY --from=builder /app/target/release/mymy-sandbox-runner /usr/local/bin/mymy-sandbox-runner
 COPY --from=builder /app/migrations ./migrations
 
 # Entrypoint ensures the runtime HOME (set to the host user's home for the

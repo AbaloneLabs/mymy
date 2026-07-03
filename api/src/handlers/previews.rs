@@ -74,6 +74,7 @@ async fn proxy_preview(
         &endpoint,
         path.path.as_deref().unwrap_or(""),
         req.uri().query(),
+        &state.config.sandbox_preview_host,
     )?;
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .map_err(|err| AppError::BadRequest(format!("unsupported preview method: {err}")))?;

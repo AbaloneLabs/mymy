@@ -21,6 +21,7 @@ use crate::agent::security::{
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
+use crate::services::sandbox_runner::{RunnerClient, RunnerExecuteRequest, RunnerRoot};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const MAX_TIMEOUT_SECS: u64 = 300;
@@ -48,6 +49,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         handler: Arc::new(CodeExecTool {
             working_dir: config.working_dir.clone(),
+            allowed_roots: config.allowed_roots.clone(),
             scratch_dir: config
                 .agent_data_dir
                 .join("sandbox")
@@ -55,6 +57,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                     || "standalone".to_string(),
                     |session_id| session_id.to_string(),
                 )),
+            runner_url: config.sandbox_runner_url.clone(),
             allowed_tools: sandbox_allowed_tools(),
         }),
     });
@@ -62,7 +65,9 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
 struct CodeExecTool {
     working_dir: PathBuf,
+    allowed_roots: Vec<PathBuf>,
     scratch_dir: PathBuf,
+    runner_url: Option<String>,
     allowed_tools: HashSet<String>,
 }
 
@@ -128,16 +133,26 @@ impl ToolHandler for CodeExecTool {
             rpc.socket_path().display().to_string(),
         );
         extra_env.insert("PYTHONPATH".to_string(), helper_dir.display().to_string());
-        let output = sandbox
-            .execute_local(ExecOptions {
-                language: language.to_string(),
-                code: code.to_string(),
-                cwd,
-                timeout_secs,
-                extra_env,
-            })
+        let options = ExecOptions {
+            language: language.to_string(),
+            code: code.to_string(),
+            cwd,
+            timeout_secs,
+            extra_env,
+        };
+        let output = if let Some(runner_url) = self.runner_url.as_deref() {
+            execute_python_with_runner(
+                runner_url,
+                &self.working_dir,
+                &self.allowed_roots,
+                &self.scratch_dir,
+                options,
+            )
             .await
-            .map_err(|err| ToolError::Execution(err.to_string()))?;
+        } else {
+            sandbox.execute_local(options).await
+        }
+        .map_err(|err| ToolError::Execution(err.to_string()))?;
 
         Ok(tool_result(&serde_json::json!({
             "success": output.success,
@@ -148,6 +163,121 @@ impl ToolHandler for CodeExecTool {
             "allowed_tools": self.allowed_tools.iter().cloned().collect::<Vec<_>>(),
         })))
     }
+}
+
+async fn execute_python_with_runner(
+    runner_url: &str,
+    working_dir: &Path,
+    allowed_roots: &[PathBuf],
+    scratch_dir: &Path,
+    options: ExecOptions,
+) -> Result<crate::agent::sandbox::ExecResult, crate::agent::sandbox::SandboxError> {
+    if options.language != "python" {
+        return Err(crate::agent::sandbox::SandboxError::InvalidRequest(
+            "only python is supported".to_string(),
+        ));
+    }
+    tokio::fs::create_dir_all(&scratch_dir)
+        .await
+        .map_err(|err| {
+            crate::agent::sandbox::SandboxError::Execution(format!(
+                "scratch dir create failed: {err}"
+            ))
+        })?;
+    let cwd = resolve_runner_cwd(working_dir, options.cwd)?;
+    let script = scratch_dir.join(format!("exec-{}.py", uuid::Uuid::new_v4()));
+    let runner = scratch_dir.join(format!("runner-{}.py", uuid::Uuid::new_v4()));
+    let cwd_file = scratch_dir.join(".cwd");
+    tokio::fs::write(&script, options.code)
+        .await
+        .map_err(|err| {
+            crate::agent::sandbox::SandboxError::Execution(format!("script write failed: {err}"))
+        })?;
+    let runner_code = format!(
+        r#"import os
+import runpy
+
+script = {script:?}
+cwd_file = {cwd_file:?}
+try:
+    runpy.run_path(script, run_name="__main__")
+finally:
+    with open(cwd_file, "w", encoding="utf-8") as handle:
+        handle.write(os.getcwd())
+"#,
+        script = script.display().to_string(),
+        cwd_file = cwd_file.display().to_string()
+    );
+    tokio::fs::write(&runner, runner_code)
+        .await
+        .map_err(|err| {
+            crate::agent::sandbox::SandboxError::Execution(format!("runner write failed: {err}"))
+        })?;
+
+    let mut roots = vec![
+        RunnerRoot::writable(working_dir),
+        RunnerRoot::writable(scratch_dir),
+    ];
+    roots.extend(allowed_roots.iter().map(|root| RunnerRoot::writable(root)));
+    roots.sort_by(|left, right| left.host_path.cmp(&right.host_path));
+    roots.dedup_by(|left, right| left.host_path == right.host_path);
+
+    let response = RunnerClient::new(runner_url.to_string())
+        .execute(&RunnerExecuteRequest {
+            command: format!("python3 {}", shell_quote(&runner.display().to_string())),
+            cwd: cwd.display().to_string(),
+            roots,
+            timeout_secs: Some(options.timeout_secs),
+            env: Some(options.extra_env),
+        })
+        .await
+        .map_err(|err| crate::agent::sandbox::SandboxError::Execution(err.to_string()))?;
+    let _ = tokio::fs::remove_file(&script).await;
+    let _ = tokio::fs::remove_file(&runner).await;
+    let cwd = tokio::fs::read_to_string(&cwd_file)
+        .await
+        .ok()
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .unwrap_or(response.cwd);
+    Ok(crate::agent::sandbox::ExecResult {
+        success: response.success,
+        stdout: response.stdout,
+        stderr: response.stderr,
+        exit_code: response.exit_code,
+        cwd,
+    })
+}
+
+fn resolve_runner_cwd(
+    working_dir: &Path,
+    requested: Option<PathBuf>,
+) -> Result<PathBuf, crate::agent::sandbox::SandboxError> {
+    let root = working_dir.canonicalize().map_err(|err| {
+        crate::agent::sandbox::SandboxError::InvalidRequest(format!(
+            "workspace cannot be resolved: {err}"
+        ))
+    })?;
+    let cwd = match requested {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => working_dir.join(path),
+        None => root.clone(),
+    };
+    let cwd = cwd.canonicalize().map_err(|err| {
+        crate::agent::sandbox::SandboxError::InvalidRequest(format!(
+            "cwd cannot be resolved: {err}"
+        ))
+    })?;
+    if !cwd.starts_with(&root) {
+        return Err(crate::agent::sandbox::SandboxError::InvalidRequest(
+            "cwd must stay inside the workspace".to_string(),
+        ));
+    }
+    Ok(cwd)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 struct CodeRpcHandler {
@@ -382,7 +512,9 @@ mod tests {
     fn test_tool(workspace: PathBuf, scratch: PathBuf) -> CodeExecTool {
         CodeExecTool {
             working_dir: workspace,
+            allowed_roots: Vec::new(),
             scratch_dir: scratch,
+            runner_url: None,
             allowed_tools: ["read_file", "search_files"]
                 .into_iter()
                 .map(ToString::to_string)

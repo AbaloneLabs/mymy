@@ -26,6 +26,7 @@ Manage native LLM agents, their project workspaces, prompts, files, previews, no
 - **Keep agent work inside Drive** under `/drive/agents`, `/drive/projects`, and `/drive/shared`
 - **Edit prompts** (`AGENTS.md`, `SOUL.md`) from the agent UI and the Drive tab
 - **Open files and previews** for generated markdown, images, media, PDFs, docx text, and local dev servers
+- **Run agent commands through a sandbox runner** with private agent roots plus shared/project mounts
 - **Chat with agents**, take notes, track tasks/goals/finance, and manage your calendar
 - **Stay locked & private** with PIN-based access (no cloud accounts, no login flows)
 
@@ -37,9 +38,9 @@ It's designed for the **one-person business** — the developer-founder who wear
 |---|---------|-------------|
 | 🔐 | **PIN Authentication** | Server-side PIN sessions with an HttpOnly cookie. Default PIN `mymy`, changeable in settings. |
 | 🤖 | **Native Agent Management** | Create/delete agents, edit prompts, select the active agent globally, and run chat sessions against registered LLM providers. |
-| 📁 | **Drive Workspace** | Browse and edit `/drive/projects`, `/drive/agents`, and `/drive/shared`; view md, docx text, images, audio, video, and PDFs. |
-| 🧱 | **Sandbox Runtime Model** | Agent tools resolve paths through Drive-scoped roots so each agent sees its own workspace plus shared/project roots. |
-| 🖥️ | **Preview Proxy** | Agents can register local dev-server ports with `register_preview`; the UI opens tokenized preview URLs. |
+| 📁 | **Drive Workspace** | Browse, edit, upload, delete, restore, and purge files under `/drive/projects`, `/drive/agents`, and `/drive/shared`; view md, docx text, images, audio, video, and PDFs. |
+| 🧱 | **Sandbox Runner** | Agent terminal/code tools and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
+| 🖥️ | **Preview Proxy** | Agents can register dev-server ports with `register_preview`; the UI opens tokenized preview URLs through the API. |
 | 📁 | **Project Workspace** | Projects get stable Drive folders and can be linked to chats and work sessions. |
 | 💬 | **Chat** | Chat with native agents, organized into sessions tied to projects or general topics. |
 | 📅 | **Calendar** | Schedule and manage events, linked to projects. |
@@ -56,8 +57,9 @@ It's designed for the **one-person business** — the developer-founder who wear
 | **Styling** | Tailwind CSS v4 | CSS-variable design tokens |
 | **State** | Zustand · TanStack Query · React Router | Auth + settings (localStorage), server state (React Query) |
 | **Backend** | Rust · axum | REST API, server-side auth sessions, native agent runtime, Drive, preview proxy |
+| **Sandbox runner** | Rust · axum · bubblewrap | Isolated command/process execution with optional Firecracker configuration surface |
 | **Database** | PostgreSQL 16 + pgvector | Full-text + semantic search in one DB |
-| **Infra** | Docker Compose | One command to run the app, DB, API data volume, and Drive storage |
+| **Infra** | Docker Compose | One command to run the app, DB, API data volume, Drive storage, and sandbox runner |
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -77,20 +79,23 @@ It's designed for the **one-person business** — the developer-founder who wear
                     │  Rust API (:33697)  │
                     │  • Auth sessions    │
                     │  • Native agents    │
-                    │  • Projects CRUD    │
                     │  • LLM chat runtime │
                     │  • Drive + previews │
-                    │  • Calendar         │
                     │  • Notes + FTS      │
                     └──────────┬──────────┘
                                │
-              ┌────────────────┼────────────────┐
-              │                │                │
-       ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
-       │ PostgreSQL  │  │ Local Drive │  │   S3 sync   │
-       │ + pgvector  │  │ volume      │  │  provider   │
-       │ (:33432)    │  │             │  │             │
-       └─────────────┘  └─────────────┘  └─────────────┘
+          ┌────────────────────┼────────────────────┐
+          │                    │                    │
+   ┌──────▼──────┐      ┌──────▼──────┐      ┌──────▼──────┐
+   │ PostgreSQL  │      │ Local Drive │      │ Sandbox     │
+   │ + pgvector  │      │ volume      │      │ runner      │
+   │ (:33432)    │      │             │      │ (:33698)    │
+   └─────────────┘      └──────┬──────┘      └──────┬──────┘
+                               │                    │
+                        ┌──────▼──────┐      ┌──────▼──────┐
+                        │   S3 sync   │      │ bubblewrap  │
+                        │  provider   │      │ isolation   │
+                        └─────────────┘      └─────────────┘
 ```
 
 ## 📸 Screenshots
@@ -179,15 +184,37 @@ The API stores Drive data under `MYMY_AGENT_DATA_DIR`:
   /shared                      cross-agent shared files
 ```
 
-Native agent file tools resolve paths only inside the current agent workspace
-plus explicitly granted shared/project roots. Other agents' private folders are
-not granted as tool roots.
+Drive supports create/edit/upload/delete, a trash workflow with restore and
+purge, and optional background S3 synchronization jobs. Native agent file tools
+resolve paths only inside the current agent workspace plus explicitly granted
+shared/project roots. Other agents' private folders are not granted as tool
+roots.
+
+The Docker stack starts a separate `sandbox-runner` service on port `33698`.
+The API sends terminal commands, code execution, and long-running sandbox
+processes to this runner when `MYMY_SANDBOX_RUNNER_URL` is configured. In the
+default Compose setup, the runner uses bubblewrap to create PID, IPC, UTS, and
+mount isolation, mounts the selected agent workspace plus shared/project roots,
+and keeps process logs under the Drive data volume. User namespaces can be
+enabled separately when the deployment provides an idmapped/rootfs setup that
+can write Drive data.
+
+Firecracker mode is exposed through configuration for deployments that provide
+VM assets and host orchestration, but the default local stack uses bubblewrap:
+
+```bash
+MYMY_SANDBOX_MODE=bubblewrap
+MYMY_SANDBOX_UNSHARE_USER=false
+MYMY_SANDBOX_RUNNER_URL=http://sandbox-runner:33698
+MYMY_SANDBOX_PREVIEW_HOST=sandbox-runner
+```
 
 Development servers started by an agent can be exposed through preview
 endpoints. The runtime tool `register_preview` accepts a local forwarded port
-and creates a tokenized `/api/previews/<token>` URL. The proxy only accepts
-loopback `http://127.0.0.1:<port>` / `localhost` targets to avoid becoming an
-open proxy.
+and creates a tokenized `/api/previews/<token>` URL. The proxy accepts loopback
+targets for local development and the configured sandbox preview host used by
+the Docker runner, while rejecting arbitrary hosts to avoid becoming an open
+proxy.
 
 Optional S3 provider settings:
 
@@ -242,6 +269,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 |---------|------|
 | Web (frontend) | `33696` |
 | API (Rust) | `33697` |
+| Sandbox runner | `33698` |
 | PostgreSQL | `33432` |
 
 ## 🗺️ Roadmap
@@ -259,15 +287,16 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Finance (transactions and period summaries)
 - [x] Goals / OKR tracking
 - [x] Native LLM provider-backed agents
-- [x] Drive tab with file browsing/editing and media viewers
+- [x] Drive tab with file browsing/editing/upload, trash, sync jobs, and media viewers
 - [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
 - [x] Tokenized preview proxy for agent-started local servers
+- [x] Bubblewrap-backed sandbox runner for agent commands and long-running processes
+- [x] S3 object synchronization worker for Drive sync jobs
 - [x] i18n (English, Korean, Chinese, Japanese)
 
 ### Planned
 - [ ] Home dashboard overview (widgets, activity feed, stats)
-- [ ] Firecracker microVM runner backend for stronger OS-level isolation
-- [ ] S3 object synchronization worker for Drive sync jobs
+- [ ] Firecracker microVM host assets and lifecycle orchestration for stronger VM-backed isolation
 - [ ] CRM / client management (contacts & relationships)
 - [ ] Time tracking
 - [ ] Agent automation routines (presets)

@@ -14,17 +14,43 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::drive::{
-    DriveEntry, DriveEntryKind, DriveFileResponse, DriveListResponse, DriveProviderKind,
-    DriveProviderStatus, DriveProvidersResponse,
+    DriveEntry, DriveEntryKind, DriveFileResponse, DriveListResponse, DriveMutationResponse,
+    DriveProviderKind, DriveProviderStatus, DriveProvidersResponse, DriveRestoreResponse,
+    DriveSyncJob, DriveSyncJobsResponse, DriveSyncOperation, DriveSyncStatus, DriveTrashEntry,
+    DriveTrashResponse, DriveUploadResponse,
 };
 use crate::state::AppState;
 
 const DRIVE_PREFIX: &str = "/drive";
 const MAX_TEXT_PREVIEW_BYTES: u64 = 1_000_000;
+const MAX_SYNC_JOBS: i64 = 100;
+
+#[derive(Debug, FromRow)]
+struct DriveTrashRow {
+    id: Uuid,
+    original_path: String,
+    trash_path: String,
+    kind: String,
+    size_bytes: i64,
+    deleted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+struct DriveSyncJobRow {
+    id: Uuid,
+    provider: String,
+    drive_path: String,
+    operation: String,
+    status: String,
+    error: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
 
 pub fn drive_root(agent_data_dir: &Path) -> PathBuf {
     agent_data_dir.join("drive")
@@ -292,8 +318,35 @@ pub async fn write_file(state: &AppState, logical_path: &str, content: &str) -> 
     if resolved.physical_path.exists() && fs::metadata(&resolved.physical_path)?.is_dir() {
         return Err(AppError::BadRequest("Cannot overwrite a directory".into()));
     }
-    fs::write(resolved.physical_path, content)?;
+    fs::write(&resolved.physical_path, content)?;
+    enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await?;
     Ok(())
+}
+
+pub async fn upload_file(
+    state: &AppState,
+    target_directory: &str,
+    file_name: &str,
+    bytes: &[u8],
+) -> AppResult<DriveUploadResponse> {
+    ensure_drive_root(state)?;
+    let safe_name = validate_file_name(file_name)?;
+    let target_dir = resolve_drive_path(&state.config.agent_data_dir, target_directory)?;
+    if target_dir.physical_path.exists() && !target_dir.physical_path.is_dir() {
+        return Err(AppError::BadRequest(
+            "Upload target must be a Drive directory".into(),
+        ));
+    }
+    fs::create_dir_all(&target_dir.physical_path)?;
+    let logical_path = logical_child_path(&target_dir.logical_path, &safe_name);
+    let physical_path = target_dir.physical_path.join(&safe_name);
+    fs::write(&physical_path, bytes)?;
+    enqueue_s3_sync_job(state, &logical_path, "upload").await?;
+
+    Ok(DriveUploadResponse {
+        success: true,
+        files: vec![entry_for_path(safe_name, logical_path, &physical_path)?],
+    })
 }
 
 pub async fn create_folder(state: &AppState, logical_path: &str) -> AppResult<()> {
@@ -314,15 +367,383 @@ pub async fn delete_path(state: &AppState, logical_path: &str) -> AppResult<()> 
 
     let trash_root = drive_root(&state.config.agent_data_dir).join(".trash");
     fs::create_dir_all(&trash_root)?;
-    let stamp = Utc::now().format("%Y%m%d%H%M%S");
+    let trash_id = Uuid::new_v4();
     let safe_name = resolved
         .physical_path
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| "drive-entry".to_string());
-    let target = trash_root.join(format!("{safe_name}-{stamp}"));
+    let metadata = fs::metadata(&resolved.physical_path)?;
+    let kind = if metadata.is_dir() {
+        DriveEntryKind::Directory
+    } else {
+        DriveEntryKind::File
+    };
+    let target = trash_root.join(trash_id.to_string()).join(&safe_name);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let original_path = resolved.logical_path.clone();
     fs::rename(resolved.physical_path, target)?;
+    let trash_path = format!("/drive/.trash/{trash_id}/{safe_name}");
+    let kind_str = entry_kind_to_str(kind);
+    let size_bytes = if metadata.is_file() {
+        metadata.len() as i64
+    } else {
+        0
+    };
+    sqlx::query!(
+        r#"INSERT INTO drive_trash_entries
+             (id, original_path, trash_path, kind, size_bytes)
+           VALUES ($1, $2, $3, $4, $5)"#,
+        trash_id,
+        &original_path,
+        trash_path,
+        kind_str,
+        size_bytes,
+    )
+    .execute(&state.db)
+    .await?;
+    enqueue_s3_sync_job(state, &original_path, "delete").await?;
     Ok(())
+}
+
+pub async fn list_trash(state: &AppState) -> AppResult<DriveTrashResponse> {
+    let rows = sqlx::query_as!(
+        DriveTrashRow,
+        r#"SELECT id, original_path, trash_path, kind, size_bytes, deleted_at
+           FROM drive_trash_entries
+           WHERE restored_at IS NULL
+           ORDER BY deleted_at DESC"#
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(DriveTrashResponse {
+        entries: rows.into_iter().map(row_to_trash_entry).collect(),
+    })
+}
+
+pub async fn restore_trash(state: &AppState, id: Uuid) -> AppResult<DriveRestoreResponse> {
+    ensure_drive_root(state)?;
+    let row = sqlx::query_as!(
+        DriveTrashRow,
+        r#"SELECT id, original_path, trash_path, kind, size_bytes, deleted_at
+           FROM drive_trash_entries
+           WHERE id = $1 AND restored_at IS NULL"#,
+        id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("trash entry {id} not found")))?;
+
+    let trash_physical = trash_path_to_physical(&state.config.agent_data_dir, &row.trash_path)?;
+    if !trash_physical.exists() {
+        return Err(AppError::NotFound(format!(
+            "trash payload for {id} was not found"
+        )));
+    }
+    let restore_target =
+        available_restore_target(&state.config.agent_data_dir, &row.original_path)?;
+    if let Some(parent) = restore_target.physical_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(trash_physical, &restore_target.physical_path)?;
+    sqlx::query!(
+        "UPDATE drive_trash_entries SET restored_at = now() WHERE id = $1",
+        id
+    )
+    .execute(&state.db)
+    .await?;
+    enqueue_s3_sync_job(state, &restore_target.logical_path, "upload").await?;
+
+    Ok(DriveRestoreResponse {
+        success: true,
+        restored_path: restore_target.logical_path,
+    })
+}
+
+pub async fn purge_trash(state: &AppState, id: Uuid) -> AppResult<DriveMutationResponse> {
+    let row = sqlx::query_as!(
+        DriveTrashRow,
+        r#"SELECT id, original_path, trash_path, kind, size_bytes, deleted_at
+           FROM drive_trash_entries
+           WHERE id = $1 AND restored_at IS NULL"#,
+        id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("trash entry {id} not found")))?;
+    let trash_physical = trash_path_to_physical(&state.config.agent_data_dir, &row.trash_path)?;
+    if trash_physical.is_dir() {
+        fs::remove_dir_all(&trash_physical)?;
+    } else if trash_physical.exists() {
+        fs::remove_file(&trash_physical)?;
+    }
+    sqlx::query!(
+        "UPDATE drive_trash_entries SET restored_at = now() WHERE id = $1",
+        id
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(DriveMutationResponse { success: true })
+}
+
+pub async fn list_sync_jobs(state: &AppState) -> AppResult<DriveSyncJobsResponse> {
+    let rows = sqlx::query_as!(
+        DriveSyncJobRow,
+        r#"SELECT id, provider, drive_path, operation, status, error, created_at, updated_at
+           FROM drive_sync_jobs
+           ORDER BY created_at DESC
+           LIMIT $1"#,
+        MAX_SYNC_JOBS
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(DriveSyncJobsResponse {
+        jobs: rows.into_iter().map(row_to_sync_job).collect(),
+    })
+}
+
+pub async fn enqueue_s3_sync_job(
+    state: &AppState,
+    logical_path: &str,
+    operation: &str,
+) -> AppResult<()> {
+    if state.config.drive_s3_bucket.is_none() {
+        return Ok(());
+    }
+    let path = normalize_logical_drive_path(logical_path)?;
+    sqlx::query!(
+        r#"INSERT INTO drive_sync_jobs (provider, drive_path, operation, status)
+           VALUES ('s3', $1, $2, 'pending')"#,
+        path,
+        operation,
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+pub fn physical_path_for_sync(state: &AppState, logical_path: &str) -> AppResult<PathBuf> {
+    Ok(resolve_drive_path(&state.config.agent_data_dir, logical_path)?.physical_path)
+}
+
+pub fn s3_object_key(logical_path: &str) -> AppResult<String> {
+    let normalized = normalize_logical_drive_path(logical_path)?;
+    let key = normalized
+        .trim_start_matches(DRIVE_PREFIX)
+        .trim_start_matches('/')
+        .to_string();
+    if key.is_empty() {
+        return Err(AppError::BadRequest(
+            "Drive root cannot be synchronized as a single S3 object".into(),
+        ));
+    }
+    Ok(key)
+}
+
+fn entry_for_path(
+    name: String,
+    logical_path: String,
+    physical_path: &Path,
+) -> AppResult<DriveEntry> {
+    let metadata = fs::metadata(physical_path)?;
+    let kind = if metadata.is_dir() {
+        DriveEntryKind::Directory
+    } else {
+        DriveEntryKind::File
+    };
+    Ok(DriveEntry {
+        mime_type: if kind == DriveEntryKind::Directory {
+            "inode/directory".to_string()
+        } else {
+            mime_type_for_path(physical_path).to_string()
+        },
+        name,
+        path: logical_path,
+        kind,
+        size: if metadata.is_file() {
+            metadata.len()
+        } else {
+            0
+        },
+        updated_at: metadata_updated_at(&metadata),
+        provider: DriveProviderKind::LocalVm,
+    })
+}
+
+fn row_to_trash_entry(row: DriveTrashRow) -> DriveTrashEntry {
+    DriveTrashEntry {
+        id: row.id.to_string(),
+        original_path: row.original_path,
+        trash_path: row.trash_path,
+        kind: parse_entry_kind(&row.kind),
+        size: row.size_bytes.max(0) as u64,
+        deleted_at: row.deleted_at.to_rfc3339(),
+    }
+}
+
+fn row_to_sync_job(row: DriveSyncJobRow) -> DriveSyncJob {
+    DriveSyncJob {
+        id: row.id.to_string(),
+        provider: parse_provider(&row.provider),
+        drive_path: row.drive_path,
+        operation: parse_sync_operation(&row.operation),
+        status: parse_sync_status(&row.status),
+        error: row.error,
+        created_at: row.created_at.to_rfc3339(),
+        updated_at: row.updated_at.to_rfc3339(),
+    }
+}
+
+fn validate_file_name(value: &str) -> AppResult<String> {
+    let name = value.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err(AppError::BadRequest("Invalid upload file name".into()));
+    }
+    Ok(name.to_string())
+}
+
+fn trash_path_to_physical(agent_data_dir: &Path, logical_path: &str) -> AppResult<PathBuf> {
+    let normalized = normalize_logical_drive_path(logical_path)?;
+    let relative = normalized
+        .trim_start_matches(DRIVE_PREFIX)
+        .trim_start_matches('/');
+    if !relative.starts_with(".trash/") {
+        return Err(AppError::BadRequest("Invalid trash path".into()));
+    }
+    let root = canonical_or_create(&drive_root(agent_data_dir))?;
+    let physical = root.join(relative);
+    let boundary = if physical.exists() {
+        physical.canonicalize()?
+    } else {
+        physical
+            .parent()
+            .ok_or_else(|| AppError::BadRequest("Invalid trash path".into()))?
+            .canonicalize()?
+    };
+    if !boundary.starts_with(root.join(".trash")) {
+        return Err(AppError::BadRequest("Trash path escapes trash root".into()));
+    }
+    Ok(physical)
+}
+
+fn available_restore_target(
+    agent_data_dir: &Path,
+    original_path: &str,
+) -> AppResult<ResolvedDrivePath> {
+    let original = resolve_drive_path(agent_data_dir, original_path)?;
+    if !original.physical_path.exists() {
+        return Ok(original);
+    }
+
+    let parent = original
+        .physical_path
+        .parent()
+        .ok_or_else(|| AppError::BadRequest("Invalid restore target".into()))?
+        .to_path_buf();
+    let logical_parent = logical_parent_path(&original.logical_path)?;
+    let file_name = original
+        .physical_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::BadRequest("Invalid restore target".into()))?;
+    let stamp = Utc::now().format("%Y%m%d%H%M%S");
+    for index in 0..100 {
+        let candidate_name = restored_file_name(&file_name, &stamp.to_string(), index);
+        let physical_path = parent.join(&candidate_name);
+        if !physical_path.exists() {
+            return Ok(ResolvedDrivePath {
+                physical_path,
+                logical_path: logical_child_path(&logical_parent, &candidate_name),
+            });
+        }
+    }
+    Err(AppError::BadRequest(
+        "Could not find an available restore target".into(),
+    ))
+}
+
+fn logical_parent_path(logical_path: &str) -> AppResult<String> {
+    let normalized = normalize_logical_drive_path(logical_path)?;
+    let mut parts = normalized
+        .trim_start_matches(DRIVE_PREFIX)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Err(AppError::BadRequest("Drive root has no parent".into()));
+    }
+    parts.pop();
+    if parts.is_empty() {
+        Ok(DRIVE_PREFIX.to_string())
+    } else {
+        Ok(format!("{DRIVE_PREFIX}/{}", parts.join("/")))
+    }
+}
+
+fn restored_file_name(file_name: &str, stamp: &str, index: usize) -> String {
+    let suffix = if index == 0 {
+        format!("restored-{stamp}")
+    } else {
+        format!("restored-{stamp}-{index}")
+    };
+    let path = Path::new(file_name);
+    match (path.file_stem(), path.extension()) {
+        (Some(stem), Some(ext)) => format!(
+            "{}-{}.{}",
+            stem.to_string_lossy(),
+            suffix,
+            ext.to_string_lossy()
+        ),
+        _ => format!("{file_name}-{suffix}"),
+    }
+}
+
+fn entry_kind_to_str(kind: DriveEntryKind) -> &'static str {
+    match kind {
+        DriveEntryKind::Directory => "directory",
+        DriveEntryKind::File => "file",
+    }
+}
+
+fn parse_entry_kind(value: &str) -> DriveEntryKind {
+    match value {
+        "directory" => DriveEntryKind::Directory,
+        _ => DriveEntryKind::File,
+    }
+}
+
+fn parse_provider(value: &str) -> DriveProviderKind {
+    match value {
+        "s3" => DriveProviderKind::S3,
+        _ => DriveProviderKind::LocalVm,
+    }
+}
+
+fn parse_sync_operation(value: &str) -> DriveSyncOperation {
+    match value {
+        "download" => DriveSyncOperation::Download,
+        "delete" => DriveSyncOperation::Delete,
+        _ => DriveSyncOperation::Upload,
+    }
+}
+
+fn parse_sync_status(value: &str) -> DriveSyncStatus {
+    match value {
+        "running" => DriveSyncStatus::Running,
+        "failed" => DriveSyncStatus::Failed,
+        "done" => DriveSyncStatus::Done,
+        _ => DriveSyncStatus::Pending,
+    }
 }
 
 fn default_agents_md(profile: &str, display_name: &str, role: &str) -> String {

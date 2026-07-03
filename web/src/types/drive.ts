@@ -40,6 +40,48 @@ export interface DriveProvidersResponse {
   providers: DriveProviderStatus[];
 }
 
+export interface DriveUploadResponse {
+  success: boolean;
+  files: DriveEntry[];
+}
+
+export interface DriveTrashEntry {
+  id: string;
+  originalPath: string;
+  trashPath: string;
+  kind: DriveEntryKind;
+  size: number;
+  deletedAt: string;
+}
+
+export interface DriveTrashResponse {
+  entries: DriveTrashEntry[];
+}
+
+export interface DriveRestoreResponse {
+  success: boolean;
+  restoredPath: string;
+}
+
+export type DriveSyncOperation = "upload" | "download" | "delete";
+
+export type DriveSyncStatus = "pending" | "running" | "failed" | "done";
+
+export interface DriveSyncJob {
+  id: string;
+  provider: DriveProviderKind;
+  drivePath: string;
+  operation: DriveSyncOperation;
+  status: DriveSyncStatus;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DriveSyncJobsResponse {
+  jobs: DriveSyncJob[];
+}
+
 export type PreviewStatus = "active" | "stopped" | "failed";
 
 export type PreviewVisibility = "session" | "public";

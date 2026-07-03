@@ -2,8 +2,9 @@
 //!
 //! A preview is an explicit, tokenized tunnel from the web UI to a server that
 //! an agent started inside its sandbox network. Until the microVM runner owns
-//! port forwarding, targets are restricted to loopback addresses so this API
-//! cannot become a general-purpose SSRF proxy.
+//! port forwarding, targets are restricted to loopback addresses and the
+//! configured sandbox runner host so this API cannot become a general-purpose
+//! SSRF proxy.
 
 use chrono::{DateTime, Utc};
 use reqwest::Url;
@@ -87,7 +88,8 @@ pub async fn create_preview(
     }
 
     let label = validate_label(req.label)?;
-    let target_url = validate_target_url(&req.target_url)?;
+    let target_url =
+        validate_target_url(&req.target_url, Some(&state.config.sandbox_preview_host))?;
     let visibility = visibility_to_str(req.visibility.unwrap_or(PreviewVisibility::Session));
     let token = Uuid::new_v4().simple().to_string();
 
@@ -147,8 +149,9 @@ pub fn proxied_target_url(
     endpoint: &PreviewEndpointRow,
     path: &str,
     query: Option<&str>,
+    sandbox_preview_host: &str,
 ) -> AppResult<String> {
-    let base = validate_target_url(&endpoint.target_url)?;
+    let base = validate_target_url(&endpoint.target_url, Some(sandbox_preview_host))?;
     let mut url = Url::parse(&base)
         .map_err(|err| AppError::BadRequest(format!("invalid preview target URL: {err}")))?;
     let mut joined_path = url.path().trim_end_matches('/').to_string();
@@ -175,7 +178,7 @@ fn validate_label(value: String) -> AppResult<String> {
     Ok(label)
 }
 
-fn validate_target_url(value: &str) -> AppResult<String> {
+fn validate_target_url(value: &str, allowed_sandbox_host: Option<&str>) -> AppResult<String> {
     let url = Url::parse(value)
         .map_err(|err| AppError::BadRequest(format!("invalid preview target URL: {err}")))?;
     if url.scheme() != "http" {
@@ -187,9 +190,12 @@ fn validate_target_url(value: &str) -> AppResult<String> {
         .host_str()
         .ok_or_else(|| AppError::BadRequest("preview target host is required".to_string()))?;
     let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if !is_loopback {
+    let is_allowed_sandbox_host = allowed_sandbox_host.is_some_and(|allowed| {
+        allowed.eq_ignore_ascii_case(host) || host.eq_ignore_ascii_case("sandbox-runner")
+    });
+    if !is_loopback && !is_allowed_sandbox_host {
         return Err(AppError::BadRequest(
-            "preview target must be a loopback sandbox forwarding address".to_string(),
+            "preview target must be a loopback or sandbox forwarding address".to_string(),
         ));
     }
     let port = url
