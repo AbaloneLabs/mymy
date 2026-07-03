@@ -1,9 +1,9 @@
 //! Local Python code execution tool.
 //!
-//! This is a controlled convenience layer, not a security sandbox. It is not
-//! enabled by the safe default toolsets. The subprocess receives a scrubbed
-//! environment, a workspace working directory, timeout limits, and redacted
-//! output, but OS-level isolation requires a future Docker backend.
+//! This is a controlled convenience layer over the sandbox runner. The
+//! subprocess receives a scrubbed environment, a workspace working directory,
+//! timeout limits, redacted output, and the same runner isolation as terminal
+//! commands when the runner is configured.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,8 +15,8 @@ use serde_json::Value;
 use super::{truncate_chars, BuiltinToolConfig};
 use crate::agent::sandbox::{ExecOptions, SandboxManager, SandboxRpcHandler};
 use crate::agent::security::{
-    detect_dangerous_command, ensure_read_allowed, is_sensitive_path, redact_sensitive_text,
-    redact_terminal_output, Severity,
+    detect_dangerous_command, ensure_read_allowed, ensure_write_allowed, is_sensitive_path,
+    redact_sensitive_text, redact_terminal_output, Severity,
 };
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
@@ -35,7 +35,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "code_execution".to_string(),
         schema: tool_schema(
             "execute_code",
-            "Execute a Python script with scrubbed environment and timeout. Not enabled by safe defaults.",
+            "Execute a Python script with scrubbed environment, timeout, and sandbox tool RPC helpers.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -294,6 +294,8 @@ impl SandboxRpcHandler for CodeRpcHandler {
         match tool {
             "read_file" => self.read_file(args).await,
             "search_files" => self.search_files(args).await,
+            "write_file" => self.write_file(args).await,
+            "patch_file" => self.patch_file(args).await,
             _ => Err(format!("unsupported sandbox RPC tool: {tool}")),
         }
     }
@@ -351,6 +353,51 @@ impl CodeRpcHandler {
         search_dir(&self.root, &start, query, limit, &mut matches)?;
         Ok(serde_json::json!({ "matches": matches }))
     }
+
+    async fn write_file(&self, args: Value) -> Result<Value, String> {
+        let path = required_arg(&args, "path")?;
+        let content = required_arg(&args, "content")?;
+        let resolved = resolve_for_write(&self.root, path)?;
+        ensure_write_allowed(&resolved).map_err(|err| err.to_string())?;
+        if let Some(parent) = resolved.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|err| format!("create parent failed: {err}"))?;
+        }
+        tokio::fs::write(&resolved, content)
+            .await
+            .map_err(|err| format!("write failed: {err}"))?;
+        Ok(serde_json::json!({
+            "path": resolved.display().to_string(),
+            "bytes_written": content.len(),
+            "lines_written": content.lines().count(),
+        }))
+    }
+
+    async fn patch_file(&self, args: Value) -> Result<Value, String> {
+        let path = required_arg(&args, "path")?;
+        let old_string = required_arg(&args, "old_string")?;
+        let new_string = required_arg(&args, "new_string")?;
+        let resolved = resolve_existing(&self.root, path)?;
+        ensure_write_allowed(&resolved).map_err(|err| err.to_string())?;
+        let content = tokio::fs::read_to_string(&resolved)
+            .await
+            .map_err(|err| format!("read failed: {err}"))?;
+        let occurrences = content.matches(old_string).count();
+        if occurrences != 1 {
+            return Err(format!(
+                "old_string must occur exactly once, found {occurrences}"
+            ));
+        }
+        let updated = content.replacen(old_string, new_string, 1);
+        tokio::fs::write(&resolved, updated)
+            .await
+            .map_err(|err| format!("write failed: {err}"))?;
+        Ok(serde_json::json!({
+            "path": resolved.display().to_string(),
+            "replacements": 1,
+        }))
+    }
 }
 
 fn sandbox_allowed_tools() -> HashSet<String> {
@@ -365,14 +412,19 @@ fn sandbox_allowed_tools() -> HashSet<String> {
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_else(|| {
-            ["read_file", "search_files"]
+            ["read_file", "search_files", "write_file", "patch_file"]
                 .into_iter()
                 .map(ToString::to_string)
                 .collect()
         });
     configured
         .into_iter()
-        .filter(|tool| matches!(tool.as_str(), "read_file" | "search_files"))
+        .filter(|tool| {
+            matches!(
+                tool.as_str(),
+                "read_file" | "search_files" | "write_file" | "patch_file"
+            )
+        })
         .collect()
 }
 
@@ -399,6 +451,41 @@ fn resolve_existing(root: &Path, raw: &str) -> Result<PathBuf, String> {
         return Err(format!("path escapes workspace: {raw}"));
     }
     Ok(canonical)
+}
+
+fn resolve_for_write(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("workspace cannot be resolved: {err}"))?;
+    let path = Path::new(raw);
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if candidate.exists() {
+        return resolve_existing(&root, &candidate.display().to_string());
+    }
+    let ancestor = nearest_existing_ancestor(&candidate)?;
+    let canonical_ancestor = ancestor
+        .canonicalize()
+        .map_err(|err| format!("path ancestor cannot be resolved: {err}"))?;
+    if !canonical_ancestor.starts_with(&root) {
+        return Err(format!("path escapes workspace: {raw}"));
+    }
+    Ok(candidate)
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err(format!("path has no existing ancestor: {}", path.display()));
+        }
+    }
 }
 
 fn search_dir(
@@ -495,6 +582,14 @@ def search_files(query, path=None, limit=50):
     if path is not None:
         args["path"] = path
     return call_tool("search_files", **args)
+
+
+def write_file(path, content):
+    return call_tool("write_file", path=path, content=content)
+
+
+def patch_file(path, old_string, new_string):
+    return call_tool("patch_file", path=path, old_string=old_string, new_string=new_string)
 "#
 }
 
@@ -515,7 +610,7 @@ mod tests {
             allowed_roots: Vec::new(),
             scratch_dir: scratch,
             runner_url: None,
-            allowed_tools: ["read_file", "search_files"]
+            allowed_tools: ["read_file", "search_files", "write_file", "patch_file"]
                 .into_iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -571,6 +666,29 @@ print(os.path.basename(os.getcwd()))
             .unwrap();
         let parsed = serde_json::from_str::<Value>(&output).unwrap();
         assert!(parsed["stdout"].as_str().unwrap().contains("nested"));
+
+        let _ = std::fs::remove_dir_all(workspace);
+        let _ = std::fs::remove_dir_all(scratch);
+    }
+
+    #[tokio::test]
+    async fn python_can_write_and_patch_files_via_rpc() {
+        let workspace = temp_dir("workspace");
+        let scratch = temp_dir("scratch");
+        let tool = test_tool(workspace.clone(), scratch.clone());
+
+        let output = tool
+            .execute(&serde_json::json!({
+                "code": r#"import mymy_tools
+mymy_tools.write_file("generated.txt", "alpha\n")
+mymy_tools.patch_file("generated.txt", "alpha", "beta")
+print(mymy_tools.read_file("generated.txt")["content"])
+"#
+            }))
+            .await
+            .unwrap();
+        let parsed = serde_json::from_str::<Value>(&output).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("beta"));
 
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(scratch);

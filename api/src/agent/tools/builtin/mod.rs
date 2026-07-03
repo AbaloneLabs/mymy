@@ -79,6 +79,7 @@ pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
 pub fn register_safe_defaults(registry: &mut ToolRegistry) {
     registry.enable_toolset("file_read");
+    registry.enable_toolset("file_write");
     registry.enable_toolset("memory");
     registry.enable_toolset("cron");
     registry.enable_toolset("todo");
@@ -88,6 +89,8 @@ pub fn register_safe_defaults(registry: &mut ToolRegistry) {
     registry.enable_toolset("extensions");
     registry.enable_toolset("runtime");
     registry.enable_toolset("skills");
+    registry.enable_toolset("terminal");
+    registry.enable_toolset("code_execution");
     registry.enable_toolset("web");
 }
 

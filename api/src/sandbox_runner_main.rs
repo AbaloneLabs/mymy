@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/runtime/status", get(runtime_status))
         .route("/execute", post(execute))
-        .route("/processes", post(start_process))
+        .route("/processes", get(list_processes).post(start_process))
         .route("/processes/{id}/stop", post(stop_process))
         .route("/processes/{id}/logs", get(process_logs))
         .layer(TraceLayer::new_for_http())
@@ -84,6 +84,16 @@ async fn execute(
         exit_code: output.status.code().unwrap_or(-1),
         cwd: prepared.cwd.display().to_string(),
     }))
+}
+
+async fn list_processes(State(state): State<Arc<RunnerState>>) -> Json<ListProcessesResponse> {
+    let processes = state.processes.read().await;
+    let mut processes = processes
+        .values()
+        .map(ProcessSummary::from)
+        .collect::<Vec<_>>();
+    processes.sort_by_key(|process| process.id);
+    Json(ListProcessesResponse { processes })
 }
 
 async fn start_process(
@@ -376,10 +386,23 @@ impl RunnerState {
             .arg("--share-net")
             .arg("--proc")
             .arg("/proc")
-            .arg("--dev")
+            .arg("--dir")
             .arg("/dev")
             .arg("--tmpfs")
-            .arg("/tmp");
+            .arg("/tmp")
+            .arg("--tmpfs")
+            .arg("/dev/shm");
+        for device in [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/full",
+            "/dev/random",
+            "/dev/urandom",
+        ] {
+            if Path::new(device).exists() {
+                cmd.arg("--dev-bind").arg(device).arg(device);
+            }
+        }
         if self.unshare_user {
             cmd.arg("--unshare-user");
         }
@@ -648,6 +671,35 @@ struct StartProcessResponse {
     pid: Option<u32>,
     status: ProcessStatus,
     forwarded_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListProcessesResponse {
+    processes: Vec<ProcessSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessSummary {
+    id: Uuid,
+    status: ProcessStatus,
+    command: String,
+    cwd: String,
+    pid: Option<u32>,
+    port: Option<u16>,
+}
+
+impl From<&ProcessRecord> for ProcessSummary {
+    fn from(record: &ProcessRecord) -> Self {
+        Self {
+            id: record.id,
+            status: record.status.clone(),
+            command: record.command.clone(),
+            cwd: record.cwd.clone(),
+            pid: record.pid,
+            port: record.port,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

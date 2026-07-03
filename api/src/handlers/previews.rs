@@ -36,6 +36,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             get(proxy_preview).post(proxy_preview),
         )
         .route(
+            "/api/previews/{token}/",
+            get(proxy_preview).post(proxy_preview),
+        )
+        .route(
             "/api/previews/{token}/{*path}",
             get(proxy_preview).post(proxy_preview),
         )

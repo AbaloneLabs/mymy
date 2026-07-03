@@ -42,6 +42,10 @@ impl RunnerClient {
         self.post_json("/processes", req).await
     }
 
+    pub async fn list_processes(&self) -> AppResult<RunnerListProcessesResponse> {
+        self.get_json("/processes").await
+    }
+
     pub async fn stop_process(&self, id: Uuid) -> AppResult<RunnerStopProcessResponse> {
         self.post_json(&format!("/processes/{id}/stop"), &serde_json::json!({}))
             .await
@@ -176,6 +180,23 @@ pub struct RunnerStartProcessResponse {
     pub pid: Option<u32>,
     pub status: String,
     pub forwarded_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerListProcessesResponse {
+    pub processes: Vec<RunnerProcessSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerProcessSummary {
+    pub id: Uuid,
+    pub status: String,
+    pub command: String,
+    pub cwd: String,
+    pub pid: Option<u32>,
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -6,6 +6,7 @@
 //! and stores enough metadata to render process/job history even if the runner
 //! restarts and loses its volatile process table.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -22,7 +23,8 @@ use crate::models::sandbox::{
 use crate::services::agents;
 use crate::services::drive;
 use crate::services::sandbox_runner::{
-    roots_for_runner, RunnerClient, RunnerExecuteRequest, RunnerRoot, RunnerStartProcessRequest,
+    roots_for_runner, RunnerClient, RunnerExecuteRequest, RunnerProcessSummary, RunnerRoot,
+    RunnerStartProcessRequest,
 };
 use crate::state::AppState;
 
@@ -96,6 +98,7 @@ pub async fn list_processes(
     agent_profile: Option<&str>,
     project_id: Option<&str>,
 ) -> AppResult<SandboxProcessesResponse> {
+    reconcile_live_processes(state).await?;
     let project_id = parse_optional_uuid(project_id, "projectId")?;
     let rows = if let Some(profile) = agent_profile {
         let profile = agents::normalize_agent_profile(profile)?;
@@ -169,6 +172,103 @@ pub async fn list_processes(
     Ok(SandboxProcessesResponse {
         processes: rows.into_iter().map(row_to_process).collect(),
     })
+}
+
+async fn reconcile_live_processes(state: &AppState) -> AppResult<()> {
+    let Some(runner_url) = &state.config.sandbox_runner_url else {
+        return Ok(());
+    };
+    let response = match RunnerClient::new(runner_url.clone()).list_processes().await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "sandbox runner process list unavailable; skipping live reconciliation"
+            );
+            return Ok(());
+        }
+    };
+
+    let mut live_ids = HashSet::new();
+    for process in &response.processes {
+        live_ids.insert(process.id);
+        reconcile_process_summary(state, process).await?;
+    }
+    mark_missing_running_processes_failed(state, &live_ids).await?;
+    Ok(())
+}
+
+async fn reconcile_process_summary(
+    state: &AppState,
+    process: &RunnerProcessSummary,
+) -> AppResult<()> {
+    reconcile_process_from_runner(
+        state,
+        process.id,
+        &process.status,
+        process.pid.map(|value| value as i32),
+        &process.command,
+        &process.cwd,
+        process.port,
+    )
+    .await
+}
+
+async fn mark_missing_running_processes_failed(
+    state: &AppState,
+    live_ids: &HashSet<Uuid>,
+) -> AppResult<()> {
+    let metadata = serde_json::json!({ "runnerLost": true });
+    if live_ids.is_empty() {
+        sqlx::query!(
+            r#"UPDATE sandbox_processes
+               SET status = 'failed',
+                   stopped_at = COALESCE(stopped_at, now()),
+                   metadata = metadata || $1
+               WHERE status IN ('starting', 'running')"#,
+            metadata
+        )
+        .execute(&state.db)
+        .await?;
+        sqlx::query!(
+            r#"UPDATE preview_endpoints
+               SET status = 'failed', updated_at = now()
+               WHERE process_id IN (
+                   SELECT id FROM sandbox_processes
+                   WHERE status = 'failed' AND metadata ? 'runnerLost'
+               )
+               AND status = 'active'"#
+        )
+        .execute(&state.db)
+        .await?;
+        return Ok(());
+    }
+
+    let ids = live_ids.iter().copied().collect::<Vec<_>>();
+    sqlx::query!(
+        r#"UPDATE sandbox_processes
+           SET status = 'failed',
+               stopped_at = COALESCE(stopped_at, now()),
+               metadata = metadata || $1
+           WHERE status IN ('starting', 'running')
+             AND NOT (id = ANY($2))"#,
+        metadata,
+        &ids
+    )
+    .execute(&state.db)
+    .await?;
+    sqlx::query!(
+        r#"UPDATE preview_endpoints
+           SET status = 'failed', updated_at = now()
+           WHERE process_id IN (
+               SELECT id FROM sandbox_processes
+               WHERE status = 'failed' AND metadata ? 'runnerLost'
+           )
+           AND status = 'active'"#
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(())
 }
 
 pub async fn start_process(

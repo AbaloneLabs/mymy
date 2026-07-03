@@ -39,7 +39,7 @@ It's designed for the **one-person business** — the developer-founder who wear
 | 🔐 | **PIN Authentication** | Server-side PIN sessions with an HttpOnly cookie. Default PIN `mymy`, changeable in settings. |
 | 🤖 | **Native Agent Management** | Create/delete agents, edit prompts, select the active agent globally, and run chat sessions against registered LLM providers. |
 | 📁 | **Drive Workspace** | Browse, edit, upload, delete, restore, and purge files under `/drive/projects`, `/drive/agents`, and `/drive/shared`; view md, docx text, images, audio, video, and PDFs. |
-| 🧱 | **Sandbox Runner** | Agent terminal/code tools and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
+| 🧱 | **Sandbox Runner** | Agent file-write, terminal, code, and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
 | 🖥️ | **Preview Proxy** | Agents can register dev-server ports with `register_preview`; the UI opens tokenized preview URLs through the API. |
 | 📁 | **Project Workspace** | Projects get stable Drive folders and can be linked to chats and work sessions. |
 | 💬 | **Chat** | Chat with native agents, organized into sessions tied to projects or general topics. |
@@ -192,12 +192,18 @@ roots.
 
 The Docker stack starts a separate `sandbox-runner` service on port `33698`.
 The API sends terminal commands, code execution, and long-running sandbox
-processes to this runner when `MYMY_SANDBOX_RUNNER_URL` is configured. In the
-default Compose setup, the runner uses bubblewrap to create PID, IPC, UTS, and
-mount isolation, mounts the selected agent workspace plus shared/project roots,
-and keeps process logs under the Drive data volume. User namespaces can be
-enabled separately when the deployment provides an idmapped/rootfs setup that
-can write Drive data.
+processes to this runner when `MYMY_SANDBOX_RUNNER_URL` is configured. Native
+agents receive file-write, terminal, and Python code-execution tools by default;
+dangerous shell commands and sensitive file writes still flow through the chat
+approval gate.
+
+In the default Compose setup, the runner uses bubblewrap to create PID, IPC,
+UTS, and mount isolation, mounts the selected agent workspace plus shared/project
+roots, and keeps process logs under the Drive data volume. The bubblewrap child
+receives only minimal `/dev` nodes (`null`, `zero`, `full`, `random`,
+`urandom`) instead of the runner container's full device surface. User
+namespaces can be enabled separately when the deployment provides an
+idmapped/rootfs setup that can write Drive data.
 
 Firecracker mode is exposed through configuration for deployments that provide
 VM assets and host orchestration, but the default local stack uses bubblewrap:
@@ -210,11 +216,14 @@ MYMY_SANDBOX_PREVIEW_HOST=sandbox-runner
 ```
 
 Development servers started by an agent can be exposed through preview
-endpoints. The runtime tool `register_preview` accepts a local forwarded port
-and creates a tokenized `/api/previews/<token>` URL. The proxy accepts loopback
-targets for local development and the configured sandbox preview host used by
-the Docker runner, while rejecting arbitrary hosts to avoid becoming an open
-proxy.
+endpoints. The `terminal` tool can start managed background processes with
+`background=true`, optional `port`, and optional `label`; companion tools
+`list_processes`, `read_process_logs`, and `stop_process` let the agent inspect
+and stop its own jobs. The runtime tool `register_preview` can also register a
+local forwarded port and create a tokenized `/api/previews/<token>` URL. The
+proxy accepts loopback targets for local development and the configured sandbox
+preview host used by the Docker runner, while rejecting arbitrary hosts to avoid
+becoming an open proxy.
 
 Optional S3 provider settings:
 
@@ -291,6 +300,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
 - [x] Tokenized preview proxy for agent-started local servers
 - [x] Bubblewrap-backed sandbox runner for agent commands and long-running processes
+- [x] Native file-write, terminal, code-execution, and managed process tools with approval gates
 - [x] S3 object synchronization worker for Drive sync jobs
 - [x] i18n (English, Korean, Chinese, Japanese)
 
