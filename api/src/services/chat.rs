@@ -65,11 +65,6 @@ struct ChatMessageRow {
     created_at: DateTime<Utc>,
 }
 
-struct AgentWorkspaceMetadata {
-    name: String,
-    role: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionQuery {
@@ -273,24 +268,10 @@ pub async fn prepare_native_turn(
         None
     };
 
-    let agent_meta = fetch_agent_workspace_metadata(state, &session.profile).await?;
-    drive::ensure_agent_workspace(
-        state,
-        &session.profile,
-        &agent_meta.name,
-        Some(&agent_meta.role),
-    )?;
-    let working_dir = drive::agent_workspace_path(&state.config.agent_data_dir, &session.profile);
-    let mut allowed_roots = vec![drive::shared_root(&state.config.agent_data_dir)];
-    if let Some(project_id) = session.project_id {
-        if let Some(project_slug) = fetch_project_drive_slug(state, project_id).await? {
-            drive::ensure_project_workspace(state, &project_slug)?;
-            allowed_roots.push(drive::project_workspace_path(
-                &state.config.agent_data_dir,
-                &project_slug,
-            ));
-        }
-    }
+    let workspace =
+        drive::resolve_agent_drive_workspace(state, &session.profile, session.project_id).await?;
+    let working_dir = workspace.working_dir;
+    let allowed_roots = workspace.allowed_roots;
     let mut registry = ToolRegistry::new();
     let extension_settings_key = state.encryption_key.read().await.as_ref().copied();
     let builtin_config = BuiltinToolConfig::for_session(BuiltinSessionConfig {
@@ -338,14 +319,14 @@ pub async fn prepare_native_turn(
     ));
 
     let system_prompt = build_system_prompt(&PromptConfig {
-        soul_md_path: Some(crate::services::agent_prompts::soul_md_path(
+        soul_md_path: Some(drive::agent_soul_md_path(
             &state.config.agent_data_dir,
             &session.profile,
-        )?),
-        agents_md_path: Some(crate::services::agent_prompts::agents_md_path(
+        )),
+        agents_md_path: Some(drive::agent_agents_md_path(
             &state.config.agent_data_dir,
             &session.profile,
-        )?),
+        )),
         working_dir,
         memory_md_path: None,
         user_md_path: None,
@@ -622,30 +603,6 @@ async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> 
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("session {id} not found")))
-}
-
-async fn fetch_agent_workspace_metadata(
-    state: &AppState,
-    profile: &str,
-) -> AppResult<AgentWorkspaceMetadata> {
-    let row = sqlx::query!(
-        r#"SELECT name, role FROM native_agents WHERE profile = $1"#,
-        profile
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("agent profile {profile} not found")))?;
-    Ok(AgentWorkspaceMetadata {
-        name: row.name,
-        role: row.role,
-    })
-}
-
-async fn fetch_project_drive_slug(state: &AppState, id: Uuid) -> AppResult<Option<String>> {
-    sqlx::query_scalar!(r#"SELECT drive_slug FROM projects WHERE id = $1"#, id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(AppError::Database)
 }
 
 async fn fetch_message_rows(state: &AppState, id: Uuid) -> AppResult<Vec<ChatMessageRow>> {

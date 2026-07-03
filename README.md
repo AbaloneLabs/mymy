@@ -197,6 +197,12 @@ agents receive file-write, terminal, and Python code-execution tools by default;
 dangerous shell commands and sensitive file writes still flow through the chat
 approval gate.
 
+The API keeps durable sandbox process metadata, preview registration, and runner
+status reconciliation in a shared service used by both HTTP handlers and native
+agent tools. Drive workspace resolution is also centralized: chat turns, sandbox
+processes, prompt editing, and file tools all receive the same private
+agent/shared/project root set before the runner mounts or stages files.
+
 In the default Compose setup, the runner uses bubblewrap to create PID, IPC,
 UTS, and mount isolation, mounts the selected agent workspace plus shared/project
 roots at logical `/drive/...` paths, and keeps process logs under the Drive data

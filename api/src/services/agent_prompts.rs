@@ -63,8 +63,14 @@ pub async fn get_prompts(
     let soul_path = soul_md_path(&state.config.agent_data_dir, &profile)?;
     Ok(AgentPromptsResponse {
         profile: profile.clone(),
-        agents_md: read_prompt_file(&agents_path, &format!("/drive/agents/{profile}/AGENTS.md"))?,
-        soul_md: read_prompt_file(&soul_path, &format!("/drive/agents/{profile}/SOUL.md"))?,
+        agents_md: read_prompt_file(
+            &agents_path,
+            &drive::logical_agent_file_path(&profile, drive::AGENTS_MD_FILE),
+        )?,
+        soul_md: read_prompt_file(
+            &soul_path,
+            &drive::logical_agent_file_path(&profile, drive::SOUL_MD_FILE),
+        )?,
     })
 }
 
@@ -99,12 +105,12 @@ pub async fn update_prompts(
 
 pub fn soul_md_path(agent_data_dir: &Path, profile: &str) -> AppResult<PathBuf> {
     let profile = normalize_profile(Some(profile.to_string()))?;
-    Ok(drive::agent_workspace_path(agent_data_dir, &profile).join("SOUL.md"))
+    Ok(drive::agent_soul_md_path(agent_data_dir, &profile))
 }
 
 pub fn agents_md_path(agent_data_dir: &Path, profile: &str) -> AppResult<PathBuf> {
     let profile = normalize_profile(Some(profile.to_string()))?;
-    Ok(drive::agent_workspace_path(agent_data_dir, &profile).join("AGENTS.md"))
+    Ok(drive::agent_agents_md_path(agent_data_dir, &profile))
 }
 
 fn normalize_profile(profile: Option<String>) -> AppResult<String> {

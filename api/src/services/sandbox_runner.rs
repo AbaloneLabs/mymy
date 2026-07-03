@@ -112,6 +112,8 @@ where
 pub fn roots_for_runner(primary_root: &Path, extra_roots: &[PathBuf]) -> Vec<RunnerRoot> {
     let mut roots = vec![RunnerRoot::writable(primary_root)];
     roots.extend(extra_roots.iter().map(|root| RunnerRoot::writable(root)));
+    roots.sort_by(|left, right| left.host_path.cmp(&right.host_path));
+    roots.dedup_by(|left, right| left.host_path == right.host_path);
     roots
 }
 

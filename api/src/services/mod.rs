@@ -25,6 +25,7 @@ pub mod notes;
 pub mod previews;
 pub mod projects;
 pub mod sandbox;
+pub mod sandbox_processes;
 pub mod sandbox_runner;
 pub mod search;
 pub mod settings;

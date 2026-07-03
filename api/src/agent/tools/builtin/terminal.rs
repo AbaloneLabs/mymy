@@ -24,9 +24,11 @@ use crate::agent::security::{
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
+use crate::error::AppError;
 use crate::services::audit::log_security_denial_safe;
+use crate::services::sandbox_processes::{self, NewRunningProcess};
 use crate::services::sandbox_runner::{
-    logical_path_for_runner, RunnerClient, RunnerExecuteRequest, RunnerRoot,
+    logical_path_for_runner, roots_for_runner, RunnerClient, RunnerExecuteRequest,
     RunnerStartProcessRequest,
 };
 
@@ -219,11 +221,7 @@ impl TerminalTool {
                 .execute(&RunnerExecuteRequest {
                     command: command.to_string(),
                     cwd: workdir.display().to_string(),
-                    roots: self
-                        .allowed_roots
-                        .iter()
-                        .map(|root| RunnerRoot::writable(root))
-                        .collect(),
+                    roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
                     timeout_secs: Some(timeout_secs),
                     env: None,
                 })
@@ -280,11 +278,7 @@ impl TerminalTool {
                 execution: RunnerExecuteRequest {
                     command: command.to_string(),
                     cwd: workdir.display().to_string(),
-                    roots: self
-                        .allowed_roots
-                        .iter()
-                        .map(|root| RunnerRoot::writable(root))
-                        .collect(),
+                    roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
                     timeout_secs: None,
                     env: None,
                 },
@@ -300,21 +294,20 @@ impl TerminalTool {
             "port": port,
             "startedBy": "terminal_tool",
         });
-        sqlx::query!(
-            r#"INSERT INTO sandbox_processes
-                 (id, agent_profile, project_id, command, cwd, status, pid, metadata)
-               VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)"#,
-            response.id,
-            agent_profile,
-            self.project_id,
-            command,
-            logical_cwd,
-            pid,
-            metadata,
+        sandbox_processes::insert_running_process(
+            db,
+            &NewRunningProcess {
+                id: response.id,
+                agent_profile,
+                project_id: self.project_id,
+                command,
+                cwd: &logical_cwd,
+                pid,
+                metadata: &metadata,
+            },
         )
-        .execute(db)
         .await
-        .map_err(|err| ToolError::Execution(format!("process metadata save failed: {err}")))?;
+        .map_err(|err| app_error_to_tool(err, "process metadata save failed"))?;
 
         let preview_path = if let Some(port) = port {
             let label = label.unwrap_or_else(|| format!("Port {port}"));
@@ -323,7 +316,7 @@ impl TerminalTool {
                 .clone()
                 .unwrap_or_else(|| format!("http://{}:{port}", self.preview_host));
             Some(
-                create_process_preview(
+                sandbox_processes::create_process_preview(
                     db,
                     agent_profile,
                     self.project_id,
@@ -331,7 +324,8 @@ impl TerminalTool {
                     &label,
                     &target_url,
                 )
-                .await?,
+                .await
+                .map_err(|err| app_error_to_tool(err, "preview registration failed"))?,
             )
         } else {
             None
@@ -364,48 +358,17 @@ impl ToolHandler for ListProcessesTool {
             .and_then(Value::as_i64)
             .unwrap_or(20)
             .clamp(1, MAX_PROCESS_ROWS);
-        let rows = sqlx::query!(
-            r#"SELECT p.id, p.command, p.cwd, p.status, p.pid, p.started_at, p.stopped_at,
-                      p.exit_code, p.metadata,
-                      preview.token AS "preview_token?",
-                      preview.target_url AS "preview_target_url?"
-               FROM sandbox_processes p
-               LEFT JOIN LATERAL (
-                   SELECT token, target_url
-                   FROM preview_endpoints
-                   WHERE process_id = p.id AND status = 'active'
-                   ORDER BY created_at DESC
-                   LIMIT 1
-               ) preview ON true
-               WHERE p.agent_profile = $1
-                 AND ($2::uuid IS NULL OR p.project_id = $2)
-               ORDER BY p.started_at DESC
-               LIMIT $3"#,
+        let processes = sandbox_processes::list_owned_processes(
+            db,
             agent_profile,
             self.context.project_id,
             limit,
         )
-        .fetch_all(db)
         .await
-        .map_err(|err| ToolError::Execution(format!("process list failed: {err}")))?;
-        let processes = rows
-            .into_iter()
-            .map(|row| {
-                serde_json::json!({
-                    "id": row.id.to_string(),
-                    "command": row.command,
-                    "cwd": row.cwd,
-                    "status": row.status,
-                    "pid": row.pid,
-                    "started_at": row.started_at.to_rfc3339(),
-                    "stopped_at": row.stopped_at.map(|time| time.to_rfc3339()),
-                    "exit_code": row.exit_code,
-                    "metadata": row.metadata,
-                    "preview_path": row.preview_token.map(|token| format!("/api/previews/{token}")),
-                    "preview_target_url": row.preview_target_url,
-                })
-            })
-            .collect::<Vec<_>>();
+        .map_err(|err| app_error_to_tool(err, "process list failed"))?
+        .into_iter()
+        .map(process_to_tool_value)
+        .collect::<Vec<_>>();
         Ok(tool_result(&serde_json::json!({ "processes": processes })))
     }
 }
@@ -420,12 +383,14 @@ impl ToolHandler for ReadProcessLogsTool {
         let db = self.context.db()?;
         let agent_profile = self.context.agent_profile()?;
         let id = parse_uuid_arg(args, "id")?;
-        ensure_process_owner(db, id, agent_profile, self.context.project_id).await?;
+        sandbox_processes::ensure_process_owner(db, id, agent_profile, self.context.project_id)
+            .await
+            .map_err(|err| app_error_to_tool(err, "process owner check failed"))?;
 
         let logs = if let Some(runner_url) = &self.context.runner_url {
             match RunnerClient::new(runner_url.clone()).process_logs(id).await {
                 Ok(response) => {
-                    reconcile_process_from_runner_tool(
+                    sandbox_processes::reconcile_from_runner(
                         db,
                         response.id,
                         &response.status,
@@ -434,7 +399,8 @@ impl ToolHandler for ReadProcessLogsTool {
                         &response.cwd,
                         response.port,
                     )
-                    .await?;
+                    .await
+                    .map_err(|err| app_error_to_tool(err, "process reconcile failed"))?;
                     response.logs
                 }
                 Err(err) => {
@@ -450,9 +416,16 @@ impl ToolHandler for ReadProcessLogsTool {
             String::new()
         };
 
-        let process = fetch_tool_process(db, id, agent_profile, self.context.project_id).await?;
+        let process = sandbox_processes::fetch_process_for_owner(
+            db,
+            id,
+            agent_profile,
+            self.context.project_id,
+        )
+        .await
+        .map_err(|err| app_error_to_tool(err, "process fetch failed"))?;
         Ok(tool_result(&serde_json::json!({
-            "process": process,
+            "process": process_to_tool_value(process),
             "logs": truncate_chars(&redact_terminal_output(&logs), MAX_OUTPUT_CHARS),
         })))
     }
@@ -468,7 +441,9 @@ impl ToolHandler for StopProcessTool {
         let db = self.context.db()?;
         let agent_profile = self.context.agent_profile()?;
         let id = parse_uuid_arg(args, "id")?;
-        ensure_process_owner(db, id, agent_profile, self.context.project_id).await?;
+        sandbox_processes::ensure_process_owner(db, id, agent_profile, self.context.project_id)
+            .await
+            .map_err(|err| app_error_to_tool(err, "process owner check failed"))?;
 
         if let Some(runner_url) = &self.context.runner_url {
             if let Err(err) = RunnerClient::new(runner_url.clone()).stop_process(id).await {
@@ -479,26 +454,20 @@ impl ToolHandler for StopProcessTool {
                 );
             }
         }
-        sqlx::query!(
-            r#"UPDATE sandbox_processes
-               SET status = 'stopped', stopped_at = COALESCE(stopped_at, now())
-               WHERE id = $1"#,
-            id
+        sandbox_processes::stop_process_record(db, id)
+            .await
+            .map_err(|err| app_error_to_tool(err, "process stop save failed"))?;
+        let process = sandbox_processes::fetch_process_for_owner(
+            db,
+            id,
+            agent_profile,
+            self.context.project_id,
         )
-        .execute(db)
         .await
-        .map_err(|err| ToolError::Execution(format!("process stop save failed: {err}")))?;
-        sqlx::query!(
-            "UPDATE preview_endpoints SET status = 'stopped', updated_at = now() WHERE process_id = $1",
-            id
-        )
-        .execute(db)
-        .await
-        .map_err(|err| ToolError::Execution(format!("preview stop save failed: {err}")))?;
-        let process = fetch_tool_process(db, id, agent_profile, self.context.project_id).await?;
+        .map_err(|err| app_error_to_tool(err, "process fetch failed"))?;
         Ok(tool_result(&serde_json::json!({
             "success": true,
-            "process": process,
+            "process": process_to_tool_value(process),
         })))
     }
 }
@@ -515,6 +484,38 @@ impl ProcessToolContext {
             .as_deref()
             .ok_or_else(|| ToolError::Unavailable("agent profile is not configured".to_string()))
     }
+}
+
+fn app_error_to_tool(err: AppError, context: &str) -> ToolError {
+    match err {
+        AppError::BadRequest(message) | AppError::NotFound(message) => {
+            ToolError::InvalidArgs(message)
+        }
+        AppError::Unauthorized(message) | AppError::NotImplemented(message) => {
+            ToolError::Unavailable(message)
+        }
+        AppError::Internal(message) => ToolError::Execution(format!("{context}: {message}")),
+        AppError::Database(err) => ToolError::Execution(format!("{context}: {err}")),
+        AppError::Io(err) => ToolError::Execution(format!("{context}: {err}")),
+    }
+}
+
+fn process_to_tool_value(process: crate::models::sandbox::SandboxProcess) -> Value {
+    serde_json::json!({
+        "id": process.id,
+        "agent_profile": process.agent_profile,
+        "project_id": process.project_id,
+        "command": process.command,
+        "cwd": process.cwd,
+        "status": process.status,
+        "pid": process.pid,
+        "started_at": process.started_at,
+        "stopped_at": process.stopped_at,
+        "exit_code": process.exit_code,
+        "metadata": process.metadata,
+        "preview_path": process.preview_path,
+        "preview_target_url": process.preview_target_url,
+    })
 }
 
 fn parse_preview_port(value: Option<&Value>) -> Result<Option<u16>, ToolError> {
@@ -553,154 +554,6 @@ fn parse_uuid_arg(args: &Value, key: &str) -> Result<Uuid, ToolError> {
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidArgs(format!("missing {key}")))?;
     Uuid::parse_str(raw).map_err(|err| ToolError::InvalidArgs(format!("invalid {key}: {err}")))
-}
-
-async fn create_process_preview(
-    db: &sqlx::PgPool,
-    agent_profile: &str,
-    project_id: Option<Uuid>,
-    process_id: Uuid,
-    label: &str,
-    target_url: &str,
-) -> Result<String, ToolError> {
-    let token = Uuid::new_v4().simple().to_string();
-    sqlx::query!(
-        r#"INSERT INTO preview_endpoints
-             (agent_profile, project_id, process_id, label, target_url, token, visibility, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'session', 'active')"#,
-        agent_profile,
-        project_id,
-        process_id,
-        label,
-        target_url,
-        token,
-    )
-    .execute(db)
-    .await
-    .map_err(|err| ToolError::Execution(format!("preview registration failed: {err}")))?;
-    Ok(format!("/api/previews/{token}"))
-}
-
-async fn ensure_process_owner(
-    db: &sqlx::PgPool,
-    id: Uuid,
-    agent_profile: &str,
-    project_id: Option<Uuid>,
-) -> Result<(), ToolError> {
-    let row = sqlx::query!(
-        r#"SELECT id
-           FROM sandbox_processes
-           WHERE id = $1
-             AND agent_profile = $2
-             AND ($3::uuid IS NULL OR project_id = $3)"#,
-        id,
-        agent_profile,
-        project_id,
-    )
-    .fetch_optional(db)
-    .await
-    .map_err(|err| ToolError::Execution(format!("process owner check failed: {err}")))?;
-    if row.is_some() {
-        Ok(())
-    } else {
-        Err(ToolError::InvalidArgs(format!("process {id} not found")))
-    }
-}
-
-async fn fetch_tool_process(
-    db: &sqlx::PgPool,
-    id: Uuid,
-    agent_profile: &str,
-    project_id: Option<Uuid>,
-) -> Result<Value, ToolError> {
-    let row = sqlx::query!(
-        r#"SELECT p.id, p.command, p.cwd, p.status, p.pid, p.started_at, p.stopped_at,
-                  p.exit_code, p.metadata,
-                  preview.token AS "preview_token?",
-                  preview.target_url AS "preview_target_url?"
-           FROM sandbox_processes p
-           LEFT JOIN LATERAL (
-               SELECT token, target_url
-               FROM preview_endpoints
-               WHERE process_id = p.id AND status = 'active'
-               ORDER BY created_at DESC
-               LIMIT 1
-           ) preview ON true
-           WHERE p.id = $1
-             AND p.agent_profile = $2
-             AND ($3::uuid IS NULL OR p.project_id = $3)"#,
-        id,
-        agent_profile,
-        project_id,
-    )
-    .fetch_optional(db)
-    .await
-    .map_err(|err| ToolError::Execution(format!("process fetch failed: {err}")))?
-    .ok_or_else(|| ToolError::InvalidArgs(format!("process {id} not found")))?;
-
-    Ok(serde_json::json!({
-        "id": row.id.to_string(),
-        "command": row.command,
-        "cwd": row.cwd,
-        "status": row.status,
-        "pid": row.pid,
-        "started_at": row.started_at.to_rfc3339(),
-        "stopped_at": row.stopped_at.map(|time| time.to_rfc3339()),
-        "exit_code": row.exit_code,
-        "metadata": row.metadata,
-        "preview_path": row.preview_token.map(|token| format!("/api/previews/{token}")),
-        "preview_target_url": row.preview_target_url,
-    }))
-}
-
-async fn reconcile_process_from_runner_tool(
-    db: &sqlx::PgPool,
-    id: Uuid,
-    runner_status: &str,
-    pid: Option<i32>,
-    command: &str,
-    cwd: &str,
-    port: Option<u16>,
-) -> Result<(), ToolError> {
-    let status = match runner_status {
-        "exited" => "exited",
-        "failed" => "failed",
-        "stopped" => "stopped",
-        "starting" => "starting",
-        _ => "running",
-    };
-    let stopped = matches!(status, "exited" | "failed" | "stopped");
-    let metadata = serde_json::json!({
-        "runnerCommand": command,
-        "runnerCwd": cwd,
-        "port": port,
-    });
-    sqlx::query!(
-        r#"UPDATE sandbox_processes
-           SET status = $2,
-               pid = COALESCE($3, pid),
-               stopped_at = CASE WHEN $4 THEN COALESCE(stopped_at, now()) ELSE stopped_at END,
-               metadata = metadata || $5
-           WHERE id = $1"#,
-        id,
-        status,
-        pid,
-        stopped,
-        metadata,
-    )
-    .execute(db)
-    .await
-    .map_err(|err| ToolError::Execution(format!("process reconcile failed: {err}")))?;
-    if stopped {
-        sqlx::query!(
-            "UPDATE preview_endpoints SET status = 'stopped', updated_at = now() WHERE process_id = $1",
-            id
-        )
-        .execute(db)
-        .await
-        .map_err(|err| ToolError::Execution(format!("preview reconcile failed: {err}")))?;
-    }
-    Ok(())
 }
 
 async fn check_redirected_paths(

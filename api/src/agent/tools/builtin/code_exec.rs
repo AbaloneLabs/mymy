@@ -21,7 +21,7 @@ use crate::agent::security::{
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
-use crate::services::sandbox_runner::{RunnerClient, RunnerExecuteRequest, RunnerRoot};
+use crate::services::sandbox_runner::{roots_for_runner, RunnerClient, RunnerExecuteRequest};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const MAX_TIMEOUT_SECS: u64 = 300;
@@ -214,19 +214,15 @@ finally:
             crate::agent::sandbox::SandboxError::Execution(format!("runner write failed: {err}"))
         })?;
 
-    let mut roots = vec![
-        RunnerRoot::writable(working_dir),
-        RunnerRoot::writable(scratch_dir),
-    ];
-    roots.extend(allowed_roots.iter().map(|root| RunnerRoot::writable(root)));
-    roots.sort_by(|left, right| left.host_path.cmp(&right.host_path));
-    roots.dedup_by(|left, right| left.host_path == right.host_path);
+    let mut extra_roots = Vec::with_capacity(allowed_roots.len() + 1);
+    extra_roots.push(scratch_dir.to_path_buf());
+    extra_roots.extend(allowed_roots.iter().cloned());
 
     let response = RunnerClient::new(runner_url.to_string())
         .execute(&RunnerExecuteRequest {
             command: format!("python3 {}", shell_quote(&runner.display().to_string())),
             cwd: cwd.display().to_string(),
-            roots,
+            roots: roots_for_runner(working_dir, &extra_roots),
             timeout_secs: Some(options.timeout_secs),
             env: Some(options.extra_env),
         })

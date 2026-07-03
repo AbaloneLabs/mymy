@@ -11,7 +11,8 @@ import {
   PromptTab,
   SandboxProcessesTab,
 } from "@/features/agents/components/AgentsNativePanels";
-import { CronTab, TabButton } from "@/features/agents/components/AgentsPanels";
+import { CronTab } from "@/features/agents/components/AgentsCronTab";
+import { TabButton } from "@/features/agents/components/AgentsPanels";
 import {
   ALL_AGENT_TABS,
   SINGLE_AGENT_TABS,

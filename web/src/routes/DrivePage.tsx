@@ -1,29 +1,22 @@
 import { useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   ExternalLink,
-  File,
-  FileText,
-  Folder,
   FolderPlus,
   HardDrive,
-  Image as ImageIcon,
   Loader2,
-  Music,
   Plus,
   RefreshCw,
   RotateCcw,
-  Save,
   Trash2,
   Upload,
-  Video,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppLayout } from "@/components/AppLayout";
 import { useAgents } from "@/features/agents/api";
+import { DriveEntryGroup } from "@/features/drive/components/DriveEntryGroup";
+import { DriveFileViewer } from "@/features/drive/components/DriveFileViewer";
+import { LoadingLine, StatusPill } from "@/features/drive/components/DriveStatus";
 import {
-  driveBlobUrl,
   previewUrl,
   useCreateDriveFolder,
   useCreatePreviewEndpoint,
@@ -38,13 +31,17 @@ import {
   usePreviewEndpoints,
   useRestoreDriveTrash,
   useUploadDriveFiles,
-  useWriteDriveFile,
 } from "@/features/drive/api";
+import {
+  ROOT_PATH,
+  buildBreadcrumbs,
+  formatBytes,
+  formatDate,
+  parentPath,
+} from "@/features/drive/utils";
 import { cn } from "@/lib/utils";
 import { useProjectContext } from "@/store/projectContext";
-import type { DriveEntry, DriveFileResponse } from "@/types/drive";
-
-const ROOT_PATH = "/drive";
+import type { DriveEntry } from "@/types/drive";
 
 export default function DrivePage() {
   const { t } = useTranslation();
@@ -233,8 +230,8 @@ export default function DrivePage() {
                   {t("drive.empty")}
                 </p>
               )}
-              <EntryGroup entries={folders} selectedFilePath={selectedFilePath} onOpen={openEntry} onDelete={handleDelete} />
-              <EntryGroup entries={files} selectedFilePath={selectedFilePath} onOpen={openEntry} onDelete={handleDelete} />
+              <DriveEntryGroup entries={folders} selectedFilePath={selectedFilePath} onOpen={openEntry} onDelete={handleDelete} />
+              <DriveEntryGroup entries={files} selectedFilePath={selectedFilePath} onOpen={openEntry} onDelete={handleDelete} />
             </div>
           </section>
 
@@ -253,7 +250,7 @@ export default function DrivePage() {
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-4">
               {file.isLoading && <LoadingLine label={t("common.loading")} />}
-              {!file.isLoading && <FileViewer file={selectedFile} />}
+              {!file.isLoading && <DriveFileViewer file={selectedFile} />}
             </div>
           </section>
 
@@ -450,205 +447,4 @@ export default function DrivePage() {
       </div>
     </AppLayout>
   );
-}
-
-function EntryGroup({
-  entries,
-  selectedFilePath,
-  onOpen,
-  onDelete,
-}: {
-  entries: DriveEntry[];
-  selectedFilePath: string | null;
-  onOpen: (entry: DriveEntry) => void;
-  onDelete: (path: string) => void;
-}) {
-  return (
-    <div className="space-y-0.5">
-      {entries.map((entry) => {
-        const Icon = entry.kind === "directory" ? Folder : iconForEntry(entry);
-        return (
-          <div
-            key={entry.path}
-            className={cn(
-              "group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm",
-              selectedFilePath === entry.path
-                ? "bg-[var(--surface-hover)] text-[var(--text)]"
-                : "text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-            )}
-          >
-            <button type="button" onClick={() => onOpen(entry)} className="flex min-w-0 flex-1 items-center gap-2">
-              <Icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-              <span className="truncate text-left">{entry.name}</span>
-            </button>
-            {entry.kind === "file" && (
-              <span className="hidden shrink-0 text-xs text-[var(--text-faint)] sm:inline">
-                {formatBytes(entry.size)}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => onDelete(entry.path)}
-              className="h-7 w-7 rounded-md text-[var(--text-faint)] opacity-0 hover:bg-[var(--surface)] hover:text-[var(--status-error)] group-hover:opacity-100"
-              title="Delete"
-            >
-              <Trash2 className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function FileViewer({
-  file,
-}: {
-  file: DriveFileResponse | null;
-}) {
-  const { t } = useTranslation();
-  if (!file) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
-        {t("drive.noSelection")}
-      </div>
-    );
-  }
-
-  const blobUrl = driveBlobUrl(file.path);
-  if (file.mimeType.startsWith("image/")) {
-    return <img src={blobUrl} alt={file.name} className="max-h-full max-w-full rounded-md object-contain" />;
-  }
-  if (file.mimeType.startsWith("video/")) {
-    return <video src={blobUrl} controls className="max-h-full w-full rounded-md bg-black" />;
-  }
-  if (file.mimeType.startsWith("audio/")) {
-    return <audio src={blobUrl} controls className="w-full" />;
-  }
-  if (file.mimeType === "application/pdf") {
-    return <iframe src={blobUrl} title={file.name} className="h-full min-h-[640px] w-full rounded-md border border-[var(--border)]" />;
-  }
-  if (file.mimeType.includes("wordprocessingml.document")) {
-    return <pre className="whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-sm leading-6">{file.content}</pre>;
-  }
-  if (file.editable) {
-    return <EditableFileViewer key={`${file.path}:${file.updatedAt ?? ""}`} file={file} />;
-  }
-
-  return (
-    <a
-      href={blobUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--accent)] hover:bg-[var(--surface-hover)]"
-    >
-      <ExternalLink className="h-4 w-4" strokeWidth={1.5} />
-      {t("drive.openFile")}
-    </a>
-  );
-}
-
-function EditableFileViewer({ file }: { file: DriveFileResponse }) {
-  const { t } = useTranslation();
-  const [draft, setDraft] = useState(file.content);
-  const writeFile = useWriteDriveFile();
-  const markdown = file.mimeType === "text/markdown" || file.name.endsWith(".md");
-  const dirty = draft !== file.content;
-
-  return (
-    <div className="flex min-h-full flex-col gap-3">
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => writeFile.mutate({ path: file.path, content: draft })}
-          disabled={!dirty || writeFile.isPending}
-          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {writeFile.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.5} />
-          ) : (
-            <Save className="h-4 w-4" strokeWidth={1.5} />
-          )}
-          {t("common.save")}
-        </button>
-      </div>
-      <div className={cn("grid min-h-full flex-1 gap-4", markdown ? "grid-cols-2" : "grid-cols-1")}>
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          spellCheck={false}
-          className="min-h-[640px] resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 font-mono text-sm leading-6 outline-none focus:border-[var(--accent)]"
-        />
-        {markdown && (
-          <article className="prose prose-sm max-w-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--text)]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
-          </article>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LoadingLine({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 px-2 py-4 text-sm text-[var(--text-muted)]">
-      <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.5} />
-      {label}
-    </div>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
-  const tone =
-    status === "done"
-      ? "bg-[var(--status-success-bg)] text-[var(--status-success)]"
-      : status === "failed"
-        ? "bg-[var(--status-error)]/10 text-[var(--status-error)]"
-        : "bg-[var(--surface-hover)] text-[var(--text-muted)]";
-  return (
-    <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium", tone)}>
-      {status}
-    </span>
-  );
-}
-
-function iconForEntry(entry: DriveEntry) {
-  if (entry.mimeType.startsWith("image/")) return ImageIcon;
-  if (entry.mimeType.startsWith("video/")) return Video;
-  if (entry.mimeType.startsWith("audio/")) return Music;
-  if (entry.mimeType.startsWith("text/") || entry.name.endsWith(".md")) return FileText;
-  return File;
-}
-
-function buildBreadcrumbs(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  const crumbs = [{ label: "drive", path: ROOT_PATH }];
-  let current = "";
-  for (const part of parts.slice(1)) {
-    current += `/${part}`;
-    crumbs.push({ label: part, path: `${ROOT_PATH}${current}` });
-  }
-  return crumbs;
-}
-
-function parentPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 1) return ROOT_PATH;
-  return `/${parts.slice(0, -1).join("/")}`;
-}
-
-function formatBytes(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
 }

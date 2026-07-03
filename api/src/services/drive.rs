@@ -27,6 +27,8 @@ use crate::models::drive::{
 use crate::state::AppState;
 
 const DRIVE_PREFIX: &str = "/drive";
+pub const AGENTS_MD_FILE: &str = "AGENTS.md";
+pub const SOUL_MD_FILE: &str = "SOUL.md";
 const MAX_TEXT_PREVIEW_BYTES: u64 = 1_000_000;
 const MAX_SYNC_JOBS: i64 = 100;
 
@@ -72,6 +74,14 @@ pub fn agent_workspace_path(agent_data_dir: &Path, profile: &str) -> PathBuf {
     agents_root(agent_data_dir).join(profile)
 }
 
+pub fn agent_agents_md_path(agent_data_dir: &Path, profile: &str) -> PathBuf {
+    agent_workspace_path(agent_data_dir, profile).join(AGENTS_MD_FILE)
+}
+
+pub fn agent_soul_md_path(agent_data_dir: &Path, profile: &str) -> PathBuf {
+    agent_workspace_path(agent_data_dir, profile).join(SOUL_MD_FILE)
+}
+
 pub fn project_workspace_path(agent_data_dir: &Path, drive_slug: &str) -> PathBuf {
     projects_root(agent_data_dir).join(drive_slug)
 }
@@ -82,6 +92,18 @@ pub fn logical_agent_path(profile: &str) -> String {
 
 pub fn logical_project_path(drive_slug: &str) -> String {
     format!("{DRIVE_PREFIX}/projects/{drive_slug}")
+}
+
+pub fn logical_agent_file_path(profile: &str, file_name: &str) -> String {
+    format!("{}/{file_name}", logical_agent_path(profile))
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentDriveWorkspace {
+    pub agent_profile: String,
+    pub project_id: Option<Uuid>,
+    pub working_dir: PathBuf,
+    pub allowed_roots: Vec<PathBuf>,
 }
 
 pub fn ensure_drive_root(state: &AppState) -> AppResult<()> {
@@ -151,7 +173,7 @@ pub fn ensure_agent_workspace(
     let workspace = agent_workspace_path(&state.config.agent_data_dir, profile);
     fs::create_dir_all(&workspace)?;
 
-    let agents_path = workspace.join("AGENTS.md");
+    let agents_path = workspace.join(AGENTS_MD_FILE);
     if !agents_path.exists() {
         fs::write(
             &agents_path,
@@ -159,7 +181,7 @@ pub fn ensure_agent_workspace(
         )?;
     }
 
-    let soul_path = workspace.join("SOUL.md");
+    let soul_path = workspace.join(SOUL_MD_FILE);
     if !soul_path.exists() {
         fs::write(
             &soul_path,
@@ -177,6 +199,44 @@ pub fn ensure_project_workspace(state: &AppState, drive_slug: &str) -> AppResult
         drive_slug,
     ))?;
     Ok(())
+}
+
+pub async fn resolve_agent_drive_workspace(
+    state: &AppState,
+    profile: &str,
+    project_id: Option<Uuid>,
+) -> AppResult<AgentDriveWorkspace> {
+    let agent = sqlx::query!(
+        "SELECT name, role FROM native_agents WHERE profile = $1",
+        profile
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("agent {profile} not found")))?;
+
+    ensure_agent_workspace(state, profile, &agent.name, Some(&agent.role))?;
+    let working_dir = agent_workspace_path(&state.config.agent_data_dir, profile);
+    let mut allowed_roots = vec![shared_root(&state.config.agent_data_dir)];
+
+    if let Some(project_id) = project_id {
+        let project = sqlx::query!("SELECT drive_slug FROM projects WHERE id = $1", project_id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("project {project_id} not found")))?;
+        ensure_project_workspace(state, &project.drive_slug)?;
+        allowed_roots.push(project_workspace_path(
+            &state.config.agent_data_dir,
+            &project.drive_slug,
+        ));
+    }
+
+    allowed_roots.push(working_dir.clone());
+    Ok(AgentDriveWorkspace {
+        agent_profile: profile.to_string(),
+        project_id,
+        working_dir: working_dir.canonicalize()?,
+        allowed_roots: canonical_workspace_roots(allowed_roots)?,
+    })
 }
 
 pub fn archive_agent_workspace(state: &AppState, profile: &str) -> AppResult<()> {
@@ -706,6 +766,17 @@ fn restored_file_name(file_name: &str, stamp: &str, index: usize) -> String {
         ),
         _ => format!("{file_name}-{suffix}"),
     }
+}
+
+fn canonical_workspace_roots(roots: Vec<PathBuf>) -> AppResult<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for root in roots {
+        fs::create_dir_all(&root)?;
+        out.push(root.canonicalize()?);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 fn entry_kind_to_str(kind: DriveEntryKind) -> &'static str {
