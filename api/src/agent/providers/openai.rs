@@ -15,7 +15,7 @@
 //! the first chunk has the call `id` + function `name`, subsequent chunks
 //! append to `arguments`. We reassemble these into [`StreamDelta`] events.
 //!
-//! Ported from Hermes `agent/transports/chat_completions.py`, simplified:
+//! Implementation constraints:
 //! - No credential pool (single key per provider instance)
 //! - No prompt caching markers (deferred to Phase 17)
 //! - No reasoning content extraction for DeepSeek (added per-provider as needed)

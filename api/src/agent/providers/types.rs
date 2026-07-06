@@ -6,7 +6,7 @@
 //! (Phase 2) consumes *only* these types — it never sees provider-specific
 //! fields, which keeps the loop portable across providers.
 //!
-//! Design rationale (ported from Hermes `agent/transports/types.py`):
+//! Design rationale:
 //! - `FinishReason` uses the OpenAI vocabulary as the canonical set because
 //!   it is the most expressive (Anthropic maps onto it).
 //! - `ToolCall` stores raw JSON arguments as a string because the agent
@@ -125,8 +125,7 @@ pub struct ProviderResponse {
 /// text deltas arrive first, then tool call deltas (start → argument
 /// fragments → done), then the final usage/finish reason.
 ///
-/// Ported from Hermes's `TransportEvent` (`transports/types.py`), but
-/// simplified to a single enum rather than separate event classes.
+/// A single enum keeps provider streams simple to normalize and inspect.
 #[derive(Debug, Clone)]
 pub enum StreamDelta {
     /// A fragment of text content to append.

@@ -113,7 +113,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     if let Some(db) = config.db.clone() {
         registry.register(ToolEntry {
             name: "session_search".to_string(),
-            toolset: "session_search".to_string(),
+            toolset: "sessions_read".to_string(),
             schema: tool_schema(
                 "session_search",
                 "Search past chat sessions. Pass query for FTS, session_id+around_message_id to scroll, or no args to browse recent sessions.",

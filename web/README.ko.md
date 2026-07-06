@@ -85,7 +85,8 @@ Linear에서 영감받은 다크 테마. 모든 색상은 `src/index.css`의 CSS
 `/settings` 라우트에서 제공:
 
 - **일반** — PIN 변경
-- **에이전트 시스템** — Hermes/OpenClaw 인스턴스 (로컬 자동 감지, 원격 수동, 다중 인스턴스)
+- **모델 / LLM 프로바이더** — provider 등록과 연결 확인
+- **에이전트** — 에이전트별 앱 데이터 권한
 - **Git 연동** — GitHub/GitLab/Gitea 연결 설정
 - **정보** — 버전 & 포트 정보
 

@@ -1,8 +1,7 @@
 //! Native agents service.
 //!
-//! Agents are first-class mymy records. They are intentionally separate from
-//! legacy Hermes profile discovery so users can create and remove agents from
-//! the web UI without depending on external profile files.
+//! Agents are first-class mymy records so users can create and remove agents
+//! from the web UI without depending on external profile files.
 
 use std::fs;
 
@@ -12,9 +11,9 @@ use sqlx::FromRow;
 use crate::error::{AppError, AppResult};
 use crate::models::agent::{
     Agent, AgentModel, AgentResponse, AgentSource, AgentStatus, AgentsResponse, CreateAgentRequest,
-    DeleteAgentResponse, SandboxStatus,
+    DeleteAgentResponse, SandboxStatus, UpdateAgentRequest,
 };
-use crate::services::drive;
+use crate::services::{agent_permissions, drive};
 use crate::state::AppState;
 
 const MAX_AGENT_NAME_CHARS: usize = 80;
@@ -76,9 +75,13 @@ pub async fn list_agents(state: &AppState) -> AppResult<AgentsResponse> {
         }
     }
 
-    Ok(AgentsResponse {
-        agents: rows.into_iter().map(row_to_agent).collect(),
-    })
+    let mut agents = Vec::new();
+    for row in rows {
+        let permissions = agent_permissions::list_permissions(state, &row.profile).await?;
+        agents.push(row_to_agent(row, permissions));
+    }
+
+    Ok(AgentsResponse { agents })
 }
 
 pub async fn create_agent(state: &AppState, req: CreateAgentRequest) -> AppResult<AgentResponse> {
@@ -131,9 +134,80 @@ pub async fn create_agent(state: &AppState, req: CreateAgentRequest) -> AppResul
     })?;
 
     drive::ensure_agent_workspace(state, &profile, &name, Some(&role))?;
+    agent_permissions::ensure_defaults(state, &profile).await?;
+    let permissions = agent_permissions::list_permissions(state, &profile).await?;
 
     Ok(AgentResponse {
-        agent: row_to_agent(row),
+        agent: row_to_agent(row, permissions),
+    })
+}
+
+pub async fn update_agent(
+    state: &AppState,
+    profile: &str,
+    req: UpdateAgentRequest,
+) -> AppResult<AgentResponse> {
+    let profile = normalize_agent_profile(profile)?;
+    let existing = sqlx::query_as::<_, NativeAgentRow>(
+        r#"SELECT profile, name, role, description, status, model,
+                  drive_path, sandbox_uid, sandbox_status,
+                  NULL::timestamptz AS last_active_at
+           FROM native_agents
+           WHERE profile = $1"#,
+    )
+    .bind(&profile)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("agent {profile} not found")))?;
+
+    let name = match req.name {
+        Some(value) => validate_text(value, "agent name", MAX_AGENT_NAME_CHARS)?,
+        None => existing.name,
+    };
+    let role = match req.role {
+        Some(value) => validate_text(value, "agent role", MAX_AGENT_ROLE_CHARS)?,
+        None => existing.role,
+    };
+    let description = match req.description {
+        Some(value) => {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() > MAX_AGENT_DESCRIPTION_CHARS {
+                return Err(AppError::BadRequest(format!(
+                    "agent description must be at most {MAX_AGENT_DESCRIPTION_CHARS} characters"
+                )));
+            } else {
+                Some(trimmed)
+            }
+        }
+        None => existing.description,
+    };
+
+    let row = sqlx::query_as::<_, NativeAgentRow>(
+        r#"UPDATE native_agents
+           SET name = $2, role = $3, description = $4, updated_at = now()
+           WHERE profile = $1
+           RETURNING profile, name, role, description, status, model,
+                     drive_path, sandbox_uid, sandbox_status,
+                     NULL::timestamptz AS last_active_at"#,
+    )
+    .bind(&profile)
+    .bind(&name)
+    .bind(&role)
+    .bind(&description)
+    .fetch_one(&state.db)
+    .await?;
+
+    drive::ensure_agent_workspace(state, &profile, &name, Some(&role))?;
+    let permissions = if let Some(permissions) = req.tool_permissions {
+        agent_permissions::replace_permissions(state, &profile, permissions).await?
+    } else {
+        agent_permissions::list_permissions(state, &profile).await?
+    };
+
+    Ok(AgentResponse {
+        agent: row_to_agent(row, permissions),
     })
 }
 
@@ -184,7 +258,10 @@ pub async fn first_agent_profile(state: &AppState) -> AppResult<Option<String>> 
     Ok(row)
 }
 
-fn row_to_agent(row: NativeAgentRow) -> Agent {
+fn row_to_agent(
+    row: NativeAgentRow,
+    tool_permissions: Vec<crate::models::agent::AgentToolPermission>,
+) -> Agent {
     Agent {
         id: row.profile.clone(),
         profile: row.profile,
@@ -200,6 +277,7 @@ fn row_to_agent(row: NativeAgentRow) -> Agent {
         sandbox_uid: row.sandbox_uid,
         sandbox_status: parse_sandbox_status(&row.sandbox_status),
         last_active_at: row.last_active_at.map(|dt| dt.to_rfc3339()),
+        tool_permissions,
     }
 }
 

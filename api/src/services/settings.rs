@@ -7,7 +7,6 @@ use crate::models::settings::{
     AppSettings, GitSystemConfig, GitSystemType, Language, SecurityStatusResponse,
     SettingsResponse, UpdateSettingsRequest,
 };
-use crate::services::agent_systems as agent_systems_service;
 use crate::services::audit::log_audit_safe;
 use crate::state::AppState;
 use sqlx::FromRow;
@@ -43,10 +42,6 @@ pub async fn get_settings(state: &AppState) -> AppResult<SettingsResponse> {
     .await?;
     let language = parse_language(&settings_row.language);
 
-    let agent_systems = agent_systems_service::list_instances(state)
-        .await?
-        .instances;
-
     // Git systems
     let git_rows = sqlx::query_as!(
         GitSystemConfigRow,
@@ -80,7 +75,6 @@ pub async fn get_settings(state: &AppState) -> AppResult<SettingsResponse> {
     Ok(SettingsResponse {
         settings: AppSettings {
             language,
-            agent_systems,
             git_systems,
         },
     })

@@ -1,5 +1,5 @@
 -- 001_init.sql — mymy core schema
--- Tables: app_meta, agent_system_instances, git_system_configs, app_settings
+-- Tables: app_meta, git_system_configs, app_settings
 
 -- Enable pgvector extension (optional, for future semantic search)
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -12,31 +12,6 @@ CREATE TABLE IF NOT EXISTS app_meta (
     pin_hash        TEXT NOT NULL,
     initialized_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- ============================================================
--- agent_system_instances: registered Hermes/OpenClaw instances
--- ============================================================
-CREATE TABLE IF NOT EXISTS agent_system_instances (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type                TEXT NOT NULL CHECK (type IN ('hermes', 'openclaw')),
-    label               TEXT NOT NULL,
-    enabled             BOOLEAN NOT NULL DEFAULT true,
-    source              TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
-    connection          TEXT NOT NULL CHECK (connection IN ('local', 'remote')),
-    cli_path            TEXT,
-    profile_dir         TEXT,
-    host                TEXT,
-    port                INTEGER DEFAULT 22,
-    ssh_user            TEXT,
-    remote_cli_path     TEXT,
-    remote_profile_dir  TEXT,
-    detected_agents     INTEGER,
-    status              TEXT DEFAULT 'pending' CHECK (status IN ('connected', 'disconnected', 'pending')),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_system_instances_type ON agent_system_instances(type);
 
 -- ============================================================
 -- git_system_configs: one row per git system (github/gitlab/gitea)

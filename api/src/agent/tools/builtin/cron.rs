@@ -2,8 +2,8 @@
 //!
 //! The first native cron layer is intentionally explicit: jobs can be created,
 //! inspected, paused, resumed, removed, and marked for manual trigger, while
-//! background execution is left to the scheduler service layer. This prevents
-//! hidden autonomous work before delivery and approval surfaces are ready.
+//! background execution is left to the scheduler service layer. This keeps
+//! autonomous work visible through the scheduler's persisted job records.
 
 use std::sync::Arc;
 

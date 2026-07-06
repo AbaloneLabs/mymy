@@ -1,9 +1,7 @@
 -- Native agent chat message fidelity.
 --
--- The Hermes bridge stored only user/agent text pairs. The native agent loop
--- needs to replay assistant tool calls and tool results, so messages gain
--- structured tool metadata while keeping the legacy hermes_session_id column
--- for historical rows.
+-- The native agent loop needs to replay assistant tool calls and tool results,
+-- so messages gain structured tool metadata.
 
 ALTER TABLE chat_messages
     DROP CONSTRAINT IF EXISTS chat_messages_role_check;

@@ -781,8 +781,8 @@ fn write_file_atomic(path: &Path, content: &str) -> std::io::Result<()> {
 
 pub fn preprocess_skill_content(content: &str, skill_dir: &Path, session_id: &str) -> String {
     content
-        .replace("${HERMES_SKILL_DIR}", &skill_dir.display().to_string())
-        .replace("${HERMES_SESSION_ID}", session_id)
+        .replace("${MYMY_SKILL_DIR}", &skill_dir.display().to_string())
+        .replace("${MYMY_SESSION_ID}", session_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1113,7 +1113,7 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: sample\ndescription: Sample skill\n---\nUse ${HERMES_SESSION_ID} in ${HERMES_SKILL_DIR}.",
+            "---\nname: sample\ndescription: Sample skill\n---\nUse ${MYMY_SESSION_ID} in ${MYMY_SKILL_DIR}.",
         )
         .unwrap();
 
@@ -1137,7 +1137,7 @@ mod tests {
         assert_eq!(slugify("/Backend Dev"), "backend-dev");
 
         let processed =
-            preprocess_skill_content("Hello ${HERMES_SESSION_ID}", &skill_dir, "session1");
+            preprocess_skill_content("Hello ${MYMY_SESSION_ID}", &skill_dir, "session1");
         assert_eq!(processed, "Hello session1");
         let shell_off = preprocess_skill_content_with_config(
             "!`printf hi`",

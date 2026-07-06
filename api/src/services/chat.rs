@@ -1,34 +1,31 @@
 //! Chat domain operations backed by the native Rust agent runtime.
 //!
 //! Session CRUD remains in PostgreSQL, but message execution no longer calls
-//! the Hermes CLI. Each send operation resolves the default LLM provider,
+//! external command shims. Each send operation resolves the default LLM provider,
 //! assembles the native tool registry and prompt, then lets the HTTP handler
 //! stream agent-loop events to the browser.
 
-use std::{io, sync::Arc};
+mod prompt_snapshot;
+mod provider;
+mod skill_invocation;
 
-use async_trait::async_trait;
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
-use futures::{stream::BoxStream, StreamExt};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::agent::context::ContextManager;
 use crate::agent::loop_engine::{AgentLoop, LoopConfig};
 use crate::agent::memory::MemoryStore;
-use crate::agent::prompt::{
-    assemble_system_prompt, build_system_prompt_parts, PromptConfig, PromptParts,
-};
-use crate::agent::providers::types::ModelInfo;
-use crate::agent::providers::{self, LlmProvider, Message, MessageRole as AgentMessageRole};
-use crate::agent::providers::{ProviderError, StreamDelta, ToolSchema};
+use crate::agent::prompt::{assemble_system_prompt, build_system_prompt_parts, PromptConfig};
+use crate::agent::providers::{LlmProvider, Message, MessageRole as AgentMessageRole};
 use crate::agent::runtime::{MoaConfig, MoaParticipant};
 use crate::agent::security::redact_sensitive_text;
-use crate::agent::skills::{BundleRegistry, SkillRegistry};
+use crate::agent::skills::SkillRegistry;
 use crate::agent::tools::builtin::{
-    mcp, register_all, register_safe_defaults, BuiltinSessionConfig, BuiltinToolConfig,
+    mcp, register_agent_toolsets, register_all, BuiltinSessionConfig, BuiltinToolConfig,
 };
 use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
@@ -36,17 +33,22 @@ use crate::models::chat::{
     ChatMessage, ChatMessagesResponse, ChatSession, ChatSessionResponse, ChatSessionsResponse,
     CreateSessionRequest, MessageRole, SendMessageRequest, SessionStatus, ToolCallDto,
 };
+use crate::services::agent_permissions;
 use crate::services::agents;
 use crate::services::audit::log_audit_safe;
 use crate::services::drive;
 use crate::services::llm_providers;
+use crate::services::sandbox_runner::logical_path_for_runner;
 use crate::state::AppState;
+
+use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
+use self::provider::{parse_runtime_provider_id, DbRotatingProvider};
+use self::skill_invocation::resolve_skill_invocation;
 
 #[derive(Debug, FromRow)]
 struct ChatSessionRow {
     id: Uuid,
     project_id: Option<Uuid>,
-    hermes_session_id: Option<String>,
     agent_id: String,
     profile: String,
     title: Option<String>,
@@ -110,11 +112,11 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
         None => None,
     };
 
-    let rows =
-        match (project_uuid, q.profile.as_deref()) {
-            (Some(pid), Some(profile)) => sqlx::query_as!(
+    let rows = match (project_uuid, q.profile.as_deref()) {
+        (Some(pid), Some(profile)) => {
+            sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
                           s.status, s.message_count, s.system_prompt_stable,
                           s.system_prompt_context, s.system_prompt_fingerprint,
                           s.tool_schema_fingerprint, s.created_at, s.updated_at
@@ -126,10 +128,12 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                 profile,
             )
             .fetch_all(&state.db)
-            .await?,
-            (Some(pid), None) => sqlx::query_as!(
+            .await?
+        }
+        (Some(pid), None) => {
+            sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
                           s.status, s.message_count, s.system_prompt_stable,
                           s.system_prompt_context, s.system_prompt_fingerprint,
                           s.tool_schema_fingerprint, s.created_at, s.updated_at
@@ -140,10 +144,12 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                 pid,
             )
             .fetch_all(&state.db)
-            .await?,
-            (None, Some(profile)) => sqlx::query_as!(
+            .await?
+        }
+        (None, Some(profile)) => {
+            sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
                           s.status, s.message_count, s.system_prompt_stable,
                           s.system_prompt_context, s.system_prompt_fingerprint,
                           s.tool_schema_fingerprint, s.created_at, s.updated_at
@@ -154,10 +160,12 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                 profile,
             )
             .fetch_all(&state.db)
-            .await?,
-            (None, None) => sqlx::query_as!(
+            .await?
+        }
+        (None, None) => {
+            sqlx::query_as!(
                 ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
+                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
                           s.status, s.message_count, s.system_prompt_stable,
                           s.system_prompt_context, s.system_prompt_fingerprint,
                           s.tool_schema_fingerprint, s.created_at, s.updated_at
@@ -166,8 +174,9 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
                    ORDER BY s.created_at DESC"#
             )
             .fetch_all(&state.db)
-            .await?,
-        };
+            .await?
+        }
+    };
 
     Ok(ChatSessionsResponse {
         sessions: rows.into_iter().map(row_to_session).collect(),
@@ -287,6 +296,7 @@ pub async fn prepare_native_turn(
         drive::resolve_agent_drive_workspace(state, &session.profile, session.project_id).await?;
     let working_dir = workspace.working_dir;
     let allowed_roots = workspace.allowed_roots;
+    let permission_policy = agent_permissions::load_policy(state, &session.profile).await?;
     let mut registry = ToolRegistry::new();
     let extension_settings_key = state.encryption_key.read().await.as_ref().copied();
     let builtin_config = BuiltinToolConfig::for_session(BuiltinSessionConfig {
@@ -300,13 +310,15 @@ pub async fn prepare_native_turn(
         sandbox_preview_host: state.config.sandbox_preview_host.clone(),
         db: state.db.clone(),
         extension_settings_key,
+        app_state: Arc::new(state.clone()),
+        permission_policy: permission_policy.clone(),
     });
     register_all(&mut registry, &builtin_config);
     crate::services::extensions::register_runtime_extensions(&mut registry, state).await?;
     if let Err(err) = mcp::register_dynamic_tools(&mut registry, &builtin_config).await {
         tracing::warn!(error = %err, "MCP dynamic tool registration failed");
     }
-    register_safe_defaults(&mut registry);
+    register_agent_toolsets(&mut registry, &permission_policy);
     let tool_schemas_for_prompt = if use_moa {
         Vec::new()
     } else {
@@ -330,9 +342,14 @@ pub async fn prepare_native_turn(
         context_blocks.push(index);
     }
     context_blocks.push(format!(
-        "DRIVE.md:\nAgent workspace: /drive/agents/{}\nShared workspace: /drive/shared\nProject workspaces are available only when the current chat session is linked to a project.\nThe runtime current directory is {}.",
+        "DRIVE.md:\nPrivate workspace: /drive/agents/{}\nShared workspace: /drive/shared\nUse relative paths for private files, for example report.md or notes/plan.md. Use /drive/shared/... only for shared files. Do not include /drive/agents/{} in private file tool paths.\nThe runtime current directory is {}.",
         session.profile,
-        working_dir.display()
+        session.profile,
+        logical_path_for_runner(&working_dir)
+    ));
+    context_blocks.push(format!(
+        "Available app data domains:\n{}",
+        permission_policy.capability_summary()
     ));
 
     let mut volatile_blocks = Vec::new();
@@ -446,7 +463,6 @@ pub async fn prepare_native_turn(
             LoopConfig::default(),
             Some(context_manager),
         )
-        .with_approval_gate(id, state.approval_gate.clone())
         .with_clarify_gate(id, state.clarify_gate.clone())
         .with_todo_path(
             state
@@ -473,157 +489,6 @@ pub async fn prepare_native_turn(
         system_prompt,
         user_message,
     })
-}
-
-async fn resolve_prompt_snapshot(
-    state: &AppState,
-    session: &ChatSessionRow,
-    current: &PromptParts,
-    tool_schema_fingerprint: &str,
-) -> AppResult<PromptParts> {
-    let prompt_fingerprint = prompt_snapshot_fingerprint(
-        &session.profile,
-        session.project_id,
-        &current.stable,
-        &current.context,
-        tool_schema_fingerprint,
-    );
-    let cached_stable = session.system_prompt_stable.as_deref();
-    let cached_context = session.system_prompt_context.as_deref();
-    let cache_matches = session.system_prompt_fingerprint.as_deref() == Some(&prompt_fingerprint)
-        && session.tool_schema_fingerprint.as_deref() == Some(tool_schema_fingerprint)
-        && cached_stable.is_some()
-        && cached_context.is_some();
-
-    if cache_matches {
-        return Ok(PromptParts {
-            stable: cached_stable.unwrap_or_default().to_string(),
-            context: cached_context.unwrap_or_default().to_string(),
-            volatile: current.volatile.clone(),
-        });
-    }
-
-    sqlx::query!(
-        r#"UPDATE chat_sessions SET
-             system_prompt_stable = $2,
-             system_prompt_context = $3,
-             system_prompt_fingerprint = $4,
-             tool_schema_fingerprint = $5,
-             prompt_snapshot_created_at = COALESCE(prompt_snapshot_created_at, now()),
-             prompt_snapshot_updated_at = now()
-           WHERE id = $1"#,
-        session.id,
-        current.stable.as_str(),
-        current.context.as_str(),
-        &prompt_fingerprint,
-        tool_schema_fingerprint,
-    )
-    .execute(&state.db)
-    .await?;
-
-    Ok(current.clone())
-}
-
-fn prompt_snapshot_fingerprint(
-    profile: &str,
-    project_id: Option<Uuid>,
-    stable: &str,
-    context: &str,
-    tool_schema_fingerprint: &str,
-) -> String {
-    let project = project_id.map(|id| id.to_string()).unwrap_or_default();
-    hash_segments([
-        "chat-prompt-v1",
-        profile,
-        &project,
-        stable,
-        context,
-        tool_schema_fingerprint,
-    ])
-}
-
-fn fingerprint_tool_schemas(schemas: &[ToolSchema]) -> AppResult<String> {
-    let json = serde_json::to_string(schemas)
-        .map_err(|err| AppError::Internal(format!("tool schema fingerprint failed: {err}")))?;
-    Ok(hash_segments(["tool-schema-v1", &json]))
-}
-
-fn hash_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> String {
-    let mut hasher = Sha256::new();
-    for segment in segments {
-        hasher.update(segment.as_bytes());
-        hasher.update(b"\0");
-    }
-    hex::encode(hasher.finalize())
-}
-
-fn parse_runtime_provider_id(id: &str) -> AppResult<Uuid> {
-    Uuid::parse_str(id)
-        .map_err(|err| AppError::Internal(format!("invalid runtime provider id: {err}")))
-}
-
-async fn resolve_skill_invocation(
-    state: &AppState,
-    text: &str,
-    session_id: Uuid,
-) -> AppResult<String> {
-    let Some((slash_name, user_instruction)) = split_slash_invocation(text) else {
-        return Ok(text.to_string());
-    };
-    let skills = SkillRegistry::new(state.config.agent_data_dir.join("skills"));
-    let bundles = BundleRegistry::new(
-        state.config.agent_data_dir.join("skill-bundles"),
-        skills.clone(),
-    );
-    let config = crate::services::skills::load_config(state)?;
-    let session_id = session_id.to_string();
-
-    if let Some(bundle) = bundles
-        .resolve(slash_name)
-        .map_err(|err| map_skill_io("skill bundle resolve failed", err))?
-    {
-        return bundles
-            .build_invocation_message(&bundle, user_instruction, &session_id, &config)
-            .await
-            .map_err(|err| map_skill_io("skill bundle invocation failed", err));
-    }
-
-    if let Some(skill) = skills
-        .resolve_slash(slash_name)
-        .map_err(|err| map_skill_io("skill resolve failed", err))?
-    {
-        return skills
-            .build_invocation_message(&skill.name, user_instruction, &session_id, &config)
-            .await
-            .map_err(|err| map_skill_io("skill invocation failed", err));
-    }
-
-    Ok(text.to_string())
-}
-
-fn split_slash_invocation(text: &str) -> Option<(&str, &str)> {
-    let rest = text.trim().strip_prefix('/')?.trim_start();
-    if rest.is_empty() {
-        return None;
-    }
-    let command_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    let slash_name = &rest[..command_end];
-    if slash_name.is_empty() {
-        return None;
-    }
-    Some((slash_name, rest[command_end..].trim_start()))
-}
-
-fn map_skill_io(context: &str, err: io::Error) -> AppError {
-    let message = format!("{context}: {err}");
-    match err.kind() {
-        io::ErrorKind::AlreadyExists
-        | io::ErrorKind::InvalidData
-        | io::ErrorKind::InvalidInput
-        | io::ErrorKind::PermissionDenied => AppError::BadRequest(message),
-        io::ErrorKind::NotFound => AppError::NotFound(message),
-        _ => AppError::Internal(message),
-    }
 }
 
 pub async fn save_agent_messages(
@@ -706,7 +571,7 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
 async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> {
     sqlx::query_as!(
         ChatSessionRow,
-        r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
+        r#"SELECT id, project_id, agent_id, profile, title,
                   status, message_count, system_prompt_stable, system_prompt_context,
                   system_prompt_fingerprint, tool_schema_fingerprint, created_at, updated_at
            FROM chat_sessions WHERE id = $1"#,
@@ -818,7 +683,6 @@ fn row_to_session(row: ChatSessionRow) -> ChatSession {
     ChatSession {
         id: row.id.to_string(),
         project_id: row.project_id.map(|id| id.to_string()),
-        hermes_session_id: row.hermes_session_id,
         agent_id: row.agent_id,
         profile: row.profile,
         title: row.title,
@@ -894,124 +758,5 @@ fn derive_title(text: &str) -> String {
     } else {
         let truncated: String = trimmed.chars().take(30).collect();
         format!("{truncated}…")
-    }
-}
-
-struct DbRotatingProvider {
-    state: AppState,
-    provider_id: Uuid,
-}
-
-#[async_trait]
-impl LlmProvider for DbRotatingProvider {
-    async fn stream(
-        &self,
-        system_prompt: &str,
-        messages: &[Message],
-        tools: &[ToolSchema],
-    ) -> Result<BoxStream<'_, Result<StreamDelta, ProviderError>>, ProviderError> {
-        let state = self.state.clone();
-        let provider_id = self.provider_id;
-        let system_prompt = system_prompt.to_string();
-        let messages = messages.to_vec();
-        let tools = tools.to_vec();
-        let stream = async_stream::stream! {
-            let mut last_error = None;
-            for attempt in 1..=3 {
-                let resolved = match llm_providers::resolve_runtime_config_with_credential(&state, provider_id).await {
-                    Ok(resolved) => resolved,
-                    Err(err) => {
-                        yield Err(ProviderError::InvalidResponse(format!("provider config resolution failed: {err}")));
-                        return;
-                    }
-                };
-                let credential_id = resolved.credential_id;
-                let provider = providers::create_provider(&resolved.config);
-                let mut inner = match provider.stream(&system_prompt, &messages, &tools).await {
-                    Ok(inner) => inner,
-                    Err(ProviderError::RateLimited { retry_after_secs }) => {
-                        if let Err(err) = llm_providers::mark_credential_rate_limited(
-                            &state,
-                            provider_id,
-                            credential_id,
-                            retry_after_secs,
-                        )
-                        .await
-                        {
-                            tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
-                        }
-                        last_error = Some(ProviderError::RateLimited { retry_after_secs });
-                        if attempt < 3 && credential_id.is_some() {
-                            continue;
-                        }
-                        break;
-                    }
-                    Err(err) => {
-                        yield Err(err);
-                        return;
-                    }
-                };
-                while let Some(delta) = inner.next().await {
-                    if let Err(ProviderError::RateLimited { retry_after_secs }) = &delta {
-                        if let Err(err) = llm_providers::mark_credential_rate_limited(
-                            &state,
-                            provider_id,
-                            credential_id,
-                            *retry_after_secs,
-                        )
-                        .await
-                        {
-                            tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
-                        }
-                    }
-                    yield delta;
-                }
-                return;
-            }
-            yield Err(last_error.unwrap_or(ProviderError::RateLimited {
-                retry_after_secs: Some(60),
-            }));
-        };
-        Ok(Box::pin(stream))
-    }
-
-    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        let mut last_error = None;
-        for attempt in 1..=3 {
-            let resolved = llm_providers::resolve_runtime_config_with_credential(
-                &self.state,
-                self.provider_id,
-            )
-            .await
-            .map_err(|err| {
-                ProviderError::InvalidResponse(format!("provider config resolution failed: {err}"))
-            })?;
-            let credential_id = resolved.credential_id;
-            let provider = providers::create_provider(&resolved.config);
-            match provider.list_models().await {
-                Ok(models) => return Ok(models),
-                Err(ProviderError::RateLimited { retry_after_secs }) => {
-                    if let Err(err) = llm_providers::mark_credential_rate_limited(
-                        &self.state,
-                        self.provider_id,
-                        credential_id,
-                        retry_after_secs,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %err, "failed to mark pooled credential rate-limited");
-                    }
-                    last_error = Some(ProviderError::RateLimited { retry_after_secs });
-                    if attempt < 3 && credential_id.is_some() {
-                        continue;
-                    }
-                    break;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(last_error.unwrap_or(ProviderError::RateLimited {
-            retry_after_secs: Some(60),
-        }))
     }
 }

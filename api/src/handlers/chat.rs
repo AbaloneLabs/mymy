@@ -18,9 +18,9 @@ use crate::agent::runtime::run_moa_turn;
 use crate::agent::security::redact_sensitive_text;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{
-    ApprovalDecisionRequest, ApprovalDecisionResponse, ChatMessagesResponse, ChatSessionResponse,
-    ChatSessionsResponse, ChatSseEvent, ClarifyAnswerRequest, ClarifyAnswerResponse,
-    CreateSessionRequest, DeleteResponse, SendMessageRequest, YoloModeRequest,
+    ChatMessagesResponse, ChatSessionResponse, ChatSessionsResponse, ChatSseEvent,
+    ClarifyAnswerRequest, ClarifyAnswerResponse, CreateSessionRequest, DeleteResponse,
+    SendMessageRequest,
 };
 use crate::services::chat::{self as chat_service, PreparedExecution, SessionQuery};
 use crate::state::AppState;
@@ -35,14 +35,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/chat/sessions/{id}/messages",
             get(get_messages).post(send_message),
-        )
-        .route(
-            "/api/chat/sessions/{id}/approvals/{request_id}",
-            post(resolve_approval),
-        )
-        .route(
-            "/api/chat/sessions/{id}/approvals/yolo",
-            post(set_yolo_mode),
         )
         .route(
             "/api/chat/sessions/{id}/clarify/{request_id}",
@@ -87,32 +79,6 @@ pub async fn delete_session(
 ) -> AppResult<Json<DeleteResponse>> {
     let success = chat_service::delete_session(&state, id).await?;
     Ok(Json(DeleteResponse { success }))
-}
-
-pub async fn resolve_approval(
-    State(state): State<Arc<AppState>>,
-    Path((id, request_id)): Path<(Uuid, String)>,
-    Json(req): Json<ApprovalDecisionRequest>,
-) -> AppResult<Json<ApprovalDecisionResponse>> {
-    let success = state
-        .approval_gate
-        .resolve(id, &request_id, req.decision, req.remember)
-        .await;
-    if !success {
-        return Err(AppError::NotFound(format!(
-            "approval request {request_id} not found"
-        )));
-    }
-    Ok(Json(ApprovalDecisionResponse { success }))
-}
-
-pub async fn set_yolo_mode(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-    Json(req): Json<YoloModeRequest>,
-) -> AppResult<Json<ApprovalDecisionResponse>> {
-    state.approval_gate.set_yolo_mode(id, req.enabled).await;
-    Ok(Json(ApprovalDecisionResponse { success: true }))
 }
 
 pub async fn resolve_clarify(
@@ -172,11 +138,6 @@ fn stream_chat_turn(
                                 call_id: redact_sensitive_text(&call_id),
                                 result: redact_sensitive_text(&result),
                                 error: error.map(|value| redact_sensitive_text(&value)),
-                            });
-                        }
-                        AgentEvent::ApprovalRequired { request } => {
-                            yield sse_event("approval_required", &ChatSseEvent::ApprovalRequired {
-                                request,
                             });
                         }
                         AgentEvent::ClarifyRequired { request } => {

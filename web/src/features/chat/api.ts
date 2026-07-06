@@ -65,7 +65,6 @@ export type ChatSseEvent =
   | { type: "reasoning_delta"; content: string }
   | { type: "tool_call_start"; call_id: string; tool_name: string; arguments: string }
   | { type: "tool_call_finish"; call_id: string; result: string; error?: string | null }
-  | { type: "approval_required"; request: ChatApprovalRequest }
   | { type: "clarify"; request: ChatClarifyRequest }
   | { type: "turn_completed"; finish_reason: string; usage: unknown }
   | { type: "context_compressing" }
@@ -78,34 +77,12 @@ export type ChatSseEvent =
     }
   | { type: "error"; message: string };
 
-export interface ChatApprovalRequest {
-  requestId: string;
-  sessionId: string;
-  toolName: string;
-  command: string;
-  patternKey: string;
-  description: string;
-  severity: "hardline" | "dangerous" | string;
-  createdAt: string;
-}
-
 export interface ChatClarifyRequest {
   requestId: string;
   sessionId: string;
   question: string;
   choices: string[];
   createdAt: string;
-}
-
-export function submitChatApproval(
-  sessionId: string,
-  requestId: string,
-  decision: "approve" | "reject",
-) {
-  return api.post<{ success: boolean }>(
-    `/chat/sessions/${sessionId}/approvals/${requestId}`,
-    { decision },
-  );
 }
 
 export function submitChatClarifyAnswer(

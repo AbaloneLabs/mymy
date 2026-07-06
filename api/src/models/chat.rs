@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::agent::clarify::ClarifyRequest;
 use crate::agent::providers::types::{FinishReason, ToolCall, Usage};
-use crate::agent::security::ApprovalRequest;
 
 /// Message role for persisted native agent chat messages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,8 +37,6 @@ pub struct ChatSession {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hermes_session_id: Option<String>,
     pub agent_id: String,
     pub profile: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,9 +122,6 @@ pub enum ChatSseEvent {
         result: String,
         error: Option<String>,
     },
-    ApprovalRequired {
-        request: ApprovalRequest,
-    },
     Clarify {
         request: ClarifyRequest,
     },
@@ -175,29 +169,12 @@ pub struct SendMessageRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ApprovalDecisionRequest {
-    pub decision: crate::agent::security::ApprovalDecision,
-    #[serde(default)]
-    pub remember: crate::agent::security::ApprovalRemember,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct YoloModeRequest {
-    pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct ClarifyAnswerRequest {
     pub answer: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ClarifyAnswerResponse {
-    pub success: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApprovalDecisionResponse {
     pub success: bool,
 }
 

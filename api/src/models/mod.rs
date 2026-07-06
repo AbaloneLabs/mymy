@@ -1,8 +1,6 @@
 //! Domain models.
 
 pub mod agent;
-pub mod agent_ops;
-pub mod agent_system;
 pub mod audit;
 pub mod auth;
 pub mod calendar;

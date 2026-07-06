@@ -23,9 +23,6 @@ pub enum AppError {
     #[error("internal error: {0}")]
     Internal(String),
 
-    #[error("not implemented: {0}")]
-    NotImplemented(String),
-
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -43,7 +40,6 @@ impl IntoResponse for AppError {
                 tracing::error!(error = %msg, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
             }
-            AppError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg.clone()),
             AppError::Database(e) => {
                 tracing::error!(error = ?e, "database error");
                 (

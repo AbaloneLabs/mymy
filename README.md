@@ -42,12 +42,12 @@ It's designed for the **one-person business** — the developer-founder who wear
 | 🧱 | **Sandbox Runner** | Agent file-write, terminal, code, and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
 | 🖥️ | **Preview Proxy** | Agents can register dev-server ports with `register_preview`; the UI opens tokenized preview URLs through the API. |
 | 📁 | **Project Workspace** | Projects get stable Drive folders and can be linked to chats and work sessions. |
-| 💬 | **Chat** | Chat with native agents, render Markdown/code/search results, attach Drive files, and answer clarify/approval prompts inline. |
+| 💬 | **Chat** | Chat with native agents, render Markdown/code/search results, attach Drive files, and answer clarify prompts inline. |
 | 📊 | **Investments** | Manually track accounts, assets, positions, valuation snapshots, cashflows, watchlists, and allocation summaries. No broker sync or trade execution. |
 | 🧭 | **Process Console** | Inspect sandbox runtime health, managed processes, CPU/RAM/storage usage, open ports, previews, logs, stop, and kill actions. |
 | 📅 | **Calendar** | Schedule and manage events, linked to projects. |
 | 📝 | **Notes** | Markdown notes with full-text search (PostgreSQL FTS), tags, and pinning. |
-| ⚙️ | **Settings** | Configure PIN, LLM providers, agent systems, extensions, skills, and Git integrations. |
+| ⚙️ | **Settings** | Configure PIN, LLM providers, agent permissions, extensions, skills, and Git integrations. |
 | 🌐 | **i18n** | Full UI in English, Korean, Chinese, and Japanese. |
 | 🎨 | **Linear-style UI** | A focused dark theme inspired by Linear — easy on the eyes for all-day use. |
 
@@ -165,7 +165,7 @@ App configuration is split between environment variables and the in-app
 |---------|-------------------|
 | **General** | Change your PIN |
 | **Models / LLM Providers** | Register OpenAI-compatible, Anthropic, Ollama, or local provider endpoints |
-| **Agent Systems** | Manage legacy Hermes/OpenClaw instances when needed |
+| **Agents** | Configure per-agent app data permissions |
 | **Skills / Extensions** | Configure native skills, MCP servers, and extension integrations |
 | **Git Integrations** | Connect GitHub, GitLab, Gitea (host, port, SSH alias) |
 | **About** | Version & port info |
@@ -200,9 +200,8 @@ roots.
 The Docker stack starts a separate `sandbox-runner` service on port `33698`.
 The API sends terminal commands, code execution, and long-running sandbox
 processes to this runner when `MYMY_SANDBOX_RUNNER_URL` is configured. Native
-agents receive file-write, terminal, and Python code-execution tools by default;
-dangerous shell commands and sensitive file writes still flow through the chat
-approval gate.
+agents receive only the tools allowed by their per-domain permissions. Dangerous
+shell commands and sensitive file writes are blocked by the runtime guardrails.
 
 The API keeps durable sandbox process metadata, preview registration, and runner
 status reconciliation in a shared service used by both HTTP handlers and native
@@ -271,18 +270,6 @@ MYMY_DRIVE_S3_ENDPOINT=
 
 When these are unset, Drive uses only the local Docker volume.
 
-### Docker and Hermes
-
-Docker Compose still supports optional legacy Hermes paths. To enable Hermes CLI
-integration inside Docker, set these in `.env`:
-
-```bash
-HERMES_HOME=/absolute/host/path/to/hermes/home
-HERMES_BIN_DIR=/absolute/host/path/to/hermes/bin
-UV_PYTHON_DIR=/absolute/host/path/to/uv/python/cache
-HERMES_CLI_PATH=/home/mymy/.local/bin/hermes
-```
-
 ### CI
 
 GitLab CI is configured in `.gitlab-ci.yml` for the shell runner tagged
@@ -322,9 +309,9 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 ### Done
 - [x] PIN authentication + protected routes
 - [x] Dashboard (agents + projects)
-- [x] Settings page (PIN change, agent systems, Git integrations)
-- [x] Rust backend (axum) — auth, projects, agent systems, settings
-- [x] Chat with Hermes agents (sessions + messages)
+- [x] Settings page (PIN change, agent permissions, Git integrations)
+- [x] Rust backend (axum) — auth, projects, native agents, settings
+- [x] Chat with native agents (sessions + messages)
 - [x] Calendar (events CRUD)
 - [x] Notes (CRUD + PostgreSQL full-text search)
 - [x] Tasks (custom statuses, list and board views)
@@ -332,7 +319,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Finance (transactions and period summaries)
 - [x] Goals / OKR tracking
 - [x] Native LLM provider-backed agents
-- [x] Markdown-rich chat UI with code highlighting, structured search/tool output, file attachments, drag-and-drop upload, and inline clarify/approval prompts
+- [x] Markdown-rich chat UI with code highlighting, structured search/tool output, file attachments, drag-and-drop upload, and inline clarify prompts
 - [x] Collapsible main navigation, chat session list, and agent sub-tabs
 - [x] Drive tab with file browsing/editing/upload, trash, sync jobs, and media viewers
 - [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
@@ -342,7 +329,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Tokenized preview proxy for agent-started local servers
 - [x] Bubblewrap-backed sandbox runner for agent commands and long-running processes
 - [x] Firecracker-backed sandbox runner for VM-isolated commands, managed processes, and preview forwarding
-- [x] Native file-write, terminal, code-execution, and managed process tools with approval gates
+- [x] Native file-write, terminal, code-execution, and managed process tools with permission-based exposure
 - [x] S3 object synchronization worker for Drive sync jobs
 - [x] i18n (English, Korean, Chinese, Japanese)
 
@@ -354,7 +341,6 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [ ] Agent automation routines (presets)
 - [ ] Workflow automation engine
 - [ ] Notification center
-- [ ] OpenClaw agent integration
 - [ ] Git system integration UI (clone, browse, commit)
 - [ ] Notes semantic search (pgvector embeddings, pending LLM setup)
 

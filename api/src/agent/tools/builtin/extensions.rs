@@ -250,14 +250,12 @@ impl ToolHandler for ScriptExtensionTool {
             ));
         }
         if let Some(matched) = detect_dangerous_command(command) {
-            let action = match matched.severity {
-                Severity::Hardline => "blocked",
-                Severity::Dangerous => "requires approval",
-            };
-            return Err(ToolError::Unavailable(format!(
-                "{action}: {} ({})",
-                matched.description, matched.pattern_key
-            )));
+            if matched.severity == Severity::Hardline {
+                return Err(ToolError::Unavailable(format!(
+                    "blocked: {} ({})",
+                    matched.description, matched.pattern_key
+                )));
+            }
         }
         let mut child = Command::new(command_path)
             .args(script_args)

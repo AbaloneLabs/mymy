@@ -1,8 +1,6 @@
 //! Route handlers module.
 
-pub mod agent_ops;
 pub mod agent_prompts;
-pub mod agent_systems;
 pub mod agents;
 pub mod audit;
 pub mod auth;
@@ -43,8 +41,6 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(auth::routes())
         .merge(agent_prompts::routes())
-        .merge(agent_systems::routes())
-        .merge(agent_ops::routes())
         .merge(agents::routes())
         .merge(projects::routes())
         .merge(drive::routes())

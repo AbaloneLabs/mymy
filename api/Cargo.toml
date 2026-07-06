@@ -57,7 +57,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# HTTP client (agent runtime + hermes REST probing)
+# HTTP client for LLM providers, Drive sync, and runtime integrations.
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Object storage sync

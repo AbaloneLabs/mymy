@@ -85,7 +85,8 @@ bun run preview    # 预览生产构建
 `/settings` 路由提供：
 
 - **通用** — PIN 更改
-- **智能体系统** — Hermes/OpenClaw 实例（本地自动检测，远程手动，多实例）
+- **模型 / LLM Provider** — provider 注册与连接检查
+- **智能体** — 每个智能体的应用数据权限
 - **Git 集成** — GitHub/GitLab/Gitea 连接配置
 - **关于** — 版本和端口信息
 

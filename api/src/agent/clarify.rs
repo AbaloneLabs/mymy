@@ -1,8 +1,8 @@
 //! Clarifying-question gate for interactive agent turns.
 //!
-//! Clarify requests are live SSE continuation points, just like approvals. The
-//! agent loop waits on a one-shot receiver while the web UI posts the user's
-//! answer back to the matching request id.
+//! Clarify requests are live SSE continuation points. The agent loop waits on
+//! a one-shot receiver while the web UI posts the user's answer back to the
+//! matching request id.
 
 use std::collections::HashMap;
 

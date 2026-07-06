@@ -1,9 +1,9 @@
 //! File-backed curated memory for the native agent.
 //!
-//! The store follows the same frozen-snapshot constraint as Hermes: memory
-//! writes update disk immediately, but the prompt snapshot is taken at session
-//! start and stays stable for that turn. This keeps provider prefix caching
-//! viable and avoids the model chasing its own memory writes mid-response.
+//! Memory writes update disk immediately, but the prompt snapshot is taken at
+//! session start and stays stable for that turn. This keeps provider prefix
+//! caching viable and avoids the model chasing its own memory writes
+//! mid-response.
 
 use std::collections::HashSet;
 use std::fs;

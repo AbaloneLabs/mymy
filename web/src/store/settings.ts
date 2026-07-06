@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { AgentSystemInstance, AgentSystemType, AppSettings, GitSystemConfig, GitSystemType, Language } from "@/types/settings";
+import type { AppSettings, GitSystemConfig, GitSystemType, Language } from "@/types/settings";
 
 
 
@@ -10,7 +10,6 @@ const DEFAULT_SETTINGS: AppSettings = {
 
   language: "en",
 
-  agentSystems: [],
   gitSystems: {
     github: {
       type: "github",
@@ -45,27 +44,15 @@ interface SettingsState {
 
   setLanguage: (lang: Language) => void;
 
-  addAgentSystem: (instance: Omit<AgentSystemInstance, "id">) => void;
-
-  updateAgentSystem: (id: string, patch: Partial<AgentSystemInstance>) => void;
-
-  removeAgentSystem: (id: string) => boolean;
-
-  redetectLocal: () => Promise<void>;
-
   updateGitSystem: (type: GitSystemType, patch: Partial<GitSystemConfig>) => void;
 
   resetSettings: () => void;
 }
 
 
-function genId(type: AgentSystemType): string {
-  return `${type}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 export const useSettingsStore = create<SettingsState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       settings: DEFAULT_SETTINGS,
       appVersion: APP_VERSION,
 
@@ -73,47 +60,6 @@ export const useSettingsStore = create<SettingsState>()(
         set((state) => ({
           settings: { ...state.settings, language: lang },
         })),
-
-      addAgentSystem: (instance) =>
-        set((state) => ({
-          settings: {
-            ...state.settings,
-            agentSystems: [
-              ...state.settings.agentSystems,
-              { ...instance, id: genId(instance.type), source: "manual" },
-            ],
-          },
-        })),
-
-      updateAgentSystem: (id, patch) =>
-        set((state) => ({
-          settings: {
-            ...state.settings,
-            agentSystems: state.settings.agentSystems.map((inst) =>
-              inst.id === id ? { ...inst, ...patch } : inst
-            ),
-          },
-        })),
-
-      removeAgentSystem: (id) => {
-        const inst = get().settings.agentSystems.find((i) => i.id === id);
-
-        if (!inst || inst.source === "auto") return false;
-        set((state) => ({
-          settings: {
-            ...state.settings,
-            agentSystems: state.settings.agentSystems.filter((i) => i.id !== id),
-          },
-        }));
-        return true;
-      },
-
-      redetectLocal: async () => {
-
-
-
-        void get;
-      },
 
       updateGitSystem: (type, patch) =>
         set((state) => ({

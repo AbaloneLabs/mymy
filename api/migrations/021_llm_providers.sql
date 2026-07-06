@@ -1,9 +1,7 @@
 -- LLM provider configurations for the native agent runtime.
 --
--- This table replaces the external Hermes CLI connection model
--- (agent_system_instances) with direct LLM API connections. Each row
--- stores a complete provider config: base_url, API format, model, and
--- an AES-256-GCM encrypted API key.
+-- Each row stores a complete provider config: base_url, API format, model,
+-- and an AES-256-GCM encrypted API key.
 --
 -- The API key is encrypted at rest using a key derived from the user's
 -- PIN via HKDF (see services::llm_providers::crypto). The DB stores only

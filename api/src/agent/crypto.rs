@@ -20,9 +20,8 @@
 //! is preferred over raw SHA-256 because it provides proper key
 //! separation (the `info` parameter binds the key to this specific use).
 //!
-//! Ported conceptually from Hermes's credential management, but Hermes
-//! stores keys in plaintext config files — mymy improves on this by
-//! encrypting at rest.
+//! The database stores only encrypted credentials; plaintext keys are resolved
+//! only for the active authenticated request.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};

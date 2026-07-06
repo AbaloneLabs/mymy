@@ -371,11 +371,17 @@ fn resolve_cwd(
     requested: Option<&str>,
 ) -> AppResult<PathBuf> {
     let root = working_dir.canonicalize()?;
+    let drive_root = drive::physical_drive_root_from_roots(&root, allowed_roots);
     let candidate = match requested.map(str::trim).filter(|value| !value.is_empty()) {
         Some(raw) => {
             let path = Path::new(raw);
             if path.is_absolute() {
-                path.to_path_buf()
+                drive_root
+                    .as_deref()
+                    .map(|drive_root| drive::physical_path_for_logical_drive_path(drive_root, path))
+                    .transpose()?
+                    .flatten()
+                    .unwrap_or_else(|| path.to_path_buf())
             } else {
                 root.join(path)
             }
@@ -424,6 +430,30 @@ fn validate_label(value: String, label: &str, max_chars: usize) -> AppResult<Str
         )));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_cwd_accepts_logical_shared_drive_path() {
+        let base = std::env::temp_dir().join(format!("mymy-sandbox-{}", uuid::Uuid::new_v4()));
+        let agent = base.join("drive").join("agents").join("elena");
+        let shared = base.join("drive").join("shared");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+
+        let cwd = resolve_cwd(
+            &agent,
+            &[agent.clone(), shared.clone()],
+            Some("/drive/shared"),
+        )
+        .unwrap();
+        assert_eq!(cwd, shared.canonicalize().unwrap());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
 
 fn validate_port(value: Option<u16>) -> AppResult<Option<u16>> {

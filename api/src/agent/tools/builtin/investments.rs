@@ -24,7 +24,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
     registry.register(ToolEntry {
         name: "investment_snapshot".to_string(),
-        toolset: "investments".to_string(),
+        toolset: "investments_read".to_string(),
         schema: tool_schema(
             "investment_snapshot",
             "Return the user's manual investment summary, positions, and watchlist. This is read-only and does not place trades.",

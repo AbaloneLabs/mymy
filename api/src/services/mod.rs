@@ -1,8 +1,7 @@
 //! Application services.
 
-pub mod agent_ops;
+pub mod agent_permissions;
 pub mod agent_prompts;
-pub mod agent_systems;
 pub mod agents;
 pub mod audit;
 pub mod audit_logs;
@@ -14,8 +13,6 @@ pub mod drive;
 pub mod drive_sync;
 pub mod extensions;
 pub mod goals;
-pub mod hermes;
-pub mod hermes_ops;
 pub mod investments;
 pub mod journey;
 pub mod knowledge;

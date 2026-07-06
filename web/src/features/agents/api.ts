@@ -3,7 +3,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { Agent } from "@/types/agents";
+import type { Agent, AgentToolPermission } from "@/types/agents";
 
 /* -------------------------------------------------- Agents */
 
@@ -20,6 +20,13 @@ export interface CreateAgentRequest {
   name: string;
   role?: string;
   description?: string;
+}
+
+export interface UpdateAgentRequest {
+  name?: string;
+  role?: string;
+  description?: string;
+  toolPermissions?: AgentToolPermission[];
 }
 
 export function useAgents() {
@@ -43,6 +50,21 @@ export function useDeleteAgent() {
   return useMutation({
     mutationFn: (profile: string) =>
       api.delete<{ success: boolean }>(`/agents/${encodeURIComponent(profile)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["agents"] }),
+  });
+}
+
+export function useUpdateAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      profile,
+      body,
+    }: {
+      profile: string;
+      body: UpdateAgentRequest;
+    }) =>
+      api.patch<AgentResponse>(`/agents/${encodeURIComponent(profile)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agents"] }),
   });
 }

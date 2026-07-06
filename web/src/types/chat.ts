@@ -12,8 +12,6 @@ export interface ChatSession {
 
   projectId?: string;
 
-  hermesSessionId?: string;
-
   agentId: string;
 
   profile: string;

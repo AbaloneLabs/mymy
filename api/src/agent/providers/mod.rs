@@ -1,15 +1,13 @@
 //! LLM provider abstraction layer.
 //!
-//! Ported from Hermes's transport layer (`agent/transports/`), simplified
-//! for Rust. Two wire formats cover ~95% of real-world providers:
+//! Two wire formats cover most real-world providers:
 //!
 //! 1. **OpenAI-compatible** — `chat/completions` + SSE streaming
 //! 2. **Anthropic native** — `messages` API + typed SSE events
 //!
-//! Design rationale: Hermes separates transport (wire format) from client
-//! (credential lifecycle). mymy merges them because we don't need credential
-//! pools or cross-provider client reuse — each provider instance owns its
-//! config and HTTP client.
+//! Design rationale: each provider instance owns its config and HTTP client,
+//! which keeps credential lifecycle and wire-format behavior local to the
+//! selected provider.
 
 pub mod anthropic;
 pub mod openai;
@@ -166,9 +164,8 @@ impl ProviderError {
 /// The user explicitly chooses which wire format to use, with auto-detect
 /// as a fallback (`None`).
 ///
-/// Design decision: Hermes supports 6 `api_mode`s (chat_completions,
-/// anthropic_messages, bedrock_converse, codex_responses, codex_app_server,
-/// plus MoA). mymy collapses these to 2 formats because:
+/// Design decision: mymy collapses provider transport selection to 2 formats
+/// because:
 /// - Bedrock (SigV4) and Codex (responses API) are niche and complex
 /// - MoA is advanced and deferred
 /// - A simple hostname + model prefix check covers 100% of auto-detection
@@ -216,8 +213,7 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     /// Resolve the effective wire format: explicit override → auto-detect.
     ///
-    /// Ported from `determine_api_mode` in `hermes_cli/providers.py:533-575`,
-    /// simplified to 2 formats.
+    /// Resolve the API mode from an explicit setting or a known host family.
     pub fn resolved_mode(&self) -> ApiMode {
         resolve_api_format(self)
     }
@@ -314,9 +310,8 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// Trait abstracting LLM providers.
 ///
-/// Ported from Hermes's `ProviderTransport` (`base.py:16-89`), merged with
-/// client lifecycle. The single `stream()` method handles both streaming
-/// chat completions and tool calling.
+/// The single `stream()` method handles both streaming chat completions and
+/// tool calling.
 ///
 /// `system_prompt` is passed separately because providers handle it
 /// differently: OpenAI puts it in `messages[0]`, Anthropic uses a separate

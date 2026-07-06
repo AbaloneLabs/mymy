@@ -14,7 +14,7 @@
 //!
 //! Wire format reference: https://docs.anthropic.com/en/api/messages
 //!
-//! Ported from Hermes `agent/transports/anthropic.py`, simplified:
+//! Implementation constraints:
 //! - No prompt caching markers (deferred to Phase 17)
 //! - No extended thinking signature replay (deferred)
 //! - Single API key (no credential pool)

@@ -1,9 +1,8 @@
 //! Dangerous command detection.
 //!
-//! Phase 8 keeps the first policy conservative: catastrophic commands are
-//! blocked outright and dangerous commands are refused until an interactive
-//! approval queue is attached to the web UI. Harmless terminal commands can be
-//! enabled without giving the model a path to irreversible operations.
+//! Catastrophic commands are blocked outright. Other dangerous patterns are
+//! surfaced to callers so each tool can decide whether its permission model
+//! allows execution in the current sandbox.
 
 use regex::Regex;
 use std::sync::OnceLock;

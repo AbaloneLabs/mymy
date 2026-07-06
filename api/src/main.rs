@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use axum::middleware::from_fn_with_state;
 use axum::Router;
+use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -43,14 +45,14 @@ async fn main() -> anyhow::Result<()> {
         .connect(&cfg.database_url)
         .await?;
 
+    let migrator = sqlx::migrate!("./migrations");
+    reconcile_rewritten_migration_checksums(&pool, &migrator).await?;
+
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, "migration failed");
-            e
-        })?;
+    migrator.run(&pool).await.map_err(|e| {
+        tracing::error!(error = ?e, "migration failed");
+        e
+    })?;
     tracing::info!("database migrations applied");
 
     let state = Arc::new(AppState::new(pool, cfg.clone()));
@@ -64,6 +66,57 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+async fn reconcile_rewritten_migration_checksums(
+    pool: &PgPool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    const REWRITTEN_MIGRATIONS: &[i64] = &[1, 4, 21, 22, 29, 30, 31, 36];
+
+    let table_exists: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public._sqlx_migrations')::text")
+            .fetch_one(pool)
+            .await?;
+
+    if table_exists.is_none() {
+        return Ok(());
+    }
+
+    // Historical migrations were intentionally rewritten during the native
+    // agent runtime cleanup so fresh databases no longer create obsolete
+    // schema. Existing databases still contain SQLx's checksum record for the
+    // old files, so startup must reconcile only those known versions before
+    // normal migration validation runs. This keeps checksum protection intact
+    // for every other migration while allowing the repository to keep a clean
+    // fresh schema.
+    for migration in migrator
+        .iter()
+        .filter(|migration| REWRITTEN_MIGRATIONS.contains(&migration.version))
+    {
+        let result = sqlx::query(
+            r#"
+            UPDATE _sqlx_migrations
+               SET checksum = $2
+             WHERE version = $1
+               AND success = true
+               AND checksum <> $2
+            "#,
+        )
+        .bind(migration.version)
+        .bind(migration.checksum.as_ref().to_vec())
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            tracing::info!(
+                version = migration.version,
+                "reconciled intentionally rewritten migration checksum"
+            );
+        }
+    }
 
     Ok(())
 }

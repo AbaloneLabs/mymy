@@ -15,6 +15,7 @@ import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
 import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
+import { useChatSessionSelection } from "@/features/chat/useChatSessionSelection";
 import { useProjects } from "@/features/projects/api";
 import { useProjectContext } from "@/store/projectContext";
 import type { ChatSession } from "@/types/chat";
@@ -64,18 +65,16 @@ export default function Chat() {
     return m;
   }, [projectsData]);
 
-  // Active session state.
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [isNewSession, setIsNewSession] = useState(false);
-  const [sessionsCollapsed, setSessionsCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("mymy:chat-sessions-collapsed") === "true";
-  });
-
-  // Auto-select the most recent session if none is active.
-  const effectiveSessionId =
-    activeSessionId ?? (sessions.length > 0 ? sessions[0].id : null);
-  const effectiveSession = sessions.find((s) => s.id === effectiveSessionId);
+  const {
+    effectiveSessionId,
+    effectiveSession,
+    isNewSession,
+    sessionsCollapsed,
+    selectSession,
+    markCreatedSession,
+    markDeletedSession,
+    toggleSessionsCollapsed,
+  } = useChatSessionSelection(sessions);
 
   // New session dialog state.
   const [showDialog, setShowDialog] = useState(false);
@@ -83,15 +82,13 @@ export default function Chat() {
   const deleteSession = useDeleteChatSession(selectedProjectId ?? undefined);
 
   const handleSelectSession = (sid: string) => {
-    setActiveSessionId(sid);
-    setIsNewSession(false);
+    selectSession(sid);
   };
 
   const handleCreate = (vars: { profile: string; projectId?: string }) => {
     createSession.mutate(vars, {
       onSuccess: (res) => {
-        setActiveSessionId(res.session.id);
-        setIsNewSession(true);
+        markCreatedSession(res.session.id);
         setShowDialog(false);
       },
     });
@@ -101,20 +98,9 @@ export default function Chat() {
     e.stopPropagation();
     if (window.confirm(t("chat.deleteConfirm"))) {
       deleteSession.mutate(sessionId);
-      if (activeSessionId === sessionId) {
-        setActiveSessionId(null);
-        setIsNewSession(false);
-      }
+      markDeletedSession(sessionId);
     }
   };
-
-  function toggleSessionsCollapsed() {
-    setSessionsCollapsed((current) => {
-      const next = !current;
-      window.localStorage.setItem("mymy:chat-sessions-collapsed", String(next));
-      return next;
-    });
-  }
 
   // Keyboard shortcut: press C on the chat page to open the new-session dialog.
   const createNonce = useCreateAction("create.chat");

@@ -91,7 +91,8 @@ Components reference these via `var(--*)`.
 The `/settings` route provides:
 
 - **General** — PIN change
-- **Agent Systems** — Hermes/OpenClaw instances (local auto-detected, remote manual, multi-instance)
+- **Models / LLM Providers** — provider registration and connection checks
+- **Agents** — per-agent app data permissions
 - **Git Integrations** — GitHub/GitLab/Gitea connection config
 - **About** — Version & port info
 

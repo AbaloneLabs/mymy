@@ -29,6 +29,38 @@ export function SummaryTile({
   );
 }
 
+export function TabButton({
+  active,
+  onClick,
+  icon: Icon,
+  label,
+  collapsed,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: LucideIcon;
+  label: string;
+  collapsed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150",
+        collapsed && "justify-center px-0",
+        active
+          ? "bg-[var(--surface-hover)] text-[var(--text)]"
+          : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+      <span className={cn(collapsed && "hidden")}>{label}</span>
+    </button>
+  );
+}
+
 export function Metric({
   label,
   value,

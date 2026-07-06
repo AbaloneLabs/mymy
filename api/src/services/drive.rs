@@ -8,9 +8,10 @@
 //! point and S3 sync provider a storage implementation detail instead of a
 //! prompt or UI concern.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -26,7 +27,7 @@ use crate::models::drive::{
 };
 use crate::state::AppState;
 
-const DRIVE_PREFIX: &str = "/drive";
+pub const DRIVE_PREFIX: &str = "/drive";
 pub const AGENTS_MD_FILE: &str = "AGENTS.md";
 pub const SOUL_MD_FILE: &str = "SOUL.md";
 const MAX_TEXT_PREVIEW_BYTES: u64 = 1_000_000;
@@ -96,6 +97,63 @@ pub fn logical_project_path(drive_slug: &str) -> String {
 
 pub fn logical_agent_file_path(profile: &str, file_name: &str) -> String {
     format!("{}/{file_name}", logical_agent_path(profile))
+}
+
+pub fn physical_drive_root_from_path(path: &Path) -> Option<PathBuf> {
+    let mut root = PathBuf::new();
+    for component in path.components() {
+        let is_drive = matches!(
+            component,
+            Component::Normal(name) if name == OsStr::new("drive")
+        );
+        root.push(component.as_os_str());
+        if is_drive {
+            return Some(root);
+        }
+    }
+    None
+}
+
+pub fn physical_drive_root_from_roots(
+    primary_root: &Path,
+    extra_roots: &[PathBuf],
+) -> Option<PathBuf> {
+    physical_drive_root_from_path(primary_root).or_else(|| {
+        extra_roots
+            .iter()
+            .find_map(|root| physical_drive_root_from_path(root))
+    })
+}
+
+pub fn physical_path_for_logical_drive_path(
+    drive_root: &Path,
+    logical_path: &Path,
+) -> AppResult<Option<PathBuf>> {
+    let mut components = logical_path.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Ok(None);
+    }
+    match components.next() {
+        Some(Component::Normal(name)) if name == OsStr::new("drive") => {}
+        _ => return Ok(None),
+    }
+
+    let mut relative = PathBuf::new();
+    for component in components {
+        match component {
+            Component::Normal(name) => relative.push(name),
+            Component::CurDir | Component::ParentDir => {
+                return Err(AppError::BadRequest("Invalid Drive path segment".into()));
+            }
+            _ => return Err(AppError::BadRequest("Invalid Drive path".into())),
+        }
+    }
+
+    if relative.as_os_str().is_empty() {
+        Ok(Some(drive_root.to_path_buf()))
+    } else {
+        Ok(Some(drive_root.join(relative)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -894,12 +952,12 @@ fn resolve_drive_path(agent_data_dir: &Path, logical_path: &str) -> AppResult<Re
     })
 }
 
-fn normalize_logical_drive_path(value: &str) -> AppResult<String> {
+pub fn normalize_logical_drive_path(value: &str) -> AppResult<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Ok(DRIVE_PREFIX.to_string());
     }
-    if !trimmed.starts_with(DRIVE_PREFIX) {
+    if trimmed != DRIVE_PREFIX && !trimmed.starts_with(&format!("{DRIVE_PREFIX}/")) {
         return Err(AppError::BadRequest(
             "Drive paths must start with /drive".into(),
         ));
@@ -1035,4 +1093,33 @@ fn extract_docx_text(path: &Path) -> AppResult<String> {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_drive_path_maps_to_physical_root() {
+        let drive_root = Path::new("/tmp/mymy-test/drive");
+        let mapped =
+            physical_path_for_logical_drive_path(drive_root, Path::new("/drive/shared/a.md"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(mapped, PathBuf::from("/tmp/mymy-test/drive/shared/a.md"));
+    }
+
+    #[test]
+    fn logical_drive_mapping_rejects_parent_segments() {
+        let drive_root = Path::new("/tmp/mymy-test/drive");
+        let err = physical_path_for_logical_drive_path(drive_root, Path::new("/drive/shared/../x"))
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid Drive path segment"));
+    }
+
+    #[test]
+    fn normalize_logical_drive_path_rejects_similar_prefixes() {
+        let err = normalize_logical_drive_path("/drivefoo").unwrap_err();
+        assert!(err.to_string().contains("Drive paths must start"));
+    }
 }

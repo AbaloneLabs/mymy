@@ -53,17 +53,6 @@ services:
 
   # ----------------------------------------------------------
   # API backend.
-  #
-  # Path-preserving mount strategy:
-  # Hermes is installed as a Python venv on the host. A venv hardcodes
-  # absolute paths in several places (wrapper script `exec`, binary
-  # shebangs, python symlinks, pyvenv.cfg `home =`). If the host path
-  # differs from the container path, the venv cannot locate itself and
-  # the CLI fails with exit 127. To avoid this, we mount the host paths
-  # to the SAME absolute path inside the container and set HOME to the
-  # host user's home. `${HOME}` resolves per-user at compose time, so
-  # this is NOT a hardcoded personal path — it works for any user with
-  # a standard Hermes install (~/.hermes, ~/.local/bin).
   # ----------------------------------------------------------
   api:
     build:
@@ -88,27 +77,10 @@ services:
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
-      # Path-preserving: set HOME to the host user's home so the venv's
-      # absolute paths resolve correctly inside the container.
-      HOME: ${HOME}
-      # Hermes paths resolve under the same HOME as on the host.
-      HERMES_HOME: ${HOME}/.hermes
-      HERMES_CLI_PATH: ${HOME}/.local/bin/hermes
+      HOME: /app/data/home
     ports:
       - "33697:33697"
     volumes:
-      # Mount host paths to the SAME absolute path so the Hermes venv's
-      # hardcoded absolute references (shebangs, pyvenv.cfg, wrapper exec)
-      # remain valid inside the container. ${HOME} is per-user, not a
-      # hardcoded personal path.
-      # These are mounted read-write because the Hermes agent runtime writes
-      # to them: it installs Node.js into ~/.hermes/node/ and symlinks the
-      # binary into ~/.local/bin/node, and may update the uv python cache.
-      # If a path doesn't exist on the host, Docker mounts an empty dir and
-      # Hermes features simply stay inactive (no crash).
-      - ${HERMES_HOME:-${HOME}/.hermes}:${HOME}/.hermes
-      - ${HERMES_BIN_DIR:-${HOME}/.local/bin}:${HOME}/.local/bin
-      - ${UV_PYTHON_DIR:-${HOME}/.local/share/uv}:${HOME}/.local/share/uv
       - mymy-api-data:/app/data
     depends_on:
       db:

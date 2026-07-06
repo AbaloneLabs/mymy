@@ -1,5 +1,5 @@
 -- 004_chat.sql — chat sessions and messages
--- Enables multi-turn conversations with hermes agents within a project.
+-- Enables multi-turn conversations with agents within a project.
 
 -- ============================================================
 -- chat_sessions: a conversation thread linked to a project
@@ -7,8 +7,7 @@
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id        UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    hermes_session_id TEXT,
-    agent_id          TEXT NOT NULL DEFAULT 'hermes-default',
+    agent_id          TEXT NOT NULL,
     profile           TEXT NOT NULL DEFAULT 'default',
     title             TEXT,
     status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),

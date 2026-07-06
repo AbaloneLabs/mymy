@@ -1,6 +1,7 @@
 //! Built-in native agent tools.
 
 mod agent_tools;
+mod app_data;
 mod code_exec;
 mod cron;
 pub mod extensions;
@@ -12,14 +13,19 @@ mod preview;
 mod skills;
 mod terminal;
 mod web;
+mod workspace_paths;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sqlx::PgPool;
 
 use super::ToolRegistry;
+use crate::models::agent::AgentToolDomain;
+use crate::services::agent_permissions::AgentPermissionPolicy;
+use crate::state::AppState;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BuiltinToolConfig {
     pub working_dir: PathBuf,
     pub allowed_roots: Vec<PathBuf>,
@@ -31,9 +37,10 @@ pub struct BuiltinToolConfig {
     pub sandbox_preview_host: String,
     pub db: Option<PgPool>,
     pub extension_settings_key: Option<[u8; 32]>,
+    pub app_state: Option<Arc<AppState>>,
+    pub permission_policy: Option<AgentPermissionPolicy>,
 }
 
-#[derive(Debug)]
 pub struct BuiltinSessionConfig {
     pub working_dir: PathBuf,
     pub allowed_roots: Vec<PathBuf>,
@@ -45,6 +52,8 @@ pub struct BuiltinSessionConfig {
     pub sandbox_preview_host: String,
     pub db: PgPool,
     pub extension_settings_key: Option<[u8; 32]>,
+    pub app_state: Arc<AppState>,
+    pub permission_policy: AgentPermissionPolicy,
 }
 
 impl BuiltinToolConfig {
@@ -60,12 +69,15 @@ impl BuiltinToolConfig {
             sandbox_preview_host: config.sandbox_preview_host,
             db: Some(config.db),
             extension_settings_key: config.extension_settings_key,
+            app_state: Some(config.app_state),
+            permission_policy: Some(config.permission_policy),
         }
     }
 }
 
 pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     file::register(registry, config);
+    app_data::register(registry, config);
     agent_tools::register(registry, config);
     code_exec::register(registry, config);
     mcp::register(registry, config);
@@ -79,22 +91,49 @@ pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     web::register(registry);
 }
 
-pub fn register_safe_defaults(registry: &mut ToolRegistry) {
-    registry.enable_toolset("file_read");
-    registry.enable_toolset("file_write");
-    registry.enable_toolset("memory");
-    registry.enable_toolset("cron");
-    registry.enable_toolset("investments");
-    registry.enable_toolset("todo");
+pub fn register_agent_toolsets(registry: &mut ToolRegistry, policy: &AgentPermissionPolicy) {
     registry.enable_toolset("clarify");
-    registry.enable_toolset("session_search");
+    registry.enable_toolset("delegation");
+    registry.enable_toolset("runtime");
+    registry.enable_toolset("todo");
     registry.enable_toolset("mcp");
     registry.enable_toolset("extensions");
-    registry.enable_toolset("runtime");
     registry.enable_toolset("skills");
-    registry.enable_toolset("terminal");
-    registry.enable_toolset("code_execution");
     registry.enable_toolset("web");
+    registry.enable_toolset("cron");
+
+    enable_domain(registry, policy, AgentToolDomain::Prompts, "prompts");
+    enable_domain(registry, policy, AgentToolDomain::Memory, "memory");
+    enable_domain(registry, policy, AgentToolDomain::Sessions, "sessions");
+    enable_domain(registry, policy, AgentToolDomain::Goals, "goals");
+    enable_domain(registry, policy, AgentToolDomain::Calendar, "calendar");
+    enable_domain(registry, policy, AgentToolDomain::Tasks, "tasks");
+    enable_domain(registry, policy, AgentToolDomain::Knowledge, "knowledge");
+    enable_domain(registry, policy, AgentToolDomain::Notes, "notes");
+    enable_domain(registry, policy, AgentToolDomain::Drive, "drive");
+    enable_domain(registry, policy, AgentToolDomain::Processes, "processes");
+    enable_domain(registry, policy, AgentToolDomain::Finance, "finance");
+    enable_domain(
+        registry,
+        policy,
+        AgentToolDomain::Investments,
+        "investments",
+    );
+    enable_domain(registry, policy, AgentToolDomain::Agents, "agents");
+}
+
+fn enable_domain(
+    registry: &mut ToolRegistry,
+    policy: &AgentPermissionPolicy,
+    domain: AgentToolDomain,
+    prefix: &str,
+) {
+    if policy.can_read(domain) {
+        registry.enable_toolset(&format!("{prefix}_read"));
+    }
+    if policy.can_write(domain) {
+        registry.enable_toolset(&format!("{prefix}_write"));
+    }
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {

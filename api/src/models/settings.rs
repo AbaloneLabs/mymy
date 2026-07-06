@@ -35,7 +35,6 @@ pub struct GitSystemConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub language: Language,
-    pub agent_systems: Vec<crate::models::agent_system::AgentSystemInstance>,
     pub git_systems: HashMap<String, GitSystemConfig>,
 }
 

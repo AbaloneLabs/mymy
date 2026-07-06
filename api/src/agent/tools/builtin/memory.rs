@@ -1,8 +1,8 @@
 //! Curated memory tool.
 //!
-//! The handler keeps Hermes's frozen prompt-snapshot rule: this tool mutates
-//! the on-disk memory files immediately, but the system prompt for the current
-//! turn is built from the snapshot loaded before the turn began.
+//! This tool mutates the on-disk memory files immediately, but the system
+//! prompt for the current turn is built from the snapshot loaded before the
+//! turn began.
 
 use std::sync::Arc;
 
@@ -23,8 +23,24 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     };
 
     registry.register(ToolEntry {
+        name: "memory_read".to_string(),
+        toolset: "memory_read".to_string(),
+        schema: tool_schema(
+            "memory_read",
+            "Read curated MEMORY.md and USER.md entries.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        handler: Arc::new(MemoryReadTool {
+            store: Arc::new(Mutex::new(store.clone())),
+        }),
+    });
+
+    registry.register(ToolEntry {
         name: "memory".to_string(),
-        toolset: "memory".to_string(),
+        toolset: "memory_write".to_string(),
         schema: tool_schema(
             "memory",
             "Add, replace, remove, or batch-update curated MEMORY.md and USER.md entries.",
@@ -59,6 +75,22 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
 struct MemoryTool {
     store: Arc<Mutex<MemoryStore>>,
+}
+
+struct MemoryReadTool {
+    store: Arc<Mutex<MemoryStore>>,
+}
+
+#[async_trait]
+impl ToolHandler for MemoryReadTool {
+    async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+        let store = self.store.lock().await;
+        let snapshot = store.snapshot();
+        Ok(tool_result(&serde_json::json!({
+            "memory": snapshot.memory,
+            "user": snapshot.user,
+        })))
+    }
 }
 
 #[async_trait]

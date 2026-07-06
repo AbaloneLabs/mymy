@@ -2,8 +2,9 @@
 //!
 //! Commands execute through the sandbox runner when it is configured. The
 //! terminal toolset is exposed to native agents because workspace mutation and
-//! development servers are core agent work, while destructive commands still
-//! pass through the approval gate before they run.
+//! development servers are core agent work. Write access to the processes
+//! domain is the execution boundary; no separate interactive permission step is
+//! used inside the agent loop.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use serde_json::Value;
 use tokio::process::Command;
 use uuid::Uuid;
 
-use super::{truncate_chars, BuiltinToolConfig};
+use super::{truncate_chars, workspace_paths::WorkspacePathPolicy, BuiltinToolConfig};
 use crate::agent::security::{
     detect_dangerous_command, ensure_read_allowed, ensure_write_allowed, redact_terminal_output,
     Severity,
@@ -50,7 +51,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
     registry.register(ToolEntry {
         name: "terminal".to_string(),
-        toolset: "terminal".to_string(),
+        toolset: "processes_write".to_string(),
         schema: tool_schema(
             "terminal",
             "Execute a shell command in the agent sandbox. Set background=true for long-running servers.",
@@ -80,7 +81,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
     registry.register(ToolEntry {
         name: "list_processes".to_string(),
-        toolset: "terminal".to_string(),
+        toolset: "processes_read".to_string(),
         schema: tool_schema(
             "list_processes",
             "List managed background processes for the current agent.",
@@ -98,7 +99,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
     registry.register(ToolEntry {
         name: "read_process_logs".to_string(),
-        toolset: "terminal".to_string(),
+        toolset: "processes_read".to_string(),
         schema: tool_schema(
             "read_process_logs",
             "Read logs and status for a managed background process.",
@@ -117,7 +118,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
     registry.register(ToolEntry {
         name: "stop_process".to_string(),
-        toolset: "terminal".to_string(),
+        toolset: "processes_write".to_string(),
         schema: tool_schema(
             "stop_process",
             "Stop a managed background process owned by the current agent.",
@@ -130,7 +131,26 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             }),
         ),
         handler: Arc::new(StopProcessTool {
-            context: process_context,
+            context: process_context.clone(),
+        }),
+    });
+
+    registry.register(ToolEntry {
+        name: "kill_process".to_string(),
+        toolset: "processes_write".to_string(),
+        schema: tool_schema(
+            "kill_process",
+            "Force stop a managed background process owned by the current agent.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Process id returned by terminal(background=true)." }
+                },
+                "required": ["id"]
+            }),
+        ),
+        handler: Arc::new(KillProcessTool {
+            context: process_context.clone(),
         }),
     });
 }
@@ -156,26 +176,21 @@ struct ProcessToolContext {
 #[async_trait]
 impl ToolHandler for TerminalTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        self.run(args, false).await
-    }
-
-    async fn execute_approved(&self, args: &Value) -> Result<String, ToolError> {
-        self.run(args, true).await
+        self.run(args).await
     }
 }
 
 impl TerminalTool {
-    async fn run(&self, args: &Value, approved_dangerous: bool) -> Result<String, ToolError> {
+    async fn run(&self, args: &Value) -> Result<String, ToolError> {
         let command = args
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("missing command".to_string()))?;
-        let workdir = args
-            .get("workdir")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.working_dir.clone());
-        let workdir = ensure_directory(&self.working_dir, &self.allowed_roots, &workdir)?;
+        let workdir = match args.get("workdir").and_then(Value::as_str) {
+            Some(raw) => ensure_directory(&self.working_dir, &self.allowed_roots, Path::new(raw))?,
+            None => std::fs::canonicalize(&self.working_dir)
+                .unwrap_or_else(|_| self.working_dir.clone()),
+        };
         check_redirected_paths(self.db.as_ref(), command, &workdir, &self.allowed_roots).await?;
 
         if let Some(matched) = detect_dangerous_command(command) {
@@ -183,12 +198,6 @@ impl TerminalTool {
                 Severity::Hardline => {
                     return Err(ToolError::Unavailable(format!(
                         "blocked: {} ({})",
-                        matched.description, matched.pattern_key
-                    )));
-                }
-                Severity::Dangerous if !approved_dangerous => {
-                    return Err(ToolError::Unavailable(format!(
-                        "requires approval: {} ({})",
                         matched.description, matched.pattern_key
                     )));
                 }
@@ -232,7 +241,7 @@ impl TerminalTool {
                 "stderr": truncate_chars(&redact_terminal_output(&response.stderr), MAX_OUTPUT_CHARS),
                 "exit_code": response.exit_code,
                 "sandbox": "runner",
-                "cwd": response.cwd,
+                "cwd": logical_path_for_runner(Path::new(&response.cwd)),
             })));
         }
 
@@ -251,6 +260,7 @@ impl TerminalTool {
             "stdout": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stdout)), MAX_OUTPUT_CHARS),
             "stderr": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stderr)), MAX_OUTPUT_CHARS),
             "exit_code": output.status.code().unwrap_or(-1),
+            "cwd": logical_path_for_runner(&workdir),
         })))
     }
 
@@ -336,7 +346,7 @@ impl TerminalTool {
             "process_id": response.id.to_string(),
             "pid": response.pid,
             "status": response.status,
-            "cwd": workdir.display().to_string(),
+            "cwd": logical_path_for_runner(workdir),
             "sandbox": "runner",
             "preview_path": preview_path,
             "forwarded_url": response.forwarded_url,
@@ -441,6 +451,10 @@ struct StopProcessTool {
     context: ProcessToolContext,
 }
 
+struct KillProcessTool {
+    context: ProcessToolContext,
+}
+
 #[async_trait]
 impl ToolHandler for StopProcessTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
@@ -478,6 +492,43 @@ impl ToolHandler for StopProcessTool {
     }
 }
 
+#[async_trait]
+impl ToolHandler for KillProcessTool {
+    async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        let db = self.context.db()?;
+        let agent_profile = self.context.agent_profile()?;
+        let id = parse_uuid_arg(args, "id")?;
+        sandbox_processes::ensure_process_owner(db, id, agent_profile, self.context.project_id)
+            .await
+            .map_err(|err| app_error_to_tool(err, "process owner check failed"))?;
+
+        if let Some(runner_url) = &self.context.runner_url {
+            if let Err(err) = RunnerClient::new(runner_url.clone()).kill_process(id).await {
+                tracing::warn!(
+                    process_id = %id,
+                    error = %err,
+                    "runner kill unavailable for terminal process tool"
+                );
+            }
+        }
+        sandbox_processes::stop_process_record(db, id)
+            .await
+            .map_err(|err| app_error_to_tool(err, "process kill save failed"))?;
+        let process = sandbox_processes::fetch_process_for_owner(
+            db,
+            id,
+            agent_profile,
+            self.context.project_id,
+        )
+        .await
+        .map_err(|err| app_error_to_tool(err, "process fetch failed"))?;
+        Ok(tool_result(&serde_json::json!({
+            "success": true,
+            "process": process_to_tool_value(process),
+        })))
+    }
+}
+
 impl ProcessToolContext {
     fn db(&self) -> Result<&sqlx::PgPool, ToolError> {
         self.db
@@ -497,9 +548,7 @@ fn app_error_to_tool(err: AppError, context: &str) -> ToolError {
         AppError::BadRequest(message) | AppError::NotFound(message) => {
             ToolError::InvalidArgs(message)
         }
-        AppError::Unauthorized(message) | AppError::NotImplemented(message) => {
-            ToolError::Unavailable(message)
-        }
+        AppError::Unauthorized(message) => ToolError::Unavailable(message),
         AppError::Internal(message) => ToolError::Execution(format!("{context}: {message}")),
         AppError::Database(err) => ToolError::Execution(format!("{context}: {err}")),
         AppError::Io(err) => ToolError::Execution(format!("{context}: {err}")),
@@ -568,17 +617,16 @@ async fn check_redirected_paths(
     workdir: &Path,
     allowed_roots: &[PathBuf],
 ) -> Result<(), ToolError> {
+    let paths = WorkspacePathPolicy::new(workdir.to_path_buf(), allowed_roots.to_vec());
     for target in redirected_targets(output_redirection_regex(), command) {
-        let path = resolve_shell_path(workdir, &target);
-        ensure_path_inside_roots(&path, allowed_roots, false)?;
+        let path = paths.resolve_for_write_internal_path(&resolve_shell_path(workdir, &target))?;
         if let Err(error) = ensure_write_allowed(&path) {
             audit_terminal_denial(db, "terminal_write_redirect", &path, &error).await;
             return Err(error);
         }
     }
     for target in redirected_targets(input_redirection_regex(), command) {
-        let path = resolve_shell_path(workdir, &target);
-        ensure_path_inside_roots(&path, allowed_roots, true)?;
+        let path = paths.resolve_existing_internal_path(&resolve_shell_path(workdir, &target))?;
         if let Err(error) = ensure_read_allowed(&path) {
             audit_terminal_denial(db, "terminal_read_redirect", &path, &error).await;
             return Err(error);
@@ -651,32 +699,8 @@ fn ensure_directory(
     allowed_roots: &[PathBuf],
     path: &Path,
 ) -> Result<PathBuf, ToolError> {
-    let root = std::fs::canonicalize(root)
-        .map_err(|err| ToolError::InvalidArgs(format!("workspace cannot be resolved: {err}")))?;
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    let canonical = std::fs::canonicalize(&resolved)
-        .map_err(|err| ToolError::InvalidArgs(format!("workdir cannot be resolved: {err}")))?;
-    if !canonical.is_dir() {
-        Err(ToolError::InvalidArgs(format!(
-            "workdir is not a directory: {}",
-            canonical.display()
-        )))
-    } else if !allowed_roots
-        .iter()
-        .any(|allowed| canonical.starts_with(allowed))
-        && !canonical.starts_with(root)
-    {
-        Err(ToolError::InvalidArgs(format!(
-            "workdir escapes workspace: {}",
-            path.display()
-        )))
-    } else {
-        Ok(canonical)
-    }
+    WorkspacePathPolicy::new(root.to_path_buf(), allowed_roots.to_vec())
+        .resolve_directory_path(path)
 }
 
 fn allowed_roots(root: &Path, extra_roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -689,44 +713,6 @@ fn allowed_roots(root: &Path, extra_roots: &[PathBuf]) -> Vec<PathBuf> {
     roots.sort();
     roots.dedup();
     roots
-}
-
-fn ensure_path_inside_roots(
-    path: &Path,
-    allowed_roots: &[PathBuf],
-    must_exist: bool,
-) -> Result<(), ToolError> {
-    let resolved = if must_exist || path.exists() {
-        std::fs::canonicalize(path)
-            .map_err(|err| ToolError::InvalidArgs(format!("path cannot be resolved: {err}")))?
-    } else {
-        let ancestor = nearest_existing_ancestor(path)?;
-        std::fs::canonicalize(ancestor).map_err(|err| {
-            ToolError::InvalidArgs(format!("path ancestor cannot be resolved: {err}"))
-        })?
-    };
-    if allowed_roots.iter().any(|root| resolved.starts_with(root)) {
-        return Ok(());
-    }
-    Err(ToolError::InvalidArgs(format!(
-        "path escapes workspace: {}",
-        path.display()
-    )))
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, ToolError> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Ok(current);
-        }
-        if !current.pop() {
-            return Err(ToolError::InvalidArgs(format!(
-                "path has no existing ancestor: {}",
-                path.display()
-            )));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -755,7 +741,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_blocks_dangerous_command() {
+    async fn terminal_blocks_hardline_command() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
@@ -766,14 +752,14 @@ mod tests {
             preview_host: "127.0.0.1".to_string(),
         };
         let err = tool
-            .execute(&serde_json::json!({"command":"rm -rf target/tmp"}))
+            .execute(&serde_json::json!({"command":"shutdown now"}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("requires approval"));
+        assert!(err.to_string().contains("blocked"));
     }
 
     #[tokio::test]
-    async fn terminal_runs_dangerous_command_after_approval() {
+    async fn terminal_runs_non_hardline_command_with_process_access() {
         let tool = TerminalTool {
             working_dir: std::env::current_dir().unwrap(),
             allowed_roots: allowed_roots(&std::env::current_dir().unwrap(), &[]),
@@ -784,7 +770,7 @@ mod tests {
             preview_host: "127.0.0.1".to_string(),
         };
         let output = tool
-            .execute_approved(&serde_json::json!({"command":"printf 'DELETE FROM users'"}))
+            .execute(&serde_json::json!({"command":"printf 'DELETE FROM users'"}))
             .await
             .unwrap();
         assert_eq!(
@@ -828,5 +814,36 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("sensitive path"));
+    }
+
+    #[test]
+    fn ensure_directory_accepts_logical_shared_drive_path() {
+        let base = std::env::temp_dir().join(format!("mymy-terminal-{}", uuid::Uuid::new_v4()));
+        let agent = base.join("drive").join("agents").join("elena");
+        let shared = base.join("drive").join("shared");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let roots = allowed_roots(&agent, std::slice::from_ref(&shared));
+
+        let resolved = ensure_directory(&agent, &roots, Path::new("/drive/shared")).unwrap();
+        assert_eq!(resolved, shared.canonicalize().unwrap());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn redirection_allows_logical_shared_drive_path() {
+        let base = std::env::temp_dir().join(format!("mymy-terminal-{}", uuid::Uuid::new_v4()));
+        let agent = base.join("drive").join("agents").join("elena");
+        let shared = base.join("drive").join("shared");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let roots = allowed_roots(&agent, std::slice::from_ref(&shared));
+
+        check_redirected_paths(None, "printf ok > /drive/shared/check.txt", &agent, &roots)
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

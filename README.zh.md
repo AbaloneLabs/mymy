@@ -2,9 +2,9 @@
 
 # mymy
 
-**面向个体经营者的 AI 智能体管理平台**
+**面向个体经营者的本地 AI 智能体工作区**
 
-管理 AI 智能体（Hermes、OpenClaw），运行连接到 Git 系统的项目——一切尽在一个为个体经营者打造的专注工作区中。
+在一个专注的本地应用中管理原生 LLM 智能体、项目工作区、提示词、文件、预览、笔记、任务、财务、投资和目标。
 
 [English](README.md) · [한국어](README.ko.md) · [中文](README.zh.md) · [日本語](README.ja.md)
 
@@ -18,11 +18,12 @@
 
 ## ✨ 概述
 
-**mymy** 将你的 AI 智能体和代码项目整合到一个简洁的界面中。无需在终端、浏览器标签页和配置文件之间来回切换，一个仪表盘即可：
+**mymy** 将你的 AI 智能体、项目文件和运营数据整合到一个本地界面中。无需在终端、浏览器标签页、提示词和分散文件之间来回切换，一个工作区即可：
 
-- **一目了然查看智能体** — 谁在活跃、谁在空闲、正在运行什么
-- **进入项目** — 连接到 GitHub、GitLab 或 Gitea 的项目
-- **与智能体聊天**、记录笔记、管理日程 — 全在一处
+- **基于已注册的 LLM provider 创建原生智能体**
+- **在 Drive 的 `/drive/agents`、`/drive/projects`、`/drive/shared` 中管理工作**
+- **编辑智能体提示词（`AGENTS.md`、`SOUL.md`）**
+- **与智能体聊天**、附加文件、查看工具结果、管理笔记/任务/目标/财务/投资/日历
 - **锁定与隐私** — 基于 PIN 的访问（无云账户、无登录流程）
 
 专为**一人企业**设计 —— 身兼数职的开发者创始人，把其余事务交给智能体。
@@ -31,13 +32,14 @@
 
 | | 功能 | 说明 |
 |---|---------|-------------|
-| 🔐 | **PIN 认证** | 本地优先访问。默认 PIN `mymy`，可在设置中更改。无账户、无邮箱。 |
-| 🤖 | **智能体管理** | 查看所有 Hermes / OpenClaw 智能体的实时状态、头像和角色。 |
-| 📁 | **项目工作区** | 连接到 Git 远程的项目 — 进入、组织、分配智能体。 |
-| 💬 | **聊天** | 与智能体聊天，按会话组织，关联项目或通用话题。 |
+| 🔐 | **PIN 认证** | 基于 HttpOnly cookie 的服务端 PIN 会话。默认 PIN `mymy`，可在设置中更改。 |
+| 🤖 | **原生智能体管理** | 创建/删除智能体、编辑提示词、选择全局活跃智能体，并使用已注册 LLM provider 聊天。 |
+| 📁 | **Drive 工作区** | 浏览、编辑、上传、删除、恢复 `/drive/projects`、`/drive/agents`、`/drive/shared` 下的文件。 |
+| 🧱 | **沙箱运行器** | 通过专用运行器执行文件写入、终端、代码和长时间运行进程。 |
+| 💬 | **聊天** | Markdown/代码/搜索结果渲染，Drive 文件附件，内联处理 clarify 请求。 |
 | 📅 | **日历** | 安排和管理事件，关联到项目。 |
 | 📝 | **笔记** | Markdown 笔记，支持 PostgreSQL 全文搜索（FTS）、标签和置顶。 |
-| ⚙️ | **设置** | 配置智能体系统（多实例：本地 + 远程）和 Git 集成。 |
+| ⚙️ | **设置** | 配置 PIN、LLM provider、智能体权限、扩展、技能和 Git 集成。 |
 | 🌐 | **国际化** | 完整支持英语、韩语、中文、日语界面。 |
 | 🎨 | **Linear 风格 UI** | 受 Linear 启发的专注暗色主题 — 全天使用也舒适。 |
 
@@ -48,9 +50,10 @@
 | **前端** | Vite · React 19 · TypeScript | SPA，无需 SSR |
 | **样式** | Tailwind CSS v4 | CSS 变量设计令牌 |
 | **状态** | Zustand · TanStack Query · React Router | 认证 + 设置（localStorage），服务器状态（React Query） |
-| **后端** | Rust · axum | REST API，连接智能体 CLI |
+| **后端** | Rust · axum | REST API、服务端会话认证、原生智能体运行时、Drive、preview proxy |
+| **沙箱运行器** | Rust · axum · bubblewrap · Firecracker | 隔离命令/进程执行、managed process、preview 转发 |
 | **数据库** | PostgreSQL 16 + pgvector | 一个数据库实现全文 + 语义搜索 |
-| **基础设施** | Docker Compose | 一条命令运行全部 |
+| **基础设施** | Docker Compose | 启动应用、DB、API 数据卷、Drive 和沙箱运行器 |
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -69,9 +72,9 @@
                     ┌──────────▼──────────┐
                     │  Rust API (:33697)  │
                     │  • 认证 (PIN)       │
-                    │  • 智能体系统       │
-                    │  • 项目 CRUD        │
-                    │  • 聊天 (Hermes)    │
+                    │  • 原生智能体       │
+                    │  • Drive + preview  │
+                    │  • LLM 聊天         │
                     │  • 日历             │
                     │  • 笔记 + FTS       │
                     └──────────┬──────────┘
@@ -79,8 +82,8 @@
               ┌────────────────┼────────────────┐
               │                │                │
        ┌──────▼──────┐  ┌──────▼──────┐  ┌──────▼──────┐
-       │ PostgreSQL  │  │   Hermes    │  │  OpenClaw   │
-       │ + pgvector  │  │   CLI       │  │  (计划中)   │
+       │ PostgreSQL  │  │ Local Drive │  │ Sandbox     │
+       │ + pgvector  │  │ volume      │  │ runner      │
        │ (:33432)    │  │             │  │             │
        └─────────────┘  └─────────────┘  └─────────────┘
 ```
@@ -114,6 +117,9 @@ docker compose up -d --build
 ### 本地开发
 
 ```bash
+# 数据库
+docker compose up -d db
+
 # 前端
 cd web
 bun install
@@ -121,7 +127,7 @@ bun run dev      # http://localhost:5173 (HMR)
 
 # 后端（另一个终端）
 cd api
-cargo run        # http://localhost:33697
+DATABASE_URL=postgres://mymy:mymy@localhost:33432/mymy cargo run
 ```
 
 ## 🔧 配置
@@ -131,7 +137,8 @@ cargo run        # http://localhost:33697
 | 部分 | 配置内容 |
 |---------|-------------------|
 | **通用** | 更改 PIN |
-| **智能体系统** | 添加 Hermes/OpenClaw 实例（本地自动检测、远程手动） |
+| **模型 / LLM Provider** | 注册 OpenAI 兼容、Anthropic、Ollama 或本地 provider |
+| **智能体** | 配置每个智能体的应用数据权限 |
 | **Git 集成** | 连接 GitHub、GitLab、Gitea（主机、端口、SSH 别名） |
 | **关于** | 版本和端口信息 |
 
@@ -145,6 +152,7 @@ mymy 使用 **33xxx** 范围以避免与常见服务冲突：
 |---------|------|
 | Web（前端） | `33696` |
 | API（Rust） | `33697` |
+| Sandbox runner | `33698` |
 | PostgreSQL | `33432` |
 
 ## 🗺️ 路线图
@@ -152,9 +160,9 @@ mymy 使用 **33xxx** 范围以避免与常见服务冲突：
 ### 已完成
 - [x] PIN 认证 + 受保护路由
 - [x] 仪表盘（智能体 + 项目）
-- [x] 设置页面（PIN 更改、智能体系统、Git 集成）
-- [x] Rust 后端（axum）— 认证、项目、智能体系统、设置
-- [x] 与 Hermes 智能体聊天（会话 + 消息）
+- [x] 设置页面（PIN 更改、智能体权限、Git 集成）
+- [x] Rust 后端（axum）— 认证、项目、原生智能体、设置
+- [x] 基于原生 LLM provider 的智能体聊天（会话 + 消息）
 - [x] 日历（事件 CRUD）
 - [x] 笔记（CRUD + PostgreSQL 全文搜索）
 - [x] 国际化（英语、韩语、中文、日语）
@@ -167,7 +175,6 @@ mymy 使用 **33xxx** 范围以避免与常见服务冲突：
 - [ ] 智能体自动化例程（预设）
 - [ ] 工作流自动化引擎
 - [ ] 通知中心
-- [ ] OpenClaw 智能体集成
 - [ ] Git 系统集成 UI（克隆、浏览、提交）
 - [ ] 笔记语义搜索（pgvector 嵌入，待 LLM 配置）
 - [ ] 任务管理

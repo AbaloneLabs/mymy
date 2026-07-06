@@ -6,7 +6,6 @@ use sqlx::PgPool;
 use tokio::sync::RwLock;
 
 use crate::agent::clarify::ClarifyGate;
-use crate::agent::security::ApprovalGate;
 use crate::config::Config;
 
 /// In-memory cache of the encryption key derived from the user's PIN.
@@ -27,8 +26,6 @@ pub struct AppState {
     pub config: Config,
     /// Cached HKDF-derived AES key for API key encryption/decryption.
     pub encryption_key: EncryptionKeyCache,
-    /// Live approval requests keyed by SSE/chat session.
-    pub approval_gate: Arc<ApprovalGate>,
     /// Live clarify requests keyed by SSE/chat session.
     pub clarify_gate: Arc<ClarifyGate>,
 }
@@ -40,7 +37,6 @@ impl AppState {
             db,
             config,
             encryption_key: Arc::new(RwLock::new(None)),
-            approval_gate: Arc::new(ApprovalGate::new()),
             clarify_gate: Arc::new(ClarifyGate::new()),
         }
     }

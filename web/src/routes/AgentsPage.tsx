@@ -13,7 +13,7 @@ import {
   SandboxProcessesTab,
 } from "@/features/agents/components/AgentsNativePanels";
 import { CronTab } from "@/features/agents/components/AgentsCronTab";
-import { TabButton } from "@/features/agents/components/AgentsPanels";
+import { TabButton } from "@/features/agents/components/AgentsNativeShared";
 import {
   ALL_AGENT_TABS,
   SINGLE_AGENT_TABS,

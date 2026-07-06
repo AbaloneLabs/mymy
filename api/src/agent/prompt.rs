@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use crate::agent::runtime::apply_cache_breakpoint;
 use crate::agent::security::{scan_for_threats, ThreatScope};
+use crate::services::sandbox_runner::logical_path_for_runner;
 
 #[derive(Debug, Clone)]
 pub struct PromptConfig {
@@ -68,7 +69,7 @@ pub fn build_system_prompt_parts(config: &PromptConfig) -> PromptParts {
         "Session metadata:\n- UTC timestamp: {}\n- Model: {}\n- Working directory: {}",
         chrono::Utc::now().to_rfc3339(),
         config.model,
-        config.working_dir.display()
+        logical_path_for_runner(&config.working_dir)
     ));
 
     PromptParts {

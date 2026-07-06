@@ -24,7 +24,7 @@
 ## 3. Chat / Agent Loop / Streaming
 
 - [ ] 새 chat session을 생성할 수 있다.
-- [ ] 메시지를 보내면 native agent가 Hermes 없이 응답한다.
+- [ ] 메시지를 보내면 native agent가 등록된 LLM provider를 사용해 응답한다.
 - [ ] 응답 text delta가 streaming으로 점진 표시된다.
 - [ ] 최종 assistant message가 DB에 저장되고 새로고침 후에도 보인다.
 - [ ] tool call이 발생하면 UI에 tool 실행 상태와 결과가 표시된다.
@@ -39,11 +39,12 @@
 - [ ] search files가 실제 workspace 파일을 검색한다.
 - [ ] web extract/search 계열이 설정된 backend 조건에서 실패 없이 결과 또는 명확한 오류를 반환한다.
 
-## 5. Approval / Security
+## 5. 권한 / 보안
 
-- [ ] 위험한 shell command는 즉시 실행되지 않고 approval 요청으로 멈춘다.
-- [ ] approval 승인 후 해당 tool call이 계속 진행된다.
-- [ ] approval 거절 후 agent가 거절 결과를 인식하고 다음 응답을 만든다.
+- [ ] 설정-에이전트 탭에서 도메인별 권한을 접근가능/읽기전용/접근불가로 변경할 수 있다.
+- [ ] 접근가능 권한에서는 해당 도메인의 생성/조회/수정/삭제 tool call이 별도 확인 없이 실행된다.
+- [ ] 읽기전용 권한에서는 조회 tool call만 실행되고 생성/수정/삭제는 거부된다.
+- [ ] 접근불가 권한에서는 해당 도메인 tool call이 거부된다.
 - [ ] 민감 경로 읽기/쓰기 시도가 차단되거나 audit trail에 남는다.
 - [ ] terminal 출력, HTTP 결과, 오류 메시지에 API key/token 원문이 노출되지 않는다.
 - [ ] audit log에서 보안 관련 action을 확인할 수 있다.

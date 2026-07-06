@@ -1,7 +1,7 @@
 -- Native agents managed by mymy.
 --
--- These are not Hermes profiles. The profile key scopes chat sessions,
--- prompt files, and future per-agent runtime settings.
+-- The profile key scopes chat sessions, prompt files, and future per-agent
+-- runtime settings.
 
 CREATE TABLE IF NOT EXISTS native_agents (
     profile      TEXT PRIMARY KEY CHECK (profile ~ '^[A-Za-z0-9_.-]+$' AND profile <> 'default'),

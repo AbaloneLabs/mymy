@@ -12,7 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{truncate_chars, BuiltinToolConfig};
+use super::{truncate_chars, workspace_paths::WorkspacePathPolicy, BuiltinToolConfig};
 use crate::agent::sandbox::{ExecOptions, SandboxManager, SandboxRpcHandler};
 use crate::agent::security::{
     detect_dangerous_command, ensure_read_allowed, ensure_write_allowed, is_sensitive_path,
@@ -21,6 +21,7 @@ use crate::agent::security::{
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
+use crate::models::agent::AgentToolDomain;
 use crate::services::sandbox_runner::{roots_for_runner, RunnerClient, RunnerExecuteRequest};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -32,7 +33,7 @@ const MAX_RPC_CALLS: usize = 50;
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     registry.register(ToolEntry {
         name: "execute_code".to_string(),
-        toolset: "code_execution".to_string(),
+        toolset: "processes_write".to_string(),
         schema: tool_schema(
             "execute_code",
             "Execute a Python script with scrubbed environment, timeout, and sandbox tool RPC helpers.",
@@ -58,7 +59,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                     |session_id| session_id.to_string(),
                 )),
             runner_url: config.sandbox_runner_url.clone(),
-            allowed_tools: sandbox_allowed_tools(),
+            allowed_tools: sandbox_allowed_tools(config),
         }),
     });
 }
@@ -88,14 +89,12 @@ impl ToolHandler for CodeExecTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidArgs("missing code".to_string()))?;
         if let Some(matched) = detect_dangerous_command(code) {
-            let action = match matched.severity {
-                Severity::Hardline => "blocked",
-                Severity::Dangerous => "requires approval",
-            };
-            return Err(ToolError::Unavailable(format!(
-                "{action}: {} ({})",
-                matched.description, matched.pattern_key
-            )));
+            if matched.severity == Severity::Hardline {
+                return Err(ToolError::Unavailable(format!(
+                    "blocked: {} ({})",
+                    matched.description, matched.pattern_key
+                )));
+            }
         }
         let timeout_secs = args
             .get("timeout")
@@ -121,7 +120,10 @@ impl ToolHandler for CodeExecTool {
             .start_rpc(
                 MAX_RPC_CALLS,
                 Arc::new(CodeRpcHandler {
-                    root: self.working_dir.clone(),
+                    paths: WorkspacePathPolicy::new(
+                        self.working_dir.clone(),
+                        self.allowed_roots.clone(),
+                    ),
                     allowed_tools: self.allowed_tools.clone(),
                 }),
             )
@@ -184,7 +186,7 @@ async fn execute_python_with_runner(
                 "scratch dir create failed: {err}"
             ))
         })?;
-    let cwd = resolve_runner_cwd(working_dir, options.cwd)?;
+    let cwd = resolve_runner_cwd(working_dir, allowed_roots, options.cwd)?;
     let script = scratch_dir.join(format!("exec-{}.py", uuid::Uuid::new_v4()));
     let runner = scratch_dir.join(format!("runner-{}.py", uuid::Uuid::new_v4()));
     let cwd_file = scratch_dir.join(".cwd");
@@ -247,29 +249,16 @@ finally:
 
 fn resolve_runner_cwd(
     working_dir: &Path,
+    allowed_roots: &[PathBuf],
     requested: Option<PathBuf>,
 ) -> Result<PathBuf, crate::agent::sandbox::SandboxError> {
-    let root = working_dir.canonicalize().map_err(|err| {
-        crate::agent::sandbox::SandboxError::InvalidRequest(format!(
-            "workspace cannot be resolved: {err}"
-        ))
-    })?;
-    let cwd = match requested {
-        Some(path) if path.is_absolute() => path,
-        Some(path) => working_dir.join(path),
-        None => root.clone(),
-    };
-    let cwd = cwd.canonicalize().map_err(|err| {
-        crate::agent::sandbox::SandboxError::InvalidRequest(format!(
-            "cwd cannot be resolved: {err}"
-        ))
-    })?;
-    if !cwd.starts_with(&root) {
-        return Err(crate::agent::sandbox::SandboxError::InvalidRequest(
-            "cwd must stay inside the workspace".to_string(),
-        ));
+    let paths = WorkspacePathPolicy::new(working_dir.to_path_buf(), allowed_roots.to_vec());
+    match requested {
+        Some(path) => paths
+            .resolve_directory_path(&path)
+            .map_err(|err| crate::agent::sandbox::SandboxError::InvalidRequest(err.to_string())),
+        None => Ok(paths.root().to_path_buf()),
     }
-    Ok(cwd)
 }
 
 fn shell_quote(value: &str) -> String {
@@ -277,7 +266,7 @@ fn shell_quote(value: &str) -> String {
 }
 
 struct CodeRpcHandler {
-    root: PathBuf,
+    paths: WorkspacePathPolicy,
     allowed_tools: HashSet<String>,
 }
 
@@ -310,9 +299,12 @@ impl CodeRpcHandler {
             .and_then(Value::as_u64)
             .unwrap_or(1)
             .max(1) as usize;
-        let resolved = resolve_existing(&self.root, path)?;
-        ensure_read_allowed(&resolved).map_err(|err| err.to_string())?;
-        let content = tokio::fs::read_to_string(&resolved)
+        let resolved = self
+            .paths
+            .resolve_existing_with_logical(path)
+            .map_err(|err| err.to_string())?;
+        ensure_read_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| format!("read failed: {err}"))?;
         let lines: Vec<&str> = content.lines().collect();
@@ -323,7 +315,7 @@ impl CodeRpcHandler {
             .collect::<Vec<_>>()
             .join("\n");
         Ok(serde_json::json!({
-            "path": resolved.display().to_string(),
+            "path": resolved.logical,
             "content": redact_sensitive_text(&content),
             "total_lines": lines.len(),
         }))
@@ -342,29 +334,36 @@ impl CodeRpcHandler {
         let start = args
             .get("path")
             .and_then(Value::as_str)
-            .map(|path| resolve_existing(&self.root, path))
+            .map(|path| {
+                self.paths
+                    .resolve_existing(path)
+                    .map_err(|err| err.to_string())
+            })
             .transpose()?
-            .unwrap_or_else(|| self.root.clone());
+            .unwrap_or_else(|| self.paths.root().to_path_buf());
         let mut matches = Vec::new();
-        search_dir(&self.root, &start, query, limit, &mut matches)?;
+        search_dir(&self.paths, &start, query, limit, &mut matches)?;
         Ok(serde_json::json!({ "matches": matches }))
     }
 
     async fn write_file(&self, args: Value) -> Result<Value, String> {
         let path = required_arg(&args, "path")?;
         let content = required_arg(&args, "content")?;
-        let resolved = resolve_for_write(&self.root, path)?;
-        ensure_write_allowed(&resolved).map_err(|err| err.to_string())?;
-        if let Some(parent) = resolved.parent() {
+        let resolved = self
+            .paths
+            .resolve_for_write_with_logical(path)
+            .map_err(|err| err.to_string())?;
+        ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        if let Some(parent) = resolved.physical.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|err| format!("create parent failed: {err}"))?;
         }
-        tokio::fs::write(&resolved, content)
+        tokio::fs::write(&resolved.physical, content)
             .await
             .map_err(|err| format!("write failed: {err}"))?;
         Ok(serde_json::json!({
-            "path": resolved.display().to_string(),
+            "path": resolved.logical,
             "bytes_written": content.len(),
             "lines_written": content.lines().count(),
         }))
@@ -374,9 +373,12 @@ impl CodeRpcHandler {
         let path = required_arg(&args, "path")?;
         let old_string = required_arg(&args, "old_string")?;
         let new_string = required_arg(&args, "new_string")?;
-        let resolved = resolve_existing(&self.root, path)?;
-        ensure_write_allowed(&resolved).map_err(|err| err.to_string())?;
-        let content = tokio::fs::read_to_string(&resolved)
+        let resolved = self
+            .paths
+            .resolve_existing_with_logical(path)
+            .map_err(|err| err.to_string())?;
+        ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| format!("read failed: {err}"))?;
         let occurrences = content.matches(old_string).count();
@@ -386,17 +388,17 @@ impl CodeRpcHandler {
             ));
         }
         let updated = content.replacen(old_string, new_string, 1);
-        tokio::fs::write(&resolved, updated)
+        tokio::fs::write(&resolved.physical, updated)
             .await
             .map_err(|err| format!("write failed: {err}"))?;
         Ok(serde_json::json!({
-            "path": resolved.display().to_string(),
+            "path": resolved.logical,
             "replacements": 1,
         }))
     }
 }
 
-fn sandbox_allowed_tools() -> HashSet<String> {
+fn sandbox_allowed_tools(config: &BuiltinToolConfig) -> HashSet<String> {
     let configured = std::env::var("SANDBOX_ALLOWED_TOOLS")
         .ok()
         .map(|value| {
@@ -413,7 +415,7 @@ fn sandbox_allowed_tools() -> HashSet<String> {
                 .map(ToString::to_string)
                 .collect()
         });
-    configured
+    let mut configured = configured
         .into_iter()
         .filter(|tool| {
             matches!(
@@ -421,7 +423,19 @@ fn sandbox_allowed_tools() -> HashSet<String> {
                 "read_file" | "search_files" | "write_file" | "patch_file"
             )
         })
-        .collect()
+        .collect::<HashSet<_>>();
+
+    if let Some(policy) = &config.permission_policy {
+        if !policy.can_read(AgentToolDomain::Drive) {
+            configured.remove("read_file");
+            configured.remove("search_files");
+        }
+        if !policy.can_write(AgentToolDomain::Drive) {
+            configured.remove("write_file");
+            configured.remove("patch_file");
+        }
+    }
+    configured
 }
 
 fn required_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -430,62 +444,8 @@ fn required_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing {key}"))
 }
 
-fn resolve_existing(root: &Path, raw: &str) -> Result<PathBuf, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|err| format!("workspace cannot be resolved: {err}"))?;
-    let path = Path::new(raw);
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|err| format!("path cannot be resolved: {err}"))?;
-    if !canonical.starts_with(&root) {
-        return Err(format!("path escapes workspace: {raw}"));
-    }
-    Ok(canonical)
-}
-
-fn resolve_for_write(root: &Path, raw: &str) -> Result<PathBuf, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|err| format!("workspace cannot be resolved: {err}"))?;
-    let path = Path::new(raw);
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    if candidate.exists() {
-        return resolve_existing(&root, &candidate.display().to_string());
-    }
-    let ancestor = nearest_existing_ancestor(&candidate)?;
-    let canonical_ancestor = ancestor
-        .canonicalize()
-        .map_err(|err| format!("path ancestor cannot be resolved: {err}"))?;
-    if !canonical_ancestor.starts_with(&root) {
-        return Err(format!("path escapes workspace: {raw}"));
-    }
-    Ok(candidate)
-}
-
-fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return Ok(current);
-        }
-        if !current.pop() {
-            return Err(format!("path has no existing ancestor: {}", path.display()));
-        }
-    }
-}
-
 fn search_dir(
-    root: &Path,
+    paths: &WorkspacePathPolicy,
     dir: &Path,
     query: &str,
     limit: usize,
@@ -515,11 +475,11 @@ fn search_dir(
         let Ok(canonical) = path.canonicalize() else {
             continue;
         };
-        if !canonical.starts_with(root) || is_sensitive_path(&canonical) {
+        if !paths.is_inside(&canonical) || is_sensitive_path(&canonical) {
             continue;
         }
         if file_type.is_dir() {
-            search_dir(root, &canonical, query, limit, matches)?;
+            search_dir(paths, &canonical, query, limit, matches)?;
             continue;
         }
         if !file_type.is_file() {
@@ -531,7 +491,7 @@ fn search_dir(
         for (idx, line) in content.lines().enumerate() {
             if line.contains(query) {
                 matches.push(serde_json::json!({
-                    "path": canonical.display().to_string(),
+                    "path": paths.logical_path_for(&canonical),
                     "line": idx + 1,
                     "preview": redact_sensitive_text(line.trim()),
                 }));
@@ -688,5 +648,63 @@ print(mymy_tools.read_file("generated.txt")["content"])
 
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(scratch);
+    }
+
+    #[tokio::test]
+    async fn python_rpc_can_write_shared_logical_drive_path() {
+        let base = temp_dir("drive");
+        let workspace = base.join("drive").join("agents").join("elena");
+        let shared = base.join("drive").join("shared");
+        let scratch = temp_dir("scratch");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let tool = CodeExecTool {
+            working_dir: workspace.clone(),
+            allowed_roots: vec![shared.clone()],
+            scratch_dir: scratch.clone(),
+            runner_url: None,
+            allowed_tools: ["read_file", "search_files", "write_file", "patch_file"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        };
+
+        let output = tool
+            .execute(&serde_json::json!({
+                "code": r#"import mymy_tools
+mymy_tools.write_file("/drive/shared/generated.txt", "shared\n")
+print(mymy_tools.read_file("/drive/shared/generated.txt")["content"])
+"#
+            }))
+            .await
+            .unwrap();
+        let parsed = serde_json::from_str::<Value>(&output).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("shared"));
+        assert_eq!(
+            std::fs::read_to_string(shared.join("generated.txt")).unwrap(),
+            "shared\n"
+        );
+
+        let _ = std::fs::remove_dir_all(base);
+        let _ = std::fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn runner_cwd_accepts_logical_shared_drive_path() {
+        let base = temp_dir("drive");
+        let workspace = base.join("drive").join("agents").join("elena");
+        let shared = base.join("drive").join("shared");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+
+        let cwd = resolve_runner_cwd(
+            &workspace,
+            std::slice::from_ref(&shared),
+            Some("/drive/shared".into()),
+        )
+        .unwrap();
+        assert_eq!(cwd, shared.canonicalize().unwrap());
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

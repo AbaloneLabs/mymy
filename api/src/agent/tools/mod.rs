@@ -4,8 +4,8 @@
 //! the loop only needs the stable operations it cares about: list schemas and
 //! execute a named tool. Built-in tools are registered explicitly rather than
 //! through import-time side effects, which keeps startup deterministic and
-//! makes high-risk toolsets easy to withhold until Phase 8 approval policies
-//! are available.
+//! makes high-risk toolsets easy to expose or withhold through per-agent
+//! permissions.
 
 pub mod builtin;
 
@@ -32,10 +32,6 @@ pub enum ToolError {
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     async fn execute(&self, args: &Value) -> Result<String, ToolError>;
-
-    async fn execute_approved(&self, args: &Value) -> Result<String, ToolError> {
-        self.execute(args).await
-    }
 
     fn is_available(&self) -> bool {
         true
@@ -86,14 +82,10 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, arguments: &str) -> String {
-        self.execute_inner(name, arguments, false).await
+        self.execute_inner(name, arguments).await
     }
 
-    pub async fn execute_approved(&self, name: &str, arguments: &str) -> String {
-        self.execute_inner(name, arguments, true).await
-    }
-
-    async fn execute_inner(&self, name: &str, arguments: &str, approved: bool) -> String {
+    async fn execute_inner(&self, name: &str, arguments: &str) -> String {
         let Some(entry) = self.tools.get(name) else {
             return tool_error(&format!("unknown tool: {name}"));
         };
@@ -111,11 +103,7 @@ impl ToolRegistry {
             Err(err) => return tool_error(&format!("invalid JSON arguments: {err}")),
         };
 
-        let result = if approved {
-            entry.handler.execute_approved(&args).await
-        } else {
-            entry.handler.execute(&args).await
-        };
+        let result = entry.handler.execute(&args).await;
 
         match result {
             Ok(result) => sanitize_tool_output(name, &result),

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { AppLayout } from "@/components/AppLayout";
 import { SectionCard } from "@/components/settings/SectionCard";
 import { PinChangeForm } from "@/components/settings/PinChangeForm";
-import { AgentSystemSection } from "@/components/settings/AgentSystemSection";
+import { AgentToolPermissionsSection } from "@/components/settings/AgentToolPermissionsSection";
 import { GitSystemSection } from "@/components/settings/GitSystemSection";
 import { LlmProviderSection } from "@/components/settings/LlmProviderSection";
 import { ExtensionsSection } from "@/components/settings/ExtensionsSection";
@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
  *   - General: language selector + app version
  *   - PIN: PinChangeForm
  *   - Chat / Calendar / Notes / Tasks: empty state (TODO(backend))
- *   - Agents: AgentSystemSection
+ *   - Agents: native agent permissions
  *   - Git: GitSystemSection
  *   - Audit: AuditLogSection (timeline of all changes)
  *   - About: version + ports
@@ -149,10 +149,10 @@ export default function Settings() {
               )}
               {activeTab === "agents" && (
                 <SectionCard
-                  title={t("settings.agentSystem.title")}
-                  description={t("settings.agentSystem.description")}
+                  title={t("settings.agentPermissions.title")}
+                  description={t("settings.agentPermissions.description")}
                 >
-                  <AgentSystemSection />
+                  <AgentToolPermissionsSection />
                 </SectionCard>
               )}
               {activeTab === "models" && (

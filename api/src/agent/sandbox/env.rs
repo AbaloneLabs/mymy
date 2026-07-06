@@ -1,8 +1,8 @@
 //! Shared execution environment contract.
 //!
 //! Tool code talks to this trait instead of spawning interpreters directly so
-//! approval, environment scrubbing, RPC limits, and future container backends
-//! stay behind one narrow boundary.
+//! environment scrubbing, RPC limits, and future container backends stay behind
+//! one narrow boundary.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -16,8 +16,6 @@ pub enum AgentStatus {
 #[serde(rename_all = "lowercase")]
 pub enum AgentSource {
     Native,
-    Hermes,
-    Openclaw,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +50,40 @@ pub struct Agent {
     pub sandbox_status: SandboxStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_active_at: Option<String>,
+    pub tool_permissions: Vec<AgentToolPermission>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolDomain {
+    Prompts,
+    Memory,
+    Sessions,
+    Goals,
+    Calendar,
+    Tasks,
+    Knowledge,
+    Notes,
+    Drive,
+    Processes,
+    Finance,
+    Investments,
+    Agents,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolAccess {
+    Access,
+    ReadOnly,
+    Denied,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolPermission {
+    pub domain: AgentToolDomain,
+    pub access: AgentToolAccess,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +110,19 @@ pub struct CreateAgentRequest {
     pub role: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAgentRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tool_permissions: Option<Vec<AgentToolPermission>>,
 }
 
 #[derive(Debug, Serialize)]
