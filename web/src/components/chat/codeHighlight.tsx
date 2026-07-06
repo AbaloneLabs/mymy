@@ -35,54 +35,93 @@ export function HighlightedCodeBlock({
   language,
   tone,
   compact = false,
+  highlight = true,
 }: {
   code: string;
   language?: string;
   tone?: "error";
   compact?: boolean;
+  highlight?: boolean;
 }) {
-  const highlightKey = `${language ?? "text"}:${code}`;
-  const [highlight, setHighlight] = useState<{ key: string; html: string } | null>(null);
+  const lang = normalizeCodeLanguage(language);
+  const highlightKey = `${lang}:${code}`;
+  const cachedHighlight = highlightedCodeCache.get(highlightKey);
+  const [highlighted, setHighlighted] = useState<{ key: string; html: string } | null>(
+    () => {
+      const html = highlightedCodeCache.get(highlightKey);
+      return html ? { key: highlightKey, html } : null;
+    },
+  );
 
   useEffect(() => {
+    if (!highlight) return;
+    if (cachedHighlight) return;
+
     let active = true;
-    const lang = normalizeCodeLanguage(language);
 
     void renderHighlightedCode(code, lang)
       .then((rendered) => {
-        if (active) setHighlight({ key: highlightKey, html: rendered });
+        highlightedCodeCache.set(highlightKey, rendered);
+        trimHighlightedCodeCache();
+        if (active) setHighlighted({ key: highlightKey, html: rendered });
       })
       .catch(() => {
-        if (active) setHighlight(null);
+        if (active) setHighlighted(null);
       });
 
     return () => {
       active = false;
     };
-  }, [code, highlightKey, language]);
+  }, [cachedHighlight, code, highlight, highlightKey, lang]);
 
-  if (highlight?.key === highlightKey) {
+  const currentHighlight = cachedHighlight
+    ? { key: highlightKey, html: cachedHighlight }
+    : highlighted?.key === highlightKey
+      ? highlighted
+      : null;
+
+  if (highlight && currentHighlight) {
     return (
       <div
         className={cn(
           "shiki-code-block",
           compact ? "max-h-64" : "my-2 max-h-80",
         )}
-        dangerouslySetInnerHTML={{ __html: highlight.html }}
+        dangerouslySetInnerHTML={{ __html: currentHighlight.html }}
       />
     );
   }
 
   return (
-    <pre
+    <PlainCodeBlock
+      code={code}
+      compact={compact}
+      tone={tone}
+    />
+  );
+}
+
+function PlainCodeBlock({
+  code,
+  compact,
+  tone,
+}: {
+  code: string;
+  compact: boolean;
+  tone?: "error";
+}) {
+  return (
+    <div
       className={cn(
-        "overflow-auto bg-[var(--bg)] p-3 font-mono text-[11px] leading-relaxed",
+        "shiki-code-block",
         compact ? "max-h-64" : "my-2 max-h-80 rounded-md border border-[var(--border)]",
         tone === "error" ? "text-[var(--status-error)]" : "text-[var(--text-muted)]",
       )}
     >
-      <code>{code}</code>
-    </pre>
+      <pre>
+        <code>{code}</code>
+      </pre>
+    </div>
   );
 }
 
@@ -109,6 +148,8 @@ const SUPPORTED_SHIKI_LANGUAGES = new Set([
 ]);
 
 let chatHighlighterPromise: Promise<ChatHighlighter> | null = null;
+const highlightedCodeCache = new Map<string, string>();
+const MAX_HIGHLIGHT_CACHE_ENTRIES = 80;
 
 function getChatHighlighter(): Promise<ChatHighlighter> {
   chatHighlighterPromise ??= Promise.all([
@@ -177,4 +218,12 @@ async function renderHighlightedCode(code: string, language: string): Promise<st
   const highlighter = await getChatHighlighter();
   const lang = SUPPORTED_SHIKI_LANGUAGES.has(language) ? language : "text";
   return highlighter.codeToHtml(code, { lang, theme: SHIKI_THEME });
+}
+
+function trimHighlightedCodeCache() {
+  while (highlightedCodeCache.size > MAX_HIGHLIGHT_CACHE_ENTRIES) {
+    const oldestKey = highlightedCodeCache.keys().next().value;
+    if (!oldestKey) return;
+    highlightedCodeCache.delete(oldestKey);
+  }
 }

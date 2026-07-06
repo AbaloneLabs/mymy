@@ -7,7 +7,9 @@ import {
   Check,
   CircleHelp,
   Network,
+  Pencil,
   Plus,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -54,14 +56,39 @@ interface ChatPanelProps {
   agentName?: string;
   /** Current agent role (for header). */
   agentRole?: string;
+  onOpenDocument?: (path: string) => void;
 }
 
+interface QueuedChatTurn {
+  id: string;
+  sessionId: string;
+  content: string;
+  options: {
+    useMoa: boolean;
+    moaPresetId: string | null;
+  };
+  createdAt: string;
+}
+
+function createQueuedTurnId() {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  if (typeof cryptoApi?.getRandomValues === "function") {
+    const bytes = new Uint32Array(2);
+    cryptoApi.getRandomValues(bytes);
+    return `queued-${Date.now().toString(36)}-${bytes[0].toString(36)}${bytes[1].toString(36)}`;
+  }
+  return `queued-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 export function ChatPanel({
   sessionId,
   isNewSession,
   agentName,
   agentRole,
+  onOpenDocument,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
@@ -77,6 +104,9 @@ export function ChatPanel({
   const [streamUserMessage, setStreamUserMessage] = useState<ChatMessage | null>(null);
   const [streamAssistantText, setStreamAssistantText] = useState("");
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
+  const [queuedTurns, setQueuedTurns] = useState<QueuedChatTurn[]>([]);
+  const [editingQueuedTurnId, setEditingQueuedTurnId] = useState<string | null>(null);
+  const [queuedEditText, setQueuedEditText] = useState("");
   const [pendingClarify, setPendingClarify] = useState<ChatClarifyRequest | null>(null);
   const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [clarifyError, setClarifyError] = useState(false);
@@ -86,6 +116,10 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const stickToBottomRef = useRef(true);
+  const isStreamingRef = useRef(false);
+  const queuedTurnsRef = useRef<QueuedChatTurn[]>([]);
+  const editingQueuedTurnIdRef = useRef<string | null>(null);
   const qc = useQueryClient();
 
   const { data, isLoading, isError } = useChatMessages(sessionId ?? undefined);
@@ -147,6 +181,7 @@ export function ChatPanel({
     () => buildToolCallById(visibleMessages),
     [visibleMessages],
   );
+  const activeQueuedTurns = queuedTurns.filter((turn) => turn.sessionId === sessionId);
   const activeAttachments = attachmentSessionId === sessionId ? attachments : [];
   const activeUploadingAttachments =
     attachmentSessionId === sessionId && uploadingAttachments;
@@ -154,31 +189,112 @@ export function ChatPanel({
     attachmentSessionId === sessionId && attachmentError;
   const activeDragDepth = attachmentSessionId === sessionId ? dragDepth : 0;
 
-  // Auto-scroll to bottom on new messages.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [visibleMessages.length, activeStreamAssistantText, activeStreaming]);
+  function setQueuedTurnState(next: QueuedChatTurn[]) {
+    queuedTurnsRef.current = next;
+    setQueuedTurns(next);
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = text.trim();
-    if (
-      (!trimmed && activeAttachments.length === 0) ||
-      !sessionId ||
-      isStreaming ||
-      activeUploadingAttachments
-    ) {
+  function enqueueTurn(turn: QueuedChatTurn) {
+    setQueuedTurnState([...queuedTurnsRef.current, turn]);
+  }
+
+  function setQueuedTurnEditState(turnId: string | null, content = "") {
+    editingQueuedTurnIdRef.current = turnId;
+    setEditingQueuedTurnId(turnId);
+    setQueuedEditText(content);
+  }
+
+  function dequeueNextTurnBatch(): QueuedChatTurn[] {
+    if (editingQueuedTurnIdRef.current) return [];
+
+    const [first] = queuedTurnsRef.current;
+    if (!first) return [];
+
+    const batch: QueuedChatTurn[] = [];
+    const rest: QueuedChatTurn[] = [];
+    let foundDifferentSession = false;
+
+    for (const turn of queuedTurnsRef.current) {
+      if (!foundDifferentSession && turn.sessionId === first.sessionId) {
+        batch.push(turn);
+      } else {
+        foundDifferentSession = true;
+        rest.push(turn);
+      }
+    }
+
+    setQueuedTurnState(rest);
+    return batch;
+  }
+
+  function mergeQueuedTurnBatch(batch: QueuedChatTurn[]): QueuedChatTurn | null {
+    const [first] = batch;
+    if (!first) return null;
+    const last = batch[batch.length - 1] ?? first;
+
+    return {
+      id: first.id,
+      sessionId: first.sessionId,
+      content: batch.map((turn) => turn.content).join("\n\n"),
+      options: last.options,
+      createdAt: first.createdAt,
+    };
+  }
+
+  function startQueuedTurnsIfIdle() {
+    if (isStreamingRef.current || editingQueuedTurnIdRef.current) return;
+    const nextTurn = mergeQueuedTurnBatch(dequeueNextTurnBatch());
+    if (nextTurn) {
+      void runChatTurn(nextTurn);
+    }
+  }
+
+  function beginQueuedTurnEdit(turn: QueuedChatTurn) {
+    setQueuedTurnEditState(turn.id, turn.content);
+  }
+
+  function saveQueuedTurnEdit() {
+    const editingId = editingQueuedTurnIdRef.current;
+    const content = queuedEditText.trim();
+    if (!editingId || !content) return;
+
+    setQueuedTurnState(
+      queuedTurnsRef.current.map((turn) =>
+        turn.id === editingId ? { ...turn, content } : turn,
+      ),
+    );
+    setQueuedTurnEditState(null);
+    startQueuedTurnsIfIdle();
+  }
+
+  function cancelQueuedTurnEdit() {
+    setQueuedTurnEditState(null);
+    startQueuedTurnsIfIdle();
+  }
+
+  function cancelQueuedTurn(turnId: string) {
+    setQueuedTurnState(queuedTurnsRef.current.filter((turn) => turn.id !== turnId));
+    if (editingQueuedTurnIdRef.current === turnId) {
+      setQueuedTurnEditState(null);
+    }
+    startQueuedTurnsIfIdle();
+  }
+
+  function updateScrollStickiness() {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }
+
+  async function runChatTurn(turn: QueuedChatTurn) {
+    if (isStreamingRef.current) {
+      enqueueTurn(turn);
       return;
     }
-    const outgoingText = appendAttachmentsToMessage(trimmed, activeAttachments);
-    setText("");
-    setAttachments([]);
-    setAttachmentSessionId(null);
+
+    isStreamingRef.current = true;
     setIsStreaming(true);
-    setStreamSessionId(sessionId);
+    setStreamSessionId(turn.sessionId);
     setStreamError(false);
     setStreamErrorMessage("");
     setStreamUserMessage(null);
@@ -191,14 +307,11 @@ export function ChatPanel({
 
     try {
       await streamChatMessage(
-        sessionId,
-        outgoingText,
-        {
-          useMoa: useMoa && Boolean(selectedMoaPreset),
-          moaPresetId: selectedMoaPreset?.id ?? null,
-        },
+        turn.sessionId,
+        turn.content,
+        turn.options,
         (event) => {
-          handleStreamEvent(event, sessionId, {
+          handleStreamEvent(event, turn.sessionId, {
             setStreamUserMessage,
             setStreamAssistantText,
             setToolEvents,
@@ -206,7 +319,7 @@ export function ChatPanel({
           });
         },
       );
-      await qc.invalidateQueries({ queryKey: ["chat", "messages", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["chat", "messages", turn.sessionId] });
       await qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
       setStreamUserMessage(null);
       setStreamAssistantText("");
@@ -216,8 +329,68 @@ export function ChatPanel({
       setStreamError(true);
       setStreamErrorMessage(error instanceof Error ? error.message : "");
     } finally {
+      isStreamingRef.current = false;
       setIsStreaming(false);
+      startQueuedTurnsIfIdle();
     }
+  }
+
+  // Auto-scroll to bottom on new messages.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && stickToBottomRef.current) {
+      const frame = window.requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [
+    visibleMessages.length,
+    activeStreamAssistantText,
+    activeStreaming,
+    activeQueuedTurns.length,
+  ]);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [sessionId]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (
+      (!trimmed && activeAttachments.length === 0) ||
+      !sessionId ||
+      activeUploadingAttachments
+    ) {
+      return;
+    }
+    const outgoingText = appendAttachmentsToMessage(trimmed, activeAttachments);
+    const turn: QueuedChatTurn = {
+      id: createQueuedTurnId(),
+      sessionId,
+      content: outgoingText,
+      options: {
+        useMoa: useMoa && Boolean(selectedMoaPreset),
+        moaPresetId: selectedMoaPreset?.id ?? null,
+      },
+      createdAt: new Date().toISOString(),
+    };
+
+    setText("");
+    setAttachments([]);
+    setAttachmentSessionId(null);
+
+    if (isStreamingRef.current) {
+      enqueueTurn(turn);
+      return;
+    }
+
+    await runChatTurn(turn);
   };
 
   const submitClarify = async (answer: string) => {
@@ -386,6 +559,7 @@ export function ChatPanel({
       {/* Messages */}
       <div
         ref={scrollRef}
+        onScroll={updateScrollStickiness}
         className="flex-1 space-y-4 overflow-y-auto px-6 py-4"
       >
         {isLoading && (
@@ -411,11 +585,17 @@ export function ChatPanel({
             key={msg.id}
             message={msg}
             toolCall={msg.toolCallId ? toolCallById.get(msg.toolCallId) : undefined}
+            streaming={msg.id === "streaming-assistant" && activeStreaming}
+            onOpenDocument={onOpenDocument}
           />
         ))}
 
         {activeToolEvents.map((event) => (
-          <ToolEventRow key={event.id} event={event} />
+          <ToolEventRow
+            key={event.id}
+            event={event}
+            onOpenDocument={onOpenDocument}
+          />
         ))}
 
         {/* Typing indicator while waiting for agent response */}
@@ -425,6 +605,84 @@ export function ChatPanel({
             <span className="text-xs text-[var(--text-muted)]">{t("chat.agentTyping")}</span>
           </div>
         )}
+
+        {activeQueuedTurns.map((turn) => (
+          <div key={turn.id} className="opacity-70">
+            {editingQueuedTurnId === turn.id ? (
+              <div className="flex max-w-[920px] items-stretch gap-3">
+                <div className="w-1 shrink-0 rounded-full bg-[#8b5cf6]" />
+                <div className="min-w-0 flex-1 space-y-2 py-0.5">
+                  <textarea
+                    value={queuedEditText}
+                    onChange={(event) => setQueuedEditText(event.target.value)}
+                    rows={Math.min(
+                      6,
+                      Math.max(2, queuedEditText.split("\n").length),
+                    )}
+                    className={cn(
+                      "max-h-40 min-h-[72px] w-full resize-y rounded-md border border-[var(--border)]",
+                      "bg-[var(--surface)] px-3 py-2 text-sm text-[var(--text)]",
+                      "focus:border-[var(--accent)] focus:outline-none",
+                    )}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                      {t("chat.queued")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={saveQueuedTurnEdit}
+                      disabled={!queuedEditText.trim()}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+                    >
+                      <Check className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      {t("common.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelQueuedTurnEdit}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+                    >
+                      <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      {t("common.cancel")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <MessageRow
+                message={{
+                  id: `queued-${turn.id}`,
+                  sessionId: turn.sessionId,
+                  role: "user",
+                  content: turn.content,
+                  createdAt: turn.createdAt,
+                }}
+                metaLabel={t("chat.queued")}
+                footer={
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => beginQueuedTurnEdit(turn)}
+                      className="inline-flex h-6 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    >
+                      <Pencil className="h-3 w-3" strokeWidth={1.75} />
+                      {t("chat.editQueued")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => cancelQueuedTurn(turn.id)}
+                      className="inline-flex h-6 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--status-error)]"
+                    >
+                      <X className="h-3 w-3" strokeWidth={1.75} />
+                      {t("chat.cancelQueued")}
+                    </button>
+                  </>
+                }
+              />
+            )}
+          </div>
+        ))}
 
         {/* Error */}
         {activeStreamError && (
@@ -493,7 +751,7 @@ export function ChatPanel({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={activeUploadingAttachments || isStreaming}
+            disabled={activeUploadingAttachments}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
             title="파일 첨부"
           >
@@ -538,20 +796,18 @@ export function ChatPanel({
             type="submit"
             disabled={
               (!text.trim() && activeAttachments.length === 0) ||
-              isStreaming ||
               activeUploadingAttachments
             }
             className={cn(
               "flex h-10 shrink-0 items-center gap-1.5 rounded-lg px-4 text-sm font-medium",
               "transition-colors duration-150",
               (text.trim() || activeAttachments.length > 0) &&
-                !isStreaming &&
                 !activeUploadingAttachments
                 ? "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
                 : "cursor-not-allowed bg-[var(--surface-active)] text-[var(--text-faint)]"
             )}
           >
-            {activeStreaming ? (
+            {activeUploadingAttachments ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.75} />
                 {t("chat.sending")}

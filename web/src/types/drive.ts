@@ -1,3 +1,5 @@
+import type { DocumentEditorKind } from "./documentEditor";
+
 export type DriveEntryKind = "directory" | "file";
 
 export type DriveProviderKind = "local_vm" | "s3";
@@ -25,6 +27,7 @@ export interface DriveFileResponse {
   updatedAt?: string;
   content: string;
   editable: boolean;
+  editorKind: DocumentEditorKind;
 }
 
 export interface DriveProviderStatus {

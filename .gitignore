@@ -4,6 +4,7 @@ AGENTS.md
 # Internal documents (local-only)
 plans/
 docs/
+QA/
 
 # Environment files, including secrets
 .env

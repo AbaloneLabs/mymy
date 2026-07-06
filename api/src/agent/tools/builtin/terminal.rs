@@ -549,7 +549,9 @@ fn app_error_to_tool(err: AppError, context: &str) -> ToolError {
             ToolError::InvalidArgs(message)
         }
         AppError::Unauthorized(message) => ToolError::Unavailable(message),
-        AppError::Internal(message) => ToolError::Execution(format!("{context}: {message}")),
+        AppError::Conflict(message) | AppError::Internal(message) => {
+            ToolError::Execution(format!("{context}: {message}"))
+        }
         AppError::Database(err) => ToolError::Execution(format!("{context}: {err}")),
         AppError::Io(err) => ToolError::Execution(format!("{context}: {err}")),
     }

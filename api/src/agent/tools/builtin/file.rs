@@ -19,6 +19,9 @@ use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 use crate::services::audit::log_security_denial_safe;
+use crate::services::file_observations::{
+    ensure_file_not_changed_since_observed, record_file_observation, FileObservationSource,
+};
 
 const MAX_READ_LINES: usize = 1_000;
 const DEFAULT_READ_LINES: usize = 500;
@@ -49,6 +52,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         handler: Arc::new(ReadFileTool {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 
@@ -91,6 +95,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         handler: Arc::new(WriteFileTool {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 
@@ -113,6 +118,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         handler: Arc::new(PatchFileTool {
             paths,
             db: config.db.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 }
@@ -121,6 +127,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 struct ReadFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -153,6 +160,15 @@ impl ToolHandler for ReadFileTool {
             .collect::<Vec<_>>()
             .join("\n");
         let numbered = redact_sensitive_text(&numbered);
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Read,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
 
         Ok(tool_result(&serde_json::json!({
             "path": resolved.logical,
@@ -167,6 +183,7 @@ impl ToolHandler for ReadFileTool {
 struct WriteFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -185,6 +202,14 @@ impl WriteFileTool {
             audit_guardrail_denial(self.db.as_ref(), "write", &resolved.physical, &err).await;
             return Err(err);
         }
+        ensure_file_not_changed_since_observed(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
         if let Some(parent) = resolved.physical.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -193,6 +218,15 @@ impl WriteFileTool {
         tokio::fs::write(&resolved.physical, content)
             .await
             .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Write,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
         Ok(tool_result(&serde_json::json!({
             "path": resolved.logical,
             "bytes_written": content.len(),
@@ -204,6 +238,7 @@ impl WriteFileTool {
 struct PatchFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -223,6 +258,14 @@ impl PatchFileTool {
             audit_guardrail_denial(self.db.as_ref(), "patch", &resolved.physical, &err).await;
             return Err(err);
         }
+        ensure_file_not_changed_since_observed(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
         let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
@@ -236,6 +279,15 @@ impl PatchFileTool {
         tokio::fs::write(&resolved.physical, updated)
             .await
             .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Write,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
         Ok(tool_result(&serde_json::json!({
             "path": resolved.logical,
             "replacements": 1,

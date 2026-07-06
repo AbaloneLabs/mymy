@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -11,9 +12,17 @@ import { ToolResultView } from "./toolResults";
 export function MessageRow({
   message,
   toolCall,
+  metaLabel,
+  footer,
+  streaming = false,
+  onOpenDocument,
 }: {
   message: ChatMessage;
   toolCall?: ToolCall;
+  metaLabel?: string;
+  footer?: ReactNode;
+  streaming?: boolean;
+  onOpenDocument?: (path: string) => void;
 }) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
@@ -30,6 +39,7 @@ export function MessageRow({
         message={message}
         toolName={toolCall?.name ?? "tool"}
         toolArguments={toolCall?.arguments ?? "{}"}
+        onOpenDocument={onOpenDocument}
       />
     );
   }
@@ -39,13 +49,23 @@ export function MessageRow({
       <div className={cn("w-1 shrink-0 rounded-full", barClass)} />
       <div className="min-w-0 flex-1 py-0.5 text-sm leading-relaxed text-[var(--text)]">
         {isAssistant ? (
-          <AssistantMarkdown content={message.content} />
+          <AssistantMarkdown content={message.content} streaming={streaming} />
         ) : (
           <div className="whitespace-pre-wrap break-words text-[var(--text)]">
             {message.content}
           </div>
         )}
         <MediaTagList text={message.content} />
+        {(metaLabel || footer) && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {metaLabel && (
+              <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                {metaLabel}
+              </span>
+            )}
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -55,10 +75,12 @@ function ToolMessageRow({
   message,
   toolName,
   toolArguments,
+  onOpenDocument,
 }: {
   message: ChatMessage;
   toolName: string;
   toolArguments: string;
+  onOpenDocument?: (path: string) => void;
 }) {
   return (
     <div className="flex max-w-[920px] items-stretch gap-3">
@@ -69,39 +91,55 @@ function ToolMessageRow({
           status="done"
           argumentsText={toolArguments}
           detail={message.content}
+          onOpenDocument={onOpenDocument}
         />
       </div>
     </div>
   );
 }
 
-export function AssistantMarkdown({ content }: { content: string }) {
+export function AssistantMarkdown({
+  content,
+  streaming = false,
+}: {
+  content: string;
+  streaming?: boolean;
+}) {
   const markdown = stripMediaTags(content);
   if (!markdown) return null;
   return (
     <div className="chat-markdown">
-      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown
+        components={streaming ? streamingMarkdownComponents : markdownComponents}
+        remarkPlugins={[remarkGfm]}
+      >
         {markdown}
       </ReactMarkdown>
     </div>
   );
 }
 
-const markdownComponents: Components = {
-  code({ className, children, ...props }) {
-    const match = /language-([\w-]+)/.exec(className ?? "");
-    if (!match) {
+const markdownComponents = buildMarkdownComponents(true);
+const streamingMarkdownComponents = buildMarkdownComponents(false);
+
+function buildMarkdownComponents(highlightCode: boolean): Components {
+  return {
+    code({ className, children, ...props }) {
+      const match = /language-([\w-]+)/.exec(className ?? "");
+      if (!match) {
+        return (
+          <code className={className} {...props}>
+            {children}
+          </code>
+        );
+      }
       return (
-        <code className={className} {...props}>
-          {children}
-        </code>
+        <HighlightedCodeBlock
+          code={String(children).replace(/\n$/, "")}
+          language={match[1]}
+          highlight={highlightCode}
+        />
       );
-    }
-    return (
-      <HighlightedCodeBlock
-        code={String(children).replace(/\n$/, "")}
-        language={match[1]}
-      />
-    );
-  },
-};
+    },
+  };
+}

@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Lock } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuthStore } from "@/store/auth";
-import { useVerifyPin } from "@/features/auth/api";
+import { usePinStatus, useVerifyPin } from "@/features/auth/api";
 import { cn } from "@/lib/utils";
 
 
@@ -14,7 +14,15 @@ export default function PinScreen() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState("");
   const [error, setError] = useState(false);
+  const pinStatus = usePinStatus();
   const verifyPin = useVerifyPin();
+
+  useEffect(() => {
+    if (pinStatus.data?.authenticated) {
+      setAuthenticated();
+      navigate("/", { replace: true });
+    }
+  }, [navigate, pinStatus.data?.authenticated, setAuthenticated]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,16 +1,18 @@
-import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { ExternalLink, Loader2, Save } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import {
-  driveBlobUrl,
-  useWriteDriveFile,
-} from "@/features/drive/api";
-import { cn } from "@/lib/utils";
+import { driveBlobUrl } from "@/features/drive/api";
+import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
 import type { DriveFileResponse } from "@/types/drive";
 
-export function DriveFileViewer({ file }: { file: DriveFileResponse | null }) {
+export function DriveFileViewer({
+  file,
+  onCloseEditor,
+  onDirtyChange,
+}: {
+  file: DriveFileResponse | null;
+  onCloseEditor?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const { t } = useTranslation();
   if (!file) {
     return (
@@ -47,18 +49,14 @@ export function DriveFileViewer({ file }: { file: DriveFileResponse | null }) {
       />
     );
   }
-  if (file.mimeType.includes("wordprocessingml.document")) {
+  if (file.editorKind !== "preview") {
     return (
-      <pre className="whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-sm leading-6">
-        {file.content}
-      </pre>
-    );
-  }
-  if (file.editable) {
-    return (
-      <EditableFileViewer
-        key={`${file.path}:${file.updatedAt ?? ""}`}
-        file={file}
+      <DocumentEditorPane
+        key={file.path}
+        path={file.path}
+        onClose={onCloseEditor ?? (() => undefined)}
+        onDirtyChange={onDirtyChange}
+        variant="embedded"
       />
     );
   }
@@ -73,51 +71,5 @@ export function DriveFileViewer({ file }: { file: DriveFileResponse | null }) {
       <ExternalLink className="h-4 w-4" strokeWidth={1.5} />
       {t("drive.openFile")}
     </a>
-  );
-}
-
-function EditableFileViewer({ file }: { file: DriveFileResponse }) {
-  const { t } = useTranslation();
-  const [draft, setDraft] = useState(file.content);
-  const writeFile = useWriteDriveFile();
-  const markdown = file.mimeType === "text/markdown" || file.name.endsWith(".md");
-  const dirty = draft !== file.content;
-
-  return (
-    <div className="flex min-h-full flex-col gap-3">
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => writeFile.mutate({ path: file.path, content: draft })}
-          disabled={!dirty || writeFile.isPending}
-          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {writeFile.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" strokeWidth={1.5} />
-          ) : (
-            <Save className="h-4 w-4" strokeWidth={1.5} />
-          )}
-          {t("common.save")}
-        </button>
-      </div>
-      <div
-        className={cn(
-          "grid min-h-full flex-1 gap-4",
-          markdown ? "grid-cols-2" : "grid-cols-1",
-        )}
-      >
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          spellCheck={false}
-          className="min-h-[640px] resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 font-mono text-sm leading-6 outline-none focus:border-[var(--accent)]"
-        />
-        {markdown && (
-          <article className="prose prose-sm max-w-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--text)]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft}</ReactMarkdown>
-          </article>
-        )}
-      </div>
-    </div>
   );
 }

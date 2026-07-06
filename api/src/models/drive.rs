@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::document_editor::DocumentEditorKind;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveEntry {
@@ -45,6 +47,7 @@ pub struct DriveFileResponse {
     pub updated_at: Option<String>,
     pub content: String,
     pub editable: bool,
+    pub editor_kind: DocumentEditorKind,
 }
 
 #[derive(Debug, Deserialize)]

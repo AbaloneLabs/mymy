@@ -51,13 +51,20 @@ import {
   parseTerminalResult,
 } from "./toolResultProcessParsers";
 
-export function ToolEventRow({ event }: { event: ToolEvent }) {
+export function ToolEventRow({
+  event,
+  onOpenDocument,
+}: {
+  event: ToolEvent;
+  onOpenDocument?: (path: string) => void;
+}) {
   return (
     <ToolResultView
       name={event.name}
       status={event.status}
       argumentsText={event.arguments}
       detail={event.detail}
+      onOpenDocument={onOpenDocument}
     />
   );
 }
@@ -67,11 +74,13 @@ export function ToolResultView({
   status,
   argumentsText,
   detail,
+  onOpenDocument,
 }: {
   name: string;
   status: "running" | "done";
   argumentsText: string;
   detail: string;
+  onOpenDocument?: (path: string) => void;
 }) {
   if (name === "execute_code") {
     return (
@@ -149,6 +158,7 @@ export function ToolResultView({
           name={name}
           result={fileMutationResult}
           status={status}
+          onOpenDocument={onOpenDocument}
         />
       );
     }
@@ -405,14 +415,17 @@ function FileMutationResultPanel({
   name,
   result,
   status,
+  onOpenDocument,
 }: {
   name: string;
   result: FileMutationResult;
   status: "running" | "done";
+  onOpenDocument?: (path: string) => void;
 }) {
   const { t } = useTranslation();
-  return (
-    <div className="max-w-[920px] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-muted)]">
+  const canOpen = status === "done" && isDocumentEditorPath(result.path) && onOpenDocument;
+  const content = (
+    <>
       <ToolPanelHeader
         icon="file"
         title={name === "patch_file" ? t("chat.patchFileTitle") : t("chat.writeFileTitle")}
@@ -422,7 +435,7 @@ function FileMutationResultPanel({
       <div className="mt-1 truncate font-mono text-[10px] text-[var(--text-faint)]">
         {result.path}
       </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {result.bytesWritten !== undefined && (
           <MiniMeta value={`${result.bytesWritten} bytes`} />
         )}
@@ -432,7 +445,31 @@ function FileMutationResultPanel({
         {result.replacements !== undefined && (
           <MiniMeta value={`${result.replacements} replacement`} />
         )}
+        {canOpen && (
+          <span className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--accent)]">
+            <ExternalLink className="h-3 w-3" strokeWidth={1.75} />
+            {t("chat.openEditor")}
+          </span>
+        )}
       </div>
+    </>
+  );
+
+  if (canOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenDocument(result.path)}
+        className="block max-w-[920px] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-left text-xs text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:bg-[var(--surface-hover)]"
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className="max-w-[920px] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-muted)]">
+      {content}
     </div>
   );
 }
@@ -1337,6 +1374,12 @@ function parseFileMutationResult(value: string): FileMutationResult | null {
     linesWritten: numberValue(parsed, "lines_written", "linesWritten"),
     replacements: numberValue(parsed, "replacements"),
   };
+}
+
+function isDocumentEditorPath(path: string) {
+  return /\.(md|markdown|txt|log|json|ya?ml|toml|csv|tsv|css|mjs|cjs|jsx?|tsx?|rs|py|sh|docx|xlsx|pptx)$/i.test(
+    path,
+  );
 }
 
 function parseTodoResult(value: string): TodoResult | null {

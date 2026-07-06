@@ -25,6 +25,7 @@ use crate::models::drive::{
     DriveSyncJob, DriveSyncJobsResponse, DriveSyncOperation, DriveSyncStatus, DriveTrashEntry,
     DriveTrashResponse, DriveUploadResponse,
 };
+use crate::services::document_editor::editor_kind_for_path;
 use crate::state::AppState;
 
 pub const DRIVE_PREFIX: &str = "/drive";
@@ -413,6 +414,7 @@ pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveF
         size: metadata.len(),
         updated_at: metadata_updated_at(&metadata),
         editable: is_editable(&resolved.physical_path),
+        editor_kind: editor_kind_for_path(&resolved.physical_path),
         content,
     })
 }
@@ -437,6 +439,20 @@ pub async fn write_file(state: &AppState, logical_path: &str, content: &str) -> 
         return Err(AppError::BadRequest("Cannot overwrite a directory".into()));
     }
     fs::write(&resolved.physical_path, content)?;
+    enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await?;
+    Ok(())
+}
+
+pub async fn write_file_bytes(state: &AppState, logical_path: &str, bytes: &[u8]) -> AppResult<()> {
+    ensure_drive_root(state)?;
+    let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
+    if let Some(parent) = resolved.physical_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if resolved.physical_path.exists() && fs::metadata(&resolved.physical_path)?.is_dir() {
+        return Err(AppError::BadRequest("Cannot overwrite a directory".into()));
+    }
+    fs::write(&resolved.physical_path, bytes)?;
     enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await?;
     Ok(())
 }
@@ -915,12 +931,15 @@ the assigned Drive workspace, and explain meaningful risks before taking action.
     )
 }
 
-struct ResolvedDrivePath {
-    physical_path: PathBuf,
-    logical_path: String,
+pub struct ResolvedDrivePath {
+    pub physical_path: PathBuf,
+    pub logical_path: String,
 }
 
-fn resolve_drive_path(agent_data_dir: &Path, logical_path: &str) -> AppResult<ResolvedDrivePath> {
+pub fn resolve_drive_path(
+    agent_data_dir: &Path,
+    logical_path: &str,
+) -> AppResult<ResolvedDrivePath> {
     let root = canonical_or_create(&drive_root(agent_data_dir))?;
     let normalized = normalize_logical_drive_path(logical_path)?;
     let relative = normalized
@@ -1015,6 +1034,7 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         "yaml" | "yml" => "application/yaml",
         "toml" => "application/toml",
         "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
         "html" | "htm" => "text/html",
         "css" => "text/css",
         "js" | "mjs" | "cjs" => "text/javascript",
@@ -1023,6 +1043,8 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         "py" => "text/x-python",
         "sh" => "application/x-sh",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "pdf" => "application/pdf",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",

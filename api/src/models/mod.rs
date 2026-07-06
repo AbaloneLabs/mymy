@@ -5,6 +5,7 @@ pub mod audit;
 pub mod auth;
 pub mod calendar;
 pub mod chat;
+pub mod document_editor;
 pub mod drive;
 pub mod goal;
 pub mod investment;

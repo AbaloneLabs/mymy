@@ -27,7 +27,13 @@ export function useVerifyPin() {
   return useMutation({
     mutationFn: (pin: string) =>
       api.post<PinVerifyResponse>("/auth/verify", { pin }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth"] }),
+    onSuccess: (data) => {
+      qc.setQueryData<PinStatusResponse>(["auth", "status"], (current) => ({
+        initialized: current?.initialized ?? true,
+        authenticated: data.authenticated,
+      }));
+      return qc.invalidateQueries({ queryKey: ["auth"] });
+    },
   });
 }
 

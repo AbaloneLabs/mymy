@@ -49,6 +49,7 @@ export default function DrivePage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [path, setPath] = useState(ROOT_PATH);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [previewAgent, setPreviewAgent] = useState(selectedAgentProfile ?? "");
   const [previewLabel, setPreviewLabel] = useState("");
@@ -75,19 +76,43 @@ export default function DrivePage() {
   const breadcrumbs = useMemo(() => buildBreadcrumbs(path), [path]);
   const selectedFile = file.data ?? null;
 
+  function confirmDiscardEditorChanges() {
+    return !editorDirty || window.confirm(t("documentEditor.discardConfirm"));
+  }
+
+  function selectPath(nextPath: string) {
+    if (nextPath === path) return;
+    if (!confirmDiscardEditorChanges()) return;
+    setPath(nextPath);
+    setSelectedFilePath(null);
+    setEditorDirty(false);
+  }
+
   function openEntry(entry: DriveEntry) {
     if (entry.kind === "directory") {
+      if (!confirmDiscardEditorChanges()) return;
       setPath(entry.path);
       setSelectedFilePath(null);
+      setEditorDirty(false);
       return;
     }
+    if (entry.path !== selectedFilePath && !confirmDiscardEditorChanges()) return;
     setSelectedFilePath(entry.path);
+    setEditorDirty(false);
   }
 
   function goUp() {
     if (path === ROOT_PATH) return;
+    if (!confirmDiscardEditorChanges()) return;
     setPath(parentPath(path));
     setSelectedFilePath(null);
+    setEditorDirty(false);
+  }
+
+  function closeSelectedFile() {
+    if (!confirmDiscardEditorChanges()) return;
+    setSelectedFilePath(null);
+    setEditorDirty(false);
   }
 
   function handleCreateFolder() {
@@ -103,6 +128,7 @@ export default function DrivePage() {
     deletePath.mutate(targetPath, {
       onSuccess: () => {
         if (selectedFilePath === targetPath) setSelectedFilePath(null);
+        if (selectedFilePath === targetPath) setEditorDirty(false);
       },
     });
   }
@@ -145,10 +171,7 @@ export default function DrivePage() {
               <button
                 key={crumb.path}
                 type="button"
-                onClick={() => {
-                  setPath(crumb.path);
-                  setSelectedFilePath(null);
-                }}
+                onClick={() => selectPath(crumb.path)}
                 className={cn(
                   "truncate rounded px-1.5 py-1 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
                   index === breadcrumbs.length - 1 && "text-[var(--text)]"
@@ -248,9 +271,22 @@ export default function DrivePage() {
                 )}
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-4">
+            <div
+              className={cn(
+                "min-h-0 flex-1",
+                selectedFile && selectedFile.editorKind !== "preview"
+                  ? "overflow-hidden"
+                  : "overflow-auto p-4",
+              )}
+            >
               {file.isLoading && <LoadingLine label={t("common.loading")} />}
-              {!file.isLoading && <DriveFileViewer file={selectedFile} />}
+              {!file.isLoading && (
+                <DriveFileViewer
+                  file={selectedFile}
+                  onCloseEditor={closeSelectedFile}
+                  onDirtyChange={setEditorDirty}
+                />
+              )}
             </div>
           </section>
 

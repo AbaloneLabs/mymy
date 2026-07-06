@@ -684,7 +684,7 @@ fn app_error_to_tool(err: AppError) -> ToolError {
             ToolError::InvalidArgs(message)
         }
         AppError::Unauthorized(message) => ToolError::Unavailable(message),
-        AppError::Internal(message) => ToolError::Execution(message),
+        AppError::Conflict(message) | AppError::Internal(message) => ToolError::Execution(message),
         AppError::Database(err) => ToolError::Execution(err.to_string()),
         AppError::Io(err) => ToolError::Execution(err.to_string()),
     }

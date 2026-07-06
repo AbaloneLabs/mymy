@@ -7,6 +7,7 @@ pub mod auth;
 pub mod calendar;
 pub mod chat;
 pub mod cron;
+pub mod document_editor;
 pub mod drive;
 pub mod extensions;
 pub mod goals;
@@ -44,6 +45,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(agents::routes())
         .merge(projects::routes())
         .merge(drive::routes())
+        .merge(document_editor::routes())
         .merge(sandbox::routes())
         .merge(chat::routes())
         .merge(cron::routes())

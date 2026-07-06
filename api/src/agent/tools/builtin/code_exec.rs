@@ -22,6 +22,9 @@ use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 use crate::models::agent::AgentToolDomain;
+use crate::services::file_observations::{
+    ensure_file_not_changed_since_observed, record_file_observation, FileObservationSource,
+};
 use crate::services::sandbox_runner::{roots_for_runner, RunnerClient, RunnerExecuteRequest};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -60,6 +63,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 )),
             runner_url: config.sandbox_runner_url.clone(),
             allowed_tools: sandbox_allowed_tools(config),
+            db: config.db.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 }
@@ -70,6 +75,8 @@ struct CodeExecTool {
     scratch_dir: PathBuf,
     runner_url: Option<String>,
     allowed_tools: HashSet<String>,
+    db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -125,6 +132,8 @@ impl ToolHandler for CodeExecTool {
                         self.allowed_roots.clone(),
                     ),
                     allowed_tools: self.allowed_tools.clone(),
+                    db: self.db.clone(),
+                    agent_profile: self.agent_profile.clone(),
                 }),
             )
             .await
@@ -268,6 +277,8 @@ fn shell_quote(value: &str) -> String {
 struct CodeRpcHandler {
     paths: WorkspacePathPolicy,
     allowed_tools: HashSet<String>,
+    db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -314,6 +325,14 @@ impl CodeRpcHandler {
             .map(|idx| format!("{}:{}", idx + 1, lines[idx]))
             .collect::<Vec<_>>()
             .join("\n");
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Read,
+        )
+        .await?;
         Ok(serde_json::json!({
             "path": resolved.logical,
             "content": redact_sensitive_text(&content),
@@ -354,6 +373,13 @@ impl CodeRpcHandler {
             .resolve_for_write_with_logical(path)
             .map_err(|err| err.to_string())?;
         ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        ensure_file_not_changed_since_observed(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+        )
+        .await?;
         if let Some(parent) = resolved.physical.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -362,6 +388,14 @@ impl CodeRpcHandler {
         tokio::fs::write(&resolved.physical, content)
             .await
             .map_err(|err| format!("write failed: {err}"))?;
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Write,
+        )
+        .await?;
         Ok(serde_json::json!({
             "path": resolved.logical,
             "bytes_written": content.len(),
@@ -378,6 +412,13 @@ impl CodeRpcHandler {
             .resolve_existing_with_logical(path)
             .map_err(|err| err.to_string())?;
         ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        ensure_file_not_changed_since_observed(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+        )
+        .await?;
         let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| format!("read failed: {err}"))?;
@@ -391,6 +432,14 @@ impl CodeRpcHandler {
         tokio::fs::write(&resolved.physical, updated)
             .await
             .map_err(|err| format!("write failed: {err}"))?;
+        record_file_observation(
+            self.db.as_ref(),
+            self.agent_profile.as_deref(),
+            &resolved.logical,
+            &resolved.physical,
+            FileObservationSource::Write,
+        )
+        .await?;
         Ok(serde_json::json!({
             "path": resolved.logical,
             "replacements": 1,
@@ -570,6 +619,8 @@ mod tests {
                 .into_iter()
                 .map(ToString::to_string)
                 .collect(),
+            db: None,
+            agent_profile: None,
         }
     }
 
@@ -667,6 +718,8 @@ print(mymy_tools.read_file("generated.txt")["content"])
                 .into_iter()
                 .map(ToString::to_string)
                 .collect(),
+            db: None,
+            agent_profile: None,
         };
 
         let output = tool

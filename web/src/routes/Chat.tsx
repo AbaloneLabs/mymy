@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
+import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
 import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
@@ -78,6 +79,8 @@ export default function Chat() {
 
   // New session dialog state.
   const [showDialog, setShowDialog] = useState(false);
+  const [editorPath, setEditorPath] = useState<string | null>(null);
+  const [editorDirty, setEditorDirty] = useState(false);
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession(selectedProjectId ?? undefined);
 
@@ -100,6 +103,22 @@ export default function Chat() {
       deleteSession.mutate(sessionId);
       markDeletedSession(sessionId);
     }
+  };
+
+  const openDocumentEditor = (path: string) => {
+    if (editorDirty && !window.confirm(t("documentEditor.discardConfirm"))) {
+      return;
+    }
+    setEditorPath(path);
+    setEditorDirty(false);
+  };
+
+  const closeDocumentEditor = () => {
+    if (editorDirty && !window.confirm(t("documentEditor.discardConfirm"))) {
+      return;
+    }
+    setEditorPath(null);
+    setEditorDirty(false);
   };
 
   // Keyboard shortcut: press C on the chat page to open the new-session dialog.
@@ -263,23 +282,42 @@ export default function Chat() {
           </div>
         </div>
 
-        {/* Chat panel with context header */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <ChatPanel
-            sessionId={effectiveSessionId}
-            isNewSession={isNewSession}
-            agentName={
-              effectiveSession
-                ? agentMap.get(effectiveSession.profile)?.name ??
-                  effectiveSession.profile
-                : undefined
-            }
-            agentRole={
-              effectiveSession
-                ? agentMap.get(effectiveSession.profile)?.role
-                : undefined
-            }
-          />
+        {/* Chat panel with optional document editor */}
+        <div
+          className={cn(
+            "grid min-w-0 flex-1 overflow-hidden",
+            editorPath
+              ? "grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(420px,1fr)]"
+              : "grid-cols-1",
+          )}
+        >
+          <div className="min-w-0 overflow-hidden">
+            <ChatPanel
+              sessionId={effectiveSessionId}
+              isNewSession={isNewSession}
+              agentName={
+                effectiveSession
+                  ? agentMap.get(effectiveSession.profile)?.name ??
+                    effectiveSession.profile
+                  : undefined
+              }
+              agentRole={
+                effectiveSession
+                  ? agentMap.get(effectiveSession.profile)?.role
+                  : undefined
+              }
+              onOpenDocument={openDocumentEditor}
+            />
+          </div>
+          {editorPath && (
+            <div className="fixed inset-0 z-40 bg-[var(--bg)] xl:static xl:z-auto xl:min-w-0">
+              <DocumentEditorPane
+                path={editorPath}
+                onClose={closeDocumentEditor}
+                onDirtyChange={setEditorDirty}
+              />
+            </div>
+          )}
         </div>
       </div>
 
