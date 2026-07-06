@@ -87,6 +87,15 @@ export function AppLayout({ children }: AppLayoutProps) {
 
         <nav className="flex-1 space-y-0.5 px-2 py-2">
           {NAV_ITEMS.map((item) => {
+            if (item.kind === "separator") {
+              return (
+                <div
+                  key={item.id}
+                  className="my-2 border-t border-[var(--border)]"
+                />
+              );
+            }
+
             const isActive = location.pathname === item.path;
             const enabled = item.enabled;
 
@@ -237,17 +246,20 @@ function SidebarButton({
 
 
 const NAV_ITEMS = [
-  { id: "home", labelKey: "nav.home", icon: Home, path: "/", enabled: true },
-  { id: "chat", labelKey: "nav.chat", icon: MessageSquare, path: "/chat", enabled: true },
-  { id: "agents", labelKey: "nav.agents", icon: Bot, path: "/agents", enabled: true },
-  { id: "finance", labelKey: "nav.finance", icon: Wallet, path: "/finance", enabled: true },
-  { id: "drive", labelKey: "nav.drive", icon: HardDrive, path: "/drive", enabled: true },
-  { id: "investments", labelKey: "nav.investments", icon: LineChart, path: "/investments", enabled: true },
-  { id: "processes", labelKey: "nav.processes", icon: Activity, path: "/processes", enabled: true },
-  { id: "tasks", labelKey: "nav.tasks", icon: CheckSquare, path: "/tasks", enabled: true },
-  { id: "goals", labelKey: "nav.goals", icon: Target, path: "/goals", enabled: true },
-  { id: "calendar", labelKey: "nav.calendar", icon: Calendar, path: "/calendar", enabled: true },
-  { id: "notes", labelKey: "nav.notes", icon: NotebookPen, path: "/notes", enabled: true },
-  { id: "knowledge", labelKey: "nav.knowledge", icon: BookOpen, path: "/knowledge", enabled: true },
-  { id: "journey", labelKey: "nav.context", icon: Share2, path: "/journey", enabled: true },
+  { kind: "item", id: "home", labelKey: "nav.home", icon: Home, path: "/", enabled: true },
+  { kind: "item", id: "chat", labelKey: "nav.chat", icon: MessageSquare, path: "/chat", enabled: true },
+  { kind: "item", id: "agents", labelKey: "nav.agents", icon: Bot, path: "/agents", enabled: true },
+  { kind: "item", id: "journey", labelKey: "nav.context", icon: Share2, path: "/journey", enabled: true },
+  { kind: "separator", id: "work-separator" },
+  { kind: "item", id: "goals", labelKey: "nav.goals", icon: Target, path: "/goals", enabled: true },
+  { kind: "item", id: "calendar", labelKey: "nav.calendar", icon: Calendar, path: "/calendar", enabled: true },
+  { kind: "item", id: "tasks", labelKey: "nav.tasks", icon: CheckSquare, path: "/tasks", enabled: true },
+  { kind: "item", id: "knowledge", labelKey: "nav.knowledge", icon: BookOpen, path: "/knowledge", enabled: true },
+  { kind: "item", id: "notes", labelKey: "nav.notes", icon: NotebookPen, path: "/notes", enabled: true },
+  { kind: "separator", id: "files-separator" },
+  { kind: "item", id: "drive", labelKey: "nav.drive", icon: HardDrive, path: "/drive", enabled: true },
+  { kind: "item", id: "processes", labelKey: "nav.processes", icon: Activity, path: "/processes", enabled: true },
+  { kind: "separator", id: "finance-separator" },
+  { kind: "item", id: "finance", labelKey: "nav.finance", icon: Wallet, path: "/finance", enabled: true },
+  { kind: "item", id: "investments", labelKey: "nav.investments", icon: LineChart, path: "/investments", enabled: true },
 ] as const;
