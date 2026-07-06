@@ -432,6 +432,26 @@ fn validate_label(value: String, label: &str, max_chars: usize) -> AppResult<Str
     Ok(value)
 }
 
+fn validate_port(value: Option<u16>) -> AppResult<Option<u16>> {
+    match value {
+        Some(port) if port < 1024 => Err(AppError::BadRequest(
+            "sandbox preview port must be between 1024 and 65535".to_string(),
+        )),
+        other => Ok(other),
+    }
+}
+
+fn parse_optional_uuid(value: Option<&str>, label: &str) -> AppResult<Option<Uuid>> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            Uuid::parse_str(value)
+                .map_err(|err| AppError::BadRequest(format!("invalid {label}: {err}")))
+        })
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,24 +474,4 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(base);
     }
-}
-
-fn validate_port(value: Option<u16>) -> AppResult<Option<u16>> {
-    match value {
-        Some(port) if port < 1024 => Err(AppError::BadRequest(
-            "sandbox preview port must be between 1024 and 65535".to_string(),
-        )),
-        other => Ok(other),
-    }
-}
-
-fn parse_optional_uuid(value: Option<&str>, label: &str) -> AppResult<Option<Uuid>> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            Uuid::parse_str(value)
-                .map_err(|err| AppError::BadRequest(format!("invalid {label}: {err}")))
-        })
-        .transpose()
 }

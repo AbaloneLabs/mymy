@@ -142,4 +142,3 @@ export function jsonScalarSummary(object: Record<string, unknown>): [string, str
     .map(([key, value]) => [key, String(value)] as [string, string])
     .slice(0, 10);
 }
-

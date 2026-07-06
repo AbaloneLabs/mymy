@@ -81,7 +81,6 @@ export function ProcessListResultPanel({
     </div>
   );
 }
-
 function ProcessResultItem({ process }: { process: ToolProcess }) {
   const ports = [
     ...(process.port ? [process.port] : []),
@@ -242,4 +241,3 @@ export function TerminalResultPanel({
     </div>
   );
 }
-

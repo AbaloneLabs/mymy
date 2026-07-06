@@ -70,5 +70,3 @@ export function handleStreamEvent(
       throw new Error(event.message);
   }
 }
-
-

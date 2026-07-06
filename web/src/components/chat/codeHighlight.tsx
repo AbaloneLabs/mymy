@@ -178,4 +178,3 @@ async function renderHighlightedCode(code: string, language: string): Promise<st
   const lang = SUPPORTED_SHIKI_LANGUAGES.has(language) ? language : "text";
   return highlighter.codeToHtml(code, { lang, theme: SHIKI_THEME });
 }
-
