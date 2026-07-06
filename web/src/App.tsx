@@ -16,6 +16,8 @@ const TasksPage = lazy(() => import("@/routes/TasksPage"));
 const AgentsPage = lazy(() => import("@/routes/AgentsPage"));
 const FinancePage = lazy(() => import("@/routes/FinancePage"));
 const DrivePage = lazy(() => import("@/routes/DrivePage"));
+const InvestmentsPage = lazy(() => import("@/routes/InvestmentsPage"));
+const ProcessesPage = lazy(() => import("@/routes/ProcessesPage"));
 const GoalsPage = lazy(() => import("@/routes/GoalsPage"));
 const ShortcutsPage = lazy(() => import("@/routes/ShortcutsPage"));
 
@@ -122,6 +124,22 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <DrivePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/investments"
+            element={
+              <ProtectedRoute>
+                <InvestmentsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/processes"
+            element={
+              <ProtectedRoute>
+                <ProcessesPage />
               </ProtectedRoute>
             }
           />

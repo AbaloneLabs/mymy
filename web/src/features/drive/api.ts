@@ -94,6 +94,29 @@ export function useUploadDriveFiles() {
   });
 }
 
+export async function uploadDriveFiles(path: string, files: File[]) {
+  const form = new FormData();
+  form.append("path", path);
+  for (const file of files) {
+    form.append("file", file, file.name);
+  }
+  const res = await fetch(`${API_BASE}/drive/upload`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("mymy:unauthorized"));
+    }
+    const message = (data && (data.error || data.message)) || res.statusText;
+    throw new ApiError(res.status, message, data);
+  }
+  return data as DriveUploadResponse;
+}
+
 export function useDriveTrash() {
   return useQuery({
     queryKey: ["drive", "trash"],
@@ -159,27 +182,4 @@ export function driveBlobUrl(path: string) {
 
 export function previewUrl(token: string) {
   return `${API_BASE}/previews/${token}`;
-}
-
-async function uploadDriveFiles(path: string, files: File[]) {
-  const form = new FormData();
-  form.append("path", path);
-  for (const file of files) {
-    form.append("file", file, file.name);
-  }
-  const res = await fetch(`${API_BASE}/drive/upload`, {
-    method: "POST",
-    credentials: "include",
-    body: form,
-  });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    if (res.status === 401 && typeof window !== "undefined") {
-      window.dispatchEvent(new Event("mymy:unauthorized"));
-    }
-    const message = (data && (data.error || data.message)) || res.statusText;
-    throw new ApiError(res.status, message, data);
-  }
-  return data as DriveUploadResponse;
 }

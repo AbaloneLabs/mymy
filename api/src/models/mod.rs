@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod chat;
 pub mod drive;
 pub mod goal;
+pub mod investment;
 pub mod knowledge;
 pub mod llm_provider;
 pub mod moa;

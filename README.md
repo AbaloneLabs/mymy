@@ -27,7 +27,7 @@ Manage native LLM agents, their project workspaces, prompts, files, previews, no
 - **Edit prompts** (`AGENTS.md`, `SOUL.md`) from the agent UI and the Drive tab
 - **Open files and previews** for generated markdown, images, media, PDFs, docx text, and local dev servers
 - **Run agent commands through a sandbox runner** with private agent roots plus shared/project mounts
-- **Chat with agents**, take notes, track tasks/goals/finance, and manage your calendar
+- **Chat with agents**, attach files, review tool/search output, track tasks/goals/finance/investments, and manage your calendar
 - **Stay locked & private** with PIN-based access (no cloud accounts, no login flows)
 
 It's designed for the **one-person business** — the developer-founder who wears every hat and delegates the rest to agents.
@@ -42,7 +42,9 @@ It's designed for the **one-person business** — the developer-founder who wear
 | 🧱 | **Sandbox Runner** | Agent file-write, terminal, code, and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
 | 🖥️ | **Preview Proxy** | Agents can register dev-server ports with `register_preview`; the UI opens tokenized preview URLs through the API. |
 | 📁 | **Project Workspace** | Projects get stable Drive folders and can be linked to chats and work sessions. |
-| 💬 | **Chat** | Chat with native agents, organized into sessions tied to projects or general topics. |
+| 💬 | **Chat** | Chat with native agents, render Markdown/code/search results, attach Drive files, and answer clarify/approval prompts inline. |
+| 📊 | **Investments** | Manually track accounts, assets, positions, valuation snapshots, cashflows, watchlists, and allocation summaries. No broker sync or trade execution. |
+| 🧭 | **Process Console** | Inspect sandbox runtime health, managed processes, CPU/RAM/storage usage, open ports, previews, logs, stop, and kill actions. |
 | 📅 | **Calendar** | Schedule and manage events, linked to projects. |
 | 📝 | **Notes** | Markdown notes with full-text search (PostgreSQL FTS), tags, and pinning. |
 | ⚙️ | **Settings** | Configure PIN, LLM providers, agent systems, extensions, skills, and Git integrations. |
@@ -69,6 +71,8 @@ It's designed for the **one-person business** — the developer-founder who wear
 │  └───────────────┘  │  • Agents        │    │
 │                     │  • Projects      │    │
 │                     │  • Chat 💬       │    │
+│                     │  • Drive/Invest   │    │
+│                     │  • Processes      │    │
 │                     │  • Calendar 📅   │    │
 │                     │  • Notes 📝      │    │
 │                     │  • Settings ⚙️   │    │
@@ -81,6 +85,8 @@ It's designed for the **one-person business** — the developer-founder who wear
                     │  • Native agents    │
                     │  • LLM chat runtime │
                     │  • Drive + previews │
+                    │  • Investments     │
+                    │  • Process control │
                     │  • Notes + FTS      │
                     └──────────┬──────────┘
                                │
@@ -160,6 +166,7 @@ App configuration is split between environment variables and the in-app
 | **General** | Change your PIN |
 | **Models / LLM Providers** | Register OpenAI-compatible, Anthropic, Ollama, or local provider endpoints |
 | **Agent Systems** | Manage legacy Hermes/OpenClaw instances when needed |
+| **Skills / Extensions** | Configure native skills, MCP servers, and extension integrations |
 | **Git Integrations** | Connect GitHub, GitLab, Gitea (host, port, SSH alias) |
 | **About** | Version & port info |
 
@@ -250,6 +257,10 @@ proxy accepts loopback targets for local development and the configured sandbox
 preview host used by the Docker runner, while rejecting arbitrary hosts to avoid
 becoming an open proxy.
 
+The Processes tab exposes the same durable process state to the user: sandbox
+runtime status, managed process rows, CPU/RAM/storage metrics, open ports,
+preview links, logs, graceful stop, and force kill.
+
 Optional S3 provider settings:
 
 ```bash
@@ -321,8 +332,13 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Finance (transactions and period summaries)
 - [x] Goals / OKR tracking
 - [x] Native LLM provider-backed agents
+- [x] Markdown-rich chat UI with code highlighting, structured search/tool output, file attachments, drag-and-drop upload, and inline clarify/approval prompts
+- [x] Collapsible main navigation, chat session list, and agent sub-tabs
 - [x] Drive tab with file browsing/editing/upload, trash, sync jobs, and media viewers
 - [x] Agent prompt files in Drive (`AGENTS.md`, `SOUL.md`)
+- [x] Investments tab for manual accounts, assets, positions, valuation snapshots, cashflows, watchlists, and summaries
+- [x] Processes tab for sandbox runtime/process management, resource metrics, ports, logs, previews, stop, and kill
+- [x] Read-only `investment_snapshot` native agent tool
 - [x] Tokenized preview proxy for agent-started local servers
 - [x] Bubblewrap-backed sandbox runner for agent commands and long-running processes
 - [x] Firecracker-backed sandbox runner for VM-isolated commands, managed processes, and preview forwarding

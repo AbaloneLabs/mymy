@@ -36,7 +36,10 @@ const NAV_PATHS: Record<string, string> = {
   "navigate.agents": "/agents",
   "navigate.finance": "/finance",
   "navigate.drive": "/drive",
+  "navigate.investments": "/investments",
+  "navigate.processes": "/processes",
   "navigate.goals": "/goals",
+  "navigate.context": "/journey",
   "navigate.settings": "/settings",
   "navigate.shortcuts": "/shortcuts",
 };

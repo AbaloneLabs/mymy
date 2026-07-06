@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Loader2, FolderGit2 } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Loader2,
+  FolderGit2,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/AppLayout";
@@ -60,6 +67,10 @@ export default function Chat() {
   // Active session state.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isNewSession, setIsNewSession] = useState(false);
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("mymy:chat-sessions-collapsed") === "true";
+  });
 
   // Auto-select the most recent session if none is active.
   const effectiveSessionId =
@@ -97,6 +108,14 @@ export default function Chat() {
     }
   };
 
+  function toggleSessionsCollapsed() {
+    setSessionsCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("mymy:chat-sessions-collapsed", String(next));
+      return next;
+    });
+  }
+
   // Keyboard shortcut: press C on the chat page to open the new-session dialog.
   const createNonce = useCreateAction("create.chat");
   useEffect(() => {
@@ -118,26 +137,47 @@ export default function Chat() {
     <AppLayout>
       <div className="flex h-full">
         {/* Session list sidebar */}
-        <div className="flex w-72 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg)]">
+        <div
+          className={cn(
+            "flex shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg)] transition-[width] duration-150",
+            sessionsCollapsed ? "w-[68px]" : "w-72",
+          )}
+        >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          <div className={cn("flex items-center justify-between py-3", sessionsCollapsed ? "px-2" : "px-4")}>
+            <span className={cn("text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]", sessionsCollapsed && "sr-only")}>
               {t("chat.sessions")}
             </span>
+            <button
+              type="button"
+              onClick={toggleSessionsCollapsed}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              title={sessionsCollapsed ? "세션 목록 펼치기" : "세션 목록 접기"}
+            >
+              {sessionsCollapsed ? (
+                <PanelLeftOpen className="h-4 w-4" strokeWidth={1.5} />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" strokeWidth={1.5} />
+              )}
+            </button>
           </div>
 
           {/* New session button */}
-          <div className="px-3 pb-2">
+          <div className={cn("pb-2", sessionsCollapsed ? "px-2" : "px-3")}>
             <button
               type="button"
               onClick={() => setShowDialog(true)}
+              title={t("chat.newSession")}
               className={cn(
                 "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors duration-150",
+                sessionsCollapsed && "justify-center px-0",
                 "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
               )}
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-              {t("chat.newSession")}
+              <span className={cn(sessionsCollapsed && "hidden")}>
+                {t("chat.newSession")}
+              </span>
             </button>
           </div>
 
@@ -175,6 +215,7 @@ export default function Chat() {
                   key={session.id}
                   role="button"
                   tabIndex={0}
+                  title={session.title || t("chat.newSession")}
                   onClick={() => handleSelectSession(session.id)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -184,6 +225,7 @@ export default function Chat() {
                   }}
                   className={cn(
                     "group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-150",
+                    sessionsCollapsed && "justify-center px-0",
                     isActive
                       ? "bg-[var(--surface-hover)] text-[var(--text)]"
                       : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
@@ -193,7 +235,7 @@ export default function Chat() {
                   <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--accent-from)] to-[var(--accent-to)] text-[9px] font-semibold text-white">
                     {initial}
                   </div>
-                  <div className="min-w-0 flex-1">
+                  <div className={cn("min-w-0 flex-1", sessionsCollapsed && "hidden")}>
                     <div className="truncate text-xs">
                       {session.title || t("chat.newSession")}
                     </div>
@@ -221,6 +263,7 @@ export default function Chat() {
                     disabled={deleteSession.isPending}
                     className={cn(
                       "shrink-0 opacity-0 transition-opacity duration-150",
+                      sessionsCollapsed && "hidden",
                       "text-[var(--text-faint)] hover:text-[var(--status-error)]",
                       "group-hover:opacity-100",
                     )}

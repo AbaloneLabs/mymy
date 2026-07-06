@@ -27,6 +27,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/sandbox/processes/{id}/stop",
             axum::routing::post(stop_process),
         )
+        .route(
+            "/api/sandbox/processes/{id}/kill",
+            axum::routing::post(kill_process),
+        )
         .route("/api/sandbox/processes/{id}/logs", get(process_logs))
 }
 
@@ -62,6 +66,13 @@ pub async fn stop_process(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<StopSandboxProcessResponse>> {
     Ok(Json(sandbox_service::stop_process(&state, id).await?))
+}
+
+pub async fn kill_process(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<StopSandboxProcessResponse>> {
+    Ok(Json(sandbox_service::kill_process(&state, id).await?))
 }
 
 pub async fn process_logs(

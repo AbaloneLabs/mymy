@@ -5,6 +5,7 @@ mod code_exec;
 mod cron;
 pub mod extensions;
 mod file;
+mod investments;
 pub mod mcp;
 mod memory;
 mod preview;
@@ -70,6 +71,7 @@ pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     mcp::register(registry, config);
     extensions::register(registry, config);
     cron::register(registry, config);
+    investments::register(registry, config);
     memory::register(registry, config);
     preview::register(registry, config);
     skills::register(registry, config);
@@ -82,6 +84,7 @@ pub fn register_safe_defaults(registry: &mut ToolRegistry) {
     registry.enable_toolset("file_write");
     registry.enable_toolset("memory");
     registry.enable_toolset("cron");
+    registry.enable_toolset("investments");
     registry.enable_toolset("todo");
     registry.enable_toolset("clarify");
     registry.enable_toolset("session_search");

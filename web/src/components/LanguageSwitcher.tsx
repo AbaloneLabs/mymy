@@ -7,7 +7,7 @@ import { useSettingsStore } from "@/store/settings";
 import { useUpdateLanguage } from "@/features/settings/api";
 import { cn } from "@/lib/utils";
 
-export default function LanguageSwitcher() {
+export default function LanguageSwitcher({ collapsed = false }: { collapsed?: boolean }) {
   const { i18n } = useTranslation();
   const { settings, setLanguage } = useSettingsStore();
   const updateLanguage = useUpdateLanguage();
@@ -52,15 +52,17 @@ export default function LanguageSwitcher() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        title={current.label}
         className={cn(
           "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors",
           "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
+          collapsed && "justify-center px-0",
           open && "bg-[var(--surface-hover)] text-[var(--text)]"
         )}
       >
         <Globe size={16} strokeWidth={1.75} />
-        <span className="flex-1 text-left">{current.label}</span>
-        <span className="text-[10px] font-semibold text-[var(--text-faint)]">
+        <span className={cn("flex-1 text-left", collapsed && "hidden")}>{current.label}</span>
+        <span className={cn("text-[10px] font-semibold text-[var(--text-faint)]", collapsed && "hidden")}>
           {current.short}
         </span>
       </button>

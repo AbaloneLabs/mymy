@@ -58,6 +58,18 @@ export function useStopSandboxProcess() {
   });
 }
 
+export function useKillSandboxProcess() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post<StopSandboxProcessResponse>(`/sandbox/processes/${id}/kill`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sandbox", "processes"] });
+      qc.invalidateQueries({ queryKey: ["preview-endpoints"] });
+    },
+  });
+}
+
 export function useSandboxProcessLogs(id: string | null) {
   return useQuery({
     queryKey: ["sandbox", "process", id, "logs"],

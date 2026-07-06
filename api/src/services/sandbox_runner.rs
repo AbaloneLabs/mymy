@@ -51,6 +51,11 @@ impl RunnerClient {
             .await
     }
 
+    pub async fn kill_process(&self, id: Uuid) -> AppResult<RunnerStopProcessResponse> {
+        self.post_json(&format!("/processes/{id}/kill"), &serde_json::json!({}))
+            .await
+    }
+
     pub async fn process_logs(&self, id: Uuid) -> AppResult<RunnerProcessLogsResponse> {
         self.get_json(&format!("/processes/{id}/logs")).await
     }
@@ -237,6 +242,11 @@ pub struct RunnerProcessSummary {
     pub cwd: String,
     pub pid: Option<u32>,
     pub port: Option<u16>,
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<i64>,
+    pub storage_bytes: Option<i64>,
+    #[serde(default)]
+    pub open_ports: Vec<u16>,
 }
 
 #[derive(Debug, Deserialize)]

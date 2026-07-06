@@ -16,6 +16,7 @@ pub mod extensions;
 pub mod goals;
 pub mod hermes;
 pub mod hermes_ops;
+pub mod investments;
 pub mod journey;
 pub mod knowledge;
 pub mod llm_providers;

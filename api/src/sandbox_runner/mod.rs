@@ -72,6 +72,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/execute", post(execute))
         .route("/processes", get(list_processes).post(start_process))
         .route("/processes/{id}/stop", post(stop_process))
+        .route("/processes/{id}/kill", post(kill_process))
         .route("/processes/{id}/logs", get(process_logs))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -128,11 +129,17 @@ async fn execute(
 }
 
 async fn list_processes(State(state): State<Arc<RunnerState>>) -> Json<ListProcessesResponse> {
-    let processes = state.processes.read().await;
-    let mut processes = processes
+    let records = state
+        .processes
+        .read()
+        .await
         .values()
-        .map(ProcessSummary::from)
+        .cloned()
         .collect::<Vec<_>>();
+    let mut processes = Vec::with_capacity(records.len());
+    for record in &records {
+        processes.push(state.process_summary(record).await);
+    }
     processes.sort_by_key(|process| process.id);
     Json(ListProcessesResponse { processes })
 }
@@ -254,6 +261,44 @@ async fn stop_process(
                 .await;
             let _ = wait_for_pid_exit(pid).await;
         }
+    }
+    if let Some(runtime) = firecracker {
+        let _ = state.sync_firecracker_writable_roots(&runtime).await;
+        state.teardown_firecracker_runtime(&runtime).await;
+    }
+    state.repair_ownership_paths(&writable_roots).await;
+    Ok(Json(StopProcessResponse { success: true }))
+}
+
+async fn kill_process(
+    State(state): State<Arc<RunnerState>>,
+    AxumPath(id): AxumPath<Uuid>,
+) -> Result<Json<StopProcessResponse>, RunnerError> {
+    let (pid, writable_roots, firecracker, proxy_shutdown) = {
+        let mut processes = state.processes.write().await;
+        let record = processes
+            .get_mut(&id)
+            .ok_or_else(|| RunnerError::NotFound(format!("process {id} not found")))?;
+        record.status = ProcessStatus::Stopped;
+        (
+            record.pid,
+            record.writable_roots.clone(),
+            record.firecracker.clone(),
+            record.proxy_shutdown.take(),
+        )
+    };
+    if let Some(shutdown) = proxy_shutdown {
+        let _ = shutdown.send(true);
+    }
+    if let Some(pid) = pid {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await;
+        let _ = wait_for_pid_exit(pid).await;
     }
     if let Some(runtime) = firecracker {
         let _ = state.sync_firecracker_writable_roots(&runtime).await;
@@ -394,6 +439,32 @@ impl RunnerState {
             && command_exists("tar")
             && command_exists("ip")
             && command_exists("curl")
+    }
+
+    async fn process_summary(&self, record: &ProcessRecord) -> ProcessSummary {
+        let (cpu_percent, memory_bytes) = match record.pid {
+            Some(pid) => process_usage(pid).await,
+            None => (None, None),
+        };
+        let storage_bytes = storage_usage(&record.writable_roots).await;
+        let mut open_ports = record.port.into_iter().collect::<Vec<_>>();
+        if let Some(pid) = record.pid {
+            open_ports.extend(process_ports(pid).await);
+        }
+        open_ports.sort_unstable();
+        open_ports.dedup();
+        ProcessSummary {
+            id: record.id,
+            status: record.status.clone(),
+            command: record.command.clone(),
+            cwd: record.cwd.clone(),
+            pid: record.pid,
+            port: record.port,
+            cpu_percent,
+            memory_bytes,
+            storage_bytes,
+            open_ports,
+        }
     }
 
     fn prepare_request(&self, req: &ExecuteRequest) -> Result<PreparedRequest, RunnerError> {
@@ -958,6 +1029,85 @@ impl RunnerState {
             }
         }
     }
+}
+
+async fn process_usage(pid: u32) -> (Option<f64>, Option<i64>) {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("%cpu=,rss=")
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.split_whitespace();
+    let cpu = parts.next().and_then(|value| value.parse::<f64>().ok());
+    let memory_bytes = parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .map(|rss_kib| rss_kib.saturating_mul(1024));
+    (cpu, memory_bytes)
+}
+
+async fn storage_usage(roots: &[PathBuf]) -> Option<i64> {
+    let roots = roots.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let total = roots
+            .iter()
+            .map(|root| directory_size(root))
+            .fold(0_u64, u64::saturating_add);
+        i64::try_from(total).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn directory_size(path: &Path) -> u64 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| directory_size(&entry.path()))
+        .fold(0_u64, u64::saturating_add)
+}
+
+async fn process_ports(pid: u32) -> Vec<u16> {
+    if !command_exists("ss") {
+        return Vec::new();
+    }
+    let output = Command::new("ss").arg("-ltnp").output().await;
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let pid_marker = format!("pid={pid},");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.contains(&pid_marker))
+        .filter_map(|line| {
+            let local = line.split_whitespace().nth(3)?;
+            local.rsplit(':').next()?.parse::<u16>().ok()
+        })
+        .collect()
 }
 
 #[cfg(test)]

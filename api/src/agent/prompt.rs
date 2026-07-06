@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use crate::agent::runtime::apply_cache_breakpoint;
 use crate::agent::security::{scan_for_threats, ThreatScope};
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,14 @@ pub struct PromptConfig {
     pub available_tool_names: Vec<String>,
     pub model: String,
     pub system_message: Option<String>,
+    pub volatile_system_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptParts {
+    pub stable: String,
+    pub context: String,
+    pub volatile: String,
 }
 
 pub const DEFAULT_AGENT_IDENTITY: &str = "\
@@ -27,39 +36,60 @@ workspace. You are direct, careful, and useful. Complete the user's task with \
 the available tools, explain blockers concretely, and avoid inventing facts or \
 data that are not present in the workspace or returned by tools.";
 
-pub fn build_system_prompt(config: &PromptConfig) -> String {
-    let mut parts = Vec::new();
-    parts.push(load_identity(config));
-
+pub fn build_system_prompt_parts(config: &PromptConfig) -> PromptParts {
+    let mut stable_parts = vec![load_identity(config)];
     let guidance = build_tool_guidance(&config.available_tool_names);
     if !guidance.is_empty() {
-        parts.push(guidance);
+        stable_parts.push(guidance);
     }
 
+    let mut context_parts = Vec::new();
     let context = load_context_files(config);
     if !context.is_empty() {
-        parts.push(context);
+        context_parts.push(context);
     }
-
     if let Some(message) = &config.system_message {
         if !message.trim().is_empty() {
-            parts.push(message.trim().to_string());
+            context_parts.push(message.trim().to_string());
         }
     }
 
+    let mut volatile_parts = Vec::new();
     let memory = load_memory_block(config);
     if !memory.is_empty() {
-        parts.push(memory);
+        volatile_parts.push(memory);
     }
-
-    parts.push(format!(
+    if let Some(message) = &config.volatile_system_message {
+        if !message.trim().is_empty() {
+            volatile_parts.push(message.trim().to_string());
+        }
+    }
+    volatile_parts.push(format!(
         "Session metadata:\n- UTC timestamp: {}\n- Model: {}\n- Working directory: {}",
         chrono::Utc::now().to_rfc3339(),
         config.model,
         config.working_dir.display()
     ));
 
-    parts.join("\n\n")
+    PromptParts {
+        stable: stable_parts
+            .into_iter()
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        context: context_parts.join("\n\n"),
+        volatile: volatile_parts.join("\n\n"),
+    }
+}
+
+pub fn assemble_system_prompt(parts: &PromptParts) -> String {
+    let stable_prefix = [&parts.stable, &parts.context]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| part.trim())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    apply_cache_breakpoint(&stable_prefix, &parts.volatile)
 }
 
 fn load_identity(config: &PromptConfig) -> String {
@@ -164,7 +194,7 @@ mod tests {
 
     #[test]
     fn prompt_contains_identity_and_metadata() {
-        let prompt = build_system_prompt(&PromptConfig {
+        let parts = build_system_prompt_parts(&PromptConfig {
             soul_md_path: None,
             agents_md_path: None,
             working_dir: std::env::current_dir().unwrap(),
@@ -173,10 +203,34 @@ mod tests {
             available_tool_names: Vec::new(),
             model: "test-model".to_string(),
             system_message: None,
+            volatile_system_message: None,
         });
+        let prompt = assemble_system_prompt(&parts);
 
         assert!(prompt.contains("mymy Agent"));
         assert!(prompt.contains("test-model"));
+        assert!(prompt.contains("mymy-cache-breakpoint"));
+    }
+
+    #[test]
+    fn prompt_parts_keep_timestamp_volatile() {
+        let parts = build_system_prompt_parts(&PromptConfig {
+            soul_md_path: None,
+            agents_md_path: None,
+            working_dir: std::env::current_dir().unwrap(),
+            memory_md_path: None,
+            user_md_path: None,
+            available_tool_names: vec!["read_file".to_string()],
+            model: "test-model".to_string(),
+            system_message: Some("stable context".to_string()),
+            volatile_system_message: Some("USER.md:\nremember this".to_string()),
+        });
+
+        assert!(parts.stable.contains("read_file"));
+        assert!(parts.context.contains("stable context"));
+        assert!(!parts.stable.contains("UTC timestamp"));
+        assert!(parts.volatile.contains("UTC timestamp"));
+        assert!(parts.volatile.contains("USER.md"));
     }
 
     #[test]

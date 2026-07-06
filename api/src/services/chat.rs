@@ -11,13 +11,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{stream::BoxStream, StreamExt};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::agent::context::ContextManager;
 use crate::agent::loop_engine::{AgentLoop, LoopConfig};
 use crate::agent::memory::MemoryStore;
-use crate::agent::prompt::{build_system_prompt, PromptConfig};
+use crate::agent::prompt::{
+    assemble_system_prompt, build_system_prompt_parts, PromptConfig, PromptParts,
+};
 use crate::agent::providers::types::ModelInfo;
 use crate::agent::providers::{self, LlmProvider, Message, MessageRole as AgentMessageRole};
 use crate::agent::providers::{ProviderError, StreamDelta, ToolSchema};
@@ -49,6 +52,10 @@ struct ChatSessionRow {
     title: Option<String>,
     status: String,
     message_count: i32,
+    system_prompt_stable: Option<String>,
+    system_prompt_context: Option<String>,
+    system_prompt_fingerprint: Option<String>,
+    tool_schema_fingerprint: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -108,7 +115,9 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
             (Some(pid), Some(profile)) => sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.created_at, s.updated_at
+                          s.status, s.message_count, s.system_prompt_stable,
+                          s.system_prompt_context, s.system_prompt_fingerprint,
+                          s.tool_schema_fingerprint, s.created_at, s.updated_at
                    FROM chat_sessions s
                    INNER JOIN native_agents a ON a.profile = s.profile
                    WHERE s.project_id = $1 AND s.profile = $2
@@ -121,7 +130,9 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
             (Some(pid), None) => sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.created_at, s.updated_at
+                          s.status, s.message_count, s.system_prompt_stable,
+                          s.system_prompt_context, s.system_prompt_fingerprint,
+                          s.tool_schema_fingerprint, s.created_at, s.updated_at
                    FROM chat_sessions s
                    INNER JOIN native_agents a ON a.profile = s.profile
                    WHERE s.project_id = $1
@@ -133,7 +144,9 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
             (None, Some(profile)) => sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.created_at, s.updated_at
+                          s.status, s.message_count, s.system_prompt_stable,
+                          s.system_prompt_context, s.system_prompt_fingerprint,
+                          s.tool_schema_fingerprint, s.created_at, s.updated_at
                    FROM chat_sessions s
                    INNER JOIN native_agents a ON a.profile = s.profile
                    WHERE s.profile = $1
@@ -145,7 +158,9 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
             (None, None) => sqlx::query_as!(
                 ChatSessionRow,
                 r#"SELECT s.id, s.project_id, s.hermes_session_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.created_at, s.updated_at
+                          s.status, s.message_count, s.system_prompt_stable,
+                          s.system_prompt_context, s.system_prompt_fingerprint,
+                          s.tool_schema_fingerprint, s.created_at, s.updated_at
                    FROM chat_sessions s
                    INNER JOIN native_agents a ON a.profile = s.profile
                    ORDER BY s.created_at DESC"#
@@ -292,6 +307,16 @@ pub async fn prepare_native_turn(
         tracing::warn!(error = %err, "MCP dynamic tool registration failed");
     }
     register_safe_defaults(&mut registry);
+    let tool_schemas_for_prompt = if use_moa {
+        Vec::new()
+    } else {
+        registry.schemas()
+    };
+    let available_tool_names = tool_schemas_for_prompt
+        .iter()
+        .map(|schema| schema.function.name.clone())
+        .collect::<Vec<_>>();
+    let tool_schema_fingerprint = fingerprint_tool_schemas(&tool_schemas_for_prompt)?;
     let registry = Arc::new(registry);
     let memory_dir = state.config.agent_data_dir.join("memory");
     let memory_snapshot = MemoryStore::load(memory_dir)
@@ -300,25 +325,36 @@ pub async fn prepare_native_turn(
     let skill_index = SkillRegistry::new(state.config.agent_data_dir.join("skills"))
         .system_prompt_index()
         .ok();
-    let mut system_blocks = Vec::new();
+    let mut context_blocks = Vec::new();
     if let Some(index) = skill_index.filter(|index| !index.trim().is_empty()) {
-        system_blocks.push(index);
+        context_blocks.push(index);
     }
-    if let Some(snapshot) = memory_snapshot {
-        if !snapshot.user.trim().is_empty() {
-            system_blocks.push(format!("USER.md:\n{}", snapshot.user));
-        }
-        if !snapshot.memory.trim().is_empty() {
-            system_blocks.push(format!("MEMORY.md:\n{}", snapshot.memory));
-        }
-    }
-    system_blocks.push(format!(
+    context_blocks.push(format!(
         "DRIVE.md:\nAgent workspace: /drive/agents/{}\nShared workspace: /drive/shared\nProject workspaces are available only when the current chat session is linked to a project.\nThe runtime current directory is {}.",
         session.profile,
         working_dir.display()
     ));
 
-    let system_prompt = build_system_prompt(&PromptConfig {
+    let mut volatile_blocks = Vec::new();
+    if let Some(snapshot) = memory_snapshot {
+        if !snapshot.user.trim().is_empty() {
+            volatile_blocks.push(format!("USER.md:\n{}", snapshot.user));
+        }
+        if !snapshot.memory.trim().is_empty() {
+            volatile_blocks.push(format!("MEMORY.md:\n{}", snapshot.memory));
+        }
+    }
+
+    let model = moa_runtime
+        .as_ref()
+        .map(|preset| preset.aggregator_provider.model.clone())
+        .or_else(|| {
+            default_runtime
+                .as_ref()
+                .map(|(_, config)| config.model.clone())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let prompt_parts = build_system_prompt_parts(&PromptConfig {
         soul_md_path: Some(drive::agent_soul_md_path(
             &state.config.agent_data_dir,
             &session.profile,
@@ -330,22 +366,15 @@ pub async fn prepare_native_turn(
         working_dir,
         memory_md_path: None,
         user_md_path: None,
-        available_tool_names: if use_moa {
-            Vec::new()
-        } else {
-            registry.available_tool_names()
-        },
-        model: moa_runtime
-            .as_ref()
-            .map(|preset| preset.aggregator_provider.model.clone())
-            .or_else(|| {
-                default_runtime
-                    .as_ref()
-                    .map(|(_, config)| config.model.clone())
-            })
-            .unwrap_or_else(|| "unknown".to_string()),
-        system_message: (!system_blocks.is_empty()).then(|| system_blocks.join("\n\n")),
+        available_tool_names,
+        model,
+        system_message: (!context_blocks.is_empty()).then(|| context_blocks.join("\n\n")),
+        volatile_system_message: (!volatile_blocks.is_empty())
+            .then(|| volatile_blocks.join("\n\n")),
     });
+    let prompt_parts =
+        resolve_prompt_snapshot(state, &session, &prompt_parts, &tool_schema_fingerprint).await?;
+    let system_prompt = assemble_system_prompt(&prompt_parts);
 
     let rows = fetch_message_rows(state, id).await?;
     let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
@@ -444,6 +473,88 @@ pub async fn prepare_native_turn(
         system_prompt,
         user_message,
     })
+}
+
+async fn resolve_prompt_snapshot(
+    state: &AppState,
+    session: &ChatSessionRow,
+    current: &PromptParts,
+    tool_schema_fingerprint: &str,
+) -> AppResult<PromptParts> {
+    let prompt_fingerprint = prompt_snapshot_fingerprint(
+        &session.profile,
+        session.project_id,
+        &current.stable,
+        &current.context,
+        tool_schema_fingerprint,
+    );
+    let cached_stable = session.system_prompt_stable.as_deref();
+    let cached_context = session.system_prompt_context.as_deref();
+    let cache_matches = session.system_prompt_fingerprint.as_deref() == Some(&prompt_fingerprint)
+        && session.tool_schema_fingerprint.as_deref() == Some(tool_schema_fingerprint)
+        && cached_stable.is_some()
+        && cached_context.is_some();
+
+    if cache_matches {
+        return Ok(PromptParts {
+            stable: cached_stable.unwrap_or_default().to_string(),
+            context: cached_context.unwrap_or_default().to_string(),
+            volatile: current.volatile.clone(),
+        });
+    }
+
+    sqlx::query!(
+        r#"UPDATE chat_sessions SET
+             system_prompt_stable = $2,
+             system_prompt_context = $3,
+             system_prompt_fingerprint = $4,
+             tool_schema_fingerprint = $5,
+             prompt_snapshot_created_at = COALESCE(prompt_snapshot_created_at, now()),
+             prompt_snapshot_updated_at = now()
+           WHERE id = $1"#,
+        session.id,
+        current.stable.as_str(),
+        current.context.as_str(),
+        &prompt_fingerprint,
+        tool_schema_fingerprint,
+    )
+    .execute(&state.db)
+    .await?;
+
+    Ok(current.clone())
+}
+
+fn prompt_snapshot_fingerprint(
+    profile: &str,
+    project_id: Option<Uuid>,
+    stable: &str,
+    context: &str,
+    tool_schema_fingerprint: &str,
+) -> String {
+    let project = project_id.map(|id| id.to_string()).unwrap_or_default();
+    hash_segments([
+        "chat-prompt-v1",
+        profile,
+        &project,
+        stable,
+        context,
+        tool_schema_fingerprint,
+    ])
+}
+
+fn fingerprint_tool_schemas(schemas: &[ToolSchema]) -> AppResult<String> {
+    let json = serde_json::to_string(schemas)
+        .map_err(|err| AppError::Internal(format!("tool schema fingerprint failed: {err}")))?;
+    Ok(hash_segments(["tool-schema-v1", &json]))
+}
+
+fn hash_segments<'a>(segments: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    for segment in segments {
+        hasher.update(segment.as_bytes());
+        hasher.update(b"\0");
+    }
+    hex::encode(hasher.finalize())
 }
 
 fn parse_runtime_provider_id(id: &str) -> AppResult<Uuid> {
@@ -596,7 +707,8 @@ async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> 
     sqlx::query_as!(
         ChatSessionRow,
         r#"SELECT id, project_id, hermes_session_id, agent_id, profile, title,
-                  status, message_count, created_at, updated_at
+                  status, message_count, system_prompt_stable, system_prompt_context,
+                  system_prompt_fingerprint, tool_schema_fingerprint, created_at, updated_at
            FROM chat_sessions WHERE id = $1"#,
         id
     )

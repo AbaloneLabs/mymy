@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{FinishReason, ModelInfo, StreamDelta, Usage};
 use super::{map_http_error, parse_retry_after, ProviderConfig, ProviderError, ToolSchema};
+use crate::agent::runtime::CACHE_BREAKPOINT;
 
 // ============================================================
 // Provider implementation
@@ -214,7 +215,7 @@ impl ChatCompletionsRequest {
         if !system_prompt.is_empty() {
             openai_messages.push(OpenAiMessage {
                 role: "system",
-                content: Some(system_prompt.to_string()),
+                content: Some(system_prompt.replace(CACHE_BREAKPOINT, "\n\n")),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
             });

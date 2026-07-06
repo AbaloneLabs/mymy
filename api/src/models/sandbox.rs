@@ -97,6 +97,21 @@ pub struct SandboxProcess {
     pub exit_code: Option<i32>,
     pub metadata: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_limit_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_limit_bytes: Option<i64>,
+    pub open_ports: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_target_url: Option<String>,

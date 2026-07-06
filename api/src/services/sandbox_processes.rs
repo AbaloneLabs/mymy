@@ -27,6 +27,13 @@ struct SandboxProcessRow {
     stopped_at: Option<DateTime<Utc>>,
     exit_code: Option<i32>,
     metadata: Value,
+    cpu_percent: Option<f64>,
+    memory_bytes: Option<i64>,
+    memory_limit_bytes: Option<i64>,
+    storage_bytes: Option<i64>,
+    storage_limit_bytes: Option<i64>,
+    open_ports: Value,
+    last_heartbeat_at: Option<DateTime<Utc>>,
     preview_token: Option<String>,
     preview_target_url: Option<String>,
 }
@@ -52,6 +59,10 @@ pub(crate) async fn list_processes(
                 SandboxProcessRow,
                 r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                           p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                          p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                          p.storage_bytes, p.storage_limit_bytes,
+                          p.open_ports AS "open_ports!: Value",
+                          p.last_heartbeat_at,
                           preview.token AS "preview_token?",
                           preview.target_url AS "preview_target_url?"
                    FROM sandbox_processes p
@@ -74,6 +85,10 @@ pub(crate) async fn list_processes(
                 SandboxProcessRow,
                 r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                           p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                          p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                          p.storage_bytes, p.storage_limit_bytes,
+                          p.open_ports AS "open_ports!: Value",
+                          p.last_heartbeat_at,
                           preview.token AS "preview_token?",
                           preview.target_url AS "preview_target_url?"
                    FROM sandbox_processes p
@@ -96,6 +111,10 @@ pub(crate) async fn list_processes(
             SandboxProcessRow,
             r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                       p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                      p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                      p.storage_bytes, p.storage_limit_bytes,
+                      p.open_ports AS "open_ports!: Value",
+                      p.last_heartbeat_at,
                       preview.token AS "preview_token?",
                       preview.target_url AS "preview_target_url?"
                FROM sandbox_processes p
@@ -127,6 +146,10 @@ pub(crate) async fn list_owned_processes(
         SandboxProcessRow,
         r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                   p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                  p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                  p.storage_bytes, p.storage_limit_bytes,
+                  p.open_ports AS "open_ports!: Value",
+                  p.last_heartbeat_at,
                   preview.token AS "preview_token?",
                   preview.target_url AS "preview_target_url?"
            FROM sandbox_processes p
@@ -176,6 +199,10 @@ pub(crate) async fn fetch_process(db: &sqlx::PgPool, id: Uuid) -> AppResult<Sand
         SandboxProcessRow,
         r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                   p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                  p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                  p.storage_bytes, p.storage_limit_bytes,
+                  p.open_ports AS "open_ports!: Value",
+                  p.last_heartbeat_at,
                   preview.token AS "preview_token?",
                   preview.target_url AS "preview_target_url?"
            FROM sandbox_processes p
@@ -205,6 +232,10 @@ pub(crate) async fn fetch_process_for_owner(
         SandboxProcessRow,
         r#"SELECT p.id, p.agent_profile, p.project_id, p.command, p.cwd, p.status,
                   p.pid, p.started_at, p.stopped_at, p.exit_code, p.metadata,
+                  p.cpu_percent, p.memory_bytes, p.memory_limit_bytes,
+                  p.storage_bytes, p.storage_limit_bytes,
+                  p.open_ports AS "open_ports!: Value",
+                  p.last_heartbeat_at,
                   preview.token AS "preview_token?",
                   preview.target_url AS "preview_target_url?"
            FROM sandbox_processes p
@@ -292,39 +323,56 @@ pub(crate) async fn stop_process_record(db: &sqlx::PgPool, id: Uuid) -> AppResul
     mark_process_previews(db, id, "stopped").await
 }
 
+pub(crate) struct RunnerProcessReconcile<'a> {
+    pub id: Uuid,
+    pub runner_status: &'a str,
+    pub pid: Option<i32>,
+    pub command: &'a str,
+    pub cwd: &'a str,
+    pub port: Option<u16>,
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<i64>,
+    pub storage_bytes: Option<i64>,
+    pub open_ports: Value,
+}
+
 pub(crate) async fn reconcile_from_runner(
     db: &sqlx::PgPool,
-    id: Uuid,
-    runner_status: &str,
-    pid: Option<i32>,
-    command: &str,
-    cwd: &str,
-    port: Option<u16>,
+    update: RunnerProcessReconcile<'_>,
 ) -> AppResult<()> {
-    let status = normalize_process_status(runner_status);
+    let status = normalize_process_status(update.runner_status);
     let stopped = matches!(status, "exited" | "failed" | "stopped");
     let metadata = serde_json::json!({
-        "runnerCommand": command,
-        "runnerCwd": cwd,
-        "port": port,
+        "runnerCommand": update.command,
+        "runnerCwd": update.cwd,
+        "port": update.port,
     });
     sqlx::query!(
         r#"UPDATE sandbox_processes
            SET status = $2,
                pid = COALESCE($3, pid),
                stopped_at = CASE WHEN $4 THEN COALESCE(stopped_at, now()) ELSE stopped_at END,
-               metadata = metadata || $5
+               metadata = metadata || $5,
+               cpu_percent = $6,
+               memory_bytes = $7,
+               storage_bytes = $8,
+               open_ports = $9,
+               last_heartbeat_at = now()
            WHERE id = $1"#,
-        id,
+        update.id,
         status,
-        pid,
+        update.pid,
         stopped,
         metadata,
+        update.cpu_percent,
+        update.memory_bytes,
+        update.storage_bytes,
+        update.open_ports,
     )
     .execute(db)
     .await?;
     if stopped {
-        mark_process_previews(db, id, "stopped").await?;
+        mark_process_previews(db, update.id, "stopped").await?;
     }
     Ok(())
 }
@@ -341,6 +389,22 @@ async fn mark_process_previews(db: &sqlx::PgPool, id: Uuid, status: &str) -> App
 }
 
 fn row_to_process(row: SandboxProcessRow) -> SandboxProcess {
+    let open_ports = row
+        .open_ports
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_u64())
+                .filter_map(|port| u16::try_from(port).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let uptime_seconds = if row.stopped_at.is_none() {
+        Some((Utc::now() - row.started_at).num_seconds().max(0))
+    } else {
+        None
+    };
     SandboxProcess {
         id: row.id.to_string(),
         agent_profile: row.agent_profile,
@@ -353,6 +417,14 @@ fn row_to_process(row: SandboxProcessRow) -> SandboxProcess {
         stopped_at: row.stopped_at.map(|time| time.to_rfc3339()),
         exit_code: row.exit_code,
         metadata: row.metadata,
+        cpu_percent: row.cpu_percent,
+        memory_bytes: row.memory_bytes,
+        memory_limit_bytes: row.memory_limit_bytes,
+        storage_bytes: row.storage_bytes,
+        storage_limit_bytes: row.storage_limit_bytes,
+        open_ports,
+        uptime_seconds,
+        last_heartbeat_at: row.last_heartbeat_at.map(|time| time.to_rfc3339()),
         preview_path: row
             .preview_token
             .map(|token| format!("/api/previews/{token}")),

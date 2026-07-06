@@ -392,12 +392,18 @@ impl ToolHandler for ReadProcessLogsTool {
                 Ok(response) => {
                     sandbox_processes::reconcile_from_runner(
                         db,
-                        response.id,
-                        &response.status,
-                        response.pid.map(|value| value as i32),
-                        &response.command,
-                        &response.cwd,
-                        response.port,
+                        sandbox_processes::RunnerProcessReconcile {
+                            id: response.id,
+                            runner_status: &response.status,
+                            pid: response.pid.map(|value| value as i32),
+                            command: &response.command,
+                            cwd: &response.cwd,
+                            port: response.port,
+                            cpu_percent: None,
+                            memory_bytes: None,
+                            storage_bytes: None,
+                            open_ports: serde_json::json!([]),
+                        },
                     )
                     .await
                     .map_err(|err| app_error_to_tool(err, "process reconcile failed"))?;

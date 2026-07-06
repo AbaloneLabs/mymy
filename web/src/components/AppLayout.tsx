@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -8,14 +9,18 @@ import {
   CheckSquare,
   NotebookPen,
   BookOpen,
-  Network,
+  Share2,
   Bot,
   Wallet,
   HardDrive,
+  Activity,
+  LineChart,
   Target,
   Settings,
   Lock,
   Command,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { TopBar } from "@/components/TopBar";
@@ -35,6 +40,10 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const lock = useLockApp();
   const { t } = useTranslation();
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("mymy:main-sidebar-collapsed") === "true";
+  });
 
   // Register all global keyboard shortcuts (navigation sequences,
   // palette toggle, lock, context create keys).
@@ -43,19 +52,33 @@ export function AppLayout({ children }: AppLayoutProps) {
   // TopBar is shown on all pages except Home (`/`).
   const showTopBar = location.pathname !== "/";
 
+  function toggleCollapsed() {
+    setCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("mymy:main-sidebar-collapsed", String(next));
+      return next;
+    });
+  }
+
   return (
     <div className="flex h-dvh overflow-hidden bg-[var(--bg)]">
 
-      <aside className="fixed inset-y-0 left-0 z-20 flex w-[220px] flex-col border-r border-[var(--border)] bg-[var(--bg)]">
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-20 flex flex-col border-r border-[var(--border)] bg-[var(--bg)] transition-[width] duration-150",
+          collapsed ? "w-[64px]" : "w-[220px]",
+        )}
+      >
 
-        <div className="flex h-14 items-center px-4">
+        <div className={cn("flex h-14 items-center", collapsed ? "justify-center px-2" : "px-4")}>
           <button
             type="button"
             onClick={() => navigate("/")}
-            className="flex items-center gap-2"
+            className="flex min-w-0 items-center gap-2"
+            title="mymy"
           >
             <img src={logoUrl} alt="mymy" className="h-7 w-7" />
-            <span className="text-sm font-semibold tracking-tight text-[var(--text)]">
+            <span className={cn("text-sm font-semibold tracking-tight text-[var(--text)]", collapsed && "hidden")}>
               mymy
             </span>
           </button>
@@ -71,11 +94,14 @@ export function AppLayout({ children }: AppLayoutProps) {
               return (
                 <div
                   key={item.id}
-                  className="flex cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-faint)] opacity-60"
-                  title={t("common.comingSoon")}
+                  className={cn(
+                    "flex cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-faint)] opacity-60",
+                    collapsed && "justify-center px-0",
+                  )}
+                  title={`${t(item.labelKey)} · ${t("common.comingSoon")}`}
                 >
                   <item.icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                  <span>{t(item.labelKey)}</span>
+                  <span className={cn(collapsed && "hidden")}>{t(item.labelKey)}</span>
                 </div>
               );
             }
@@ -85,8 +111,10 @@ export function AppLayout({ children }: AppLayoutProps) {
                 key={item.id}
                 type="button"
                 onClick={() => navigate(item.path)}
+                title={t(item.labelKey)}
                 className={cn(
                   "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150",
+                  collapsed && "justify-center px-0",
                   isActive
                     ? "bg-[var(--surface-hover)] text-[var(--text)]"
                     : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
@@ -96,7 +124,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-[var(--accent)]" />
                 )}
                 <item.icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-                <span>{t(item.labelKey)}</span>
+                <span className={cn(collapsed && "hidden")}>{t(item.labelKey)}</span>
               </button>
             );
           })}
@@ -106,37 +134,64 @@ export function AppLayout({ children }: AppLayoutProps) {
         <div className="space-y-0.5 border-t border-[var(--border)] px-2 py-2">
           <button
             type="button"
+            onClick={toggleCollapsed}
+            className={cn(
+              "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] text-[var(--text-muted)] transition-colors duration-150 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
+              collapsed && "justify-center px-0",
+            )}
+            title={collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            ) : (
+              <PanelLeftClose className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            )}
+            <span className={cn("flex-1 text-left", collapsed && "hidden")}>
+              {collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => navigate("/shortcuts")}
+            title={t("nav.commandPalette")}
             className={cn(
               "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150",
+              collapsed && "justify-center px-0",
               location.pathname === "/shortcuts"
                 ? "bg-[var(--surface-hover)] text-[var(--text)]"
                 : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
             )}
           >
             <Command className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-            <span className="flex-1 text-left">{t("nav.commandPalette")}</span>
-            <span className="text-[10px] font-semibold text-[var(--text-faint)]">
+            <span className={cn("flex-1 text-left", collapsed && "hidden")}>{t("nav.commandPalette")}</span>
+            <span className={cn("text-[10px] font-semibold text-[var(--text-faint)]", collapsed && "hidden")}>
               ⌘K
             </span>
           </button>
-          <LanguageSwitcher />
+          <LanguageSwitcher collapsed={collapsed} />
           <SidebarButton
             label={t("nav.settings")}
             icon={Settings}
             active={location.pathname === "/settings"}
             onClick={() => navigate("/settings")}
+            collapsed={collapsed}
           />
           <SidebarButton
             label={t("nav.lock")}
             icon={Lock}
             onClick={lock}
+            collapsed={collapsed}
           />
         </div>
       </aside>
 
 
-      <main className="flex h-dvh min-h-0 flex-1 flex-col pl-[220px]">
+      <main
+        className={cn(
+          "flex h-dvh min-h-0 flex-1 flex-col transition-[padding-left] duration-150",
+          collapsed ? "pl-[64px]" : "pl-[220px]",
+        )}
+      >
         {showTopBar && <TopBar />}
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </main>
@@ -153,25 +208,29 @@ function SidebarButton({
   icon: Icon,
   active,
   onClick,
+  collapsed,
 }: {
   label: string;
   icon: typeof Home;
   active?: boolean;
   onClick: () => void;
+  collapsed?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={label}
       className={cn(
         "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150",
+        collapsed && "justify-center px-0",
         active
           ? "bg-[var(--surface-hover)] text-[var(--text)]"
           : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       )}
     >
       <Icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
-      <span>{label}</span>
+      <span className={cn(collapsed && "hidden")}>{label}</span>
     </button>
   );
 }
@@ -180,13 +239,15 @@ function SidebarButton({
 const NAV_ITEMS = [
   { id: "home", labelKey: "nav.home", icon: Home, path: "/", enabled: true },
   { id: "chat", labelKey: "nav.chat", icon: MessageSquare, path: "/chat", enabled: true },
-  { id: "calendar", labelKey: "nav.calendar", icon: Calendar, path: "/calendar", enabled: true },
-  { id: "notes", labelKey: "nav.notes", icon: NotebookPen, path: "/notes", enabled: true },
-  { id: "knowledge", labelKey: "nav.knowledge", icon: BookOpen, path: "/knowledge", enabled: true },
-  { id: "journey", labelKey: "nav.journey", icon: Network, path: "/journey", enabled: true },
-  { id: "tasks", labelKey: "nav.tasks", icon: CheckSquare, path: "/tasks", enabled: true },
-  { id: "goals", labelKey: "nav.goals", icon: Target, path: "/goals", enabled: true },
   { id: "agents", labelKey: "nav.agents", icon: Bot, path: "/agents", enabled: true },
   { id: "finance", labelKey: "nav.finance", icon: Wallet, path: "/finance", enabled: true },
   { id: "drive", labelKey: "nav.drive", icon: HardDrive, path: "/drive", enabled: true },
+  { id: "investments", labelKey: "nav.investments", icon: LineChart, path: "/investments", enabled: true },
+  { id: "processes", labelKey: "nav.processes", icon: Activity, path: "/processes", enabled: true },
+  { id: "tasks", labelKey: "nav.tasks", icon: CheckSquare, path: "/tasks", enabled: true },
+  { id: "goals", labelKey: "nav.goals", icon: Target, path: "/goals", enabled: true },
+  { id: "calendar", labelKey: "nav.calendar", icon: Calendar, path: "/calendar", enabled: true },
+  { id: "notes", labelKey: "nav.notes", icon: NotebookPen, path: "/notes", enabled: true },
+  { id: "knowledge", labelKey: "nav.knowledge", icon: BookOpen, path: "/knowledge", enabled: true },
+  { id: "journey", labelKey: "nav.context", icon: Share2, path: "/journey", enabled: true },
 ] as const;

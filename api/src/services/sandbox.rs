@@ -113,12 +113,18 @@ async fn reconcile_process_summary(
 ) -> AppResult<()> {
     sandbox_processes::reconcile_from_runner(
         &state.db,
-        process.id,
-        &process.status,
-        process.pid.map(|value| value as i32),
-        &process.command,
-        &process.cwd,
-        process.port,
+        sandbox_processes::RunnerProcessReconcile {
+            id: process.id,
+            runner_status: &process.status,
+            pid: process.pid.map(|value| value as i32),
+            command: &process.command,
+            cwd: &process.cwd,
+            port: process.port,
+            cpu_percent: process.cpu_percent,
+            memory_bytes: process.memory_bytes,
+            storage_bytes: process.storage_bytes,
+            open_ports: serde_json::json!(process.open_ports),
+        },
     )
     .await
 }
@@ -286,6 +292,30 @@ pub async fn stop_process(state: &AppState, id: Uuid) -> AppResult<StopSandboxPr
     })
 }
 
+pub async fn kill_process(state: &AppState, id: Uuid) -> AppResult<StopSandboxProcessResponse> {
+    let _process = sandbox_processes::fetch_process(&state.db, id).await?;
+    if let Some(runner_url) = &state.config.sandbox_runner_url {
+        RunnerClient::new(runner_url.clone())
+            .kill_process(id)
+            .await?;
+    }
+    sandbox_processes::stop_process_record(&state.db, id).await?;
+    crate::services::audit::log_audit_safe(
+        &state.db,
+        "user",
+        "user",
+        "kill",
+        "sandbox_process",
+        Some(&id.to_string()),
+        None,
+    )
+    .await;
+    Ok(StopSandboxProcessResponse {
+        success: true,
+        process: sandbox_processes::fetch_process(&state.db, id).await?,
+    })
+}
+
 pub async fn process_logs(state: &AppState, id: Uuid) -> AppResult<SandboxProcessLogsResponse> {
     let mut logs = String::new();
     if let Some(runner_url) = &state.config.sandbox_runner_url {
@@ -294,12 +324,18 @@ pub async fn process_logs(state: &AppState, id: Uuid) -> AppResult<SandboxProces
                 logs = response.logs;
                 sandbox_processes::reconcile_from_runner(
                     &state.db,
-                    response.id,
-                    &response.status,
-                    response.pid.map(|value| value as i32),
-                    &response.command,
-                    &response.cwd,
-                    response.port,
+                    sandbox_processes::RunnerProcessReconcile {
+                        id: response.id,
+                        runner_status: &response.status,
+                        pid: response.pid.map(|value| value as i32),
+                        command: &response.command,
+                        cwd: &response.cwd,
+                        port: response.port,
+                        cpu_percent: None,
+                        memory_bytes: None,
+                        storage_bytes: None,
+                        open_ports: serde_json::json!([]),
+                    },
                 )
                 .await?;
             }

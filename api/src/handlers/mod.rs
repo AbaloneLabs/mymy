@@ -12,6 +12,7 @@ pub mod cron;
 pub mod drive;
 pub mod extensions;
 pub mod goals;
+pub mod investments;
 pub mod journey;
 pub mod knowledge;
 pub mod llm_providers;
@@ -66,6 +67,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(tasks::routes())
         .merge(task_statuses::routes())
         .merge(goals::routes())
+        .merge(investments::routes())
         .merge(transactions::routes())
         .merge(audit::routes())
         .merge(versions::routes())

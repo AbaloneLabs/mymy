@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { useAgents } from "@/features/agents/api";
 import {
@@ -31,6 +32,10 @@ import { useProjectContext } from "@/store/projectContext";
 export default function AgentsPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [tabsCollapsed, setTabsCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("mymy:agents-tabs-collapsed") === "true";
+  });
   const { data: agentsData } = useAgents();
   const agents = useMemo(() => agentsData?.agents ?? [], [agentsData]);
   const selectedAgentProfile = useProjectContext(
@@ -72,6 +77,14 @@ export default function AgentsPage() {
     setSearchParams({ tab: "overview" }, { replace: true });
   }
 
+  function toggleTabsCollapsed() {
+    setTabsCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("mymy:agents-tabs-collapsed", String(next));
+      return next;
+    });
+  }
+
   const scopeLabel = activeAgentProfile
     ? (selectedAgent?.name ?? activeAgentProfile)
     : t("nav.allAgents");
@@ -99,7 +112,25 @@ export default function AgentsPage() {
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          <nav className="w-[200px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[var(--border)] px-2 py-3">
+          <nav
+            className={
+              tabsCollapsed
+                ? "w-[64px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[var(--border)] px-2 py-3 transition-[width] duration-150"
+                : "w-[200px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[var(--border)] px-2 py-3 transition-[width] duration-150"
+            }
+          >
+            <button
+              type="button"
+              onClick={toggleTabsCollapsed}
+              className="mb-2 flex h-8 w-full items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              title={tabsCollapsed ? "탭 목록 펼치기" : "탭 목록 접기"}
+            >
+              {tabsCollapsed ? (
+                <PanelLeftOpen className="h-4 w-4" strokeWidth={1.5} />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" strokeWidth={1.5} />
+              )}
+            </button>
             {tabs.map((tab) => (
               <TabButton
                 key={tab}
@@ -107,6 +138,7 @@ export default function AgentsPage() {
                 onClick={() => selectTab(tab)}
                 icon={TAB_ICONS[tab]}
                 label={t(`agents.tabs.${tab}`)}
+                collapsed={tabsCollapsed}
               />
             ))}
           </nav>

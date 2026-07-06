@@ -85,13 +85,6 @@ impl ToolRegistry {
         schemas
     }
 
-    pub fn available_tool_names(&self) -> Vec<String> {
-        self.schemas()
-            .into_iter()
-            .map(|schema| schema.function.name)
-            .collect()
-    }
-
     pub async fn execute(&self, name: &str, arguments: &str) -> String {
         self.execute_inner(name, arguments, false).await
     }

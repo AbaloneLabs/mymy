@@ -99,3 +99,144 @@ body {
 ::selection {
   background: rgba(94, 106, 210, 0.3);
 }
+
+/* Chat markdown keeps assistant output dense and readable in the conversation stream. */
+.chat-markdown {
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0.45rem 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3 {
+  margin: 0.85rem 0 0.4rem;
+  color: var(--text);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.chat-markdown h1 {
+  font-size: 1.15rem;
+}
+
+.chat-markdown h2 {
+  font-size: 1.02rem;
+}
+
+.chat-markdown h3 {
+  font-size: 0.95rem;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.45rem 0;
+  padding-left: 1.2rem;
+}
+
+.chat-markdown li + li {
+  margin-top: 0.2rem;
+}
+
+.chat-markdown a {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-markdown blockquote {
+  margin: 0.65rem 0;
+  border-left: 2px solid var(--border-hover);
+  padding-left: 0.75rem;
+  color: var(--text-muted);
+}
+
+.chat-markdown code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.08rem 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
+.chat-markdown pre {
+  margin: 0.65rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 0.75rem;
+}
+
+.chat-markdown pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.chat-markdown .shiki-code-block {
+  margin: 0.65rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.shiki-code-block {
+  overflow: auto;
+  background: var(--bg);
+}
+
+.shiki-code-block pre {
+  margin: 0;
+  overflow: auto;
+  background: var(--bg) !important;
+  padding: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.65;
+}
+
+.shiki-code-block code {
+  display: block;
+  min-width: max-content;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.chat-markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.65rem 0;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+
+.chat-markdown th {
+  background: var(--surface-hover);
+  font-weight: 600;
+}
+
+.chat-markdown hr {
+  margin: 0.8rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}

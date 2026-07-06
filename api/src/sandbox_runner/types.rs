@@ -154,6 +154,10 @@ pub(crate) struct ProcessSummary {
     pub(crate) cwd: String,
     pub(crate) pid: Option<u32>,
     pub(crate) port: Option<u16>,
+    pub(crate) cpu_percent: Option<f64>,
+    pub(crate) memory_bytes: Option<i64>,
+    pub(crate) storage_bytes: Option<i64>,
+    pub(crate) open_ports: Vec<u16>,
 }
 
 impl From<&ProcessRecord> for ProcessSummary {
@@ -165,6 +169,10 @@ impl From<&ProcessRecord> for ProcessSummary {
             cwd: record.cwd.clone(),
             pid: record.pid,
             port: record.port,
+            cpu_percent: None,
+            memory_bytes: None,
+            storage_bytes: None,
+            open_ports: record.port.into_iter().collect(),
         }
     }
 }

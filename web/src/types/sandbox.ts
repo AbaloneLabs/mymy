@@ -30,6 +30,14 @@ export interface SandboxProcess {
   stoppedAt?: string;
   exitCode?: number;
   metadata: Record<string, unknown>;
+  cpuPercent?: number;
+  memoryBytes?: number;
+  memoryLimitBytes?: number;
+  storageBytes?: number;
+  storageLimitBytes?: number;
+  openPorts: number[];
+  uptimeSeconds?: number;
+  lastHeartbeatAt?: string;
   previewPath?: string;
   previewTargetUrl?: string;
 }
