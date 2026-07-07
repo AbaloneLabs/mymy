@@ -7,6 +7,9 @@
 
 mod docx_comments;
 mod docx_notes;
+mod docx_numbering;
+mod docx_page;
+mod docx_relationships;
 mod docx_tables;
 mod docx_text_parts;
 mod ooxml_images;
@@ -35,6 +38,17 @@ use self::docx_notes::{
     add_docx_note_replacements, docx_note_reference_run, docx_notes,
     docx_paragraph_needs_note_reference_rebuild, DOCX_ENDNOTE_PART, DOCX_FOOTNOTE_PART,
 };
+#[cfg(test)]
+use self::docx_numbering::ensure_docx_basic_numbering_xml;
+use self::docx_numbering::{
+    add_docx_numbering_replacements, docx_blocks_have_lists, docx_list_kind,
+    docx_numbering_formats, DOCX_BULLET_NUM_ID, DOCX_NUMBER_NUM_ID,
+};
+use self::docx_page::{docx_page_settings, update_docx_page_settings};
+use self::docx_relationships::{
+    add_docx_hyperlink_relationships, docx_empty_content_types, docx_empty_relationships,
+    ensure_docx_part_relationship,
+};
 use self::docx_tables::{
     build_docx_table, parse_docx_table_border_color, parse_docx_table_border_size,
     parse_docx_table_cell_background, parse_docx_table_cell_vertical_align,
@@ -51,10 +65,6 @@ use self::ooxml_images::{
 
 const PPTX_SLIDE_WIDTH_EMU: f64 = 9_144_000.0;
 const PPTX_SLIDE_HEIGHT_EMU: f64 = 5_143_500.0;
-const DOCX_BULLET_NUM_ID: &str = "9001";
-const DOCX_NUMBER_NUM_ID: &str = "9002";
-const DOCX_BULLET_ABSTRACT_NUM_ID: &str = "9001";
-const DOCX_NUMBER_ABSTRACT_NUM_ID: &str = "9002";
 
 #[derive(Debug, Clone)]
 struct PptxTextSpec {
@@ -992,76 +1002,6 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
     replace_zip_entries(original, &replacement_refs)
 }
 
-fn docx_blocks_have_lists(blocks: &[Value]) -> bool {
-    blocks.iter().any(|block| {
-        block
-            .get("listKind")
-            .and_then(Value::as_str)
-            .is_some_and(|value| matches!(value, "bullet" | "number"))
-    })
-}
-
-fn add_docx_hyperlink_relationships(blocks: &mut [Value], relationships: &mut String) -> bool {
-    let mut changed = false;
-    let mut next_relationship_id = next_rid(relationships);
-    for block in blocks.iter_mut() {
-        if block.get("type").and_then(Value::as_str) == Some("image") {
-            continue;
-        }
-        let Some(target) = block
-            .get("target")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        let relationship_id = block
-            .get("relationshipId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                let id = format!("rId{next_relationship_id}");
-                next_relationship_id += 1;
-                block["relationshipId"] = json!(id.clone());
-                id
-            });
-        *relationships =
-            upsert_docx_hyperlink_relationship(relationships, &relationship_id, &target);
-        changed = true;
-    }
-    changed
-}
-
-fn upsert_docx_hyperlink_relationship(rels: &str, relationship_id: &str, target: &str) -> String {
-    for relationship in xml_named_empty_elements(rels, "Relationship") {
-        if attr_value(&relationship, "Id").as_deref() != Some(relationship_id) {
-            continue;
-        }
-        let updated = [
-            (
-                "Type",
-                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
-            ),
-            ("Target", target),
-            ("TargetMode", "External"),
-        ]
-        .iter()
-        .fold(relationship.clone(), |xml, (name, value)| {
-            set_xml_attr(&xml, name, value)
-        });
-        return rels.replacen(&relationship, &updated, 1);
-    }
-    let relationship = format!(
-        r#"<Relationship Id="{relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{}" TargetMode="External"/>"#,
-        escape_xml(target)
-    );
-    append_before_or_end(rels, "</Relationships>", &relationship)
-}
-
 fn ensure_content_type_default(content_types: &str, extension: &str, content_type: &str) -> String {
     if content_types.contains(&format!(r#"Extension="{extension}""#)) {
         return content_types.to_string();
@@ -1086,21 +1026,6 @@ fn ensure_content_type_override(
         "</Types>",
         &format!(r#"<Override PartName="{part_name}" ContentType="{content_type}"/>"#),
     )
-}
-
-fn add_docx_numbering_replacements(
-    original: &[u8],
-    relationships: &mut String,
-    content_types: &mut String,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) {
-    let numbering = read_zip_text(original, "word/numbering.xml").unwrap_or_default();
-    replacements.push((
-        "word/numbering.xml".to_string(),
-        ensure_docx_basic_numbering_xml(&numbering).into_bytes(),
-    ));
-    *relationships = ensure_docx_numbering_relationship(relationships.as_str());
-    *content_types = ensure_docx_numbering_content_type(content_types.as_str());
 }
 
 fn replace_docx_paragraph_text(paragraph: &str, text: &str) -> String {
@@ -1175,14 +1100,6 @@ fn docx_vertical_align(xml: &str) -> Option<String> {
         .filter(|value| matches!(value.as_str(), "superscript" | "subscript"))
 }
 
-fn docx_list_kind(xml: &str, numbering_formats: &BTreeMap<String, String>) -> Option<String> {
-    let num_id = docx_tag_attr(xml, "<w:numId", "w:val")?;
-    numbering_formats
-        .get(&num_id)
-        .cloned()
-        .or_else(|| Some("number".to_string()))
-}
-
 fn docx_heading_level(xml: &str) -> Option<u32> {
     let style = docx_tag_attr(xml, "<w:pStyle", "w:val")?;
     let normalized = style
@@ -1192,123 +1109,6 @@ fn docx_heading_level(xml: &str) -> Option<u32> {
         .to_ascii_lowercase();
     let level = normalized.strip_prefix("heading")?.parse::<u32>().ok()?;
     (1..=6).contains(&level).then_some(level)
-}
-
-fn docx_numbering_formats(numbering: &str) -> BTreeMap<String, String> {
-    let mut abstract_formats = BTreeMap::new();
-    for abstract_num in xml_segments(numbering, "<w:abstractNum", "</w:abstractNum>") {
-        let Some(abstract_id) = attr_value(&abstract_num, "w:abstractNumId")
-            .or_else(|| attr_value(&abstract_num, "abstractNumId"))
-        else {
-            continue;
-        };
-        let Some(format) = docx_number_format_kind(&abstract_num) else {
-            continue;
-        };
-        abstract_formats.insert(abstract_id, format.to_string());
-    }
-    let mut num_formats = BTreeMap::new();
-    for num in xml_segments(numbering, "<w:num ", "</w:num>") {
-        let Some(num_id) = attr_value(&num, "w:numId").or_else(|| attr_value(&num, "numId")) else {
-            continue;
-        };
-        let Some(abstract_id) = docx_tag_attr(&num, "<w:abstractNumId", "w:val") else {
-            continue;
-        };
-        if let Some(format) = abstract_formats.get(&abstract_id) {
-            num_formats.insert(num_id, format.clone());
-        }
-    }
-    num_formats
-}
-
-fn docx_number_format_kind(xml: &str) -> Option<&'static str> {
-    let format = docx_tag_attr(xml, "<w:numFmt", "w:val")?;
-    if format == "bullet" {
-        Some("bullet")
-    } else if matches!(
-        format.as_str(),
-        "decimal" | "decimalZero" | "lowerLetter" | "upperLetter" | "lowerRoman" | "upperRoman"
-    ) {
-        Some("number")
-    } else {
-        None
-    }
-}
-
-fn ensure_docx_basic_numbering_xml(existing: &str) -> String {
-    let trimmed = existing.trim();
-    if trimmed.is_empty() {
-        return format!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{}</w:numbering>"#,
-            docx_basic_numbering_definitions(true, true)
-        );
-    }
-    let needs_bullet = !existing.contains(&format!(r#"w:numId="{DOCX_BULLET_NUM_ID}""#));
-    let needs_number = !existing.contains(&format!(r#"w:numId="{DOCX_NUMBER_NUM_ID}""#));
-    let inserted = docx_basic_numbering_definitions(needs_bullet, needs_number);
-    if inserted.is_empty() {
-        return existing.to_string();
-    }
-    append_before_or_end(existing, "</w:numbering>", &inserted)
-}
-
-fn docx_basic_numbering_definitions(include_bullet: bool, include_number: bool) -> String {
-    let mut xml = String::new();
-    if include_bullet {
-        xml.push_str(&format!(
-            r#"<w:abstractNum w:abstractNumId="{DOCX_BULLET_ABSTRACT_NUM_ID}"><w:multiLevelType w:val="singleLevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="{DOCX_BULLET_NUM_ID}"><w:abstractNumId w:val="{DOCX_BULLET_ABSTRACT_NUM_ID}"/></w:num>"#
-        ));
-    }
-    if include_number {
-        xml.push_str(&format!(
-            r#"<w:abstractNum w:abstractNumId="{DOCX_NUMBER_ABSTRACT_NUM_ID}"><w:multiLevelType w:val="singleLevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="{DOCX_NUMBER_NUM_ID}"><w:abstractNumId w:val="{DOCX_NUMBER_ABSTRACT_NUM_ID}"/></w:num>"#
-        ));
-    }
-    xml
-}
-
-fn ensure_docx_numbering_relationship(rels: &str) -> String {
-    if rels
-        .contains("http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering")
-        || rels.contains(r#"Target="numbering.xml""#)
-    {
-        return rels.to_string();
-    }
-    let rel_id = format!("rId{}", next_rid(rels));
-    let relationship = format!(
-        r#"<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#
-    );
-    append_before_or_end(rels, "</Relationships>", &relationship)
-}
-
-fn ensure_docx_part_relationship(rels: &str, relationship_type: &str, target: &str) -> String {
-    if rels.contains(relationship_type) || rels.contains(&format!(r#"Target="{target}""#)) {
-        return rels.to_string();
-    }
-    let rel_id = format!("rId{}", next_rid(rels));
-    let relationship =
-        format!(r#"<Relationship Id="{rel_id}" Type="{relationship_type}" Target="{target}"/>"#);
-    append_before_or_end(rels, "</Relationships>", &relationship)
-}
-
-fn ensure_docx_numbering_content_type(content_types: &str) -> String {
-    if content_types.contains(r#"PartName="/word/numbering.xml""#) {
-        return content_types.to_string();
-    }
-    append_before_or_end(
-        content_types,
-        "</Types>",
-        r#"<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#,
-    )
-}
-
-fn docx_empty_relationships() -> String {
-    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#.to_string()
-}
-
-fn docx_empty_content_types() -> String {
-    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>"#.to_string()
 }
 
 fn text_model(bytes: &[u8]) -> AppResult<Value> {
@@ -4347,161 +4147,6 @@ fn docx_highlight_color(value: &str) -> &'static str {
         "#bfdbfe" | "blue" => "cyan",
         _ => "yellow",
     }
-}
-
-fn docx_page_settings(document: &str) -> Value {
-    let Some((_, _, section)) = docx_section_properties(document) else {
-        return json!({});
-    };
-    let mut page = json!({});
-    if let Some(width) = docx_u32_attr(&section, "<w:pgSz", "w:w") {
-        page["width"] = json!(width);
-    }
-    if let Some(height) = docx_u32_attr(&section, "<w:pgSz", "w:h") {
-        page["height"] = json!(height);
-    }
-    if let Some(orientation) = docx_tag_attr(&section, "<w:pgSz", "w:orient")
-        .filter(|value| matches!(value.as_str(), "portrait" | "landscape"))
-    {
-        page["orientation"] = json!(orientation);
-    }
-    for (xml_attr, key) in [
-        ("w:top", "marginTop"),
-        ("w:right", "marginRight"),
-        ("w:bottom", "marginBottom"),
-        ("w:left", "marginLeft"),
-    ] {
-        if let Some(value) = docx_u32_attr(&section, "<w:pgMar", xml_attr) {
-            page[key] = json!(value);
-        }
-    }
-    page
-}
-
-fn update_docx_page_settings(document: &str, page: Option<&Value>) -> String {
-    let Some(page) = page.filter(|value| value.is_object()) else {
-        return document.to_string();
-    };
-    let page_size = docx_page_size_xml(page);
-    let page_margins = docx_page_margins_xml(page);
-    if page_size.is_none() && page_margins.is_none() {
-        return document.to_string();
-    }
-
-    if let Some((start, end, section)) = docx_section_properties(document) {
-        let mut updated_section = expand_docx_section_properties(&section);
-        if let Some(page_size) = page_size {
-            updated_section =
-                replace_or_insert_docx_section_child(&updated_section, "<w:pgSz", &page_size);
-        }
-        if let Some(page_margins) = page_margins {
-            updated_section =
-                replace_or_insert_docx_section_child(&updated_section, "<w:pgMar", &page_margins);
-        }
-        let mut output = String::new();
-        output.push_str(&document[..start]);
-        output.push_str(&updated_section);
-        output.push_str(&document[end..]);
-        return output;
-    }
-
-    let section = format!(
-        "<w:sectPr>{}{}</w:sectPr>",
-        page_size.unwrap_or_default(),
-        page_margins.unwrap_or_default()
-    );
-    if let Some(index) = document.find("</w:body>") {
-        let mut output = String::new();
-        output.push_str(&document[..index]);
-        output.push_str(&section);
-        output.push_str(&document[index..]);
-        output
-    } else {
-        format!("{document}{section}")
-    }
-}
-
-fn docx_page_size_xml(page: &Value) -> Option<String> {
-    let width = docx_u32_model_attr(page, "width", 31_680);
-    let height = docx_u32_model_attr(page, "height", 31_680);
-    let orientation = page
-        .get("orientation")
-        .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "portrait" | "landscape"));
-    if width.is_none() && height.is_none() && orientation.is_none() {
-        return None;
-    }
-    let mut attrs = Vec::new();
-    if let Some(width) = width {
-        attrs.push(format!(r#"w:w="{width}""#));
-    }
-    if let Some(height) = height {
-        attrs.push(format!(r#"w:h="{height}""#));
-    }
-    if let Some(orientation) = orientation {
-        attrs.push(format!(r#"w:orient="{orientation}""#));
-    }
-    Some(format!("<w:pgSz {}/>", attrs.join(" ")))
-}
-
-fn docx_page_margins_xml(page: &Value) -> Option<String> {
-    let mut attrs = Vec::new();
-    for (key, attr) in [
-        ("marginTop", "w:top"),
-        ("marginRight", "w:right"),
-        ("marginBottom", "w:bottom"),
-        ("marginLeft", "w:left"),
-    ] {
-        if let Some(value) = docx_u32_model_attr_allow_zero(page, key, 14_400) {
-            attrs.push(format!(r#"{attr}="{value}""#));
-        }
-    }
-    if attrs.is_empty() {
-        None
-    } else {
-        Some(format!("<w:pgMar {}/>", attrs.join(" ")))
-    }
-}
-
-fn docx_section_properties(document: &str) -> Option<(usize, usize, String)> {
-    let start = document.find("<w:sectPr")?;
-    let after_start = &document[start..];
-    let open_end = after_start.find('>')?;
-    if after_start[..=open_end].ends_with("/>") {
-        return Some((
-            start,
-            start + open_end + 1,
-            after_start[..=open_end].to_string(),
-        ));
-    }
-    let end_marker = "</w:sectPr>";
-    let end = after_start.find(end_marker)? + end_marker.len();
-    Some((start, start + end, after_start[..end].to_string()))
-}
-
-fn expand_docx_section_properties(section: &str) -> String {
-    let Some(open_end) = section.find('>') else {
-        return "<w:sectPr></w:sectPr>".to_string();
-    };
-    if !section[..=open_end].ends_with("/>") {
-        return section.to_string();
-    }
-    let opening = section[..open_end].trim_end_matches('/').to_string();
-    format!("{opening}></w:sectPr>")
-}
-
-fn replace_or_insert_docx_section_child(section: &str, marker: &str, child: &str) -> String {
-    if section.contains(marker) {
-        return replace_empty_xml_element(section, marker, child);
-    }
-    let Some(open_end) = section.find('>') else {
-        return section.to_string();
-    };
-    let mut output = String::new();
-    output.push_str(&section[..=open_end]);
-    output.push_str(child);
-    output.push_str(&section[open_end + 1..]);
-    output
 }
 
 fn sheet_update_from_model(sheet: &Value, rows: &[Value]) -> SheetUpdate {
