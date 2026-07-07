@@ -28,9 +28,9 @@ use crate::services::drive;
 use crate::services::file_observations::fingerprint_path;
 use crate::state::AppState;
 
-use self::docx_comments::add_docx_comment_replacements;
+use self::docx_comments::{add_docx_comment_replacements, docx_comments};
 use self::docx_notes::{
-    add_docx_note_replacements, docx_note_reference_run,
+    add_docx_note_replacements, docx_note_reference_run, docx_notes,
     docx_paragraph_needs_note_reference_rebuild, DOCX_ENDNOTE_PART, DOCX_FOOTNOTE_PART,
 };
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
@@ -1223,46 +1223,6 @@ fn docx_plain_paragraph_xml(text: &str) -> String {
         r#"<w:p><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#,
         escape_xml(text)
     )
-}
-
-fn docx_comments(bytes: &[u8]) -> Vec<Value> {
-    let Ok(xml) = read_zip_text(bytes, "word/comments.xml") else {
-        return Vec::new();
-    };
-    xml_named_segments(&xml, "w:comment")
-        .into_iter()
-        .filter_map(|comment| {
-            let id = docx_tag_attr(&comment, "<w:comment", "w:id")?;
-            Some(json!({
-                "id": id,
-                "author": docx_tag_attr(&comment, "<w:comment", "w:author"),
-                "date": docx_tag_attr(&comment, "<w:comment", "w:date"),
-                "text": extract_text_tags(&comment, "w:t").join("\n"),
-                "sourceXml": comment
-            }))
-        })
-        .collect()
-}
-
-fn docx_notes(bytes: &[u8], path: &str, tag: &str, kind: &str) -> Vec<Value> {
-    let Ok(xml) = read_zip_text(bytes, path) else {
-        return Vec::new();
-    };
-    xml_named_segments(&xml, tag)
-        .into_iter()
-        .filter_map(|note| {
-            let id = docx_tag_attr(&note, &format!("<{tag}"), "w:id")?;
-            if id.starts_with('-') || id == "0" {
-                return None;
-            }
-            Some(json!({
-                "id": id,
-                "kind": kind,
-                "text": extract_text_tags(&note, "w:t").join("\n"),
-                "sourceXml": note
-            }))
-        })
-        .collect()
 }
 
 fn docx_body_segments(document: &str) -> Vec<String> {

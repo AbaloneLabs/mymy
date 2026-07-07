@@ -1,11 +1,30 @@
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{
-    append_before_or_end, docx_plain_paragraph_xml, docx_tag_attr, find_xml_tag_start,
-    read_zip_text, replace_docx_paragraph_text, set_first_xml_tag_attrs,
+    append_before_or_end, docx_plain_paragraph_xml, docx_tag_attr, extract_text_tags,
+    find_xml_tag_start, read_zip_text, replace_docx_paragraph_text, set_first_xml_tag_attrs,
 };
+
+pub(super) fn docx_comments(bytes: &[u8]) -> Vec<Value> {
+    let Ok(xml) = read_zip_text(bytes, "word/comments.xml") else {
+        return Vec::new();
+    };
+    super::xml_named_segments(&xml, "w:comment")
+        .into_iter()
+        .filter_map(|comment| {
+            let id = docx_tag_attr(&comment, "<w:comment", "w:id")?;
+            Some(json!({
+                "id": id,
+                "author": docx_tag_attr(&comment, "<w:comment", "w:author"),
+                "date": docx_tag_attr(&comment, "<w:comment", "w:date"),
+                "text": extract_text_tags(&comment, "w:t").join("\n"),
+                "sourceXml": comment
+            }))
+        })
+        .collect()
+}
 
 pub(super) fn add_docx_comment_replacements(
     original: &[u8],

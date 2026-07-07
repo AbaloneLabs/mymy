@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{
     append_before_or_end, docx_plain_paragraph_xml, docx_tag_attr, ensure_content_type_override,
-    ensure_docx_part_relationship, escape_xml, read_zip_text, replace_docx_paragraph_text,
+    ensure_docx_part_relationship, escape_xml, extract_text_tags, read_zip_text,
+    replace_docx_paragraph_text, xml_named_segments,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +37,27 @@ pub(super) const DOCX_ENDNOTE_PART: DocxNotePartSpec = DocxNotePartSpec {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes",
     content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml",
 };
+
+pub(super) fn docx_notes(bytes: &[u8], path: &str, tag: &str, kind: &str) -> Vec<Value> {
+    let Ok(xml) = read_zip_text(bytes, path) else {
+        return Vec::new();
+    };
+    xml_named_segments(&xml, tag)
+        .into_iter()
+        .filter_map(|note| {
+            let id = docx_tag_attr(&note, &format!("<{tag}"), "w:id")?;
+            if id.starts_with('-') || id == "0" {
+                return None;
+            }
+            Some(json!({
+                "id": id,
+                "kind": kind,
+                "text": extract_text_tags(&note, "w:t").join("\n"),
+                "sourceXml": note
+            }))
+        })
+        .collect()
+}
 
 pub(super) fn add_docx_note_replacements(
     original: &[u8],
