@@ -4,14 +4,9 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
   Bold,
   Check,
   Code,
-  Copy,
   FileCog,
   Heading1,
   Heading2,
@@ -32,18 +27,15 @@ import {
   Search,
   Strikethrough,
   Table,
-  Trash2,
   Upload,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
-import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { driveBlobUrl, uploadDriveFiles } from "@/features/drive/api";
+import { uploadDriveFiles } from "@/features/drive/api";
 import { parentPath } from "@/features/drive/utils";
-import { HighlightedCodeBlock } from "@/components/chat/codeHighlight";
-import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
+import { modeButtonClass, markdownTextButtonClass } from "../markdownEditorChrome";
 import {
   buildMarkdownSearchRegex,
   countMarkdownSearchMatches,
@@ -68,6 +60,9 @@ import {
   replaceFrontmatterBody,
   replaceMarkdownTable,
 } from "../markdownEditorUtils";
+import { markdownPreviewComponents, markdownRelativeFileReference } from "../markdownPreview";
+import { MarkdownSidePanel } from "../markdownSidePanel";
+import type { MarkdownSidePanelKind } from "../markdownSidePanel";
 import type {
   MarkdownHeadingLevel,
   MarkdownTableAlignment,
@@ -95,8 +90,7 @@ export function MarkdownRichEditor({
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [mode, setMode] = useState<"source" | "preview">("source");
-  const [sidePanel, setSidePanel] =
-    useState<"outline" | "frontmatter" | "references" | "table" | null>(null);
+  const [sidePanel, setSidePanel] = useState<MarkdownSidePanelKind | null>(null);
   const [linkDraft, setLinkDraft] = useState("");
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [imageDraft, setImageDraft] = useState("");
@@ -1144,181 +1138,39 @@ export function MarkdownRichEditor({
           )}
         </div>
         {sidePanel && (
-          <aside className="flex w-80 shrink-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
-            <div className="flex h-10 shrink-0 items-center justify-between border-b border-[var(--border)] px-3">
-              <span className="text-xs font-semibold text-[var(--text)]">
-                {sidePanel === "outline"
-                  ? t("documentEditor.outline", { defaultValue: "Outline" })
-                  : sidePanel === "references"
-                    ? t("documentEditor.references", { defaultValue: "References" })
-                    : sidePanel === "table"
-                      ? t("documentEditor.table", { defaultValue: "Table" })
-                      : t("documentEditor.frontmatter", { defaultValue: "Frontmatter" })}
-              </span>
-              <button
-                type="button"
-                onClick={() => setSidePanel(null)}
-                className="rounded-md px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-              >
-                {t("common.close")}
-              </button>
-            </div>
-            {sidePanel === "outline" ? (
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {outline.length === 0 ? (
-                  <p className="text-xs text-[var(--text-faint)]">
-                    {t("documentEditor.noOutline", { defaultValue: "No headings yet." })}
-                  </p>
-                ) : (
-                  <div className="space-y-1">
-                    {outline.map((heading) => (
-                      <button
-                        key={`${heading.line}:${heading.text}`}
-                        type="button"
-                        onClick={() => focusSourceLine(heading.line)}
-                        className="block w-full truncate rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                        style={{ paddingLeft: `${Math.max(0, heading.level - 1) * 12 + 8}px` }}
-                      >
-                        {heading.text}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : sidePanel === "references" ? (
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {references.length === 0 ? (
-                  <p className="text-xs text-[var(--text-faint)]">
-                    {t("documentEditor.noReferences", {
-                      defaultValue: "No links, images, footnotes, or definitions yet.",
-                    })}
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {references.map((reference) => (
-                      <button
-                        key={`${reference.kind}:${reference.line}:${reference.start}:${reference.label}`}
-                        type="button"
-                        onClick={() => focusSourceRange(reference.start, reference.end)}
-                        className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-medium text-[var(--text)]">
-                            {reference.label}
-                          </span>
-                          <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--text-faint)]">
-                            {reference.kind}
-                          </span>
-                        </div>
-                        {reference.target && (
-                          <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-faint)]">
-                            {reference.target}
-                          </div>
-                        )}
-                        <div className="mt-1 text-[10px] text-[var(--text-faint)]">
-                          L{reference.line}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : sidePanel === "table" ? (
-              <MarkdownTablePanel
-                table={activeTable}
-                onCreate={insertMarkdownTable}
-                onHeaderChange={updateMarkdownTableHeader}
-                onAlignmentChange={updateMarkdownTableAlignment}
-                onCellChange={updateMarkdownTableCell}
-                onAddRow={addMarkdownTableRow}
-                onDuplicateRow={duplicateMarkdownTableRow}
-                onMoveRow={moveMarkdownTableRow}
-                onDeleteRow={deleteMarkdownTableRow}
-                onAddColumn={addMarkdownTableColumn}
-                onDuplicateColumn={duplicateMarkdownTableColumn}
-                onMoveColumn={moveMarkdownTableColumn}
-                onDeleteColumn={deleteMarkdownTableColumn}
-              />
-            ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {frontmatter ? (
-                  <div className="space-y-3">
-                    <textarea
-                      value={frontmatter.content}
-                      onChange={(event) => updateFrontmatterBody(event.target.value)}
-                      spellCheck={false}
-                      className="h-40 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 font-mono text-xs leading-5 text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                    />
-                    {frontmatterFields.length > 0 && (
-                      <div className="space-y-2">
-                        {frontmatterFields.map((field) => (
-                          <div
-                            key={`${field.lineIndex}:${field.key}`}
-                            className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_auto] gap-1"
-                          >
-                            <input
-                              value={field.key}
-                              onChange={(event) =>
-                                updateFrontmatterField(field.lineIndex, event.target.value, field.value)
-                              }
-                              className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                            />
-                            <input
-                              value={field.value}
-                              onChange={(event) =>
-                                updateFrontmatterField(field.lineIndex, field.key, event.target.value)
-                              }
-                              className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                            />
-                            <ToolbarButton
-                              icon={Trash2}
-                              label={t("common.delete")}
-                              onClick={() => deleteFrontmatterField(field.lineIndex)}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_auto] gap-1">
-                      <input
-                        value={newFrontmatterKey}
-                        onChange={(event) => setNewFrontmatterKey(event.target.value)}
-                        placeholder={t("common.name")}
-                        className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                      />
-                      <input
-                        value={newFrontmatterValue}
-                        onChange={(event) => setNewFrontmatterValue(event.target.value)}
-                        placeholder={t("documentEditor.value", { defaultValue: "Value" })}
-                        className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                      />
-                      <ToolbarButton
-                        icon={Plus}
-                        label={t("common.add")}
-                        onClick={addFrontmatterField}
-                        disabled={!newFrontmatterKey.trim()}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={removeFrontmatter}
-                      className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                    >
-                      {t("documentEditor.removeFrontmatter", { defaultValue: "Remove frontmatter" })}
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={openFrontmatterPanel}
-                    className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--accent)] hover:bg-[var(--surface-hover)]"
-                  >
-                    {t("documentEditor.createFrontmatter", { defaultValue: "Create frontmatter" })}
-                  </button>
-                )}
-              </div>
-            )}
-          </aside>
+          <MarkdownSidePanel
+            panel={sidePanel}
+            outline={outline}
+            references={references}
+            table={activeTable}
+            frontmatter={frontmatter}
+            frontmatterFields={frontmatterFields}
+            newFrontmatterKey={newFrontmatterKey}
+            newFrontmatterValue={newFrontmatterValue}
+            onClose={() => setSidePanel(null)}
+            onFocusLine={focusSourceLine}
+            onFocusRange={focusSourceRange}
+            onCreateTable={insertMarkdownTable}
+            onTableHeaderChange={updateMarkdownTableHeader}
+            onTableAlignmentChange={updateMarkdownTableAlignment}
+            onTableCellChange={updateMarkdownTableCell}
+            onTableAddRow={addMarkdownTableRow}
+            onTableDuplicateRow={duplicateMarkdownTableRow}
+            onTableMoveRow={moveMarkdownTableRow}
+            onTableDeleteRow={deleteMarkdownTableRow}
+            onTableAddColumn={addMarkdownTableColumn}
+            onTableDuplicateColumn={duplicateMarkdownTableColumn}
+            onTableMoveColumn={moveMarkdownTableColumn}
+            onTableDeleteColumn={deleteMarkdownTableColumn}
+            onFrontmatterBodyChange={updateFrontmatterBody}
+            onFrontmatterFieldChange={updateFrontmatterField}
+            onFrontmatterFieldDelete={deleteFrontmatterField}
+            onFrontmatterFieldAdd={addFrontmatterField}
+            onFrontmatterRemove={removeFrontmatter}
+            onFrontmatterCreate={openFrontmatterPanel}
+            onNewFrontmatterKeyChange={setNewFrontmatterKey}
+            onNewFrontmatterValueChange={setNewFrontmatterValue}
+          />
         )}
       </div>
       <div className="flex shrink-0 items-center justify-between border-t border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11px] text-[var(--text-faint)]">
@@ -1332,362 +1184,4 @@ export function MarkdownRichEditor({
       </div>
     </div>
   );
-}
-
-function MarkdownTablePanel({
-  table,
-  onCreate,
-  onHeaderChange,
-  onAlignmentChange,
-  onCellChange,
-  onAddRow,
-  onDuplicateRow,
-  onMoveRow,
-  onDeleteRow,
-  onAddColumn,
-  onDuplicateColumn,
-  onMoveColumn,
-  onDeleteColumn,
-}: {
-  table: MarkdownTableModel | null;
-  onCreate: () => void;
-  onHeaderChange: (columnIndex: number, value: string) => void;
-  onAlignmentChange: (
-    columnIndex: number,
-    alignment: MarkdownTableAlignment,
-  ) => void;
-  onCellChange: (rowIndex: number, columnIndex: number, value: string) => void;
-  onAddRow: (afterRowIndex?: number) => void;
-  onDuplicateRow: (rowIndex: number) => void;
-  onMoveRow: (rowIndex: number, direction: -1 | 1) => void;
-  onDeleteRow: (rowIndex: number) => void;
-  onAddColumn: (afterColumnIndex?: number) => void;
-  onDuplicateColumn: (columnIndex: number) => void;
-  onMoveColumn: (columnIndex: number, direction: -1 | 1) => void;
-  onDeleteColumn: (columnIndex: number) => void;
-}) {
-  if (!table) {
-    return (
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <button
-          type="button"
-          onClick={onCreate}
-          className="w-full rounded-md border border-dashed border-[var(--border)] px-3 py-8 text-sm text-[var(--accent)] hover:bg-[var(--surface-hover)]"
-        >
-          Insert table
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] p-2">
-        <button type="button" onClick={() => onAddRow()} className={markdownTextButtonClass()}>
-          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Row
-        </button>
-        <button
-          type="button"
-          onClick={() => onAddColumn()}
-          className={markdownTextButtonClass()}
-        >
-          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Column
-        </button>
-        <span className="ml-auto font-mono text-[10px] text-[var(--text-faint)]">
-          L{table.startLine}-{table.endLine}
-        </span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        <table className="min-w-full border-collapse text-xs">
-          <thead>
-            <tr>
-              <th className="sticky left-0 top-0 z-20 w-20 border border-[var(--border)] bg-[var(--surface)]" />
-              {table.headers.map((header, columnIndex) => (
-                <th
-                  key={columnIndex}
-                  className="sticky top-0 z-10 min-w-44 border border-[var(--border)] bg-[var(--surface)] p-1 align-top"
-                >
-                  <div className="grid gap-1">
-                    <input
-                      value={header}
-                      onChange={(event) =>
-                        onHeaderChange(columnIndex, event.target.value)
-                      }
-                      className="h-8 min-w-0 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs font-medium text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                    />
-                    <div className="flex items-center gap-1">
-                      <select
-                        value={table.alignments[columnIndex] ?? "default"}
-                        onChange={(event) =>
-                          onAlignmentChange(
-                            columnIndex,
-                            event.target.value as MarkdownTableAlignment,
-                          )
-                        }
-                        className="h-7 min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
-                      >
-                        <option value="default">Default</option>
-                        <option value="left">Left</option>
-                        <option value="center">Center</option>
-                        <option value="right">Right</option>
-                      </select>
-                      <MarkdownIconButton
-                        icon={ArrowLeft}
-                        label="Move column left"
-                        disabled={columnIndex === 0}
-                        onClick={() => onMoveColumn(columnIndex, -1)}
-                      />
-                      <MarkdownIconButton
-                        icon={ArrowRight}
-                        label="Move column right"
-                        disabled={columnIndex === table.headers.length - 1}
-                        onClick={() => onMoveColumn(columnIndex, 1)}
-                      />
-                      <MarkdownIconButton
-                        icon={Copy}
-                        label="Duplicate column"
-                        onClick={() => onDuplicateColumn(columnIndex)}
-                      />
-                      <MarkdownIconButton
-                        icon={Trash2}
-                        label="Delete column"
-                        danger
-                        disabled={table.headers.length <= 1}
-                        onClick={() => onDeleteColumn(columnIndex)}
-                      />
-                    </div>
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {table.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                <th className="sticky left-0 z-10 border border-[var(--border)] bg-[var(--surface)] p-1 align-top">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="min-w-5 text-right font-mono text-[10px] text-[var(--text-faint)]">
-                      {rowIndex + 1}
-                    </span>
-                    <MarkdownIconButton
-                      icon={ArrowUp}
-                      label="Move row up"
-                      disabled={rowIndex === 0}
-                      onClick={() => onMoveRow(rowIndex, -1)}
-                    />
-                    <MarkdownIconButton
-                      icon={ArrowDown}
-                      label="Move row down"
-                      disabled={rowIndex === table.rows.length - 1}
-                      onClick={() => onMoveRow(rowIndex, 1)}
-                    />
-                    <MarkdownIconButton
-                      icon={Plus}
-                      label="Insert row below"
-                      onClick={() => onAddRow(rowIndex)}
-                    />
-                    <MarkdownIconButton
-                      icon={Copy}
-                      label="Duplicate row"
-                      onClick={() => onDuplicateRow(rowIndex)}
-                    />
-                    <MarkdownIconButton
-                      icon={Trash2}
-                      label="Delete row"
-                      danger
-                      onClick={() => onDeleteRow(rowIndex)}
-                    />
-                  </div>
-                </th>
-                {table.headers.map((_header, columnIndex) => (
-                  <td key={columnIndex} className="border border-[var(--border)] p-0">
-                    <textarea
-                      value={row[columnIndex] ?? ""}
-                      onChange={(event) =>
-                        onCellChange(rowIndex, columnIndex, event.target.value)
-                      }
-                      className="h-16 min-w-44 resize-y bg-[var(--bg)] px-2 py-1 font-mono text-xs leading-5 text-[var(--text)] outline-none focus:bg-[var(--surface)]"
-                    />
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {table.rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={table.headers.length + 1}
-                  className="border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-faint)]"
-                >
-                  Empty table
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function MarkdownIconButton({
-  icon: Icon,
-  label,
-  disabled,
-  danger,
-  onClick,
-}: {
-  icon: typeof ArrowUp;
-  label: string;
-  disabled?: boolean;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40",
-        danger && "hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]",
-      )}
-      title={label}
-    >
-      <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
-    </button>
-  );
-}
-
-function modeButtonClass(active: boolean) {
-  return [
-    "rounded-md border px-2 py-1 text-xs",
-    active
-      ? "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--text)]"
-      : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
-  ].join(" ");
-}
-
-function markdownTextButtonClass() {
-  return "inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]";
-}
-
-function markdownPreviewComponents(
-  filePath: string,
-  onTaskListToggle: (line: number) => void,
-): Components {
-  return {
-    code({ className, children, ...props }) {
-      const match = /language-([\w-]+)/.exec(className ?? "");
-      if (!match) {
-        return (
-          <code className={className} {...props}>
-            {children}
-          </code>
-        );
-      }
-      return (
-        <HighlightedCodeBlock
-          code={String(children).replace(/\n$/, "")}
-          language={match[1]}
-        />
-      );
-    },
-    a({ href, children, ...props }) {
-      const resolved = resolveMarkdownReference(filePath, href);
-      const external = isExternalReference(resolved.href);
-      return (
-        <a
-          {...props}
-          href={resolved.href}
-          rel={external ? "noreferrer" : undefined}
-          target={external ? "_blank" : undefined}
-        >
-          {children}
-        </a>
-      );
-    },
-    img({ src, alt, ...props }) {
-      const resolved = resolveMarkdownReference(filePath, src);
-      return (
-        <img
-          {...props}
-          alt={alt ?? ""}
-          className="max-w-full rounded-md border border-[var(--border)]"
-          src={resolved.href}
-        />
-      );
-    },
-    input({ type, checked, node, ...props }) {
-      const line = node?.position?.start.line;
-      if (type !== "checkbox" || typeof line !== "number") {
-        return <input {...props} type={type} checked={checked} />;
-      }
-      return (
-        <input
-          {...props}
-          type="checkbox"
-          checked={Boolean(checked)}
-          disabled={false}
-          className="mr-1 align-middle"
-          onChange={() => onTaskListToggle(line)}
-        />
-      );
-    },
-  };
-}
-
-function resolveMarkdownReference(filePath: string, value: string | undefined) {
-  if (!value) return { href: undefined };
-  if (isBrowserHandledReference(value)) return { href: value };
-  const [pathAndQuery, fragment = ""] = value.split("#", 2);
-  const [pathOnly, query = ""] = pathAndQuery.split("?", 2);
-  const logicalPath = markdownReferencePath(filePath, pathOnly);
-  if (!logicalPath) return { href: value };
-  let href = driveBlobUrl(logicalPath);
-  if (query) href = `${href}&${query}`;
-  if (fragment) href = `${href}#${fragment}`;
-  return { href };
-}
-
-function markdownReferencePath(filePath: string, reference: string) {
-  if (!reference) return null;
-  if (reference.startsWith("/drive/")) return normalizeDriveReference(reference);
-  if (reference.startsWith("/")) return null;
-  return normalizeDriveReference(`${parentPath(filePath)}/${reference}`);
-}
-
-function markdownRelativeFileReference(
-  filePath: string,
-  uploadedPath: string,
-  uploadedName: string,
-) {
-  return parentPath(uploadedPath) === parentPath(filePath) ? uploadedName : uploadedPath;
-}
-
-function normalizeDriveReference(value: string) {
-  const parts: string[] = [];
-  for (const part of value.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (parts.length > 1) parts.pop();
-      continue;
-    }
-    parts.push(part);
-  }
-  if (parts[0] !== "drive") return null;
-  return `/${parts.join("/")}`;
-}
-
-function isBrowserHandledReference(value: string) {
-  return (
-    value.startsWith("#") ||
-    /^[a-z][a-z0-9+.-]*:/i.test(value) ||
-    value.startsWith("//")
-  );
-}
-
-function isExternalReference(value: string | undefined) {
-  return Boolean(value && (/^https?:\/\//i.test(value) || value.startsWith("//")));
 }

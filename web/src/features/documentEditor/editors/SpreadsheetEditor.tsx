@@ -17,23 +17,16 @@ import {
   xlsxDefinedNameValueForSheet,
 } from "../spreadsheetDefinedNames";
 import { SpreadsheetDefinedNamesPanel } from "../spreadsheetDefinedNamesPanel";
-import { xlsxConditionalCellStyle } from "../spreadsheetConditionalFormatting";
-import {
-  clipboardDataToMatrix,
-  rangeToClipboardText,
-} from "../spreadsheetData";
+import { rangeToClipboardText } from "../spreadsheetData";
+import { SpreadsheetGrid } from "../spreadsheetGrid";
 import {
   normalizeColorInputValue,
   normalizeXlsxStylePatch,
-  spreadsheetCellClass,
   spreadsheetDateStamp,
   spreadsheetTimeStamp,
   stripXlsxCellStyle,
   summarizeSelection,
-  xlsxCellInputStyle,
   xlsxCellStyleFromCell,
-  xlsxHyperlinkCellStyle,
-  xlsxMergedCellClass,
 } from "../spreadsheetPresentation";
 import type { XlsxCellStylePatch } from "../spreadsheetPresentation";
 import { SpreadsheetFormulaDependencyPanel } from "../spreadsheetFormulaPanel";
@@ -43,12 +36,9 @@ import {
   positiveModulo,
   shiftXlsxTables,
   spreadsheetFillTargetRange,
-  spreadsheetRangeContainsCell,
 } from "../spreadsheetEditorUtils";
 import {
-  SpreadsheetColumnSpacer,
   SpreadsheetObjectStrip,
-  SpreadsheetSpacerRow,
   SpreadsheetStatusBar,
 } from "../spreadsheetPanels";
 import {
@@ -63,15 +53,10 @@ import {
   clampNumber,
   emptyViewport,
   normalizeCellRange,
-  rangeCoversColumn,
-  rangeCoversRow,
-  rangeCoversSheet,
   rangeIndexes,
   rangeToA1,
   scrollCellIntoView,
   singleCellRange,
-  spacerColumnCount,
-  viewportFromElement,
   virtualWindow,
   xlsxRangeFromRef,
 } from "../spreadsheetGeometry";
@@ -106,16 +91,12 @@ import {
   shiftXlsxRangeForColumnInsert,
   shiftXlsxRangeForRowDelete,
   shiftXlsxRangeForRowInsert,
-  xlsxCellHasComment,
-  xlsxCellHasDataValidation,
-  xlsxCellHasHyperlink,
   xlsxCommentForRange,
   xlsxConditionalRuleForRange,
   xlsxDataValidationForRange,
   xlsxHyperlinkForRange,
 } from "../spreadsheetXlsxMetadata";
 import {
-  displayXlsxCellValue,
   ensureXlsxDisplayRows,
   ensureXlsxRows,
   filteredXlsxRows,
@@ -1859,232 +1840,37 @@ export function XlsxEditor({
         activeReference={activeCellReference}
         onSelectReference={selectReference}
       />
-      <div
-        ref={gridRef}
-        onScroll={(event) => setViewport(viewportFromElement(event.currentTarget))}
-        className="min-h-0 flex-1 overflow-auto p-4"
-      >
-        <table className="border-collapse text-xs shadow-sm">
-          <thead>
-            <tr>
-              <th
-                onClick={selectAllCells}
-                className={cn(
-                  "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
-                  rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
-                    "bg-[var(--accent)]/10 text-[var(--accent)]",
-                )}
-                title="Select all cells"
-              />
-              {columnWindow.start > 0 && (
-                <th
-                  aria-hidden="true"
-                  className="sticky top-0 z-10 h-8 border border-transparent bg-[var(--surface)]"
-                  style={{ minWidth: leftColumnSpacerWidth, width: leftColumnSpacerWidth }}
-                />
-              )}
-              {visibleColumnIndexes.map((index) => (
-                <th
-                  key={index}
-                  onClick={() => selectColumn(index)}
-                  className={cn(
-                    "group relative sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
-                    rangeCoversColumn(selectionRange, index, displayRowLimit) &&
-                      "bg-[var(--accent)]/10 text-[var(--accent)]",
-                  )}
-                  style={{
-                    minWidth: xlsxColumnWidthPx(sheet, index),
-                    width: xlsxColumnWidthPx(sheet, index),
-                  }}
-                >
-                  {columnName(index)}
-                  <button
-                    type="button"
-                    onPointerDown={(event) => startColumnResize(event, index)}
-                    className="absolute right-0 top-0 h-full w-2 cursor-col-resize opacity-0 hover:bg-[var(--accent)]/30 group-hover:opacity-100"
-                    title="Resize column"
-                  />
-                </th>
-              ))}
-              {columnWindow.end < visibleColumns.length && (
-                <th
-                  aria-hidden="true"
-                  className="sticky top-0 z-10 h-8 border border-transparent bg-[var(--surface)]"
-                  style={{ minWidth: rightColumnSpacerWidth, width: rightColumnSpacerWidth }}
-                />
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {rowWindow.start > 0 && (
-              <SpreadsheetSpacerRow
-                height={rowWindow.start * SPREADSHEET_ROW_HEIGHT}
-                columnSpan={visibleColumnIndexes.length + spacerColumnCount(columnWindow, visibleColumns.length)}
-              />
-            )}
-            {visibleRows.slice(rowWindow.start, rowWindow.end).map(({ row, rowIndex }) => (
-              <tr
-                key={`${sheet.id}:${row.index}:${rowIndex}`}
-                style={{ height: xlsxRowHeightPx(row) }}
-              >
-                <th
-                  onClick={() => selectRow(rowIndex)}
-                  className={cn(
-                    "group relative sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
-                    rangeCoversRow(selectionRange, rowIndex, columnCount) &&
-                      "bg-[var(--accent)]/10 text-[var(--accent)]",
-                  )}
-                >
-                  {row.index || rowIndex + 1}
-                  <button
-                    type="button"
-                    onPointerDown={(event) => startRowResize(event, rowIndex)}
-                    className="absolute bottom-0 left-0 h-2 w-full cursor-row-resize opacity-0 hover:bg-[var(--accent)]/30 group-hover:opacity-100"
-                    title="Resize row"
-                  />
-                </th>
-                {columnWindow.start > 0 && (
-                  <SpreadsheetColumnSpacer width={leftColumnSpacerWidth} />
-                )}
-                {visibleColumnIndexes.map((cellIndex) => {
-                  const cell = normalizeXlsxCells(
-                    row.cells,
-                    columnCount,
-                    row.index || String(rowIndex + 1),
-                  )[cellIndex];
-                  const mergedClass = xlsxMergedCellClass(
-                    sheet?.mergedRanges,
-                    rowIndex,
-                    cellIndex,
-                  );
-                  const hasValidation = xlsxCellHasDataValidation(
-                    sheet?.dataValidations,
-                    rowIndex,
-                    cellIndex,
-                  );
-                  const hasHyperlink = xlsxCellHasHyperlink(
-                    sheet?.hyperlinks,
-                    rowIndex,
-                    cellIndex,
-                  );
-                  const hasComment = xlsxCellHasComment(
-                    sheet?.comments,
-                    rowIndex,
-                    cellIndex,
-                  );
-                  const conditionalStyle = xlsxConditionalCellStyle(
-                    sheet?.conditionalFormattings,
-                    displaySheet,
-                    rowIndex,
-                    cellIndex,
-                    cell,
-                    columnCount,
-                  );
-                  const hasConditionalStyle =
-                    conditionalStyle.backgroundColor !== undefined;
-                  return (
-                  <td
-                    key={`${cell.ref}:${cellIndex}`}
-                    className={cn(
-                      "relative",
-                      spreadsheetCellClass(
-                        activeCell,
-                        selectionRange,
-                        rowIndex,
-                        cellIndex,
-                      ),
-                      mergedClass,
-                      hasValidation && "shadow-[inset_0_-2px_0_rgba(132,204,22,0.55)]",
-                      hasConditionalStyle &&
-                        "shadow-[inset_0_0_0_1px_rgba(132,204,22,0.35)]",
-                      fillPreviewRange &&
-                        spreadsheetRangeContainsCell(fillPreviewRange, rowIndex, cellIndex) &&
-                        "outline outline-1 outline-offset-[-1px] outline-[rgba(132,204,22,0.75)]",
-                    )}
-                  >
-                    {hasComment && (
-                      <span className="pointer-events-none absolute right-0 top-0 z-10 h-0 w-0 border-l-[8px] border-l-transparent border-t-[8px] border-t-amber-400" />
-                    )}
-                    <input
-                      data-spreadsheet-cell={`${rowIndex}:${cellIndex}`}
-                      value={displayXlsxCellValue(cell, showFormulas)}
-                      onChange={(event) => updateCell(rowIndex, cellIndex, event.target.value)}
-                      onFocus={() =>
-                        setActiveCell({ row: rowIndex, column: cellIndex })
-                      }
-                      onMouseDown={(event) =>
-                        selectCell({ row: rowIndex, column: cellIndex }, event.shiftKey)
-                      }
-                      onMouseEnter={(event) => {
-                        if (fillDrag && event.buttons === 1) {
-                          setFillDrag({
-                            ...fillDrag,
-                            end: { row: rowIndex, column: cellIndex },
-                          });
-                          return;
-                        }
-                        if (event.buttons === 1) {
-                          selectCell({ row: rowIndex, column: cellIndex }, true);
-                        }
-                      }}
-                      onKeyDown={(event) => handleCellKeyDown(event, rowIndex, cellIndex)}
-                      onPaste={(event) => {
-                        const matrix = clipboardDataToMatrix(event.clipboardData);
-                        if (matrix) {
-                          event.preventDefault();
-                          updateCellsFromMatrix(rowIndex, cellIndex, matrix);
-                        }
-                      }}
-                      className={cn(
-                        "h-8 min-w-32 bg-[var(--bg)] px-2 text-[var(--text)] outline-none focus:bg-[var(--surface)]",
-                        mergedClass,
-                      )}
-                      style={{
-                        minWidth: xlsxColumnWidthPx(sheet, cellIndex),
-                        width: xlsxColumnWidthPx(sheet, cellIndex),
-                        height: xlsxRowHeightPx(row),
-                        ...xlsxCellInputStyle(cell),
-                        ...conditionalStyle,
-                        ...xlsxHyperlinkCellStyle(cell, hasHyperlink),
-                      }}
-                      title={[
-                        cell.ref,
-                        hasValidation ? "data validation" : null,
-                        hasConditionalStyle ? "conditional formatting" : null,
-                        hasHyperlink ? "hyperlink" : null,
-                        hasComment ? "comment" : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    />
-                    {selectionRange &&
-                      selectionRange.bottom === rowIndex &&
-                      selectionRange.right === cellIndex && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) => startFillDrag(event, selectionRange)}
-                          className="absolute bottom-0 right-0 z-20 h-2.5 w-2.5 translate-x-1/2 translate-y-1/2 cursor-crosshair border border-white bg-[var(--accent)] shadow-sm"
-                          title="Fill handle"
-                          aria-label="Fill handle"
-                        />
-                      )}
-                  </td>
-                  );
-                })}
-                {columnWindow.end < visibleColumns.length && (
-                  <SpreadsheetColumnSpacer width={rightColumnSpacerWidth} />
-                )}
-              </tr>
-            ))}
-            {rowWindow.end < visibleRows.length && (
-              <SpreadsheetSpacerRow
-                height={(visibleRows.length - rowWindow.end) * SPREADSHEET_ROW_HEIGHT}
-                columnSpan={visibleColumnIndexes.length + spacerColumnCount(columnWindow, visibleColumns.length)}
-              />
-            )}
-          </tbody>
-        </table>
-      </div>
+      <SpreadsheetGrid
+        gridRef={gridRef}
+        sheet={sheet}
+        displaySheet={displaySheet}
+        displayRowLimit={displayRowLimit}
+        columnCount={columnCount}
+        visibleColumns={visibleColumns}
+        visibleColumnIndexes={visibleColumnIndexes}
+        visibleRows={visibleRows}
+        rowWindow={rowWindow}
+        columnWindow={columnWindow}
+        leftColumnSpacerWidth={leftColumnSpacerWidth}
+        rightColumnSpacerWidth={rightColumnSpacerWidth}
+        activeCell={activeCell}
+        selectionRange={selectionRange}
+        fillDrag={fillDrag}
+        fillPreviewRange={fillPreviewRange}
+        showFormulas={showFormulas}
+        onViewportChange={setViewport}
+        onSelectAllCells={selectAllCells}
+        onSelectColumn={selectColumn}
+        onSelectRow={selectRow}
+        onStartColumnResize={startColumnResize}
+        onStartRowResize={startRowResize}
+        onUpdateCell={updateCell}
+        onSelectCell={selectCell}
+        onCellKeyDown={handleCellKeyDown}
+        onUpdateCellsFromMatrix={updateCellsFromMatrix}
+        onSetFillDrag={setFillDrag}
+        onStartFillDrag={startFillDrag}
+      />
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
   );
