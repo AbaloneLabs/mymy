@@ -1,7 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type {
   ClipboardEvent as ReactClipboardEvent,
-  CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
@@ -41,6 +40,33 @@ import {
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
+import {
+  DOCX_PAGE_PRESETS,
+  TWIPS_PER_INCH,
+  allocateDocxBlockId,
+  clampImageDimension,
+  clampTableCell,
+  docxPagePresetValue,
+  docxPageStyle,
+  focusDocxBlock,
+  headingFontSize,
+  inchesToTwips,
+  isDocxTextBlock,
+  nextDocxBlockId,
+  nextDocxNoteId,
+  normalizeDocxTableRow,
+  pickDocxFormatting,
+  pointsToTwips,
+  readImageDisplaySize,
+  sectionBreakLabel,
+  tableClipboardMatrix,
+  tableColumnCount,
+  textOffsetWithin,
+  twipsToCssPixels,
+  twipsToInches,
+  twipsToPoints,
+} from "../docxEditorUtils";
+import type { DocxFormatClipboard } from "../docxEditorUtils";
 import { builtInFontFamilies } from "../fonts";
 import { columnName } from "../models";
 import type {
@@ -52,46 +78,6 @@ import type {
   DocxTextPart,
 } from "../models";
 import { FontFamilySelect, ToolbarButton } from "../shared";
-
-const TWIPS_PER_INCH = 1440;
-const DOCX_HEADING_FONT_SIZES: Record<number, string> = {
-  1: "32",
-  2: "28",
-  3: "24",
-  4: "20",
-  5: "18",
-  6: "16",
-};
-const DOCX_PAGE_PRESETS = [
-  { label: "Letter", value: "letter", width: 12_240, height: 15_840 },
-  { label: "A4", value: "a4", width: 11_906, height: 16_838 },
-  { label: "Legal", value: "legal", width: 12_240, height: 20_160 },
-] as const;
-
-const DOCX_FORMAT_KEYS = [
-  "type",
-  "headingLevel",
-  "bold",
-  "italic",
-  "underline",
-  "strikethrough",
-  "verticalAlign",
-  "fontFamily",
-  "fontSize",
-  "color",
-  "highlight",
-  "align",
-  "listKind",
-  "indentLeft",
-  "spacingBefore",
-  "spacingAfter",
-  "lineSpacing",
-  "pageBreakBefore",
-] as const;
-
-type DocxFormatClipboard = Partial<
-  Pick<DocxBlock, (typeof DOCX_FORMAT_KEYS)[number]>
->;
 
 export function DocxEditor({
   model,
@@ -1544,7 +1530,6 @@ export function DocxEditor({
     </div>
   );
 }
-
 function DocxRuler({
   page,
   onChange,
@@ -1646,40 +1631,6 @@ function DocxMarginInput({
         className="w-12 bg-transparent text-xs text-[var(--text)] outline-none"
       />
     </label>
-  );
-}
-
-function docxPageStyle(page: DocxPageSettings | undefined): CSSProperties {
-  const width = page?.width ? twipsToCssPixels(page.width) : 816;
-  const minHeight = page?.height ? twipsToCssPixels(page.height) : 980;
-  return {
-    width,
-    minHeight,
-    paddingTop:
-      page?.marginTop !== undefined ? twipsToCssPixels(page.marginTop) : 64,
-    paddingRight:
-      page?.marginRight !== undefined ? twipsToCssPixels(page.marginRight) : 80,
-    paddingBottom:
-      page?.marginBottom !== undefined ? twipsToCssPixels(page.marginBottom) : 64,
-    paddingLeft:
-      page?.marginLeft !== undefined ? twipsToCssPixels(page.marginLeft) : 80,
-  };
-}
-
-function headingFontSize(level: number) {
-  return DOCX_HEADING_FONT_SIZES[level] ?? DOCX_HEADING_FONT_SIZES[1];
-}
-
-function docxPagePresetValue(page: DocxPageSettings | undefined) {
-  const width = page?.width ?? DOCX_PAGE_PRESETS[0].width;
-  const height = page?.height ?? DOCX_PAGE_PRESETS[0].height;
-  const portraitWidth = Math.min(width, height);
-  const portraitHeight = Math.max(width, height);
-  return (
-    DOCX_PAGE_PRESETS.find(
-      (preset) =>
-        preset.width === portraitWidth && preset.height === portraitHeight,
-    )?.value ?? "custom"
   );
 }
 
@@ -2242,174 +2193,4 @@ function DocxTableActionButton({
       <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
     </button>
   );
-}
-
-function tableColumnCount(rows: string[][]) {
-  return Math.max(1, ...rows.map((row) => row.length));
-}
-
-function normalizeDocxTableRow(row: string[], columnCount: number) {
-  if (row.length >= columnCount) return row;
-  return [...row, ...Array(columnCount - row.length).fill("")];
-}
-
-function clampTableCell(
-  cell: { row: number; column: number } | null,
-  rowCount: number,
-  columnCount: number,
-) {
-  if (!cell) return null;
-  return {
-    row: Math.max(0, Math.min(rowCount - 1, cell.row)),
-    column: Math.max(0, Math.min(columnCount - 1, cell.column)),
-  };
-}
-
-function tableClipboardMatrix(text: string) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/\n$/, "")
-    .split("\n")
-    .map((row) => row.split("\t"));
-}
-
-function pointsToTwips(points: number) {
-  if (!Number.isFinite(points)) return 0;
-  return Math.max(0, Math.round(points * 20));
-}
-
-function twipsToPoints(twips: number) {
-  return Math.round((twips / 20) * 10) / 10;
-}
-
-function inchesToTwips(inches: number) {
-  if (!Number.isFinite(inches)) return 0;
-  return Math.max(0, Math.round(inches * TWIPS_PER_INCH));
-}
-
-function twipsToInches(twips: number) {
-  return Math.round((twips / TWIPS_PER_INCH) * 10) / 10;
-}
-
-function twipsToCssPixels(twips: number) {
-  return (twips / 20) * (4 / 3);
-}
-
-function clampImageDimension(value: number) {
-  if (!Number.isFinite(value)) return 16;
-  return Math.max(16, Math.min(10_000, Math.round(value)));
-}
-
-function readImageDisplaySize(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const image = new window.Image();
-    image.onload = () => {
-      const naturalWidth = image.naturalWidth || 320;
-      const naturalHeight = image.naturalHeight || 180;
-      const maxWidth = 520;
-      const scale = naturalWidth > maxWidth ? maxWidth / naturalWidth : 1;
-      resolve({
-        width: clampImageDimension(naturalWidth * scale),
-        height: clampImageDimension(naturalHeight * scale),
-      });
-    };
-    image.onerror = () => resolve({ width: 320, height: 180 });
-    image.src = dataUrl;
-  });
-}
-
-function isDocxTextBlock(
-  block: DocxBlock | undefined,
-): block is DocxBlock & { type: "paragraph" | "heading" } {
-  return block?.type === "paragraph" || block?.type === "heading";
-}
-
-function pickDocxFormatting(block: DocxBlock): DocxFormatClipboard {
-  return Object.fromEntries(
-    DOCX_FORMAT_KEYS.map((key) => [key, block[key]]).filter(
-      ([, value]) => value !== undefined,
-    ),
-  ) as DocxFormatClipboard;
-}
-
-function sectionBreakLabel(kind: DocxBlock["breakKind"]) {
-  if (kind === "continuous") return "continuous";
-  if (kind === "evenPage") return "even page";
-  if (kind === "oddPage") return "odd page";
-  return "next page";
-}
-
-function nextDocxNoteId(
-  notes: DocxNote[],
-  blocks: DocxBlock[],
-  key: "footnoteId" | "endnoteId",
-) {
-  const usedIds = new Set<string>();
-  notes.forEach((note) => usedIds.add(note.id));
-  blocks.forEach((block) => {
-    const id = block[key];
-    if (id) usedIds.add(id);
-  });
-  let index =
-    Math.max(
-      0,
-      ...Array.from(usedIds)
-        .map((id) => Number.parseInt(id, 10))
-        .filter(Number.isFinite),
-    ) + 1;
-  while (usedIds.has(String(index))) {
-    index += 1;
-  }
-  return String(index);
-}
-
-function nextDocxBlockId(
-  blocks: DocxBlock[],
-  prefix: "p" | "tbl" | "img" | "br" | "sect",
-) {
-  return allocateDocxBlockId(new Set(blocks.map((block) => block.id)), prefix);
-}
-
-function allocateDocxBlockId(
-  usedIds: Set<string>,
-  prefix: "p" | "tbl" | "img" | "br" | "sect",
-) {
-  let index = usedIds.size + 1;
-  let id = `${prefix}${index}`;
-  while (usedIds.has(id)) {
-    index += 1;
-    id = `${prefix}${index}`;
-  }
-  usedIds.add(id);
-  return id;
-}
-
-function textOffsetWithin(element: HTMLElement) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    return element.textContent?.length ?? 0;
-  }
-  const range = selection.getRangeAt(0);
-  if (!element.contains(range.startContainer)) {
-    return element.textContent?.length ?? 0;
-  }
-  const before = range.cloneRange();
-  before.selectNodeContents(element);
-  before.setEnd(range.startContainer, range.startOffset);
-  return before.toString().length;
-}
-
-function focusDocxBlock(id: string) {
-  const element = document.querySelector<HTMLElement>(
-    `[data-docx-block="${CSS.escape(id)}"]`,
-  );
-  if (!element) return;
-  element.focus();
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(true);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
 }
