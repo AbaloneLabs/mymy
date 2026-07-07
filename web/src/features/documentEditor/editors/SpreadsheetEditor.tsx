@@ -58,6 +58,7 @@ import {
 } from "../spreadsheetGeometry";
 import type {
   CellPosition,
+  NormalizedCellRange,
   SpreadsheetViewport,
 } from "../spreadsheetGeometry";
 import {
@@ -154,6 +155,10 @@ export function XlsxEditor({
   const [activeCell, setActiveCell] = useState<CellPosition | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
+  const [fillDrag, setFillDrag] = useState<{
+    source: NormalizedCellRange;
+    end: CellPosition;
+  } | null>(null);
   const [filterText, setFilterText] = useState("");
   const [showFormulas, setShowFormulas] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -196,6 +201,9 @@ export function XlsxEditor({
     visibleColumns.slice(columnWindow.end),
   );
   const selectionRange = normalizeCellRange(selectionAnchor, selectionEnd);
+  const fillPreviewRange = fillDrag
+    ? spreadsheetFillTargetRange(fillDrag.source, fillDrag.end)
+    : null;
   const validationRange =
     selectionRange ??
     (activeCell
@@ -479,6 +487,63 @@ export function XlsxEditor({
       },
     );
     updateCellsFromMatrix(selectionRange.top, selectionRange.left, matrix);
+  }
+
+  function applyFillDrag(drag: {
+    source: NormalizedCellRange;
+    end: CellPosition;
+  }) {
+    if (!sheet) return;
+    const target = spreadsheetFillTargetRange(drag.source, drag.end);
+    if (
+      target.top === drag.source.top &&
+      target.right === drag.source.right &&
+      target.bottom === drag.source.bottom &&
+      target.left === drag.source.left
+    ) {
+      return;
+    }
+    const sourceHeight = drag.source.bottom - drag.source.top + 1;
+    const sourceWidth = drag.source.right - drag.source.left + 1;
+    const sourceRows = ensureXlsxRows(
+      sheet,
+      drag.source.bottom + 1,
+      Math.max(columnCount, drag.source.right + 1),
+    );
+    const matrix = rangeIndexes(target.top, target.bottom).map((rowIndex) =>
+      rangeIndexes(target.left, target.right).map((columnIndex) => {
+        const sourceRowIndex =
+          drag.source.top + positiveModulo(rowIndex - drag.source.top, sourceHeight);
+        const sourceColumnIndex =
+          drag.source.left + positiveModulo(columnIndex - drag.source.left, sourceWidth);
+        const sourceCell = normalizeXlsxCells(
+          sourceRows[sourceRowIndex]?.cells ?? [],
+          Math.max(columnCount, drag.source.right + 1),
+          sourceRows[sourceRowIndex]?.index ?? String(sourceRowIndex + 1),
+        )[sourceColumnIndex];
+        return xlsxFillInputFromCell(
+          sourceCell,
+          rowIndex - sourceRowIndex,
+          columnIndex - sourceColumnIndex,
+        );
+      }),
+    );
+    updateCellsFromMatrix(target.top, target.left, matrix);
+    setActiveCell({ row: target.bottom, column: target.right });
+    setSelectionAnchor({ row: target.top, column: target.left });
+    setSelectionEnd({ row: target.bottom, column: target.right });
+  }
+
+  function startFillDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    source: NormalizedCellRange,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setFillDrag({
+      source,
+      end: { row: source.bottom, column: source.right },
+    });
   }
 
   function addRow() {
@@ -1111,6 +1176,12 @@ export function XlsxEditor({
     },
   );
 
+  const finishFillDrag = useEffectEvent(
+    (drag: { source: NormalizedCellRange; end: CellPosition }) => {
+      applyFillDrag(drag);
+    },
+  );
+
   useEffect(() => {
     if (!commandRequest || handledCommandTokenRef.current === commandRequest.token) return;
     handledCommandTokenRef.current = commandRequest.token;
@@ -1120,6 +1191,17 @@ export function XlsxEditor({
       }
     }, 0);
   }, [commandRequest, onCommandHandled]);
+
+  useEffect(() => {
+    if (!fillDrag) return;
+    function handlePointerUp() {
+      const drag = fillDrag;
+      setFillDrag(null);
+      if (drag) finishFillDrag(drag);
+    }
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => window.removeEventListener("pointerup", handlePointerUp);
+  }, [fillDrag]);
 
   function applyDataValidation(validation: XlsxDataValidation | null) {
     if (!sheet || !validationRange) return;
@@ -1716,6 +1798,9 @@ export function XlsxEditor({
                       hasValidation && "shadow-[inset_0_-2px_0_rgba(132,204,22,0.55)]",
                       hasConditionalStyle &&
                         "shadow-[inset_0_0_0_1px_rgba(132,204,22,0.35)]",
+                      fillPreviewRange &&
+                        spreadsheetRangeContainsCell(fillPreviewRange, rowIndex, cellIndex) &&
+                        "outline outline-1 outline-offset-[-1px] outline-[rgba(132,204,22,0.75)]",
                     )}
                   >
                     {hasComment && (
@@ -1732,6 +1817,13 @@ export function XlsxEditor({
                         selectCell({ row: rowIndex, column: cellIndex }, event.shiftKey)
                       }
                       onMouseEnter={(event) => {
+                        if (fillDrag && event.buttons === 1) {
+                          setFillDrag({
+                            ...fillDrag,
+                            end: { row: rowIndex, column: cellIndex },
+                          });
+                          return;
+                        }
                         if (event.buttons === 1) {
                           selectCell({ row: rowIndex, column: cellIndex }, true);
                         }
@@ -1766,6 +1858,17 @@ export function XlsxEditor({
                         .filter(Boolean)
                         .join(" · ")}
                     />
+                    {selectionRange &&
+                      selectionRange.bottom === rowIndex &&
+                      selectionRange.right === cellIndex && (
+                        <button
+                          type="button"
+                          onPointerDown={(event) => startFillDrag(event, selectionRange)}
+                          className="absolute bottom-0 right-0 z-20 h-2.5 w-2.5 translate-x-1/2 translate-y-1/2 cursor-crosshair border border-white bg-[var(--accent)] shadow-sm"
+                          title="Fill handle"
+                          aria-label="Fill handle"
+                        />
+                      )}
                   </td>
                   );
                 })}
@@ -1786,4 +1889,34 @@ export function XlsxEditor({
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
   );
+}
+
+function spreadsheetFillTargetRange(
+  source: NormalizedCellRange,
+  end: CellPosition,
+): NormalizedCellRange {
+  return {
+    top: Math.min(source.top, end.row),
+    right: Math.max(source.right, end.column),
+    bottom: Math.max(source.bottom, end.row),
+    left: Math.min(source.left, end.column),
+  };
+}
+
+function spreadsheetRangeContainsCell(
+  range: NormalizedCellRange,
+  row: number,
+  column: number,
+) {
+  return (
+    row >= range.top &&
+    row <= range.bottom &&
+    column >= range.left &&
+    column <= range.right
+  );
+}
+
+function positiveModulo(value: number, divisor: number) {
+  if (divisor <= 0) return 0;
+  return ((value % divisor) + divisor) % divisor;
 }

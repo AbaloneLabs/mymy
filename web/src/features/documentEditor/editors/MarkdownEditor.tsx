@@ -96,7 +96,12 @@ export function MarkdownRichEditor({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
   const [replaceDraft, setReplaceDraft] = useState("");
+  const [goToLineOpen, setGoToLineOpen] = useState(false);
+  const [goToLineDraft, setGoToLineDraft] = useState("");
   const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [regexSearch, setRegexSearch] = useState(false);
+  const [cursor, setCursor] = useState({ line: 1, column: 1, selection: 0 });
   const lineCount = Math.max(1, model.content.split("\n").length);
   const outline = markdownOutline(model.content);
   const references = markdownReferences(model.content);
@@ -107,6 +112,8 @@ export function MarkdownRichEditor({
   const stats = markdownStats(model.content, outline.length);
   const searchMatches = countMarkdownSearchMatches(model.content, searchDraft, {
     matchCase,
+    wholeWord,
+    regexSearch,
   });
   const previewComponents = useMemo(
     () => markdownPreviewComponents(filePath),
@@ -288,6 +295,10 @@ export function MarkdownRichEditor({
     } else if (primary && key === "h") {
       event.preventDefault();
       setSearchOpen(true);
+    } else if (primary && key === "g") {
+      event.preventDefault();
+      setGoToLineDraft(String(cursor.line));
+      setGoToLineOpen(true);
     } else if (primary && event.shiftKey && key === "i") {
       event.preventDefault();
       setImageInputOpen(true);
@@ -345,6 +356,19 @@ export function MarkdownRichEditor({
     lineNumberRef.current.scrollTop = sourceRef.current.scrollTop;
   }
 
+  function updateCursor() {
+    const textarea = sourceRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const line = lineForOffset(model.content, start);
+    setCursor({
+      line,
+      column: start - offsetForLine(model.content, line) + 1,
+      selection: Math.abs(end - start),
+    });
+  }
+
   function wrapSourceSelection(before: string, after = before) {
     const textarea = sourceRef.current;
     if (!textarea) {
@@ -383,6 +407,7 @@ export function MarkdownRichEditor({
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(lineStart + prefix.length, lineStart + prefix.length + nextLine.length);
+      updateCursor();
     });
   }
 
@@ -404,6 +429,7 @@ export function MarkdownRichEditor({
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(lineStart, lineStart + nextBlock.length);
+      updateCursor();
     });
   }
 
@@ -421,13 +447,23 @@ export function MarkdownRichEditor({
       const line = lineForOffset(model.content, start);
       textarea.scrollTop = Math.max(0, (line - 4) * 24);
       syncLineNumberScroll();
+      updateCursor();
     });
+  }
+
+  function submitGoToLine() {
+    const line = Math.max(1, Math.min(lineCount, Math.floor(Number(goToLineDraft))));
+    if (!Number.isFinite(line)) return;
+    focusSourceLine(line);
+    setGoToLineOpen(false);
   }
 
   function findNext() {
     const start = sourceRef.current?.selectionEnd ?? 0;
     const range = nextMarkdownSearchRange(model.content, searchDraft, {
       matchCase,
+      wholeWord,
+      regexSearch,
       start,
     });
     if (range) focusSourceRange(range.start, range.end);
@@ -435,7 +471,11 @@ export function MarkdownRichEditor({
 
   function replaceNext() {
     const textarea = sourceRef.current;
-    const regex = buildMarkdownSearchRegex(searchDraft, { matchCase });
+    const regex = buildMarkdownSearchRegex(searchDraft, {
+      matchCase,
+      wholeWord,
+      regexSearch,
+    });
     if (!regex) return;
     if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
       const selected = model.content.slice(textarea.selectionStart, textarea.selectionEnd);
@@ -453,7 +493,11 @@ export function MarkdownRichEditor({
   }
 
   function replaceAll() {
-    const regex = buildMarkdownSearchRegex(searchDraft, { matchCase });
+    const regex = buildMarkdownSearchRegex(searchDraft, {
+      matchCase,
+      wholeWord,
+      regexSearch,
+    });
     if (!regex) return;
     updateContent(model.content.replace(regex, replaceDraft));
   }
@@ -554,6 +598,9 @@ export function MarkdownRichEditor({
       insertMarkdownTable();
     } else if (commandId === "outline") {
       setSidePanel((current) => (current === "outline" ? null : "outline"));
+    } else if (commandId === "goToLine") {
+      setGoToLineDraft(String(cursor.line));
+      setGoToLineOpen(true);
     } else {
       return false;
     }
@@ -665,6 +712,18 @@ export function MarkdownRichEditor({
             setMode("source");
           }}
         />
+        <button
+          type="button"
+          onClick={() => {
+            setGoToLineDraft(String(cursor.line));
+            setGoToLineOpen((current) => !current);
+            setMode("source");
+          }}
+          className={markdownTextButtonClass()}
+        >
+          L:
+          {t("documentEditor.goToLine", { defaultValue: "Go to line" })}
+        </button>
         <button
           type="button"
           onClick={togglePreview}
@@ -787,10 +846,58 @@ export function MarkdownRichEditor({
             />
             Aa
           </label>
+          <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
+            <input
+              type="checkbox"
+              checked={wholeWord}
+              onChange={(event) => setWholeWord(event.target.checked)}
+            />
+            Word
+          </label>
+          <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
+            <input
+              type="checkbox"
+              checked={regexSearch}
+              onChange={(event) => setRegexSearch(event.target.checked)}
+            />
+            .*
+          </label>
           <span className="text-xs text-[var(--text-faint)]">
             {searchMatches} matches
           </span>
         </div>
+      )}
+      {goToLineOpen && (
+        <form
+          className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitGoToLine();
+          }}
+        >
+          <span className="text-xs text-[var(--text-muted)]">
+            {t("documentEditor.goToLine", { defaultValue: "Go to line" })}
+          </span>
+          <input
+            value={goToLineDraft}
+            onChange={(event) => setGoToLineDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setGoToLineOpen(false);
+              }
+            }}
+            type="number"
+            min={1}
+            max={lineCount}
+            className="h-8 w-28 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            autoFocus
+          />
+          <span className="text-xs text-[var(--text-faint)]">/ {lineCount}</span>
+          <button type="submit" className={markdownTextButtonClass()}>
+            Go
+          </button>
+        </form>
       )}
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 flex-1">
@@ -817,6 +924,9 @@ export function MarkdownRichEditor({
                 onChange={(event) => updateContent(event.target.value)}
                 onKeyDown={handleSourceKeyDown}
                 onPaste={handleSourcePaste}
+                onSelect={updateCursor}
+                onKeyUp={updateCursor}
+                onClick={updateCursor}
                 onScroll={syncLineNumberScroll}
                 spellCheck={false}
                 className="min-h-0 resize-none bg-[var(--bg)] p-4 font-mono text-sm leading-6 text-[var(--text)] outline-none"
@@ -986,9 +1096,12 @@ export function MarkdownRichEditor({
       </div>
       <div className="flex shrink-0 items-center justify-between border-t border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11px] text-[var(--text-faint)]">
         <span>
-          {stats.lines} lines · {stats.words} words · {stats.characters} chars
+          L{cursor.line}:C{cursor.column}
+          {cursor.selection > 0 ? ` · ${cursor.selection} selected` : ""}
         </span>
-        <span>{stats.headings} headings</span>
+        <span>
+          {stats.lines} lines · {stats.words} words · {stats.characters} chars · {stats.headings} headings
+        </span>
       </div>
     </div>
   );

@@ -239,6 +239,7 @@ const MARKDOWN_COMMANDS: EditorCommandDefinition[] = [
     shift: true,
   }),
   command("link", "Link", "Ctrl/Cmd+K", { key: "k", primary: true }),
+  command("goToLine", "Go to line", "Ctrl/Cmd+G", { key: "g", primary: true }),
   command(
     "heading1",
     "Heading 1",

@@ -317,11 +317,13 @@ export function isMarkdownHeadingKey(value: string): value is `${MarkdownHeading
 
 export function buildMarkdownSearchRegex(
   query: string,
-  options: { matchCase: boolean },
+  options: { matchCase: boolean; wholeWord?: boolean; regexSearch?: boolean },
 ) {
   if (!query) return null;
+  const source = options.regexSearch ? query : escapeRegExp(query);
+  const wrapped = options.wholeWord ? `\\b(?:${source})\\b` : source;
   try {
-    return new RegExp(escapeRegExp(query), options.matchCase ? "g" : "gi");
+    return new RegExp(wrapped, options.matchCase ? "g" : "gi");
   } catch {
     return null;
   }
@@ -330,7 +332,7 @@ export function buildMarkdownSearchRegex(
 export function countMarkdownSearchMatches(
   content: string,
   query: string,
-  options: { matchCase: boolean },
+  options: { matchCase: boolean; wholeWord?: boolean; regexSearch?: boolean },
 ) {
   const regex = buildMarkdownSearchRegex(query, options);
   if (!regex) return 0;
@@ -346,7 +348,12 @@ export function countMarkdownSearchMatches(
 export function nextMarkdownSearchRange(
   content: string,
   query: string,
-  options: { matchCase: boolean; start: number },
+  options: {
+    matchCase: boolean;
+    wholeWord?: boolean;
+    regexSearch?: boolean;
+    start: number;
+  },
 ) {
   const regex = buildMarkdownSearchRegex(query, options);
   if (!regex) return null;

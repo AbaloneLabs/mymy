@@ -796,6 +796,14 @@ export function DocxEditor({
     });
   }
 
+  function deleteComment(index: number) {
+    const comments = model.comments ?? [];
+    onChange({
+      ...model,
+      comments: comments.filter((_, commentIndex) => commentIndex !== index),
+    });
+  }
+
   function updateNote(
     kind: "footnotes" | "endnotes",
     index: number,
@@ -807,6 +815,20 @@ export function DocxEditor({
       [kind]: notes.map((note, noteIndex) =>
         noteIndex === index ? { ...note, text } : note,
       ),
+    });
+  }
+
+  function deleteNote(kind: "footnotes" | "endnotes", index: number) {
+    const notes = model[kind] ?? [];
+    const note = notes[index];
+    if (!note) return;
+    const blockKey = kind === "footnotes" ? "footnoteId" : "endnoteId";
+    onChange({
+      ...model,
+      blocks: model.blocks.map((block) =>
+        block[blockKey] === note.id ? { ...block, [blockKey]: undefined } : block,
+      ),
+      [kind]: notes.filter((_, noteIndex) => noteIndex !== index),
     });
   }
 
@@ -1291,8 +1313,11 @@ export function DocxEditor({
           onHeaderChange={(index, text) => updateTextPart("headers", index, text)}
           onFooterChange={(index, text) => updateTextPart("footers", index, text)}
           onCommentChange={updateComment}
+          onCommentDelete={deleteComment}
           onFootnoteChange={(index, text) => updateNote("footnotes", index, text)}
+          onFootnoteDelete={(index) => deleteNote("footnotes", index)}
           onEndnoteChange={(index, text) => updateNote("endnotes", index, text)}
+          onEndnoteDelete={(index) => deleteNote("endnotes", index)}
         />
       )}
       <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] p-6">
