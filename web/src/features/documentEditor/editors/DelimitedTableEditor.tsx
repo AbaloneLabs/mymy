@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import { columnName, normalizeRow } from "../models";
 import type { DelimitedTableModel } from "../models";
+import { DelimitedTableProfilePanel } from "../delimitedProfilePanel";
 import {
   clipboardDataToMatrix,
   ensureDelimitedDisplayRows,
@@ -37,7 +38,6 @@ import {
 } from "../spreadsheetGeometry";
 import type { CellPosition, SpreadsheetViewport } from "../spreadsheetGeometry";
 import {
-  DelimitedTableProfilePanel,
   SpreadsheetColumnSpacer,
   SpreadsheetSpacerRow,
   SpreadsheetStatusBar,

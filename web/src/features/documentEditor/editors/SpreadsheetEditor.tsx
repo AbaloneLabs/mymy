@@ -25,9 +25,9 @@ import {
   xlsxMergedCellClass,
 } from "../spreadsheetPresentation";
 import type { XlsxCellStylePatch } from "../spreadsheetPresentation";
+import { SpreadsheetFormulaDependencyPanel } from "../spreadsheetFormulaPanel";
 import { SpreadsheetToolbar } from "../spreadsheetToolbar";
 import {
-  SpreadsheetFormulaDependencyPanel,
   SpreadsheetColumnSpacer,
   SpreadsheetObjectStrip,
   SpreadsheetSpacerRow,

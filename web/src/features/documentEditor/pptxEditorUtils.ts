@@ -201,3 +201,17 @@ export function nextVisibleSlideIndex(
   }
   return firstVisibleSlideIndex(slides);
 }
+
+export function reorderPptxObjectsById<T extends { id: string }>(
+  items: T[],
+  id: string,
+  direction: -1 | 1,
+) {
+  const index = items.findIndex((item) => item.id === id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return items;
+  const next = [...items];
+  const [moved] = next.splice(index, 1);
+  next.splice(nextIndex, 0, moved);
+  return next;
+}

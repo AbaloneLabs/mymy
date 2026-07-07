@@ -16,7 +16,6 @@ import {
   EyeOff,
   Image as ImageIcon,
   Italic,
-  Layers,
   Minus,
   Move,
   Play,
@@ -49,6 +48,7 @@ import {
   normalizeRotation,
   pptxChartStyle,
   pptxImageStyle,
+  reorderPptxObjectsById,
 } from "../pptxEditorUtils";
 import type { SlideDragState } from "../pptxEditorUtils";
 import type {
@@ -70,8 +70,10 @@ import {
   PptxChartView,
   PptxEditableTable,
   PptxImageView,
-  PptxReadOnlySlide,
+  PptxObjectLayerPanel,
+  PptxPresentationOverlay,
   PptxShapeView,
+  PptxSlideNavigator,
 } from "../pptxEditorPanels";
 
 type PptxObjectKind = SlideDragState["objectKind"];
@@ -2090,85 +2092,27 @@ export function PptxEditor({
         )}
       </div>
       {presentingSlide && presentingIndex !== null && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          tabIndex={-1}
+        <PptxPresentationOverlay
+          slides={model.slides}
+          presentingIndex={presentingIndex}
+          presentingSlide={presentingSlide}
+          onMove={movePresentation}
+          onClose={() => setPresentingIndex(null)}
           onKeyDown={handlePresentationKeyDown}
-          className="fixed inset-0 z-50 flex flex-col bg-black text-white"
-          autoFocus
-        >
-          <div className="flex h-12 shrink-0 items-center justify-between px-4 text-xs text-white/70">
-            <span>
-              {presentingIndex + 1} / {model.slides.length}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => movePresentation(-1)}
-                disabled={presentingIndex <= 0}
-                className="rounded-md border border-white/20 px-2 py-1 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                onClick={() => movePresentation(1)}
-                disabled={presentingIndex >= model.slides.length - 1}
-                className="rounded-md border border-white/20 px-2 py-1 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Next
-              </button>
-              <button
-                type="button"
-                onClick={() => setPresentingIndex(null)}
-                className="rounded-md border border-white/20 px-2 py-1 hover:bg-white/10"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-            <PptxReadOnlySlide slide={presentingSlide} />
-          </div>
-        </div>
+        />
       )}
       <div className="flex min-h-0 flex-1">
-        <div className="w-40 shrink-0 overflow-y-auto border-r border-[var(--border)] p-2">
-          {model.slides.map((item, index) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setPreferredSlideId(item.id);
-                clearObjectSelection();
-              }}
-              className={cn(
-                "mb-2 block w-full rounded-md border px-2 py-3 text-left text-xs",
-                item.hidden && "opacity-55",
-                item.id === slide?.id
-                  ? "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--text)]"
-                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
-              )}
-            >
-              <span className="flex items-center justify-between gap-2">
-                {t("documentEditor.slideLabel", { index: index + 1 })}
-                {item.hidden && (
-                  <span className="text-[10px] uppercase text-[var(--text-faint)]">
-                    hidden
-                  </span>
-                )}
-              </span>
-              <span className="mt-2 block aspect-video rounded-sm bg-white p-1 text-[8px] leading-tight text-neutral-700 shadow-inner">
-                {[
-                  ...item.texts.slice(0, 2).map((text) => text.text),
-                  ...(item.shapes ?? []).slice(0, 2).map((shape) => shape.kind),
-                  ...(item.charts ?? []).slice(0, 1).map((chart) => chart.title ?? "Chart"),
-                ].join(" / ")}
-              </span>
-            </button>
-          ))}
-        </div>
+        <PptxSlideNavigator
+          slides={model.slides}
+          activeSlideId={slide?.id}
+          slideLabel={(index) =>
+            t("documentEditor.slideLabel", { index: index + 1 })
+          }
+          onSelect={(slideId) => {
+            setPreferredSlideId(slideId);
+            clearObjectSelection();
+          }}
+        />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface)]">
           <div className="min-h-0 flex-1 overflow-y-auto p-6">
             <div
@@ -2630,184 +2574,13 @@ export function PptxEditor({
             slide={slide}
             activeKey={activeObjectKey}
             selectedKeys={selectedObjectKeySet}
-            onSelect={(key, additive) => {
-              const parsed = parsePptxSelectionKey(key);
-              selectObject(parsed.objectKind, parsed.objectId, additive);
-            }}
-            onMove={moveObjectLayer}
+            onSelect={selectObject}
+            onMove={(objectKind, objectId, direction) =>
+              moveObjectLayer(pptxSelectionKey(objectKind, objectId), direction)
+            }
           />
         )}
       </div>
     </div>
   );
-}
-
-function PptxObjectLayerPanel({
-  slide,
-  activeKey,
-  selectedKeys,
-  onSelect,
-  onMove,
-}: {
-  slide: PptxSlide;
-  activeKey: PptxSelectionKey | null;
-  selectedKeys: Set<PptxSelectionKey>;
-  onSelect: (key: PptxSelectionKey, additive: boolean) => void;
-  onMove: (key: PptxSelectionKey, direction: -1 | 1) => void;
-}) {
-  const records = [...pptxSlideLayerRecords(slide)].reverse();
-  return (
-    <aside className="w-56 shrink-0 overflow-y-auto border-l border-[var(--border)] bg-[var(--bg)] p-2">
-      <div className="mb-2 flex items-center gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-        <Layers className="h-3.5 w-3.5" strokeWidth={1.75} />
-        Objects
-      </div>
-      {records.length === 0 ? (
-        <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-4 text-center text-xs text-[var(--text-faint)]">
-          Empty slide
-        </div>
-      ) : (
-        <div className="grid gap-1">
-          {records.map((record) => {
-            const key = pptxSelectionKey(record.objectKind, record.objectId);
-            const selected = selectedKeys.has(key);
-            const typeIndex = pptxLayerTypeIndex(slide, record);
-            const typeLength = pptxLayerTypeLength(slide, record.objectKind);
-            return (
-              <div
-                key={key}
-                className={cn(
-                  "grid grid-cols-[minmax(0,1fr)_auto] gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] p-1.5",
-                  selected && "border-[var(--accent)] bg-[var(--surface-hover)]",
-                  activeKey === key && "ring-1 ring-[var(--accent)]/40",
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={(event) =>
-                    onSelect(key, event.shiftKey || event.metaKey || event.ctrlKey)
-                  }
-                  className="min-w-0 text-left"
-                  title={pptxLayerLabel(record)}
-                >
-                  <span className="block truncate text-xs font-medium text-[var(--text)]">
-                    {pptxLayerLabel(record)}
-                  </span>
-                  <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">
-                    {record.objectKind} · {record.objectId}
-                  </span>
-                </button>
-                <div className="flex gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => onMove(key, 1)}
-                    disabled={typeIndex >= typeLength - 1}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-                    title="Bring forward"
-                  >
-                    <ChevronUp className="h-3 w-3" strokeWidth={1.75} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onMove(key, -1)}
-                    disabled={typeIndex <= 0}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-                    title="Send backward"
-                  >
-                    <ChevronDown className="h-3 w-3" strokeWidth={1.75} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function pptxSlideLayerRecords(slide: PptxSlide): PptxObjectRecord[] {
-  return [
-    ...(slide.shapes ?? []).map((object) => ({
-      objectKind: "shape" as const,
-      objectId: object.id,
-      object,
-    })),
-    ...(slide.images ?? []).map((object) => ({
-      objectKind: "image" as const,
-      objectId: object.id,
-      object,
-    })),
-    ...(slide.charts ?? []).map((object) => ({
-      objectKind: "chart" as const,
-      objectId: object.id,
-      object,
-    })),
-    ...(slide.tables ?? []).map((object) => ({
-      objectKind: "table" as const,
-      objectId: object.id,
-      object,
-    })),
-    ...slide.texts.map((object) => ({
-      objectKind: "text" as const,
-      objectId: object.id,
-      object,
-    })),
-  ];
-}
-
-function pptxLayerLabel(record: PptxObjectRecord) {
-  if (record.objectKind === "text") {
-    const text = (record.object as PptxText).text.trim();
-    return text || "Text box";
-  }
-  if (record.objectKind === "shape") return (record.object as PptxShape).kind;
-  if (record.objectKind === "image") {
-    const image = record.object as PptxImage;
-    return image.altText || image.mediaPath || "Image";
-  }
-  if (record.objectKind === "table") {
-    const table = record.object as PptxTable;
-    return `Table ${table.rows.length}x${Math.max(0, ...table.rows.map((row) => row.length))}`;
-  }
-  const chart = record.object as PptxChart;
-  return chart.title || chart.type || "Chart";
-}
-
-function pptxLayerTypeIndex(slide: PptxSlide, record: PptxObjectRecord) {
-  if (record.objectKind === "text") {
-    return slide.texts.findIndex((item) => item.id === record.objectId);
-  }
-  if (record.objectKind === "shape") {
-    return (slide.shapes ?? []).findIndex((item) => item.id === record.objectId);
-  }
-  if (record.objectKind === "image") {
-    return (slide.images ?? []).findIndex((item) => item.id === record.objectId);
-  }
-  if (record.objectKind === "table") {
-    return (slide.tables ?? []).findIndex((item) => item.id === record.objectId);
-  }
-  return (slide.charts ?? []).findIndex((item) => item.id === record.objectId);
-}
-
-function pptxLayerTypeLength(slide: PptxSlide, objectKind: PptxObjectKind) {
-  if (objectKind === "text") return slide.texts.length;
-  if (objectKind === "shape") return slide.shapes?.length ?? 0;
-  if (objectKind === "image") return slide.images?.length ?? 0;
-  if (objectKind === "table") return slide.tables?.length ?? 0;
-  return slide.charts?.length ?? 0;
-}
-
-function reorderPptxObjectsById<T extends { id: string }>(
-  items: T[],
-  id: string,
-  direction: -1 | 1,
-) {
-  const index = items.findIndex((item) => item.id === id);
-  const nextIndex = index + direction;
-  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return items;
-  const next = [...items];
-  const [moved] = next.splice(index, 1);
-  next.splice(nextIndex, 0, moved);
-  return next;
 }
