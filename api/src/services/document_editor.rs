@@ -13,17 +13,15 @@ mod docx_relationships;
 mod docx_tables;
 mod docx_text_parts;
 mod ooxml_images;
+mod ooxml_package;
 mod text_formats;
 mod validation;
 
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::error::{AppError, AppResult};
 use crate::models::document_editor::{
@@ -63,6 +61,7 @@ use self::ooxml_images::{
     docx_image_block_from_segment, docx_image_relationship_id, docx_relationship_targets,
     next_pptx_media_path,
 };
+use self::ooxml_package::{read_zip_bytes, read_zip_text, replace_zip_entries, zip_entry_names};
 #[cfg(test)]
 use self::text_formats::parse_delimited;
 use self::text_formats::{delimited_bytes, delimited_model, text_bytes, text_model};
@@ -1181,16 +1180,12 @@ fn xlsx_model(bytes: &[u8]) -> AppResult<Value> {
         return Ok(json!({ "sheets": sheets, "definedNames": defined_names }));
     }
 
-    let mut archive = zip_archive(bytes)?;
     let mut sheets = Vec::new();
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(map_zip)?;
-        let name = file.name().to_string();
+    for name in zip_entry_names(bytes)? {
         if !(name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml")) {
             continue;
         }
-        let mut xml = String::new();
-        file.read_to_string(&mut xml).map_err(map_io)?;
+        let xml = read_zip_text(bytes, &name)?;
         let tab_color = parse_sheet_tab_color(&xml);
         let sheet_rels = read_zip_text(bytes, &xlsx_worksheet_rels_path(&name)).ok();
         let hyperlink_targets = sheet_rels
@@ -1348,16 +1343,12 @@ fn update_xlsx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
 }
 
 fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
-    let mut archive = zip_archive(bytes)?;
     let mut slides = Vec::new();
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(map_zip)?;
-        let name = file.name().to_string();
+    for name in zip_entry_names(bytes)? {
         if !(name.starts_with("ppt/slides/slide") && name.ends_with(".xml")) {
             continue;
         }
-        let mut xml = String::new();
-        file.read_to_string(&mut xml).map_err(map_io)?;
+        let xml = read_zip_text(bytes, &name)?;
         let mut texts = pptx_shape_texts(&xml);
         if texts.is_empty() {
             texts = extract_text_tags(&xml, "a:t")
@@ -8047,44 +8038,6 @@ fn read_shared_strings(bytes: &[u8]) -> AppResult<Vec<String>> {
         .collect())
 }
 
-fn replace_zip_entries(original: &[u8], replacements: &[(&str, Vec<u8>)]) -> AppResult<Vec<u8>> {
-    let mut archive = zip_archive(original)?;
-    let mut replacement_map = replacements
-        .iter()
-        .map(|(path, bytes)| ((*path).to_string(), bytes.as_slice()))
-        .collect::<BTreeMap<_, _>>();
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let cursor = Cursor::new(Vec::new());
-    let mut writer = ZipWriter::new(cursor);
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(map_zip)?;
-        let name = file.name().to_string();
-        if file.is_dir() {
-            writer.add_directory(&name, options).map_err(map_zip)?;
-            continue;
-        }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).map_err(map_io)?;
-        let bytes = replacement_map.remove(&name).unwrap_or(contents.as_slice());
-        writer.start_file(&name, options).map_err(map_zip)?;
-        writer.write_all(bytes).map_err(map_io)?;
-    }
-    for (name, bytes) in replacement_map {
-        writer.start_file(&name, options).map_err(map_zip)?;
-        writer.write_all(bytes).map_err(map_io)?;
-    }
-    let cursor = writer.finish().map_err(map_zip)?;
-    Ok(cursor.into_inner())
-}
-
-fn read_zip_text(bytes: &[u8], path: &str) -> AppResult<String> {
-    let mut archive = zip_archive(bytes)?;
-    let mut file = archive.by_name(path).map_err(map_zip)?;
-    let mut text = String::new();
-    file.read_to_string(&mut text).map_err(map_io)?;
-    Ok(text)
-}
-
 fn replacement_zip_text_or_default<F>(
     original: &[u8],
     replacements: &[(String, Vec<u8>)],
@@ -8108,28 +8061,6 @@ fn upsert_zip_replacement(replacements: &mut Vec<(String, Vec<u8>)>, path: Strin
         return;
     }
     replacements.push((path, bytes));
-}
-
-fn read_zip_bytes(bytes: &[u8], path: &str) -> AppResult<Vec<u8>> {
-    let mut archive = zip_archive(bytes)?;
-    let mut file = archive.by_name(path).map_err(map_zip)?;
-    let mut output = Vec::new();
-    file.read_to_end(&mut output).map_err(map_io)?;
-    Ok(output)
-}
-
-fn zip_entry_names(bytes: &[u8]) -> AppResult<Vec<String>> {
-    let mut archive = zip_archive(bytes)?;
-    let mut names = Vec::new();
-    for index in 0..archive.len() {
-        names.push(archive.by_index(index).map_err(map_zip)?.name().to_string());
-    }
-    Ok(names)
-}
-
-fn zip_archive(bytes: &[u8]) -> AppResult<ZipArchive<Cursor<&[u8]>>> {
-    ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| AppError::BadRequest(format!("Invalid OOXML package: {error}")))
 }
 
 fn xml_segments(xml: &str, start_marker: &str, end_marker: &str) -> Vec<String> {
@@ -8380,16 +8311,13 @@ fn unescape_xml(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn map_zip(error: zip::result::ZipError) -> AppError {
-    AppError::BadRequest(format!("OOXML zip operation failed: {error}"))
-}
-
-fn map_io(error: std::io::Error) -> AppError {
-    AppError::Internal(format!("document IO operation failed: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::{Cursor, Write};
+
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
     use super::*;
 
     #[test]

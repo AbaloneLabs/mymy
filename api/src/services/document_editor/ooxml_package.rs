@@ -1,0 +1,86 @@
+//! OOXML ZIP package helpers.
+//!
+//! DOCX, XLSX, and PPTX files all share the same package container rules even
+//! though their editable XML parts differ. Keeping ZIP reads, writes, and entry
+//! replacement in one module gives every Office editor the same failure mode and
+//! preserves unknown package entries while typed format modules replace only the
+//! parts they own.
+
+use std::collections::BTreeMap;
+use std::io::{Cursor, Read, Write};
+
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+use crate::error::{AppError, AppResult};
+
+pub(super) fn replace_zip_entries(
+    original: &[u8],
+    replacements: &[(&str, Vec<u8>)],
+) -> AppResult<Vec<u8>> {
+    let mut archive = zip_archive(original)?;
+    let mut replacement_map = replacements
+        .iter()
+        .map(|(path, bytes)| ((*path).to_string(), bytes.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).map_err(map_zip)?;
+        let name = file.name().to_string();
+        if file.is_dir() {
+            writer.add_directory(&name, options).map_err(map_zip)?;
+            continue;
+        }
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).map_err(map_io)?;
+        let bytes = replacement_map.remove(&name).unwrap_or(contents.as_slice());
+        writer.start_file(&name, options).map_err(map_zip)?;
+        writer.write_all(bytes).map_err(map_io)?;
+    }
+    for (name, bytes) in replacement_map {
+        writer.start_file(&name, options).map_err(map_zip)?;
+        writer.write_all(bytes).map_err(map_io)?;
+    }
+    let cursor = writer.finish().map_err(map_zip)?;
+    Ok(cursor.into_inner())
+}
+
+pub(super) fn read_zip_text(bytes: &[u8], path: &str) -> AppResult<String> {
+    let mut archive = zip_archive(bytes)?;
+    let mut file = archive.by_name(path).map_err(map_zip)?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(map_io)?;
+    Ok(text)
+}
+
+pub(super) fn read_zip_bytes(bytes: &[u8], path: &str) -> AppResult<Vec<u8>> {
+    let mut archive = zip_archive(bytes)?;
+    let mut file = archive.by_name(path).map_err(map_zip)?;
+    let mut output = Vec::new();
+    file.read_to_end(&mut output).map_err(map_io)?;
+    Ok(output)
+}
+
+pub(super) fn zip_entry_names(bytes: &[u8]) -> AppResult<Vec<String>> {
+    let mut archive = zip_archive(bytes)?;
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        names.push(archive.by_index(index).map_err(map_zip)?.name().to_string());
+    }
+    Ok(names)
+}
+
+fn zip_archive(bytes: &[u8]) -> AppResult<ZipArchive<Cursor<&[u8]>>> {
+    ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| AppError::BadRequest(format!("Invalid OOXML package: {error}")))
+}
+
+fn map_zip(error: zip::result::ZipError) -> AppError {
+    AppError::BadRequest(format!("OOXML zip operation failed: {error}"))
+}
+
+fn map_io(error: std::io::Error) -> AppError {
+    AppError::Internal(format!("document IO operation failed: {error}"))
+}
