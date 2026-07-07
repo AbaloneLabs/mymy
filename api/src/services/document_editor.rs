@@ -5,6 +5,7 @@
 //! writes the edited model back by replacing the relevant XML parts while
 //! preserving the rest of the package.
 
+mod compatibility;
 mod docx_comments;
 mod docx_notes;
 mod docx_numbering;
@@ -12,6 +13,8 @@ mod docx_page;
 mod docx_relationships;
 mod docx_tables;
 mod docx_text_parts;
+mod kind;
+mod ooxml_content_types;
 mod ooxml_images;
 mod ooxml_package;
 mod text_formats;
@@ -26,13 +29,13 @@ use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::models::document_editor::{
-    DocumentCompatibilityWarning, DocumentCompatibilityWarningSeverity, DocumentEditorKind,
-    DocumentEditorModelResponse, WriteDocumentEditorModelRequest,
+    DocumentEditorKind, DocumentEditorModelResponse, WriteDocumentEditorModelRequest,
 };
 use crate::services::drive;
 use crate::services::file_observations::fingerprint_path;
 use crate::state::AppState;
 
+use self::compatibility::compatibility_warnings_for_bytes;
 use self::docx_comments::{add_docx_comment_replacements, docx_comments};
 use self::docx_notes::{
     add_docx_note_replacements, docx_note_reference_run, docx_notes,
@@ -57,6 +60,9 @@ use self::docx_tables::{
     parse_docx_table_style,
 };
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
+pub use self::kind::editor_kind_for_path;
+use self::kind::mime_type_for_editor;
+use self::ooxml_content_types::{ensure_content_type_default, ensure_content_type_override};
 use self::ooxml_images::{
     add_docx_image_replacements, build_docx_image_paragraph, decode_pptx_image_data_url,
     docx_image_block_from_segment, docx_image_relationship_id, docx_relationship_targets,
@@ -70,11 +76,15 @@ use self::validation::validate_saved_document_bytes;
 #[cfg(test)]
 use self::validation::{validate_ooxml_package, validate_structured_text_for_path};
 use self::xml_utils::{
-    attr_value, escape_xml, extract_text_tags, find_xml_start, find_xml_tag_start, first_tag_text,
-    remove_xml_named_elements, replace_empty_xml_element, replace_tag_texts, replace_xml_element,
-    set_first_xml_tag_attrs, set_xml_attr, unescape_xml, xml_empty_elements,
-    xml_first_empty_tag_attr, xml_has_named_empty_tag, xml_named_empty_elements,
-    xml_named_segments, xml_named_start_tag, xml_segments,
+    append_before_or_end, attr_value, escape_xml, extract_text_tags, find_xml_start,
+    find_xml_tag_start, first_tag_text, remove_xml_named_elements, replace_empty_xml_element,
+    replace_tag_texts, replace_xml_element, set_first_xml_tag_attrs, set_xml_attr, unescape_xml,
+    xml_empty_elements, xml_first_empty_tag_attr, xml_has_named_empty_tag,
+    xml_named_empty_elements, xml_named_segments, xml_named_start_tag, xml_segments,
+};
+#[cfg(test)]
+use crate::models::document_editor::{
+    DocumentCompatibilityWarning, DocumentCompatibilityWarningSeverity,
 };
 
 const PPTX_SLIDE_WIDTH_EMU: f64 = 9_144_000.0;
@@ -498,26 +508,6 @@ pub async fn write_model(
     read_model(state, &resolved.logical_path).await
 }
 
-pub fn editor_kind_for_path(path: &Path) -> DocumentEditorKind {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "md" | "markdown" => DocumentEditorKind::Markdown,
-        "txt" | "log" | "json" | "yaml" | "yml" | "toml" | "css" | "js" | "mjs" | "cjs" | "ts"
-        | "tsx" | "rs" | "py" | "sh" => DocumentEditorKind::Text,
-        "csv" => DocumentEditorKind::Csv,
-        "tsv" => DocumentEditorKind::Tsv,
-        "docx" => DocumentEditorKind::Docx,
-        "xlsx" => DocumentEditorKind::Xlsx,
-        "pptx" => DocumentEditorKind::Pptx,
-        _ => DocumentEditorKind::Preview,
-    }
-}
-
 async fn fingerprint_token(path: &Path) -> AppResult<String> {
     let fingerprint = fingerprint_path(path).await.map_err(AppError::Internal)?;
     let modified = fingerprint
@@ -528,26 +518,6 @@ async fn fingerprint_token(path: &Path) -> AppResult<String> {
         "{}:{}:{}",
         fingerprint.hash, fingerprint.size, modified
     ))
-}
-
-fn mime_type_for_editor(kind: DocumentEditorKind) -> String {
-    match kind {
-        DocumentEditorKind::Markdown => "text/markdown",
-        DocumentEditorKind::Text => "text/plain",
-        DocumentEditorKind::Csv => "text/csv",
-        DocumentEditorKind::Tsv => "text/tab-separated-values",
-        DocumentEditorKind::Docx => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }
-        DocumentEditorKind::Xlsx => {
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        }
-        DocumentEditorKind::Pptx => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        }
-        DocumentEditorKind::Preview => "application/octet-stream",
-    }
-    .to_string()
 }
 
 fn model_from_bytes(kind: DocumentEditorKind, bytes: &[u8]) -> AppResult<Value> {
@@ -579,237 +549,6 @@ fn bytes_from_model(
         DocumentEditorKind::Preview => {
             Err(AppError::BadRequest("File type is not editable".into()))
         }
-    }
-}
-
-fn compatibility_warnings_for_bytes(
-    kind: DocumentEditorKind,
-    bytes: &[u8],
-) -> Vec<DocumentCompatibilityWarning> {
-    match kind {
-        DocumentEditorKind::Docx => docx_compatibility_warnings(bytes),
-        DocumentEditorKind::Xlsx => xlsx_compatibility_warnings(bytes),
-        DocumentEditorKind::Pptx => pptx_compatibility_warnings(bytes),
-        DocumentEditorKind::Markdown
-        | DocumentEditorKind::Text
-        | DocumentEditorKind::Csv
-        | DocumentEditorKind::Tsv
-        | DocumentEditorKind::Preview => Vec::new(),
-    }
-}
-
-fn docx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning> {
-    let names = zip_entry_names(bytes).unwrap_or_default();
-    let document = read_zip_text(bytes, "word/document.xml").unwrap_or_default();
-    let mut warnings = Vec::new();
-    push_warning_if(
-        &mut warnings,
-        document.contains("<w:drawing") || document.contains("<w:pict"),
-        "docx-drawing",
-        DocumentCompatibilityWarningSeverity::Warning,
-        "Drawings and images are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names
-            .iter()
-            .any(|name| name.starts_with("word/header") || name.starts_with("word/footer")),
-        "docx-header-footer",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Headers and footers are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        document.contains("<w:numPr") || names.iter().any(|name| name == "word/numbering.xml"),
-        "docx-numbering",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Lists and numbering are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name == "word/comments.xml")
-            || document.contains("<w:commentRangeStart"),
-        "docx-comments",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Comments and comment ranges are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names
-            .iter()
-            .any(|name| name == "word/footnotes.xml" || name == "word/endnotes.xml"),
-        "docx-notes",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Footnotes and endnotes are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        document.contains("<w:ins") || document.contains("<w:del"),
-        "docx-track-changes",
-        DocumentCompatibilityWarningSeverity::Warning,
-        "Tracked changes are preserved in the document package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        document.contains("<w:sectPr"),
-        "docx-section",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Page sections and layout settings are preserved in the document package.",
-    );
-    warnings
-}
-
-fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning> {
-    let names = zip_entry_names(bytes).unwrap_or_default();
-    let sheet_xml = names
-        .iter()
-        .filter(|name| name.starts_with("xl/worksheets/") && name.ends_with(".xml"))
-        .filter_map(|name| read_zip_text(bytes, name).ok())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut warnings = Vec::new();
-    push_warning_if(
-        &mut warnings,
-        sheet_xml.contains("<f"),
-        "xlsx-formulas",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Formulas and cached values are preserved in the workbook package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name == "xl/styles.xml"),
-        "xlsx-styles",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Workbook styles are preserved in the workbook package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        sheet_xml.contains("<mergeCells") || sheet_xml.contains("<mergeCell"),
-        "xlsx-merged-cells",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Merged cells are preserved in the workbook package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        sheet_xml.contains("<conditionalFormatting"),
-        "xlsx-conditional-formatting",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Conditional formatting is preserved. Basic cell, text, formula, duplicate, and highlight rule editing is available.",
-    );
-    push_warning_if(
-        &mut warnings,
-        sheet_xml.contains("<dataValidations") || sheet_xml.contains("<dataValidation"),
-        "xlsx-data-validation",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Data validation rules are preserved. Basic range, list, numeric/date/time/text, custom formula, and message editing is available.",
-    );
-    push_warning_if(
-        &mut warnings,
-        sheet_xml.contains("<hyperlinks") || sheet_xml.contains("<hyperlink"),
-        "xlsx-hyperlinks",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Spreadsheet hyperlinks are preserved and can be edited for cell ranges.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name.starts_with("xl/charts/")),
-        "xlsx-charts",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Charts and chart data are preserved in the workbook package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name.starts_with("xl/pivotTables/")),
-        "xlsx-pivots",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Pivot tables and pivot cache parts are preserved in the workbook package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name == "xl/vbaProject.bin"),
-        "xlsx-macros",
-        DocumentCompatibilityWarningSeverity::Danger,
-        "This workbook contains macros. Macro parts are preserved in the workbook package.",
-    );
-    warnings
-}
-
-fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning> {
-    let names = zip_entry_names(bytes).unwrap_or_default();
-    let slide_xml = names
-        .iter()
-        .filter(|name| name.starts_with("ppt/slides/") && name.ends_with(".xml"))
-        .filter_map(|name| read_zip_text(bytes, name).ok())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut warnings = Vec::new();
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name.starts_with("ppt/media/")) || slide_xml.contains("<p:pic"),
-        "pptx-media",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Slide media parts are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names.iter().any(|name| name.starts_with("ppt/charts/")),
-        "pptx-charts",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Charts and chart data are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        slide_xml.contains("<a:tbl"),
-        "pptx-tables",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Slide tables are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        names
-            .iter()
-            .any(|name| name.starts_with("ppt/notesSlides/")),
-        "pptx-notes",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Speaker notes are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        slide_xml.contains("<p:transition"),
-        "pptx-transitions",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Slide transitions are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        slide_xml.contains("<p:timing"),
-        "pptx-animations",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Animation timing nodes are preserved in the presentation package.",
-    );
-    push_warning_if(
-        &mut warnings,
-        slide_xml.contains("<p:grpSp"),
-        "pptx-groups",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Grouped shapes are preserved in the presentation package.",
-    );
-    warnings
-}
-
-fn push_warning_if(
-    warnings: &mut Vec<DocumentCompatibilityWarning>,
-    condition: bool,
-    code: &str,
-    severity: DocumentCompatibilityWarningSeverity,
-    message: &str,
-) {
-    if condition {
-        warnings.push(DocumentCompatibilityWarning {
-            code: code.to_string(),
-            severity,
-            message: message.to_string(),
-        });
     }
 }
 
@@ -1014,32 +753,6 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
         .map(|(path, bytes)| (path.as_str(), bytes.clone()))
         .collect::<Vec<_>>();
     replace_zip_entries(original, &replacement_refs)
-}
-
-fn ensure_content_type_default(content_types: &str, extension: &str, content_type: &str) -> String {
-    if content_types.contains(&format!(r#"Extension="{extension}""#)) {
-        return content_types.to_string();
-    }
-    append_before_or_end(
-        content_types,
-        "</Types>",
-        &format!(r#"<Default Extension="{extension}" ContentType="{content_type}"/>"#),
-    )
-}
-
-fn ensure_content_type_override(
-    content_types: &str,
-    part_name: &str,
-    content_type: &str,
-) -> String {
-    if content_types.contains(&format!(r#"PartName="{part_name}""#)) {
-        return content_types.to_string();
-    }
-    append_before_or_end(
-        content_types,
-        "</Types>",
-        &format!(r#"<Override PartName="{part_name}" ContentType="{content_type}"/>"#),
-    )
 }
 
 fn replace_docx_paragraph_text(paragraph: &str, text: &str) -> String {
@@ -7944,18 +7657,6 @@ fn append_pptx_notes_content_types(content_types: &str, notes_paths: &[String]) 
         output = append_before_or_end(&output, "</Types>", &override_xml);
     }
     output
-}
-
-fn append_before_or_end(xml: &str, marker: &str, inserted: &str) -> String {
-    if let Some(index) = xml.find(marker) {
-        let mut output = String::new();
-        output.push_str(&xml[..index]);
-        output.push_str(inserted);
-        output.push_str(&xml[index..]);
-        output
-    } else {
-        format!("{xml}{inserted}")
-    }
 }
 
 fn next_rid(rels: &str) -> usize {

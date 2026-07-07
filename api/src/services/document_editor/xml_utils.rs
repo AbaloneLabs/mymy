@@ -7,6 +7,18 @@
 //! string-oriented because they operate on already-scoped XML fragments rather
 //! than serving as a general XML parser.
 
+pub(super) fn append_before_or_end(xml: &str, marker: &str, inserted: &str) -> String {
+    if let Some(index) = xml.find(marker) {
+        let mut output = String::new();
+        output.push_str(&xml[..index]);
+        output.push_str(inserted);
+        output.push_str(&xml[index..]);
+        output
+    } else {
+        format!("{xml}{inserted}")
+    }
+}
+
 pub(super) fn replace_xml_element(xml: &str, tag: &str, replacement: &str) -> Option<String> {
     let start_marker = format!("<{tag}");
     let end_marker = format!("</{tag}>");
