@@ -22,7 +22,7 @@ export type PptxObjectRecord = {
   object: PptxObject;
 };
 export type PptxGeometryPatch = Partial<
-  Pick<PptxObject, "x" | "y" | "width" | "height" | "rotation">
+  Pick<PptxObject, "x" | "y" | "width" | "height" | "rotation" | "groupId">
 >;
 export type PptxSelectionBox = {
   startX: number;

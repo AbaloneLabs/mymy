@@ -6,6 +6,8 @@ import type {
   EditorFontUploadResponse,
   EditorKeymapEntry,
   EditorKeymapResponse,
+  EditorPreferences,
+  EditorPreferencesResponse,
 } from "@/types/editorSettings";
 
 export const builtInFontFamilies = [
@@ -63,6 +65,26 @@ export function useUpdateEditorKeymap() {
       api.put<EditorKeymapResponse>("/editor-settings/keymap", { shortcuts }),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: ["editor-settings", "keymap"] }),
+  });
+}
+
+export function useEditorPreferences() {
+  return useQuery({
+    queryKey: ["editor-settings", "preferences"],
+    queryFn: () =>
+      api.get<EditorPreferencesResponse>("/editor-settings/preferences"),
+  });
+}
+
+export function useUpdateEditorPreferences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (preferences: EditorPreferences) =>
+      api.put<EditorPreferencesResponse>("/editor-settings/preferences", {
+        preferences,
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["editor-settings", "preferences"] }),
   });
 }
 

@@ -156,6 +156,9 @@ export function XlsxEditor({
   const [activeCell, setActiveCell] = useState<CellPosition | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
+  const [extraSelectionRanges, setExtraSelectionRanges] = useState<
+    NormalizedCellRange[]
+  >([]);
   const [fillDrag, setFillDrag] = useState<{
     source: NormalizedCellRange;
     end: CellPosition;
@@ -202,6 +205,18 @@ export function XlsxEditor({
     visibleColumns.slice(columnWindow.end),
   );
   const selectionRange = normalizeCellRange(selectionAnchor, selectionEnd);
+  const activeSingleCellRange = activeCell
+    ? {
+        top: activeCell.row,
+        right: activeCell.column,
+        bottom: activeCell.row,
+        left: activeCell.column,
+      }
+    : null;
+  const selectedRanges = [
+    ...extraSelectionRanges,
+    ...(selectionRange ? [selectionRange] : activeSingleCellRange ? [activeSingleCellRange] : []),
+  ];
   const activeDefinedNameValue =
     sheet && selectionRange
       ? xlsxDefinedNameValueForSheet(sheet.name, selectionRange)
@@ -260,8 +275,10 @@ export function XlsxEditor({
   const frozenRows = sheet?.frozenRows ?? 0;
   const frozenColumns = sheet?.frozenColumns ?? 0;
   const selectedValues =
-    displayGridSheet && selectionRange
-      ? valuesFromXlsxRange(displayGridSheet, columnCount, selectionRange, showFormulas)
+    displayGridSheet && selectedRanges.length > 0
+      ? selectedRanges.flatMap((range) =>
+          valuesFromXlsxRange(displayGridSheet, columnCount, range, showFormulas),
+        )
       : activeCellValue
         ? [[activeCellValue]]
         : [];
@@ -460,17 +477,29 @@ export function XlsxEditor({
     );
   }
 
-  function selectCell(position: CellPosition, extend = false) {
+  function selectCell(position: CellPosition, extend = false, additive = false) {
     setActiveCell(position);
+    if (additive) {
+      if (selectionRange) {
+        setExtraSelectionRanges((current) =>
+          addSpreadsheetSelectionRange(current, selectionRange),
+        );
+      }
+      setSelectionAnchor(position);
+      setSelectionEnd(position);
+      return;
+    }
     if (extend && selectionAnchor) {
       setSelectionEnd(position);
     } else {
+      setExtraSelectionRanges([]);
       setSelectionAnchor(position);
       setSelectionEnd(position);
     }
   }
 
   function selectAllCells() {
+    setExtraSelectionRanges([]);
     setActiveCell({ row: 0, column: 0 });
     setSelectionAnchor({ row: 0, column: 0 });
     setSelectionEnd({
@@ -481,6 +510,7 @@ export function XlsxEditor({
   }
 
   function selectColumn(column: number) {
+    setExtraSelectionRanges([]);
     setActiveCell({ row: 0, column });
     setSelectionAnchor({ row: 0, column });
     setSelectionEnd({
@@ -491,6 +521,7 @@ export function XlsxEditor({
   }
 
   function selectRow(row: number) {
+    setExtraSelectionRanges([]);
     setActiveCell({ row, column: 0 });
     setSelectionAnchor({ row, column: 0 });
     setSelectionEnd({
@@ -501,8 +532,15 @@ export function XlsxEditor({
   }
 
   async function copySelection() {
-    if (!sheet || !selectionRange) return;
-    await navigator.clipboard?.writeText(rangeToClipboardText(selectedValues));
+    if (!sheet || !displayGridSheet || selectedRanges.length === 0) return;
+    const text = selectedRanges
+      .map((range) =>
+        rangeToClipboardText(
+          valuesFromXlsxRange(displayGridSheet, columnCount, range, showFormulas),
+        ),
+      )
+      .join("\n\n");
+    await navigator.clipboard?.writeText(text);
   }
 
   function fillDown() {
@@ -919,6 +957,7 @@ export function XlsxEditor({
     setActiveCell(null);
     setSelectionAnchor(null);
     setSelectionEnd(null);
+    setExtraSelectionRanges([]);
   }
 
   function deleteActiveColumn() {
@@ -979,6 +1018,7 @@ export function XlsxEditor({
     setActiveCell(null);
     setSelectionAnchor(null);
     setSelectionEnd(null);
+    setExtraSelectionRanges([]);
   }
 
   function clearActiveCell() {
@@ -990,17 +1030,9 @@ export function XlsxEditor({
     updater: (cell: XlsxCell, rowIndex: number, cellIndex: number) => XlsxCell,
   ) {
     if (!sheet) return;
-    const range =
-      selectionRange ??
-      (activeCell
-        ? {
-            top: activeCell.row,
-            right: activeCell.column,
-            bottom: activeCell.row,
-            left: activeCell.column,
-          }
-        : null);
-    if (!range) return;
+    if (selectedRanges.length === 0) return;
+    const bottom = Math.max(...selectedRanges.map((range) => range.bottom));
+    const right = Math.max(...selectedRanges.map((range) => range.right));
     commitXlsxModel({
       sheets: model.sheets.map((item) =>
         item.id === sheet.id
@@ -1008,10 +1040,12 @@ export function XlsxEditor({
               ...item,
               rows: ensureXlsxRows(
                 item,
-                range.bottom + 1,
-                Math.max(columnCount, range.right + 1),
+                bottom + 1,
+                Math.max(columnCount, right + 1),
               ).map((row, rowIndex) =>
-                rowIndex >= range.top && rowIndex <= range.bottom
+                selectedRanges.some(
+                  (range) => rowIndex >= range.top && rowIndex <= range.bottom,
+                )
                   ? {
                       ...row,
                       cells: normalizeXlsxCells(
@@ -1019,7 +1053,13 @@ export function XlsxEditor({
                         columnCount,
                         row.index || String(rowIndex + 1),
                       ).map((cell, cellIndex) =>
-                        cellIndex >= range.left && cellIndex <= range.right
+                        selectedRanges.some(
+                          (range) =>
+                            rowIndex >= range.top &&
+                            rowIndex <= range.bottom &&
+                            cellIndex >= range.left &&
+                            cellIndex <= range.right,
+                        )
                           ? updater(cell, rowIndex, cellIndex)
                           : cell,
                       ),
@@ -1630,7 +1670,9 @@ export function XlsxEditor({
       <SpreadsheetToolbar
         activeCellLabel={
           selectionRange
-            ? rangeToA1(selectionRange)
+            ? extraSelectionRanges.length > 0
+              ? `${rangeToA1(selectionRange)} +${extraSelectionRanges.length}`
+              : rangeToA1(selectionRange)
             : activeCell
               ? `${columnName(activeCell.column)}${activeCell.row + 1}`
               : "-"
@@ -1695,7 +1737,7 @@ export function XlsxEditor({
         )}
         canDeleteColumn={Boolean(activeCell && columnCount > 1)}
         canClearCell={Boolean(activeCell)}
-        canCopy={Boolean(selectionRange)}
+        canCopy={selectedRanges.length > 0}
         canFillDown={Boolean(selectionRange && selectionRange.bottom > selectionRange.top)}
         canFillRight={Boolean(selectionRange && selectionRange.right > selectionRange.left)}
         canSetAutoFilter={Boolean(selectionRange)}
@@ -1706,7 +1748,7 @@ export function XlsxEditor({
         canApplyHyperlink={Boolean(validationRange)}
         canApplyComment={Boolean(validationRange)}
         canHide={Boolean(selectionRange)}
-        canFormat={Boolean(activeCell || selectionRange)}
+        canFormat={selectedRanges.length > 0}
         canSort={Boolean(activeCell)}
       />
       <SpreadsheetSheetTabs
@@ -1715,6 +1757,9 @@ export function XlsxEditor({
         onSelectSheet={(sheetId) => {
           setPreferredSheetId(sheetId);
           setActiveCell(null);
+          setSelectionAnchor(null);
+          setSelectionEnd(null);
+          setExtraSelectionRanges([]);
         }}
         onAddSheet={addSheet}
         onDuplicateSheet={duplicateSheet}
@@ -1762,6 +1807,7 @@ export function XlsxEditor({
         rightColumnSpacerWidth={rightColumnSpacerWidth}
         activeCell={activeCell}
         selectionRange={selectionRange}
+        extraSelectionRanges={extraSelectionRanges}
         fillDrag={fillDrag}
         fillPreviewRange={fillPreviewRange}
         showFormulas={showFormulas}
@@ -1780,5 +1826,22 @@ export function XlsxEditor({
       />
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
+  );
+}
+
+function addSpreadsheetSelectionRange(
+  ranges: NormalizedCellRange[],
+  range: NormalizedCellRange,
+) {
+  if (ranges.some((item) => sameSpreadsheetRange(item, range))) return ranges;
+  return [...ranges, range];
+}
+
+function sameSpreadsheetRange(left: NormalizedCellRange, right: NormalizedCellRange) {
+  return (
+    left.top === right.top &&
+    left.right === right.right &&
+    left.bottom === right.bottom &&
+    left.left === right.left
   );
 }

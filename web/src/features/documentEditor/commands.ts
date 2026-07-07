@@ -47,6 +47,8 @@ export type EditorCommandId =
   | "alignBottom"
   | "distributeHorizontal"
   | "distributeVertical"
+  | "group"
+  | "ungroup"
   | "sendBackward"
   | "bringForward"
   | "bulletList"
@@ -427,6 +429,15 @@ const PRESENTATION_COMMANDS: EditorCommandDefinition[] = [
   }),
   command("bringForward", "Bring forward", "Ctrl/Cmd+Shift+]", {
     key: "]",
+    primary: true,
+    shift: true,
+  }),
+  command("group", "Group", "Ctrl/Cmd+G", {
+    key: "g",
+    primary: true,
+  }),
+  command("ungroup", "Ungroup", "Ctrl/Cmd+Shift+G", {
+    key: "g",
     primary: true,
     shift: true,
   }),

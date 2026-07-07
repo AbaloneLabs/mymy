@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -73,6 +74,7 @@ export function SpreadsheetGrid({
   rightColumnSpacerWidth,
   activeCell,
   selectionRange,
+  extraSelectionRanges,
   fillDrag,
   fillPreviewRange,
   showFormulas,
@@ -103,6 +105,7 @@ export function SpreadsheetGrid({
   rightColumnSpacerWidth: number;
   activeCell: CellPosition | null;
   selectionRange: NormalizedCellRange | null;
+  extraSelectionRanges: NormalizedCellRange[];
   fillDrag: SpreadsheetFillDrag | null;
   fillPreviewRange: NormalizedCellRange | null;
   showFormulas: boolean;
@@ -119,7 +122,11 @@ export function SpreadsheetGrid({
     rowIndex: number,
   ) => void;
   onUpdateCell: (rowIndex: number, cellIndex: number, value: string) => void;
-  onSelectCell: (position: CellPosition, extend?: boolean) => void;
+  onSelectCell: (
+    position: CellPosition,
+    extend?: boolean,
+    additive?: boolean,
+  ) => void;
   onCellKeyDown: (
     event: ReactKeyboardEvent<HTMLInputElement>,
     rowIndex: number,
@@ -136,6 +143,8 @@ export function SpreadsheetGrid({
     source: NormalizedCellRange,
   ) => void;
 }) {
+  const skipNextFocusSelectRef = useRef(false);
+
   return (
     <div
       ref={gridRef}
@@ -151,6 +160,9 @@ export function SpreadsheetGrid({
                 "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
                 rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
                   "bg-[var(--accent)]/10 text-[var(--accent)]",
+                extraSelectionRanges.some((range) =>
+                  rangeCoversSheet(range, displayRowLimit, columnCount),
+                ) && "bg-[var(--accent)]/10 text-[var(--accent)]",
               )}
               title="Select all cells"
             />
@@ -169,6 +181,9 @@ export function SpreadsheetGrid({
                   "group relative sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
                   rangeCoversColumn(selectionRange, index, displayRowLimit) &&
                     "bg-[var(--accent)]/10 text-[var(--accent)]",
+                  extraSelectionRanges.some((range) =>
+                    rangeCoversColumn(range, index, displayRowLimit),
+                  ) && "bg-[var(--accent)]/10 text-[var(--accent)]",
                 )}
                 style={{
                   minWidth: xlsxColumnWidthPx(sheet, index),
@@ -214,6 +229,9 @@ export function SpreadsheetGrid({
                   "group relative sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
                   rangeCoversRow(selectionRange, rowIndex, columnCount) &&
                     "bg-[var(--accent)]/10 text-[var(--accent)]",
+                  extraSelectionRanges.some((range) =>
+                    rangeCoversRow(range, rowIndex, columnCount),
+                  ) && "bg-[var(--accent)]/10 text-[var(--accent)]",
                 )}
               >
                 {row.index || rowIndex + 1}
@@ -262,6 +280,9 @@ export function SpreadsheetGrid({
                   columnCount,
                 );
                 const hasConditionalStyle = conditionalStyle.backgroundColor !== undefined;
+                const inExtraSelection = extraSelectionRanges.some((range) =>
+                  spreadsheetRangeContainsCell(range, rowIndex, cellIndex),
+                );
                 return (
                   <td
                     key={`${cell.ref}:${cellIndex}`}
@@ -273,6 +294,8 @@ export function SpreadsheetGrid({
                         rowIndex,
                         cellIndex,
                       ),
+                      inExtraSelection &&
+                        "bg-[var(--accent)]/5 outline outline-1 outline-offset-[-1px] outline-[var(--accent)]/45",
                       mergedClass,
                       hasValidation &&
                         "shadow-[inset_0_-2px_0_rgba(132,204,22,0.55)]",
@@ -292,12 +315,24 @@ export function SpreadsheetGrid({
                       onChange={(event) =>
                         onUpdateCell(rowIndex, cellIndex, event.target.value)
                       }
-                      onFocus={() =>
-                        onSelectCell({ row: rowIndex, column: cellIndex })
-                      }
-                      onMouseDown={(event) =>
-                        onSelectCell({ row: rowIndex, column: cellIndex }, event.shiftKey)
-                      }
+                      onFocus={() => {
+                        if (skipNextFocusSelectRef.current) {
+                          skipNextFocusSelectRef.current = false;
+                          return;
+                        }
+                        onSelectCell({ row: rowIndex, column: cellIndex });
+                      }}
+                      onMouseDown={(event) => {
+                        skipNextFocusSelectRef.current = true;
+                        window.setTimeout(() => {
+                          skipNextFocusSelectRef.current = false;
+                        }, 0);
+                        onSelectCell(
+                          { row: rowIndex, column: cellIndex },
+                          event.shiftKey,
+                          event.metaKey || event.ctrlKey,
+                        );
+                      }}
                       onMouseEnter={(event) => {
                         if (fillDrag && event.buttons === 1) {
                           onSetFillDrag({

@@ -8,6 +8,7 @@ import { HighlightedCodeBlock } from "./codeHighlight";
 import { MediaTagList } from "./media";
 import { stripMediaTags } from "./mediaTags";
 import { ToolResultView } from "./toolResults";
+import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
 
 export function MessageRow({
   message,
@@ -16,6 +17,7 @@ export function MessageRow({
   footer,
   streaming = false,
   onOpenDocument,
+  onOpenPreview,
 }: {
   message: ChatMessage;
   toolCall?: ToolCall;
@@ -23,6 +25,7 @@ export function MessageRow({
   footer?: ReactNode;
   streaming?: boolean;
   onOpenDocument?: (path: string) => void;
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
@@ -40,6 +43,7 @@ export function MessageRow({
         toolName={toolCall?.name ?? "tool"}
         toolArguments={toolCall?.arguments ?? "{}"}
         onOpenDocument={onOpenDocument}
+        onOpenPreview={onOpenPreview}
       />
     );
   }
@@ -76,11 +80,13 @@ function ToolMessageRow({
   toolName,
   toolArguments,
   onOpenDocument,
+  onOpenPreview,
 }: {
   message: ChatMessage;
   toolName: string;
   toolArguments: string;
   onOpenDocument?: (path: string) => void;
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   return (
     <div className="flex max-w-[920px] items-stretch gap-3">
@@ -92,6 +98,7 @@ function ToolMessageRow({
           argumentsText={toolArguments}
           detail={message.content}
           onOpenDocument={onOpenDocument}
+          onOpenPreview={onOpenPreview}
         />
       </div>
     </div>

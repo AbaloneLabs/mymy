@@ -67,6 +67,7 @@ export function DocumentEditorPane({
           key={`${data.path}:${data.fingerprint}`}
           data={data}
           onDirtyChange={onDirtyChange}
+          onReload={() => void query.refetch()}
         />
       )}
     </aside>
@@ -76,9 +77,11 @@ export function DocumentEditorPane({
 function DocumentEditorContent({
   data,
   onDirtyChange,
+  onReload,
 }: {
   data: DocumentEditorModelResponse;
   onDirtyChange?: (dirty: boolean) => void;
+  onReload: () => void;
 }) {
   const { t } = useTranslation();
   const session = useDocumentEditorSession({ data, onDirtyChange });
@@ -89,6 +92,7 @@ function DocumentEditorContent({
     lastSavedAt,
     isSaving,
     saveError,
+    saveConflict,
     canUndo,
     canRedo,
     keymapEntries,
@@ -141,6 +145,18 @@ function DocumentEditorContent({
       {saveError && (
         <div className="border-b border-[var(--status-error)]/40 bg-[var(--status-error)]/10 px-4 py-2 text-xs text-[var(--status-error)]">
           {t("documentEditor.saveError")}
+        </div>
+      )}
+      {saveConflict && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-4 py-2 text-xs text-[var(--status-warning)]">
+          <span>{t("documentEditor.conflictMessage")}</span>
+          <button
+            type="button"
+            onClick={onReload}
+            className="shrink-0 rounded-md border border-[var(--status-warning)]/40 px-2 py-1 hover:bg-[var(--status-warning)]/10"
+          >
+            {t("documentEditor.reload")}
+          </button>
         </div>
       )}
       {commandPaletteOpen && (

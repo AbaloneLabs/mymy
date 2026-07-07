@@ -45,3 +45,12 @@ export interface EditorKeymapEntry {
 export interface EditorKeymapResponse {
   shortcuts: EditorKeymapEntry[];
 }
+
+export interface EditorPreferences {
+  autosaveEnabled: boolean;
+  autosaveDelayMs: number;
+}
+
+export interface EditorPreferencesResponse {
+  preferences: EditorPreferences;
+}

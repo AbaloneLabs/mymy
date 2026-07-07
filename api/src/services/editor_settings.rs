@@ -13,13 +13,17 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::models::editor_settings::{EditorFont, EditorKeymapEntry, EditorKeymapShortcut};
+use crate::models::editor_settings::{
+    EditorFont, EditorKeymapEntry, EditorKeymapShortcut, EditorPreferences,
+};
 use crate::state::AppState;
 
 const MAX_FONT_BYTES: usize = 30 * 1024 * 1024;
 const FONT_URL_PREFIX: &str = "/api/editor-settings/fonts";
 const MAX_KEYMAP_ENTRIES: usize = 512;
 const MAX_KEYMAP_FIELD_CHARS: usize = 64;
+const MIN_AUTOSAVE_DELAY_MS: u64 = 1_000;
+const MAX_AUTOSAVE_DELAY_MS: u64 = 60_000;
 
 #[derive(Debug, Clone)]
 pub struct EditorFontPackageFile {
@@ -173,6 +177,44 @@ pub fn write_keymap(
 
 fn keymap_path(state: &AppState) -> PathBuf {
     editor_settings_root(state).join("keymap.json")
+}
+
+pub fn read_preferences(state: &AppState) -> AppResult<EditorPreferences> {
+    ensure_editor_settings_root(state)?;
+    let path = preferences_path(state);
+    if !path.is_file() {
+        return Ok(EditorPreferences::default());
+    }
+    let bytes = fs::read(path)?;
+    let preferences: EditorPreferences = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::BadRequest(format!("Invalid editor preferences: {error}")))?;
+    validate_preferences(&preferences)?;
+    Ok(preferences)
+}
+
+pub fn write_preferences(
+    state: &AppState,
+    preferences: EditorPreferences,
+) -> AppResult<EditorPreferences> {
+    ensure_editor_settings_root(state)?;
+    validate_preferences(&preferences)?;
+    let bytes = serde_json::to_vec_pretty(&preferences)
+        .map_err(|error| AppError::Internal(format!("serialize preferences failed: {error}")))?;
+    fs::write(preferences_path(state), bytes)?;
+    Ok(preferences)
+}
+
+fn preferences_path(state: &AppState) -> PathBuf {
+    editor_settings_root(state).join("preferences.json")
+}
+
+fn validate_preferences(preferences: &EditorPreferences) -> AppResult<()> {
+    if !(MIN_AUTOSAVE_DELAY_MS..=MAX_AUTOSAVE_DELAY_MS).contains(&preferences.autosave_delay_ms) {
+        return Err(AppError::BadRequest(
+            "Autosave delay must be between 1000 and 60000 ms".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_keymap(shortcuts: &[EditorKeymapEntry]) -> AppResult<()> {
@@ -685,6 +727,26 @@ mod tests {
         ];
 
         assert!(validate_keymap(&shortcuts).is_err());
+    }
+
+    #[test]
+    fn preferences_validation_accepts_supported_autosave_delay() {
+        let preferences = EditorPreferences {
+            autosave_enabled: true,
+            autosave_delay_ms: 5_000,
+        };
+
+        validate_preferences(&preferences).expect("supported autosave delay should pass");
+    }
+
+    #[test]
+    fn preferences_validation_rejects_unsafe_autosave_delay() {
+        let preferences = EditorPreferences {
+            autosave_enabled: true,
+            autosave_delay_ms: 250,
+        };
+
+        assert!(validate_preferences(&preferences).is_err());
     }
 
     fn minimal_ttf_with_family_name(name: &str) -> Vec<u8> {

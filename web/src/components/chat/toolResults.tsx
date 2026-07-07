@@ -9,8 +9,12 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-import { API_BASE } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import {
+  apiPreviewPathHref,
+  processUrlBrowserSource,
+} from "@/features/drive/browserSources";
+import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
 import { CodeBlock } from "./codeHighlight";
 import { languageFromTitle } from "./codeLanguage";
 import { MediaTagList } from "./media";
@@ -85,9 +89,11 @@ import {
 export function ToolEventRow({
   event,
   onOpenDocument,
+  onOpenPreview,
 }: {
   event: ToolEvent;
   onOpenDocument?: (path: string) => void;
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   return (
     <ToolResultView
@@ -96,6 +102,7 @@ export function ToolEventRow({
       argumentsText={event.arguments}
       detail={event.detail}
       onOpenDocument={onOpenDocument}
+      onOpenPreview={onOpenPreview}
     />
   );
 }
@@ -106,12 +113,14 @@ export function ToolResultView({
   argumentsText,
   detail,
   onOpenDocument,
+  onOpenPreview,
 }: {
   name: string;
   status: "running" | "done";
   argumentsText: string;
   detail: string;
   onOpenDocument?: (path: string) => void;
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   if (name === "execute_code") {
     return (
@@ -139,7 +148,11 @@ export function ToolResultView({
     const processResult = parseProcessListResult(detail);
     if (processResult) {
       return (
-        <ProcessListResultPanel result={processResult} status={status} />
+        <ProcessListResultPanel
+          result={processResult}
+          status={status}
+          onOpenPreview={onOpenPreview}
+        />
       );
     }
   }
@@ -154,14 +167,26 @@ export function ToolResultView({
   if (name === "stop_process" || name === "kill_process") {
     const actionResult = parseProcessActionResult(detail);
     if (actionResult) {
-      return <ProcessActionResultPanel result={actionResult} status={status} />;
+      return (
+        <ProcessActionResultPanel
+          result={actionResult}
+          status={status}
+          onOpenPreview={onOpenPreview}
+        />
+      );
     }
   }
 
   if (name === "terminal") {
     const terminalResult = parseTerminalResult(detail);
     if (terminalResult) {
-      return <TerminalResultPanel result={terminalResult} status={status} />;
+      return (
+        <TerminalResultPanel
+          result={terminalResult}
+          status={status}
+          onOpenPreview={onOpenPreview}
+        />
+      );
     }
   }
 
@@ -250,7 +275,13 @@ export function ToolResultView({
   if (name === "register_preview") {
     const previewResult = parsePreviewResult(detail);
     if (previewResult) {
-      return <PreviewResultPanel result={previewResult} status={status} />;
+      return (
+        <PreviewResultPanel
+          result={previewResult}
+          status={status}
+          onOpenPreview={onOpenPreview}
+        />
+      );
     }
   }
 
@@ -824,12 +855,17 @@ function OperationResultPanel({
 function PreviewResultPanel({
   result,
   status,
+  onOpenPreview,
 }: {
   result: PreviewResult;
   status: "running" | "done";
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   const { t } = useTranslation();
-  const previewHref = result.previewPath ? `${API_BASE}${result.previewPath}` : "";
+  const previewHref = result.previewPath ? apiPreviewPathHref(result.previewPath) : "";
+  const previewSource: LightweightBrowserSource | null = previewHref
+    ? processUrlBrowserSource(previewHref, result.label || result.previewPath || previewHref)
+    : null;
   return (
     <div className="max-w-[920px] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-muted)]">
       <ToolPanelHeader
@@ -847,16 +883,27 @@ function PreviewResultPanel({
             {result.targetUrl}
           </div>
         )}
-        {previewHref && (
-          <a
-            href={previewHref}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--accent-hover)] hover:underline"
-          >
-            {t("chat.openPreview")}
-            <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
-          </a>
+        {previewHref && previewSource && (
+          onOpenPreview ? (
+            <button
+              type="button"
+              onClick={() => onOpenPreview(previewSource)}
+              className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--accent-hover)] hover:underline"
+            >
+              {t("chat.openPreview")}
+              <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
+            </button>
+          ) : (
+            <a
+              href={previewHref}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--accent-hover)] hover:underline"
+            >
+              {t("chat.openPreview")}
+              <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
+            </a>
+          )
         )}
       </div>
     </div>

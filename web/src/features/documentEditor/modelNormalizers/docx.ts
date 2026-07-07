@@ -47,6 +47,10 @@ export function normalizeDocxModel(model: unknown): DocxModel {
                 : [],
             )
           : undefined,
+        tableMergedCells: normalizeDocxTableMergedCells(
+          item.tableMergedCells,
+          item.rows,
+        ),
         tableColumnWidths: Array.isArray(item.tableColumnWidths)
           ? item.tableColumnWidths
               .map((width) => numericField(width))
@@ -131,6 +135,41 @@ export function normalizeDocxModel(model: unknown): DocxModel {
       };
     }),
   };
+}
+
+function normalizeDocxTableMergedCells(value: unknown, rowsValue: unknown) {
+  if (!Array.isArray(value) || !Array.isArray(rowsValue)) return undefined;
+  const rowCount = rowsValue.length;
+  const columnCount = rowsValue.reduce((max, row) => {
+    if (!Array.isArray(row)) return max;
+    return Math.max(max, row.length);
+  }, 0);
+  const ranges = value
+    .map((range) => {
+      const item = isRecord(range) ? range : {};
+      const row = clampInteger(numericField(item.row) ?? -1, 0, rowCount - 1);
+      const column = clampInteger(
+        numericField(item.column) ?? -1,
+        0,
+        columnCount - 1,
+      );
+      const rowSpan = clampInteger(
+        numericField(item.rowSpan) ?? 1,
+        1,
+        Math.max(1, rowCount - row),
+      );
+      const colSpan = clampInteger(
+        numericField(item.colSpan) ?? 1,
+        1,
+        Math.max(1, columnCount - column),
+      );
+      if (rowCount <= 0 || columnCount <= 0 || (rowSpan === 1 && colSpan === 1)) {
+        return null;
+      }
+      return { row, column, rowSpan, colSpan };
+    })
+    .filter((range): range is NonNullable<typeof range> => range !== null);
+  return ranges.length > 0 ? ranges : undefined;
 }
 
 function normalizeDocxTextParts(value: unknown, kind: "header" | "footer") {

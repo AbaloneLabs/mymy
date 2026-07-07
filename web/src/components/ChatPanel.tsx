@@ -23,6 +23,7 @@ import {
 import { useNativeSkills, useSkillBundles } from "@/features/skills/api";
 import { useMoaPresets } from "@/features/moa/api";
 import type { ChatMessage } from "@/types/chat";
+import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
 import { AttachmentTray } from "@/components/chat/attachments";
 import {
   appendAttachmentsToMessage,
@@ -57,6 +58,7 @@ interface ChatPanelProps {
   /** Current agent role (for header). */
   agentRole?: string;
   onOpenDocument?: (path: string) => void;
+  onOpenPreview?: (source: LightweightBrowserSource) => void;
 }
 
 interface QueuedChatTurn {
@@ -89,6 +91,7 @@ export function ChatPanel({
   agentName,
   agentRole,
   onOpenDocument,
+  onOpenPreview,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const [text, setText] = useState("");
@@ -587,6 +590,7 @@ export function ChatPanel({
             toolCall={msg.toolCallId ? toolCallById.get(msg.toolCallId) : undefined}
             streaming={msg.id === "streaming-assistant" && activeStreaming}
             onOpenDocument={onOpenDocument}
+            onOpenPreview={onOpenPreview}
           />
         ))}
 
@@ -595,6 +599,7 @@ export function ChatPanel({
             key={event.id}
             event={event}
             onOpenDocument={onOpenDocument}
+            onOpenPreview={onOpenPreview}
           />
         ))}
 

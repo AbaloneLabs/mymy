@@ -5,6 +5,10 @@ import type {
   WriteDocumentEditorModelRequest,
 } from "@/types/documentEditor";
 
+type WriteDocumentEditorModelMutationInput = WriteDocumentEditorModelRequest & {
+  syncQuery?: boolean;
+};
+
 function documentQuery(path: string) {
   const params = new URLSearchParams();
   params.set("path", path);
@@ -25,10 +29,17 @@ export function useDocumentEditorModel(path: string | null) {
 export function useWriteDocumentEditorModel() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: WriteDocumentEditorModelRequest) =>
-      api.put<DocumentEditorModelResponse>("/document-editor/model", body),
-    onSuccess: (data) => {
-      qc.setQueryData(["document-editor", "model", data.path], data);
+    mutationFn: (input: WriteDocumentEditorModelMutationInput) =>
+      api.put<DocumentEditorModelResponse>("/document-editor/model", {
+        path: input.path,
+        editorKind: input.editorKind,
+        model: input.model,
+        expectedFingerprint: input.expectedFingerprint,
+      }),
+    onSuccess: (data, variables) => {
+      if (variables.syncQuery !== false) {
+        qc.setQueryData(["document-editor", "model", data.path], data);
+      }
       qc.invalidateQueries({ queryKey: ["drive", "file", data.path] });
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
       qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });

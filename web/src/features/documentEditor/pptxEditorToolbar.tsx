@@ -10,6 +10,7 @@ import {
   Circle,
   Copy,
   EyeOff,
+  Group,
   Image as ImageIcon,
   Italic,
   Minus,
@@ -23,6 +24,7 @@ import {
   Trash2,
   Type,
   Underline,
+  Ungroup,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -54,6 +56,7 @@ export function PptxEditorToolbar({
   hasObjectSelection,
   hasMultiSelection,
   selectedObjectCount,
+  canUngroupSelection,
   imageInputRef,
   onAddSlide,
   onDuplicateSlide,
@@ -68,6 +71,8 @@ export function PptxEditorToolbar({
   onAddTable,
   onDuplicateSelectedObjects,
   onDeleteSelectedObjects,
+  onGroupSelectedObjects,
+  onUngroupSelectedObjects,
   onMoveActiveObjectLayer,
   onAlignActiveObject,
   onDistributeSelectedObjects,
@@ -91,6 +96,7 @@ export function PptxEditorToolbar({
   hasObjectSelection: boolean;
   hasMultiSelection: boolean;
   selectedObjectCount: number;
+  canUngroupSelection: boolean;
   imageInputRef: RefObject<HTMLInputElement | null>;
   onAddSlide: () => void;
   onDuplicateSlide: () => void;
@@ -105,6 +111,8 @@ export function PptxEditorToolbar({
   onAddTable: () => void;
   onDuplicateSelectedObjects: () => void;
   onDeleteSelectedObjects: () => void;
+  onGroupSelectedObjects: () => void;
+  onUngroupSelectedObjects: () => void;
   onMoveActiveObjectLayer: (direction: -1 | 1) => void;
   onAlignActiveObject: (
     alignment: "left" | "center" | "right" | "top" | "middle" | "bottom",
@@ -318,6 +326,24 @@ export function PptxEditorToolbar({
         title="Delete selected object"
       >
         <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+      </button>
+      <button
+        type="button"
+        onClick={onGroupSelectedObjects}
+        disabled={selectedObjectCount < 2}
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+        title={t("documentEditor.commands.group", { defaultValue: "Group" })}
+      >
+        <Group className="h-3.5 w-3.5" strokeWidth={1.75} />
+      </button>
+      <button
+        type="button"
+        onClick={onUngroupSelectedObjects}
+        disabled={!canUngroupSelection}
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+        title={t("documentEditor.commands.ungroup", { defaultValue: "Ungroup" })}
+      >
+        <Ungroup className="h-3.5 w-3.5" strokeWidth={1.75} />
       </button>
       <button
         type="button"

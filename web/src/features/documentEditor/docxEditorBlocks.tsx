@@ -15,6 +15,8 @@ import {
   Eraser,
   Palette,
   Plus,
+  TableCellsMerge,
+  TableCellsSplit,
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -40,6 +42,10 @@ import {
   twipsToCssPixels,
   twipsToInches,
 } from "./docxEditorUtils";
+import {
+  isDocxTableCellCovered,
+  mergedRangeForCell,
+} from "./docxTableOperations";
 
 export { DocxImageBlock } from "./docxImageBlock";
 export { DocxTextPartsPanel } from "./docxTextPartsPanel";
@@ -167,6 +173,9 @@ export function DocxTableBlock({
   onDeleteRow,
   onDeleteColumn,
   onClearCell,
+  onMergeCellRight,
+  onMergeCellDown,
+  onSplitCell,
   onPasteCells,
 }: {
   block: DocxBlock;
@@ -187,6 +196,9 @@ export function DocxTableBlock({
   onDeleteRow: (row: number) => void;
   onDeleteColumn: (column: number) => void;
   onClearCell: (row: number, column: number) => void;
+  onMergeCellRight: (row: number, column: number) => void;
+  onMergeCellDown: (row: number, column: number) => void;
+  onSplitCell: (row: number, column: number) => void;
   onPasteCells: (row: number, column: number, matrix: string[][]) => void;
 }) {
   const tableRef = useRef<HTMLDivElement | null>(null);
@@ -215,6 +227,28 @@ export function DocxTableBlock({
   const tableHeaderBackground =
     block.tableHeaderBackground ?? DEFAULT_DOCX_TABLE_HEADER_BACKGROUND;
   const tableCellVerticalAlign = block.tableCellVerticalAlign ?? "top";
+  const selectedMergedRange = selectedCell
+    ? mergedRangeForCell(block, selectedCell.row, selectedCell.column)
+    : undefined;
+  const selectedRange = selectedCell
+    ? (selectedMergedRange ?? {
+        row: selectedCell.row,
+        column: selectedCell.column,
+        rowSpan: 1,
+        colSpan: 1,
+      })
+    : undefined;
+  const canMergeRight = Boolean(
+    selectedRange && selectedRange.column + selectedRange.colSpan < columns,
+  );
+  const canMergeDown = Boolean(
+    selectedRange &&
+      selectedRange.row + selectedRange.rowSpan < normalizedRows.length,
+  );
+  const canSplitCell = Boolean(
+    selectedMergedRange &&
+      (selectedMergedRange.rowSpan > 1 || selectedMergedRange.colSpan > 1),
+  );
 
   function selectCell(row: number, column: number) {
     setActiveCell({ row, column });
@@ -379,6 +413,9 @@ export function DocxTableBlock({
         <DocxTableActionButton icon={Trash2} label="Delete column" onClick={() => selectedCell && onDeleteColumn(selectedCell.column)} disabled={!selectedCell || columns <= 1} danger />
         <div className="mx-1 h-5 w-px bg-neutral-200" />
         <DocxTableActionButton icon={Eraser} label="Clear cell" onClick={() => selectedCell && onClearCell(selectedCell.row, selectedCell.column)} disabled={!selectedCell} />
+        <DocxTableActionButton icon={TableCellsMerge} label="Merge right" onClick={() => selectedCell && onMergeCellRight(selectedCell.row, selectedCell.column)} disabled={!selectedCell || !canMergeRight} />
+        <DocxTableActionButton icon={TableCellsMerge} label="Merge down" onClick={() => selectedCell && onMergeCellDown(selectedCell.row, selectedCell.column)} disabled={!selectedCell || !canMergeDown} />
+        <DocxTableActionButton icon={TableCellsSplit} label="Split cell" onClick={() => selectedCell && onSplitCell(selectedCell.row, selectedCell.column)} disabled={!selectedCell || !canSplitCell} />
         <div className="mx-1 h-5 w-px bg-neutral-200" />
         <Palette className="h-3.5 w-3.5 text-neutral-500" strokeWidth={1.75} />
         <label className="inline-flex h-7 items-center gap-1 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-600">
@@ -549,48 +586,56 @@ export function DocxTableBlock({
                   title="Resize row"
                 />
               </th>
-              {row.map((cell, columnIndex) => (
-                <td
-                  key={columnIndex}
-                  className={cn(
-                    "border border-neutral-300 p-0",
-                    selectedCell?.row === rowIndex &&
-                      selectedCell.column === columnIndex &&
-                      "bg-lime-50",
-                  )}
-                  style={{
-                    backgroundColor:
-                      block.tableHeaderRow === true && rowIndex === 0
-                        ? tableHeaderBackground
-                        : tableCellBackground,
-                    borderColor: tableBorderColor,
-                    borderWidth: Math.max(0, Math.ceil(tableBorderSize / 2)),
-                    verticalAlign:
-                      tableCellVerticalAlign === "center"
-                        ? "middle"
-                        : tableCellVerticalAlign,
-                  }}
-                >
-                  <textarea
-                    value={cell}
-                    data-docx-cell={`${rowIndex}:${columnIndex}`}
-                    onFocus={() => selectCell(rowIndex, columnIndex)}
-                    onKeyDown={(event) =>
-                      handleCellKeyDown(event, rowIndex, columnIndex)
-                    }
-                    onPaste={(event) =>
-                      handleCellPaste(event, rowIndex, columnIndex)
-                    }
-                    onChange={(event) =>
-                      onCellChange(rowIndex, columnIndex, event.target.value)
-                    }
-                    className="min-h-10 w-full resize-y bg-transparent px-2 py-1 text-sm leading-5 outline-none focus:bg-white"
+              {row.map((cell, columnIndex) => {
+                if (isDocxTableCellCovered(block, rowIndex, columnIndex)) {
+                  return null;
+                }
+                const mergedRange = mergedRangeForCell(block, rowIndex, columnIndex);
+                return (
+                  <td
+                    key={columnIndex}
+                    rowSpan={mergedRange?.rowSpan}
+                    colSpan={mergedRange?.colSpan}
+                    className={cn(
+                      "border border-neutral-300 p-0",
+                      selectedCell?.row === rowIndex &&
+                        selectedCell.column === columnIndex &&
+                        "bg-lime-50",
+                    )}
                     style={{
-                      minHeight: twipsToCssPixels(rowHeights[rowIndex]),
+                      backgroundColor:
+                        block.tableHeaderRow === true && rowIndex === 0
+                          ? tableHeaderBackground
+                          : tableCellBackground,
+                      borderColor: tableBorderColor,
+                      borderWidth: Math.max(0, Math.ceil(tableBorderSize / 2)),
+                      verticalAlign:
+                        tableCellVerticalAlign === "center"
+                          ? "middle"
+                          : tableCellVerticalAlign,
                     }}
-                  />
-                </td>
-              ))}
+                  >
+                    <textarea
+                      value={cell}
+                      data-docx-cell={`${rowIndex}:${columnIndex}`}
+                      onFocus={() => selectCell(rowIndex, columnIndex)}
+                      onKeyDown={(event) =>
+                        handleCellKeyDown(event, rowIndex, columnIndex)
+                      }
+                      onPaste={(event) =>
+                        handleCellPaste(event, rowIndex, columnIndex)
+                      }
+                      onChange={(event) =>
+                        onCellChange(rowIndex, columnIndex, event.target.value)
+                      }
+                      className="min-h-10 w-full resize-y bg-transparent px-2 py-1 text-sm leading-5 outline-none focus:bg-white"
+                      style={{
+                        minHeight: twipsToCssPixels(rowHeights[rowIndex]),
+                      }}
+                    />
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>

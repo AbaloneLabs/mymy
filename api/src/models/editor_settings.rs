@@ -76,3 +76,31 @@ pub struct EditorKeymapResponse {
 pub struct EditorKeymapUpdateRequest {
     pub shortcuts: Vec<EditorKeymapEntry>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorPreferences {
+    pub autosave_enabled: bool,
+    pub autosave_delay_ms: u64,
+}
+
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self {
+            autosave_enabled: false,
+            autosave_delay_ms: 5_000,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorPreferencesResponse {
+    pub preferences: EditorPreferences,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorPreferencesUpdateRequest {
+    pub preferences: EditorPreferences,
+}

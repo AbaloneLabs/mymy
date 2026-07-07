@@ -44,11 +44,14 @@ import {
   duplicateDocxTableRow,
   insertDocxTableColumn,
   insertDocxTableRow,
+  mergeDocxTableCellDown,
+  mergeDocxTableCellRight,
   moveDocxTableColumn,
   moveDocxTableRow,
   pasteDocxTableCells,
   resizeDocxTableColumn,
   resizeDocxTableRow,
+  splitDocxTableCell,
   updateDocxTableCell,
 } from "../docxTableOperations";
 
@@ -657,6 +660,39 @@ export function DocxEditor({
     updateTableCell(blockIndex, rowIndex, columnIndex, "");
   }
 
+  function mergeTableCellRight(
+    blockIndex: number,
+    rowIndex: number,
+    columnIndex: number,
+  ) {
+    const block = model.blocks[blockIndex];
+    if (block?.type !== "table") return;
+    const patch = mergeDocxTableCellRight(block, rowIndex, columnIndex);
+    if (patch) updateBlock(blockIndex, patch);
+  }
+
+  function mergeTableCellDown(
+    blockIndex: number,
+    rowIndex: number,
+    columnIndex: number,
+  ) {
+    const block = model.blocks[blockIndex];
+    if (block?.type !== "table") return;
+    const patch = mergeDocxTableCellDown(block, rowIndex, columnIndex);
+    if (patch) updateBlock(blockIndex, patch);
+  }
+
+  function splitTableCell(
+    blockIndex: number,
+    rowIndex: number,
+    columnIndex: number,
+  ) {
+    const block = model.blocks[blockIndex];
+    if (block?.type !== "table") return;
+    const patch = splitDocxTableCell(block, rowIndex, columnIndex);
+    if (patch) updateBlock(blockIndex, patch);
+  }
+
   function pasteTableCells(
     blockIndex: number,
     startRow: number,
@@ -913,6 +949,15 @@ export function DocxEditor({
                   }
                   onClearCell={(rowIndex, columnIndex) =>
                     clearTableCell(index, rowIndex, columnIndex)
+                  }
+                  onMergeCellRight={(rowIndex, columnIndex) =>
+                    mergeTableCellRight(index, rowIndex, columnIndex)
+                  }
+                  onMergeCellDown={(rowIndex, columnIndex) =>
+                    mergeTableCellDown(index, rowIndex, columnIndex)
+                  }
+                  onSplitCell={(rowIndex, columnIndex) =>
+                    splitTableCell(index, rowIndex, columnIndex)
                   }
                   onPasteCells={(rowIndex, columnIndex, matrix) =>
                     pasteTableCells(index, rowIndex, columnIndex, matrix)

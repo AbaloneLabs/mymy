@@ -109,6 +109,27 @@ export function nextPptxChartId(charts: PptxChart[], seed = charts.length + 1) {
   return id;
 }
 
+export function nextPptxGroupId(slide: PptxSlide) {
+  const used = new Set(
+    [
+      ...slide.texts,
+      ...(slide.shapes ?? []),
+      ...(slide.images ?? []),
+      ...(slide.tables ?? []),
+      ...(slide.charts ?? []),
+    ]
+      .map((object) => object.groupId)
+      .filter((groupId): groupId is string => Boolean(groupId)),
+  );
+  let index = used.size + 1;
+  let id = `group${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `group${index}`;
+  }
+  return id;
+}
+
 export function pptxImageStyle(image: PptxImage, zIndex: number): CSSProperties {
   return {
     left: `${image.x ?? 20}%`,

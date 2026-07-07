@@ -73,8 +73,8 @@ use self::docx_tables::build_docx_table;
 use self::docx_tables::{
     parse_docx_table_border_color, parse_docx_table_border_size, parse_docx_table_cell_background,
     parse_docx_table_cell_vertical_align, parse_docx_table_column_widths,
-    parse_docx_table_header_background, parse_docx_table_header_row, parse_docx_table_row_heights,
-    parse_docx_table_rows, parse_docx_table_style,
+    parse_docx_table_header_background, parse_docx_table_header_row, parse_docx_table_merged_cells,
+    parse_docx_table_row_heights, parse_docx_table_rows, parse_docx_table_style,
 };
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
 pub use self::kind::editor_kind_for_path;
@@ -518,6 +518,10 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
                 "tableColumnWidths": parse_docx_table_column_widths(&segment),
                 "tableRowHeights": parse_docx_table_row_heights(&segment)
             });
+            let merged_cells = parse_docx_table_merged_cells(&segment);
+            if !merged_cells.is_empty() {
+                table_block["tableMergedCells"] = json!(merged_cells);
+            }
             if let Some(style) = parse_docx_table_style(&segment) {
                 table_block["tableStyle"] = json!(style);
             }
@@ -7057,6 +7061,28 @@ mod tests {
         assert!(xml.contains("<w:t xml:space=\"preserve\">C1</w:t>"));
         assert!(xml.contains("<w:t xml:space=\"preserve\">D2</w:t>"));
         assert!(xml.contains("<w:br/><w:t xml:space=\"preserve\">D3</w:t>"));
+    }
+
+    #[test]
+    fn docx_table_merged_cells_parse_and_save() {
+        let table = r#"<w:tbl><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>C1</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc><w:tc><w:p><w:r><w:t>C2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+
+        let merged_cells = parse_docx_table_merged_cells(table);
+        assert_eq!(
+            merged_cells,
+            vec![json!({"row": 0, "column": 0, "rowSpan": 2, "colSpan": 2})]
+        );
+
+        let xml = build_docx_table(&json!({
+            "type": "table",
+            "rows": [["A1", "", "C1"], ["", "", "C2"]],
+            "tableColumnWidths": [1200, 1300, 1400],
+            "tableMergedCells": [{"row": 0, "column": 0, "rowSpan": 2, "colSpan": 2}]
+        }));
+        assert!(xml.contains(r#"<w:gridSpan w:val="2"/>"#));
+        assert!(xml.contains(r#"<w:vMerge w:val="restart"/>"#));
+        assert!(xml.contains("<w:vMerge/>"));
+        assert!(xml.contains(r#"<w:tcW w:w="2500" w:type="dxa"/>"#));
     }
 
     #[test]

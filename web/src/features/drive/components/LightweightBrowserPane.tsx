@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
   ArrowRight,
@@ -14,24 +15,35 @@ interface BrowserHistoryEntry {
   label: string;
 }
 
+export type LightweightBrowserSource =
+  | { kind: "drive-html"; path: string }
+  | { kind: "process-url"; url: string; label: string };
+
+type LightweightBrowserPaneProps =
+  | { path: string; source?: never }
+  | { path?: never; source: LightweightBrowserSource };
+
 export function LightweightBrowserPane({
   path,
-}: {
-  path: string;
-}) {
-  return <LightweightBrowserSession key={path} path={path} />;
+  source,
+}: LightweightBrowserPaneProps) {
+  const resolvedSource = source ?? { kind: "drive-html" as const, path };
+  return (
+    <LightweightBrowserSession
+      key={browserSourceKey(resolvedSource)}
+      source={resolvedSource}
+    />
+  );
 }
 
 function LightweightBrowserSession({
-  path,
+  source,
 }: {
-  path: string;
+  source: LightweightBrowserSource;
 }) {
+  const { t } = useTranslation();
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const initialEntry = useMemo(
-    () => ({ url: driveHtmlViewerUrl(path), label: path }),
-    [path],
-  );
+  const initialEntry = useMemo(() => browserEntryForSource(source), [source]);
   const [history, setHistory] = useState<BrowserHistoryEntry[]>([initialEntry]);
   const [index, setIndex] = useState(0);
   const [blockedExternalUrl, setBlockedExternalUrl] = useState<string | null>(null);
@@ -76,7 +88,7 @@ function LightweightBrowserSession({
           onClick={() => setIndex((value) => Math.max(0, value - 1))}
           disabled={index <= 0}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Back"
+          title={t("common.back")}
         >
           <ArrowLeft className="h-4 w-4" strokeWidth={1.75} />
         </button>
@@ -87,7 +99,7 @@ function LightweightBrowserSession({
           }
           disabled={index >= history.length - 1}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Forward"
+          title={t("browser.forward")}
         >
           <ArrowRight className="h-4 w-4" strokeWidth={1.75} />
         </button>
@@ -95,7 +107,7 @@ function LightweightBrowserSession({
           type="button"
           onClick={reload}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          title="Reload"
+          title={t("browser.reload")}
         >
           <RefreshCw className="h-4 w-4" strokeWidth={1.75} />
         </button>
@@ -108,7 +120,7 @@ function LightweightBrowserSession({
           target="_blank"
           rel="noreferrer"
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          title="Open in new tab"
+          title={t("browser.openInNewTab")}
         >
           <ExternalLink className="h-4 w-4" strokeWidth={1.75} />
         </a>
@@ -117,7 +129,7 @@ function LightweightBrowserSession({
         <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
           <Shield className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
           <span className="min-w-0 flex-1 truncate">
-            External link blocked: {blockedExternalUrl}
+            {t("browser.externalLinkBlocked", { url: blockedExternalUrl })}
           </span>
           <a
             href={blockedExternalUrl}
@@ -126,14 +138,14 @@ function LightweightBrowserSession({
             onClick={() => setBlockedExternalUrl(null)}
             className="shrink-0 rounded-md border border-[var(--status-warning)]/40 px-2 py-1 text-[var(--status-warning)] hover:bg-[var(--status-warning)]/10"
           >
-            Open
+            {t("common.open")}
           </a>
           <button
             type="button"
             onClick={() => setBlockedExternalUrl(null)}
             className="shrink-0 rounded-md px-2 py-1 hover:bg-[var(--status-warning)]/10"
           >
-            Dismiss
+            {t("common.dismiss")}
           </button>
         </div>
       )}
@@ -148,6 +160,30 @@ function LightweightBrowserSession({
       />
     </div>
   );
+}
+
+function browserSourceKey(source: LightweightBrowserSource) {
+  if (source.kind === "drive-html") return `drive-html:${source.path}`;
+  return `process-url:${source.url}`;
+}
+
+function browserEntryForSource(source: LightweightBrowserSource): BrowserHistoryEntry {
+  if (source.kind === "drive-html") {
+    return { url: driveHtmlViewerUrl(source.path), label: source.path };
+  }
+  return { url: normalizeInitialBrowserUrl(source.url), label: source.label };
+}
+
+function normalizeInitialBrowserUrl(url: string) {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return "about:blank";
+  }
+  return "about:blank";
 }
 
 function isViewerNavigateMessage(

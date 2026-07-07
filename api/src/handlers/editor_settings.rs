@@ -12,7 +12,8 @@ use axum::{Json, Router};
 use crate::error::{AppError, AppResult};
 use crate::models::editor_settings::{
     EditorFontMutationResponse, EditorFontUploadResponse, EditorFontsResponse,
-    EditorKeymapResponse, EditorKeymapUpdateRequest,
+    EditorKeymapResponse, EditorKeymapUpdateRequest, EditorPreferencesResponse,
+    EditorPreferencesUpdateRequest,
 };
 use crate::services::editor_settings as editor_settings_service;
 use crate::state::AppState;
@@ -28,6 +29,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/editor-settings/keymap",
             get(read_keymap).put(write_keymap),
+        )
+        .route(
+            "/api/editor-settings/preferences",
+            get(read_preferences).put(write_preferences),
         )
 }
 
@@ -112,5 +117,22 @@ pub async fn write_keymap(
 ) -> AppResult<Json<EditorKeymapResponse>> {
     Ok(Json(EditorKeymapResponse {
         shortcuts: editor_settings_service::write_keymap(&state, request.shortcuts)?,
+    }))
+}
+
+pub async fn read_preferences(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<EditorPreferencesResponse>> {
+    Ok(Json(EditorPreferencesResponse {
+        preferences: editor_settings_service::read_preferences(&state)?,
+    }))
+}
+
+pub async fn write_preferences(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<EditorPreferencesUpdateRequest>,
+) -> AppResult<Json<EditorPreferencesResponse>> {
+    Ok(Json(EditorPreferencesResponse {
+        preferences: editor_settings_service::write_preferences(&state, request.preferences)?,
     }))
 }

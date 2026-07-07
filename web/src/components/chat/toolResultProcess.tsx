@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronUp, ExternalLink, Loader2, Terminal } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import {
+  apiPreviewPathHref,
+  processUrlBrowserSource,
+} from "@/features/drive/browserSources";
+import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
 import { CodeBlock } from "./codeHighlight";
 import { MiniMeta, ToolPanelHeader, ToolStatusPill } from "./toolResultShared";
 
@@ -13,12 +17,16 @@ import type {
   ToolProcessListResult,
 } from "./toolResultProcessParsers";
 
+type OpenPreview = (source: LightweightBrowserSource) => void;
+
 export function ProcessListResultPanel({
   result,
   status,
+  onOpenPreview,
 }: {
   result: ToolProcessListResult;
   status: "running" | "done";
+  onOpenPreview?: OpenPreview;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -54,7 +62,11 @@ export function ProcessListResultPanel({
       ) : (
         <div className="mt-2 grid gap-2">
           {visibleProcesses.map((process) => (
-            <ProcessResultItem key={process.id || process.command} process={process} />
+            <ProcessResultItem
+              key={process.id || process.command}
+              process={process}
+              onOpenPreview={onOpenPreview}
+            />
           ))}
         </div>
       )}
@@ -81,14 +93,23 @@ export function ProcessListResultPanel({
     </div>
   );
 }
-function ProcessResultItem({ process }: { process: ToolProcess }) {
+function ProcessResultItem({
+  process,
+  onOpenPreview,
+}: {
+  process: ToolProcess;
+  onOpenPreview?: OpenPreview;
+}) {
   const ports = [
     ...(process.port ? [process.port] : []),
     ...process.openPorts.filter((port) => port !== process.port),
   ];
   const previewHref = process.previewPath
-    ? `${API_BASE}${process.previewPath}`
+    ? apiPreviewPathHref(process.previewPath)
     : process.previewTargetUrl;
+  const previewSource = previewHref
+    ? processPreviewSource(process, previewHref)
+    : null;
 
   return (
     <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
@@ -114,16 +135,27 @@ function ProcessResultItem({ process }: { process: ToolProcess }) {
             exit {process.exitCode}
           </span>
         )}
-        {previewHref && (
-          <a
-            href={previewHref}
-            target="_blank"
-            rel="noreferrer"
-            className="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--accent-hover)] hover:underline"
-          >
-            preview
-            <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
-          </a>
+        {previewHref && previewSource && (
+          onOpenPreview ? (
+            <button
+              type="button"
+              onClick={() => onOpenPreview(previewSource)}
+              className="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--accent-hover)] hover:underline"
+            >
+              preview
+              <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
+            </button>
+          ) : (
+            <a
+              href={previewHref}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--accent-hover)] hover:underline"
+            >
+              preview
+              <ExternalLink className="h-3 w-3" strokeWidth={1.5} />
+            </a>
+          )
         )}
       </div>
       {process.command && (
@@ -169,9 +201,11 @@ export function ProcessLogsResultPanel({
 export function ProcessActionResultPanel({
   result,
   status,
+  onOpenPreview,
 }: {
   result: ProcessActionResult;
   status: "running" | "done";
+  onOpenPreview?: OpenPreview;
 }) {
   const { t } = useTranslation();
   return (
@@ -183,7 +217,10 @@ export function ProcessActionResultPanel({
         ok={result.success}
       />
       <div className="mt-2">
-        <ProcessResultItem process={result.process} />
+        <ProcessResultItem
+          process={result.process}
+          onOpenPreview={onOpenPreview}
+        />
       </div>
     </div>
   );
@@ -192,15 +229,20 @@ export function ProcessActionResultPanel({
 export function TerminalResultPanel({
   result,
   status,
+  onOpenPreview,
 }: {
   result: TerminalResult;
   status: "running" | "done";
+  onOpenPreview?: OpenPreview;
 }) {
   const { t } = useTranslation();
   const ok = result.exitCode === undefined || result.exitCode === 0;
   const previewHref = result.previewPath
-    ? `${API_BASE}${result.previewPath}`
+    ? apiPreviewPathHref(result.previewPath)
     : result.forwardedUrl;
+  const previewSource = previewHref
+    ? terminalPreviewSource(result, previewHref)
+    : null;
 
   return (
     <div className="max-w-[920px] rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs text-[var(--text-muted)]">
@@ -220,15 +262,25 @@ export function TerminalResultPanel({
         {result.sandbox && <MiniMeta value={result.sandbox} />}
         {result.pid !== undefined && <MiniMeta value={`PID ${result.pid}`} />}
         {result.processId && <MiniMeta value={result.processId} />}
-        {previewHref && (
-          <a
-            href={previewHref}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--accent-hover)] hover:underline"
-          >
-            preview
-          </a>
+        {previewHref && previewSource && (
+          onOpenPreview ? (
+            <button
+              type="button"
+              onClick={() => onOpenPreview(previewSource)}
+              className="rounded bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--accent-hover)] hover:underline"
+            >
+              preview
+            </button>
+          ) : (
+            <a
+              href={previewHref}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--accent-hover)] hover:underline"
+            >
+              preview
+            </a>
+          )
         )}
       </div>
       {result.stdout && <CodeBlock title="stdout" content={result.stdout} />}
@@ -240,4 +292,18 @@ export function TerminalResultPanel({
       )}
     </div>
   );
+}
+
+function processPreviewSource(
+  process: ToolProcess,
+  url: string,
+): LightweightBrowserSource {
+  return processUrlBrowserSource(url, process.command || process.id || url);
+}
+
+function terminalPreviewSource(
+  result: TerminalResult,
+  url: string,
+): LightweightBrowserSource {
+  return processUrlBrowserSource(url, result.processId || result.cwd || url);
 }

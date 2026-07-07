@@ -13,7 +13,10 @@ import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
-import { LightweightBrowserPane } from "@/features/drive/components/LightweightBrowserPane";
+import {
+  LightweightBrowserPane,
+  type LightweightBrowserSource,
+} from "@/features/drive/components/LightweightBrowserPane";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
 import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
@@ -81,6 +84,8 @@ export default function Chat() {
   // New session dialog state.
   const [showDialog, setShowDialog] = useState(false);
   const [editorPath, setEditorPath] = useState<string | null>(null);
+  const [previewSource, setPreviewSource] =
+    useState<LightweightBrowserSource | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession(selectedProjectId ?? undefined);
@@ -111,16 +116,29 @@ export default function Chat() {
       return;
     }
     setEditorPath(path);
+    setPreviewSource(null);
     setEditorDirty(false);
   };
 
-  const closeDocumentEditor = () => {
+  const openPreviewPanel = (source: LightweightBrowserSource) => {
     if (editorDirty && !window.confirm(t("documentEditor.discardConfirm"))) {
       return;
     }
     setEditorPath(null);
+    setPreviewSource(source);
     setEditorDirty(false);
   };
+
+  const closeSidePanel = () => {
+    if (editorDirty && !window.confirm(t("documentEditor.discardConfirm"))) {
+      return;
+    }
+    setEditorPath(null);
+    setPreviewSource(null);
+    setEditorDirty(false);
+  };
+
+  const sidePanelOpen = Boolean(editorPath || previewSource);
 
   // Keyboard shortcut: press C on the chat page to open the new-session dialog.
   const createNonce = useCreateAction("create.chat");
@@ -287,7 +305,7 @@ export default function Chat() {
         <div
           className={cn(
             "grid min-w-0 flex-1 overflow-hidden",
-            editorPath
+            sidePanelOpen
               ? "grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(420px,1fr)]"
               : "grid-cols-1",
           )}
@@ -308,16 +326,32 @@ export default function Chat() {
                   : undefined
               }
               onOpenDocument={openDocumentEditor}
+              onOpenPreview={openPreviewPanel}
             />
           </div>
-          {editorPath && (
+          {sidePanelOpen && (
             <div className="fixed inset-0 z-40 bg-[var(--bg)] xl:static xl:z-auto xl:min-w-0">
-              {isHtmlPreviewPath(editorPath) ? (
+              {previewSource ? (
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="flex h-12 shrink-0 items-center justify-end border-b border-[var(--border)] px-4">
                     <button
                       type="button"
-                      onClick={closeDocumentEditor}
+                      onClick={closeSidePanel}
+                      className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    >
+                      {t("common.close")}
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <LightweightBrowserPane source={previewSource} />
+                  </div>
+                </div>
+              ) : editorPath && isHtmlPreviewPath(editorPath) ? (
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="flex h-12 shrink-0 items-center justify-end border-b border-[var(--border)] px-4">
+                    <button
+                      type="button"
+                      onClick={closeSidePanel}
                       className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                     >
                       {t("common.close")}
@@ -327,13 +361,13 @@ export default function Chat() {
                     <LightweightBrowserPane path={editorPath} />
                   </div>
                 </div>
-              ) : (
+              ) : editorPath ? (
                 <DocumentEditorPane
                   path={editorPath}
-                  onClose={closeDocumentEditor}
+                  onClose={closeSidePanel}
                   onDirtyChange={setEditorDirty}
                 />
-              )}
+              ) : null}
             </div>
           )}
         </div>

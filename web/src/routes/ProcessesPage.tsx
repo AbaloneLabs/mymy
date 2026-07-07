@@ -13,6 +13,11 @@ import {
 } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { useAgents } from "@/features/agents/api";
+import {
+  apiPreviewPathHref,
+  processUrlBrowserSource,
+} from "@/features/drive/browserSources";
+import { LightweightBrowserPane } from "@/features/drive/components/LightweightBrowserPane";
 import { useProjects } from "@/features/projects/api";
 import {
   useKillSandboxProcess,
@@ -22,7 +27,6 @@ import {
   useStartSandboxProcess,
   useStopSandboxProcess,
 } from "@/features/sandbox/api";
-import { API_BASE } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { SandboxProcess } from "@/types/sandbox";
 
@@ -152,6 +156,7 @@ export default function ProcessesPage() {
                 });
               }}
             />
+            <ProcessPreviewPanel process={selectedProcess} />
             <LogsPanel
               process={selectedProcess}
               logs={logs.data?.logs ?? ""}
@@ -190,6 +195,7 @@ function ProcessRow({
   onKill: () => void;
 }) {
   const running = process.status === "running" || process.status === "starting";
+  const hasPreview = Boolean(processPreviewUrl(process));
   return (
     <div className={cn("p-4", selected && "bg-[var(--surface-hover)]")}>
       <div className="flex items-start gap-3">
@@ -212,16 +218,15 @@ function ProcessRow({
           </p>
         </button>
         <div className="flex shrink-0 items-center gap-1">
-          {process.previewPath && (
-            <a
-              href={previewHref(process.previewPath)}
-              target="_blank"
-              rel="noreferrer"
+          {hasPreview && (
+            <button
+              type="button"
+              onClick={onSelect}
               className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--surface)] hover:text-[var(--accent)]"
               title="프리뷰 열기"
             >
               <ExternalLink className="h-4 w-4" strokeWidth={1.5} />
-            </a>
+            </button>
           )}
           <button
             type="button"
@@ -255,6 +260,17 @@ function ProcessRow({
         </div>
       </div>
     </div>
+  );
+}
+
+function ProcessPreviewPanel({ process }: { process?: SandboxProcess }) {
+  const previewSource = process ? processPreviewSource(process) : null;
+  if (!previewSource) return null;
+
+  return (
+    <section className="mb-4 h-[420px] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]">
+      <LightweightBrowserPane source={previewSource} />
+    </section>
   );
 }
 
@@ -433,11 +449,28 @@ const selectClassName =
 const inputClassName =
   "w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 font-mono text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]";
 
-function previewHref(path: string) {
-  if (path.startsWith("/api/")) {
-    return `${API_BASE.replace(/\/api$/, "")}${path}`;
-  }
-  return `${API_BASE}${path}`;
+function processPreviewSource(process: SandboxProcess) {
+  const url = processPreviewUrl(process);
+  if (!url) return null;
+  return processUrlBrowserSource(url, processPreviewLabel(process));
+}
+
+function processPreviewUrl(process: SandboxProcess) {
+  if (process.previewPath) return apiPreviewPathHref(process.previewPath);
+  return process.previewTargetUrl ?? null;
+}
+
+function processPreviewLabel(process: SandboxProcess) {
+  return (
+    stringMetadata(process.metadata, "label") ??
+    stringMetadata(process.metadata, "previewLabel") ??
+    process.command
+  );
+}
+
+function stringMetadata(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function bytes(value?: number) {

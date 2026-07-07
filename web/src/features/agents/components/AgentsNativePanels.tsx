@@ -20,13 +20,17 @@ import {
 import { useCreateAgent, useDeleteAgent } from "@/features/agents/api";
 import { useChatSessions } from "@/features/chat/api";
 import {
+  apiPreviewPathHref,
+  processUrlBrowserSource,
+} from "@/features/drive/browserSources";
+import { LightweightBrowserPane } from "@/features/drive/components/LightweightBrowserPane";
+import {
   useSandboxProcessLogs,
   useSandboxProcesses,
   useSandboxRuntime,
   useStartSandboxProcess,
   useStopSandboxProcess,
 } from "@/features/sandbox/api";
-import { API_BASE } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useProjectContext } from "@/store/projectContext";
 import type { Agent } from "@/types/agents";
@@ -451,6 +455,7 @@ export function SandboxProcessesTab({
   }, [agents]);
   const rows = processes.data?.processes ?? [];
   const canStart = Boolean(profile && command.trim() && !startProcess.isPending);
+  const selectedProcess = rows.find((row) => row.id === selectedProcessId);
 
   function handleStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -623,16 +628,15 @@ export function SandboxProcessesTab({
                       </p>
                     </button>
                     <div className="flex shrink-0 items-center gap-1">
-                      {process.previewPath && (
-                        <a
-                          href={previewHref(process.previewPath)}
-                          target="_blank"
-                          rel="noreferrer"
+                      {processPreviewUrl(process) && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedProcessId(process.id)}
                           className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
                           title={t("agents.sandbox.openPreview")}
                         >
                           <ExternalLink className="h-4 w-4" strokeWidth={1.5} />
-                        </a>
+                        </button>
                       )}
                       <button
                         type="button"
@@ -652,9 +656,11 @@ export function SandboxProcessesTab({
         )}
       </section>
 
+      <ProcessPreviewPanel process={selectedProcess} />
+
       {selectedProcessId && (
         <ProcessLogsPanel
-          process={rows.find((row) => row.id === selectedProcessId)}
+          process={selectedProcess}
           logs={logs.data?.logs ?? ""}
           loading={logs.isLoading}
           onClose={() => setSelectedProcessId(null)}
@@ -744,6 +750,17 @@ export function NativeSessionsTab({
   );
 }
 
+function ProcessPreviewPanel({ process }: { process?: SandboxProcess }) {
+  const previewSource = process ? processPreviewSource(process) : null;
+  if (!previewSource) return null;
+
+  return (
+    <section className="h-[420px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+      <LightweightBrowserPane source={previewSource} />
+    </section>
+  );
+}
+
 function ProcessLogsPanel({
   process,
   logs,
@@ -798,11 +815,28 @@ function SandboxStatusPill({ status }: { status: string }) {
   );
 }
 
-function previewHref(path: string) {
-  if (path.startsWith("/api/")) {
-    return `${API_BASE.replace(/\/api$/, "")}${path}`;
-  }
-  return `${API_BASE}${path}`;
+function processPreviewSource(process: SandboxProcess) {
+  const url = processPreviewUrl(process);
+  if (!url) return null;
+  return processUrlBrowserSource(url, processPreviewLabel(process));
+}
+
+function processPreviewUrl(process: SandboxProcess) {
+  if (process.previewPath) return apiPreviewPathHref(process.previewPath);
+  return process.previewTargetUrl ?? null;
+}
+
+function processPreviewLabel(process: SandboxProcess) {
+  return (
+    stringMetadata(process.metadata, "label") ??
+    stringMetadata(process.metadata, "previewLabel") ??
+    process.command
+  );
+}
+
+function stringMetadata(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function CompactSessionList({

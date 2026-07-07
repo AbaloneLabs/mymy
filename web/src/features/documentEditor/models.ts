@@ -18,6 +18,7 @@ export interface DocxBlock {
   text: string;
   headingLevel?: number;
   rows?: string[][];
+  tableMergedCells?: DocxTableMergedCell[];
   tableColumnWidths?: number[];
   tableRowHeights?: number[];
   tableStyle?: string;
@@ -60,6 +61,13 @@ export interface DocxBlock {
   lineSpacing?: number;
   pageBreakBefore?: boolean;
   breakKind?: "nextPage" | "continuous" | "evenPage" | "oddPage";
+}
+
+export interface DocxTableMergedCell {
+  row: number;
+  column: number;
+  rowSpan: number;
+  colSpan: number;
 }
 
 export interface DocxPageSettings {
@@ -376,6 +384,7 @@ export interface DelimitedTableModel {
 
 export interface PptxText {
   id: string;
+  groupId?: string;
   text: string;
   textIndex?: number;
   x?: number;
@@ -396,6 +405,7 @@ export interface PptxText {
 
 export interface PptxShape {
   id: string;
+  groupId?: string;
   kind: "rect" | "ellipse" | "line";
   x?: number;
   y?: number;
@@ -409,6 +419,7 @@ export interface PptxShape {
 
 export interface PptxTable {
   id: string;
+  groupId?: string;
   textIndexStart?: number;
   rows: string[][];
   x?: number;
@@ -420,6 +431,7 @@ export interface PptxTable {
 
 export interface PptxImage {
   id: string;
+  groupId?: string;
   relationshipId?: string;
   mediaPath?: string;
   mimeType?: string;
@@ -440,6 +452,7 @@ export interface PptxChartSeries {
 
 export interface PptxChart {
   id: string;
+  groupId?: string;
   relationshipId?: string;
   path?: string;
   type?: string;

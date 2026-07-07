@@ -12,6 +12,7 @@ import {
   firstVisibleSlideIndex,
   lockedAspectResize,
   nextPptxChartId,
+  nextPptxGroupId,
   nextPptxImageId,
   nextPptxShapeId,
   nextPptxSlidePath,
@@ -150,6 +151,7 @@ export function PptxEditor({
             : null;
   const hasObjectSelection = selectedObjects.length > 0;
   const hasMultiSelection = selectedObjects.length > 1;
+  const hasGroupedSelection = selectedObjects.some((record) => record.object.groupId);
   const selectionBoxBounds = selectionBox
     ? pptxSelectionBoxBounds(selectionBox)
     : null;
@@ -184,6 +186,10 @@ export function PptxEditor({
       moveActiveObjectLayer(-1);
     } else if (commandId === "bringForward") {
       moveActiveObjectLayer(1);
+    } else if (commandId === "group") {
+      groupSelectedObjects();
+    } else if (commandId === "ungroup") {
+      ungroupSelectedObjects();
     } else if (commandId === "alignLeft") {
       alignActiveObject("left");
     } else if (commandId === "alignCenter") {
@@ -235,21 +241,51 @@ export function PptxEditor({
     setSelectedObjectKeys([]);
   }
 
+  function selectionKeysForObject(
+    objectKind: PptxObjectKind,
+    objectId: string,
+  ): PptxSelectionKey[] {
+    const key = pptxSelectionKey(objectKind, objectId);
+    if (!slide) return [key];
+    const records = pptxSlideObjectRecords(slide);
+    const record = records.find(
+      (item) => item.objectKind === objectKind && item.objectId === objectId,
+    );
+    if (!record?.object.groupId) return [key];
+    return records
+      .filter((item) => item.object.groupId === record.object.groupId)
+      .map((item) => pptxSelectionKey(item.objectKind, item.objectId));
+  }
+
+  function expandGroupedSelectionKeys(keys: PptxSelectionKey[]) {
+    if (!slide) return keys;
+    const expanded = new Set<PptxSelectionKey>();
+    keys.forEach((key) => {
+      const parsed = parsePptxSelectionKey(key);
+      selectionKeysForObject(parsed.objectKind, parsed.objectId).forEach((item) =>
+        expanded.add(item),
+      );
+    });
+    return Array.from(expanded);
+  }
+
   function selectObject(
     objectKind: PptxObjectKind,
     objectId: string,
     additive = false,
   ) {
     const key = pptxSelectionKey(objectKind, objectId);
+    const keys = selectionKeysForObject(objectKind, objectId);
     if (!additive) {
       activateObjectKey(key);
-      setSelectedObjectKeys([key]);
+      setSelectedObjectKeys(keys);
       return;
     }
-    const exists = selectedObjectKeys.includes(key);
+    const keySet = new Set(keys);
+    const exists = keys.every((item) => selectedObjectKeys.includes(item));
     const next = exists
-      ? selectedObjectKeys.filter((item) => item !== key)
-      : [...selectedObjectKeys, key];
+      ? selectedObjectKeys.filter((item) => !keySet.has(item))
+      : Array.from(new Set([...selectedObjectKeys, ...keys]));
     const nextActive = exists ? (next.at(-1) ?? null) : key;
     activateObjectKey(nextActive);
     setSelectedObjectKeys(next);
@@ -1062,6 +1098,27 @@ export function PptxEditor({
     const nextImages = [...(slide.images ?? [])];
     const nextTables = [...(slide.tables ?? [])];
     const nextCharts = [...(slide.charts ?? [])];
+    const usedGroupIds = new Set(
+      pptxSlideObjectRecords(slide)
+        .map((record) => record.object.groupId)
+        .filter((groupId): groupId is string => Boolean(groupId)),
+    );
+    const duplicatedGroupIds = new Map<string, string>();
+
+    function allocateDuplicateGroupId(sourceGroupId?: string) {
+      if (!sourceGroupId) return undefined;
+      const existing = duplicatedGroupIds.get(sourceGroupId);
+      if (existing) return existing;
+      let index = usedGroupIds.size + 1;
+      let groupId = `group${index}`;
+      while (usedGroupIds.has(groupId)) {
+        index += 1;
+        groupId = `group${index}`;
+      }
+      usedGroupIds.add(groupId);
+      duplicatedGroupIds.set(sourceGroupId, groupId);
+      return groupId;
+    }
 
     selectedObjects.forEach((record) => {
       if (record.objectKind === "text") {
@@ -1069,6 +1126,7 @@ export function PptxEditor({
         const next = {
           ...source,
           id: nextPptxTextId(nextTexts),
+          groupId: allocateDuplicateGroupId(source.groupId),
           x: Math.min((source.x ?? 10) + 2, 100),
           y: Math.min((source.y ?? 12) + 2, 100),
         };
@@ -1079,6 +1137,7 @@ export function PptxEditor({
         const next = {
           ...source,
           id: nextPptxShapeId(nextShapes),
+          groupId: allocateDuplicateGroupId(source.groupId),
           x: Math.min((source.x ?? 24) + 2, 100),
           y: Math.min((source.y ?? 34) + 2, 100),
         };
@@ -1089,6 +1148,7 @@ export function PptxEditor({
         const next = {
           ...source,
           id: nextPptxImageId(nextImages),
+          groupId: allocateDuplicateGroupId(source.groupId),
           relationshipId: undefined,
           x: Math.min((source.x ?? 24) + 2, 100),
           y: Math.min((source.y ?? 34) + 2, 100),
@@ -1100,6 +1160,7 @@ export function PptxEditor({
         const next = {
           ...source,
           id: nextPptxTableId(nextTables),
+          groupId: allocateDuplicateGroupId(source.groupId),
           x: Math.min((source.x ?? 18) + 2, 100),
           y: Math.min((source.y ?? 30) + 2, 100),
           rows: source.rows.map((row) => [...row]),
@@ -1111,6 +1172,7 @@ export function PptxEditor({
         const next = {
           ...source,
           id: nextPptxChartId(nextCharts),
+          groupId: allocateDuplicateGroupId(source.groupId),
           relationshipId: undefined,
           x: Math.min((source.x ?? 18) + 2, 100),
           y: Math.min((source.y ?? 18) + 2, 100),
@@ -1175,6 +1237,36 @@ export function PptxEditor({
       ),
     });
     clearObjectSelection();
+  }
+
+  function groupSelectedObjects() {
+    if (!slide || selectedObjects.length < 2) return;
+    const groupId = nextPptxGroupId(slide);
+    const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+    selectedObjects.forEach((record) => {
+      patches.set(pptxSelectionKey(record.objectKind, record.objectId), {
+        groupId,
+      });
+    });
+    updateObjectGeometries(patches);
+  }
+
+  function ungroupSelectedObjects() {
+    if (!slide || selectedObjects.length === 0) return;
+    const groupIds = new Set(
+      selectedObjects
+        .map((record) => record.object.groupId)
+        .filter((groupId): groupId is string => Boolean(groupId)),
+    );
+    if (groupIds.size === 0) return;
+    const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+    pptxSlideObjectRecords(slide).forEach((record) => {
+      if (!record.object.groupId || !groupIds.has(record.object.groupId)) return;
+      patches.set(pptxSelectionKey(record.objectKind, record.objectId), {
+        groupId: undefined,
+      });
+    });
+    updateObjectGeometries(patches);
   }
 
   function alignActiveObject(
@@ -1272,6 +1364,12 @@ export function PptxEditor({
     if (!rect) return;
     event.preventDefault();
     event.stopPropagation();
+    const clickedKey = pptxSelectionKey(objectKind, object.id);
+    const clickedSelectionKeys = selectionKeysForObject(objectKind, object.id);
+    const dragSelectionKeys = selectedObjectKeySet.has(clickedKey)
+      ? selectedObjectKeys
+      : clickedSelectionKeys;
+    const dragSelectionKeySet = new Set(dragSelectionKeys);
     if (objectKind === "text") {
       if (!selectedObjectKeySet.has(pptxSelectionKey("text", object.id))) {
         selectText(object.id);
@@ -1303,12 +1401,16 @@ export function PptxEditor({
         activateObjectKey(pptxSelectionKey("chart", object.id));
       }
     }
-    const clickedKey = pptxSelectionKey(objectKind, object.id);
+    const dragRecords = slide
+      ? pptxSlideObjectRecords(slide).filter((record) =>
+          dragSelectionKeySet.has(
+            pptxSelectionKey(record.objectKind, record.objectId),
+          ),
+        )
+      : [];
     const groupItems =
-      mode === "move" &&
-      selectedObjectKeySet.has(clickedKey) &&
-      selectedObjects.length > 1
-        ? selectedObjects.map((record) => ({
+      mode === "move" && dragRecords.length > 1
+        ? dragRecords.map((record) => ({
             objectKind: record.objectKind,
             objectId: record.objectId,
             startX: record.object.x ?? 0,
@@ -1416,9 +1518,10 @@ export function PptxEditor({
         const matchedKeys = pptxSlideObjectRecords(slide)
           .filter((record) => pptxObjectIntersectsSelectionBox(record, bounds))
           .map((record) => pptxSelectionKey(record.objectKind, record.objectId));
+        const expandedKeys = expandGroupedSelectionKeys(matchedKeys);
         const nextKeys = selectionBox.additive
-          ? Array.from(new Set([...selectedObjectKeys, ...matchedKeys]))
-          : matchedKeys;
+          ? Array.from(new Set([...selectedObjectKeys, ...expandedKeys]))
+          : expandedKeys;
         setSelectedObjectKeys(nextKeys);
         activateObjectKey(nextKeys.at(-1) ?? null);
       }
@@ -1462,6 +1565,15 @@ export function PptxEditor({
     if (primary && event.key.toLowerCase() === "d") {
       event.preventDefault();
       duplicateSelectedObjects();
+      return;
+    }
+    if (primary && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        ungroupSelectedObjects();
+      } else {
+        groupSelectedObjects();
+      }
       return;
     }
     const updateActiveObject = activeText
@@ -1510,7 +1622,14 @@ export function PptxEditor({
 
   function handleCanvasKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     const primary = event.ctrlKey || event.metaKey;
-    if (primary && event.key.toLowerCase() === "a") {
+    if (primary && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        ungroupSelectedObjects();
+      } else {
+        groupSelectedObjects();
+      }
+    } else if (primary && event.key.toLowerCase() === "a") {
       event.preventDefault();
       selectAllSlideObjects();
     } else if (event.key === "Escape") {
@@ -1538,6 +1657,7 @@ export function PptxEditor({
         hasObjectSelection={hasObjectSelection}
         hasMultiSelection={hasMultiSelection}
         selectedObjectCount={selectedObjects.length}
+        canUngroupSelection={hasGroupedSelection}
         imageInputRef={imageInputRef}
         onAddSlide={addSlide}
         onDuplicateSlide={duplicateSlide}
@@ -1554,6 +1674,8 @@ export function PptxEditor({
         onAddTable={addTable}
         onDuplicateSelectedObjects={duplicateSelectedObjects}
         onDeleteSelectedObjects={deleteSelectedObjects}
+        onGroupSelectedObjects={groupSelectedObjects}
+        onUngroupSelectedObjects={ungroupSelectedObjects}
         onMoveActiveObjectLayer={moveActiveObjectLayer}
         onAlignActiveObject={alignActiveObject}
         onDistributeSelectedObjects={distributeSelectedObjects}
