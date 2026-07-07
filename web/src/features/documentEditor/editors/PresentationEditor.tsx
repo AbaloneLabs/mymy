@@ -17,7 +17,6 @@ import {
   Image as ImageIcon,
   Italic,
   Minus,
-  Move,
   Play,
   Plus,
   RotateCw,
@@ -46,8 +45,6 @@ import {
   nextPptxTextId,
   nextVisibleSlideIndex,
   normalizeRotation,
-  pptxChartStyle,
-  pptxImageStyle,
   reorderPptxObjectsById,
 } from "../pptxEditorUtils";
 import type { SlideDragState } from "../pptxEditorUtils";
@@ -82,14 +79,11 @@ import {
   PercentInput,
   PptxAnimationInspector,
   PptxChartDataEditor,
-  PptxChartView,
-  PptxEditableTable,
-  PptxImageView,
   PptxObjectLayerPanel,
   PptxPresentationOverlay,
-  PptxShapeView,
   PptxSlideNavigator,
 } from "../pptxEditorPanels";
+import { PptxSlideCanvas } from "../pptxSlideCanvas";
 
 export function PptxEditor({
   model,
@@ -2096,342 +2090,35 @@ export function PptxEditor({
           }}
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface)]">
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
-            <div
-              className="mx-auto aspect-video max-w-4xl border border-[var(--border)] shadow-sm"
-              style={{ backgroundColor: slide?.backgroundColor ?? "#ffffff" }}
-            >
-              <div
-                ref={canvasRef}
-                tabIndex={0}
-                className="relative h-full w-full overflow-hidden outline-none"
-                onKeyDown={handleCanvasKeyDown}
-                onPointerMove={handleCanvasPointerMove}
-                onPointerUp={handleCanvasPointerUp}
-                onPointerLeave={handleCanvasPointerUp}
-                onPointerDown={handleCanvasPointerDown}
-              >
-                {selectionBoxBounds && (
-                  <div
-                    className="pointer-events-none absolute z-[9999] border border-[var(--accent)] bg-[var(--accent)]/10"
-                    style={{
-                      left: `${selectionBoxBounds.left}%`,
-                      top: `${selectionBoxBounds.top}%`,
-                      width: `${selectionBoxBounds.width}%`,
-                      height: `${selectionBoxBounds.height}%`,
-                    }}
-                  />
-                )}
-                {(slide?.shapes ?? []).map((shape, index) => {
-                  const selected =
-                    activeShapeId === shape.id ||
-                    selectedObjectKeySet.has(pptxSelectionKey("shape", shape.id));
-                  return (
-                    <div
-                      key={shape.id}
-                      role="button"
-                      tabIndex={0}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        selectShape(
-                          shape.id,
-                          event.shiftKey || event.metaKey || event.ctrlKey,
-                        );
-                      }}
-                      onKeyDown={handleTextKeyDown}
-                      className={cn(
-                        "absolute outline-none",
-                        selected && "ring-2 ring-[var(--accent)]/40",
-                      )}
-                      style={{
-                        left: `${shape.x ?? 24}%`,
-                        top: `${shape.y ?? 34}%`,
-                        width: `${shape.width ?? 26}%`,
-                        height: `${shape.kind === "line" ? Math.max(1, shape.height ?? 0) : shape.height ?? 20}%`,
-                        transform: `rotate(${shape.rotation ?? 0}deg)`,
-                        zIndex: index + 1,
-                      }}
-                    >
-                      <PptxShapeView shape={shape} />
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "shape", shape, "move")
-                          }
-                          className="absolute -top-7 left-0 inline-flex h-6 items-center gap-1 rounded border border-neutral-300 bg-white px-1.5 text-[10px] text-neutral-600 shadow-sm"
-                          title="Move shape"
-                        >
-                          <Move className="h-3 w-3" strokeWidth={1.75} />
-                          Move
-                        </button>
-                      )}
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "shape", shape, "resize")
-                          }
-                          className="absolute -bottom-2 -right-2 h-4 w-4 rounded-sm border border-[var(--accent)] bg-white shadow-sm"
-                          title="Resize shape"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {(slide?.images ?? []).map((image, index) => {
-                  const selected =
-                    activeImageId === image.id ||
-                    selectedObjectKeySet.has(pptxSelectionKey("image", image.id));
-                  return (
-                    <div
-                      key={image.id}
-                      role="button"
-                      tabIndex={0}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        selectImage(
-                          image.id,
-                          event.shiftKey || event.metaKey || event.ctrlKey,
-                        );
-                      }}
-                      onKeyDown={handleTextKeyDown}
-                      className={cn(
-                        "absolute outline-none",
-                        selected && "ring-2 ring-[var(--accent)]/40",
-                      )}
-                      style={pptxImageStyle(
-                        image,
-                        (slide.shapes?.length ?? 0) + index + 1,
-                      )}
-                    >
-                      <PptxImageView image={image} />
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "image", image, "move")
-                          }
-                          className="absolute -top-7 left-0 inline-flex h-6 items-center gap-1 rounded border border-neutral-300 bg-white px-1.5 text-[10px] text-neutral-600 shadow-sm"
-                          title="Move image"
-                        >
-                          <Move className="h-3 w-3" strokeWidth={1.75} />
-                          Move
-                        </button>
-                      )}
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "image", image, "resize")
-                          }
-                          className="absolute -bottom-2 -right-2 h-4 w-4 rounded-sm border border-[var(--accent)] bg-white shadow-sm"
-                          title="Resize image"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {(slide?.charts ?? []).map((chart, index) => {
-                  const selected =
-                    activeChartId === chart.id ||
-                    selectedObjectKeySet.has(pptxSelectionKey("chart", chart.id));
-                  return (
-                    <div
-                      key={chart.id}
-                      role="button"
-                      tabIndex={0}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        selectChart(
-                          chart.id,
-                          event.shiftKey || event.metaKey || event.ctrlKey,
-                        );
-                      }}
-                      onKeyDown={handleTextKeyDown}
-                      className={cn(
-                        "absolute outline-none",
-                        selected && "ring-2 ring-[var(--accent)]/40",
-                      )}
-                      style={pptxChartStyle(
-                        chart,
-                        (slide.shapes?.length ?? 0) +
-                          (slide.images?.length ?? 0) +
-                          index +
-                          1,
-                      )}
-                    >
-                      <PptxChartView chart={chart} />
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "chart", chart, "move")
-                          }
-                          className="absolute -top-7 left-0 inline-flex h-6 items-center gap-1 rounded border border-neutral-300 bg-white px-1.5 text-[10px] text-neutral-600 shadow-sm"
-                          title="Move chart"
-                        >
-                          <Move className="h-3 w-3" strokeWidth={1.75} />
-                          Move
-                        </button>
-                      )}
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "chart", chart, "resize")
-                          }
-                          className="absolute -bottom-2 -right-2 h-4 w-4 rounded-sm border border-[var(--accent)] bg-white shadow-sm"
-                          title="Resize chart"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {(slide?.tables ?? []).map((table, index) => {
-                  const selected =
-                    activeTableId === table.id ||
-                    selectedObjectKeySet.has(pptxSelectionKey("table", table.id));
-                  return (
-                    <PptxEditableTable
-                      key={table.id}
-                      table={table}
-                      selected={selected}
-                      zIndex={
-                        (slide.shapes?.length ?? 0) +
-                        (slide.images?.length ?? 0) +
-                        (slide.charts?.length ?? 0) +
-                        index +
-                        1
-                      }
-                      onSelect={(event) =>
-                        selectTable(
-                          table.id,
-                          Boolean(
-                            event &&
-                              (event.shiftKey || event.metaKey || event.ctrlKey),
-                          ),
-                        )
-                      }
-                      onStartMove={(event) =>
-                        startObjectDrag(event, "table", table, "move")
-                      }
-                      onStartResize={(event) =>
-                        startObjectDrag(event, "table", table, "resize")
-                      }
-                      onKeyDown={handleTextKeyDown}
-                      onCellChange={(rowIndex, columnIndex, value) =>
-                        updateTableCell(table.id, rowIndex, columnIndex, value)
-                      }
-                      onAddRow={(rowIndex) => addTableRow(table.id, rowIndex)}
-                      onAddColumn={(columnIndex) => addTableColumn(table.id, columnIndex)}
-                      onDeleteRow={(rowIndex) => deleteTableRow(table.id, rowIndex)}
-                      onDeleteColumn={(columnIndex) =>
-                        deleteTableColumn(table.id, columnIndex)
-                      }
-                    />
-                  );
-                })}
-                {slide?.texts.map((textItem, index) => {
-                  const selected =
-                    activeTextId === textItem.id ||
-                    selectedObjectKeySet.has(pptxSelectionKey("text", textItem.id));
-                  return (
-                    <div
-                      key={textItem.id}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        selectText(
-                          textItem.id,
-                          event.shiftKey || event.metaKey || event.ctrlKey,
-                        );
-                      }}
-                      className={cn(
-                        "absolute rounded-sm border border-transparent text-neutral-950 outline-none hover:border-neutral-300",
-                        selected &&
-                          "border-[var(--accent)] ring-2 ring-[var(--accent)]/30",
-                      )}
-                      style={{
-                        left: `${textItem.x ?? 10}%`,
-                        top: `${textItem.y ?? 12 + index * 18}%`,
-                        width: `${textItem.width ?? 80}%`,
-                        height: `${textItem.height ?? 10}%`,
-                        transform: `rotate(${textItem.rotation ?? 0}deg)`,
-                        zIndex:
-                          (slide.shapes?.length ?? 0) +
-                          (slide.images?.length ?? 0) +
-                          (slide.charts?.length ?? 0) +
-                          (slide.tables?.length ?? 0) +
-                          index +
-                          1,
-                      }}
-                    >
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "text", textItem, "move")
-                          }
-                          className="absolute -top-7 left-0 inline-flex h-6 items-center gap-1 rounded border border-neutral-300 bg-white px-1.5 text-[10px] text-neutral-600 shadow-sm"
-                          title="Move text box"
-                        >
-                          <Move className="h-3 w-3" strokeWidth={1.75} />
-                          Move
-                        </button>
-                      )}
-                      <div
-                        contentEditable
-                        suppressContentEditableWarning
-                        onFocus={() => selectText(textItem.id)}
-                        onKeyDown={handleTextKeyDown}
-                        onInput={(event) =>
-                          updateText(index, event.currentTarget.textContent ?? "")
-                        }
-                        className="h-full min-h-8 w-full px-2 py-1 outline-none"
-                        style={{
-                          fontFamily:
-                            textItem.fontFamily ?? builtInFontFamilies[0],
-                          fontSize: `${textItem.fontSize ?? (index === 0 ? "28" : "18")}px`,
-                          fontWeight: textItem.bold ? 700 : index === 0 ? 600 : 400,
-                          fontStyle: textItem.italic ? "italic" : undefined,
-                          textDecorationLine: [
-                            textItem.underline ? "underline" : "",
-                            textItem.strikethrough ? "line-through" : "",
-                          ]
-                            .filter(Boolean)
-                            .join(" "),
-                          textAlign: textItem.align ?? "left",
-                          color: textItem.color,
-                          backgroundColor: textItem.fillColor,
-                        }}
-                      >
-                        {textItem.text}
-                      </div>
-                      {selected && (
-                        <button
-                          type="button"
-                          onPointerDown={(event) =>
-                            startObjectDrag(event, "text", textItem, "resize")
-                          }
-                          className="absolute -bottom-2 -right-2 h-4 w-4 rounded-sm border border-[var(--accent)] bg-white shadow-sm"
-                          title="Resize text box"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {!slide && (
-                  <button
-                    type="button"
-                    onClick={addSlide}
-                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md border border-dashed border-neutral-300 px-3 py-2 text-sm text-neutral-500"
-                  >
-                    New slide
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
+          <PptxSlideCanvas
+            canvasRef={canvasRef}
+            slide={slide}
+            selectionBoxBounds={selectionBoxBounds}
+            activeTextId={activeTextId}
+            activeShapeId={activeShapeId}
+            activeImageId={activeImageId}
+            activeTableId={activeTableId}
+            activeChartId={activeChartId}
+            selectedKeys={selectedObjectKeySet}
+            onCanvasKeyDown={handleCanvasKeyDown}
+            onCanvasPointerMove={handleCanvasPointerMove}
+            onCanvasPointerUp={handleCanvasPointerUp}
+            onCanvasPointerDown={handleCanvasPointerDown}
+            onTextKeyDown={handleTextKeyDown}
+            onSelectText={selectText}
+            onSelectShape={selectShape}
+            onSelectImage={selectImage}
+            onSelectTable={selectTable}
+            onSelectChart={selectChart}
+            onStartObjectDrag={startObjectDrag}
+            onTextChange={updateText}
+            onTableCellChange={updateTableCell}
+            onAddTableRow={addTableRow}
+            onAddTableColumn={addTableColumn}
+            onDeleteTableRow={deleteTableRow}
+            onDeleteTableColumn={deleteTableColumn}
+            onAddSlide={addSlide}
+          />
           {activeChart && (
             <PptxChartDataEditor
               chart={activeChart}
