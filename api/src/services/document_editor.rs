@@ -5,6 +5,7 @@
 //! writes the edited model back by replacing the relevant XML parts while
 //! preserving the rest of the package.
 
+mod docx_comments;
 mod docx_notes;
 
 use std::collections::BTreeMap;
@@ -26,6 +27,7 @@ use crate::services::drive;
 use crate::services::file_observations::fingerprint_path;
 use crate::state::AppState;
 
+use self::docx_comments::add_docx_comment_replacements;
 use self::docx_notes::{
     add_docx_note_replacements, docx_note_reference_run,
     docx_paragraph_needs_note_reference_rebuild, DOCX_ENDNOTE_PART, DOCX_FOOTNOTE_PART,
@@ -1367,118 +1369,6 @@ fn docx_notes(bytes: &[u8], path: &str, tag: &str, kind: &str) -> Vec<Value> {
             }))
         })
         .collect()
-}
-
-fn add_docx_comment_replacements(
-    original: &[u8],
-    value: Option<&Value>,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) {
-    let Some(comments) = value.and_then(Value::as_array) else {
-        return;
-    };
-    let Ok(xml) = read_zip_text(original, "word/comments.xml") else {
-        return;
-    };
-    let updated = update_docx_comments_xml(&xml, comments);
-    replacements.push(("word/comments.xml".to_string(), updated.into_bytes()));
-}
-
-fn update_docx_comments_xml(xml: &str, comments: &[Value]) -> String {
-    let comment_map = comments
-        .iter()
-        .filter_map(|comment| {
-            let id = comment.get("id").and_then(Value::as_str)?;
-            Some((id.to_string(), comment))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let mut output = String::new();
-    let mut rest = xml;
-    while let Some(start) = find_xml_tag_start(rest, "w:comment") {
-        output.push_str(&rest[..start]);
-        let after_start = &rest[start..];
-        let Some(end) = after_start.find("</w:comment>") else {
-            output.push_str(after_start);
-            return output;
-        };
-        let end_index = end + "</w:comment>".len();
-        let segment = &after_start[..end_index];
-        let id = docx_tag_attr(segment, "<w:comment", "w:id");
-        if let Some(comment) = id.and_then(|value| comment_map.get(&value)) {
-            output.push_str(&update_docx_comment_segment(segment, comment));
-        } else {
-            output.push_str(segment);
-        }
-        rest = &after_start[end_index..];
-    }
-    output.push_str(rest);
-    output
-}
-
-fn update_docx_comment_segment(segment: &str, comment: &Value) -> String {
-    let mut output = segment.to_string();
-    let mut attrs = Vec::new();
-    if let Some(author) = comment.get("author").and_then(Value::as_str) {
-        attrs.push(("w:author", author.to_string()));
-    }
-    if let Some(date) = comment.get("date").and_then(Value::as_str) {
-        attrs.push(("w:date", date.to_string()));
-    }
-    if !attrs.is_empty() {
-        output = set_first_xml_tag_attrs(&output, "<w:comment", &attrs);
-    }
-    if let Some(text) = comment.get("text").and_then(Value::as_str) {
-        output = update_docx_comment_text(&output, text);
-    }
-    output
-}
-
-fn update_docx_comment_text(comment: &str, text: &str) -> String {
-    let lines = text
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .split('\n')
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let mut output = String::new();
-    let mut rest = comment;
-    let mut line_index = 0usize;
-    while let Some(start) = rest.find("<w:p") {
-        output.push_str(&rest[..start]);
-        let after_start = &rest[start..];
-        let Some(end) = after_start.find("</w:p>") else {
-            output.push_str(after_start);
-            return output;
-        };
-        let end_index = end + "</w:p>".len();
-        let paragraph = &after_start[..end_index];
-        let replacement = lines.get(line_index).cloned().unwrap_or_default();
-        output.push_str(&replace_docx_paragraph_text(paragraph, &replacement));
-        line_index += 1;
-        rest = &after_start[end_index..];
-    }
-    output.push_str(rest);
-    if line_index > 0 {
-        if line_index < lines.len() {
-            return insert_docx_comment_paragraphs(&output, &lines[line_index..]);
-        }
-        return output;
-    }
-    let paragraphs = lines
-        .iter()
-        .map(|line| docx_plain_paragraph_xml(line))
-        .collect::<Vec<_>>()
-        .join("");
-    append_before_or_end(comment, "</w:comment>", &paragraphs)
-}
-
-fn insert_docx_comment_paragraphs(xml: &str, lines: &[String]) -> String {
-    let paragraphs = lines
-        .iter()
-        .map(|line| docx_plain_paragraph_xml(line))
-        .collect::<Vec<_>>()
-        .join("");
-    append_before_or_end(xml, "</w:comment>", &paragraphs)
 }
 
 fn docx_body_segments(document: &str) -> Vec<String> {
