@@ -189,6 +189,16 @@ export function clampImageDimension(value: number) {
   return Math.max(16, Math.min(10_000, Math.round(value)));
 }
 
+export function clampImageRotation(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-360, Math.min(360, Math.round(value)));
+}
+
+export function clampImageCropPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value * 10) / 10));
+}
+
 export function readImageDisplaySize(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
     const image = new window.Image();

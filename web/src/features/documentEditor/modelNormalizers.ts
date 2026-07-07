@@ -135,6 +135,11 @@ export function normalizeDocxModel(model: unknown): DocxModel {
         dataUrl: typeof item.dataUrl === "string" ? item.dataUrl : undefined,
         width: numericField(item.width),
         height: numericField(item.height),
+        imageRotation: numericField(item.imageRotation),
+        imageCropLeft: numericField(item.imageCropLeft),
+        imageCropTop: numericField(item.imageCropTop),
+        imageCropRight: numericField(item.imageCropRight),
+        imageCropBottom: numericField(item.imageCropBottom),
         altText: typeof item.altText === "string" ? item.altText : undefined,
         sourceXml:
           typeof item.sourceXml === "string" ? item.sourceXml : undefined,

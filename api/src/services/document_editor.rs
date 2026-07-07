@@ -1304,7 +1304,7 @@ fn docx_image_block_from_segment(
         base64::engine::general_purpose::STANDARD.encode(media)
     );
     let (width, height) = docx_image_extent(segment);
-    Some(json!({
+    let mut block = json!({
         "id": format!("img{}", index + 1),
         "type": "image",
         "text": "",
@@ -1317,7 +1317,21 @@ fn docx_image_block_from_segment(
         "height": height,
         "altText": docx_image_alt_text(segment),
         "sourceXml": segment
-    }))
+    });
+    if let Some(rotation) = docx_image_rotation(segment) {
+        block["imageRotation"] = json!(rotation);
+    }
+    for (attr, key) in [
+        ("l", "imageCropLeft"),
+        ("t", "imageCropTop"),
+        ("r", "imageCropRight"),
+        ("b", "imageCropBottom"),
+    ] {
+        if let Some(value) = docx_image_crop_percent(segment, attr) {
+            block[key] = json!(value);
+        }
+    }
+    Some(block)
 }
 
 fn docx_relationship_targets(rels: &str) -> BTreeMap<String, String> {
@@ -1363,6 +1377,20 @@ fn docx_image_alt_text(segment: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
         .or_else(|| docx_tag_attr(segment, "<wp:docPr", "title"))
         .or_else(|| docx_tag_attr(segment, "<wp:docPr", "name"))
+}
+
+fn docx_image_rotation(segment: &str) -> Option<i32> {
+    docx_tag_attr(segment, "<a:xfrm", "rot")
+        .and_then(|value| value.parse::<i64>().ok())
+        .map(|value| ((value as f64 / 60_000.0).round() as i32).clamp(-360, 360))
+        .filter(|value| *value != 0)
+}
+
+fn docx_image_crop_percent(segment: &str, attr: &str) -> Option<f64> {
+    docx_tag_attr(segment, "<a:srcRect", attr)
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|value| (value / 1000.0).clamp(0.0, 100.0))
+        .filter(|value| *value > 0.0)
 }
 
 fn emu_to_css_pixels(value: u64) -> u32 {
@@ -4376,8 +4404,12 @@ fn build_docx_image_paragraph(block: &Value) -> String {
         .and_then(Value::as_str)
         .map(escape_xml)
         .unwrap_or_default();
+    let rotation = docx_image_rotation_units(block)
+        .map(|value| format!(r#" rot="{value}""#))
+        .unwrap_or_default();
+    let src_rect = docx_image_src_rect_xml(block).unwrap_or_default();
     format!(
-        r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{width}" cy="{height}"/><wp:docPr id="1" name="Picture" descr="{alt}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{relationship_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#
+        r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{width}" cy="{height}"/><wp:docPr id="1" name="Picture" descr="{alt}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{relationship_id}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm{rotation}><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#
     )
 }
 
@@ -4408,7 +4440,75 @@ fn update_docx_image_source_xml(source_xml: &str, block: &Value) -> String {
             &[("descr", alt.to_string()), ("title", alt.to_string())],
         );
     }
+    if let Some(rotation) = docx_image_rotation_units(block) {
+        output = set_first_xml_tag_attrs(&output, "<a:xfrm", &[("rot", rotation.to_string())]);
+    }
+    if let Some(src_rect) = docx_image_src_rect_xml(block) {
+        output = replace_or_insert_docx_image_src_rect(&output, &src_rect);
+    }
     output
+}
+
+fn docx_image_rotation_units(block: &Value) -> Option<i64> {
+    block
+        .get("imageRotation")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .map(|value| value.round().clamp(-360.0, 360.0) as i64 * 60_000)
+}
+
+fn docx_image_src_rect_xml(block: &Value) -> Option<String> {
+    let crops = [
+        ("imageCropLeft", "l"),
+        ("imageCropTop", "t"),
+        ("imageCropRight", "r"),
+        ("imageCropBottom", "b"),
+    ]
+    .into_iter()
+    .filter_map(|(key, attr)| {
+        block.get(key)?;
+        let value = block
+            .get(key)
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
+        Some(format!(r#"{attr}="{}""#, (value * 1000.0).round() as u32))
+    })
+    .collect::<Vec<_>>();
+    (!crops.is_empty()).then(|| format!("<a:srcRect {}/>", crops.join(" ")))
+}
+
+fn replace_or_insert_docx_image_src_rect(xml: &str, src_rect: &str) -> String {
+    if let Some(start) = xml.find("<a:srcRect") {
+        let after_start = &xml[start..];
+        if let Some(end) = after_start.find("/>") {
+            let mut output = String::new();
+            output.push_str(&xml[..start]);
+            output.push_str(src_rect);
+            output.push_str(&after_start[end + 2..]);
+            return output;
+        }
+    }
+    if let Some(stretch_start) = xml.find("<a:stretch") {
+        let mut output = String::new();
+        output.push_str(&xml[..stretch_start]);
+        output.push_str(src_rect);
+        output.push_str(&xml[stretch_start..]);
+        return output;
+    }
+    if let Some(blip_start) = xml.find("<a:blip") {
+        let after_blip = &xml[blip_start..];
+        if let Some(blip_end) = after_blip.find("/>") {
+            let insert_at = blip_start + blip_end + 2;
+            let mut output = String::new();
+            output.push_str(&xml[..insert_at]);
+            output.push_str(src_rect);
+            output.push_str(&xml[insert_at..]);
+            return output;
+        }
+    }
+    xml.to_string()
 }
 
 fn build_docx_paragraph(block: &Value) -> String {
@@ -10861,7 +10961,7 @@ mod tests {
         let bytes = test_ooxml_package(&[
             (
                 "word/document.xml",
-                r#"<w:document><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><wp:docPr id="1" name="Picture 1" descr="Diagram"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rId7"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+                r#"<w:document><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/><wp:docPr id="1" name="Picture 1" descr="Diagram"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rId7"/><a:srcRect l="5000" t="10000" r="15000" b="20000"/></pic:blipFill><pic:spPr><a:xfrm rot="2700000"><a:ext cx="952500" cy="476250"/></a:xfrm></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
             ),
             (
                 "word/_rels/document.xml.rels",
@@ -10879,6 +10979,11 @@ mod tests {
         assert_eq!(block["mimeType"], "image/png");
         assert_eq!(block["width"], 100);
         assert_eq!(block["height"], 50);
+        assert_eq!(block["imageRotation"], 45);
+        assert_eq!(block["imageCropLeft"], 5.0);
+        assert_eq!(block["imageCropTop"], 10.0);
+        assert_eq!(block["imageCropRight"], 15.0);
+        assert_eq!(block["imageCropBottom"], 20.0);
         assert_eq!(block["altText"], "Diagram");
         assert!(block["dataUrl"]
             .as_str()
@@ -10894,6 +10999,11 @@ mod tests {
             "relationshipId": "rId7",
             "width": 120,
             "height": 80,
+            "imageRotation": 90,
+            "imageCropLeft": 2.5,
+            "imageCropTop": 5,
+            "imageCropRight": 7.5,
+            "imageCropBottom": 10,
             "altText": "Updated diagram",
             "sourceXml": source_xml,
         });
@@ -10904,6 +11014,8 @@ mod tests {
         assert!(xml.contains(r#"<a:ext cx="1143000" cy="762000"/>"#));
         assert!(xml.contains(r#"descr="Updated diagram""#));
         assert!(xml.contains(r#"title="Updated diagram""#));
+        assert!(xml.contains(r#"<a:xfrm rot="5400000">"#));
+        assert!(xml.contains(r#"<a:srcRect l="2500" t="5000" r="7500" b="10000"/>"#));
         assert!(xml.contains(r#"r:embed="rId7""#));
     }
 

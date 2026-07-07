@@ -36,6 +36,11 @@ export interface DocxBlock {
   dataUrl?: string;
   width?: number;
   height?: number;
+  imageRotation?: number;
+  imageCropLeft?: number;
+  imageCropTop?: number;
+  imageCropRight?: number;
+  imageCropBottom?: number;
   altText?: string;
   sourceXml?: string;
   bold?: boolean;
