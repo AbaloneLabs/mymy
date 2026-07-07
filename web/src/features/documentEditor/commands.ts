@@ -151,6 +151,30 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
     "Ctrl/Cmd+Alt+2",
     { key: "2", primary: true, alt: true },
   ),
+  command(
+    "heading3",
+    "Heading 3",
+    "Ctrl/Cmd+Alt+3",
+    { key: "3", primary: true, alt: true },
+  ),
+  command(
+    "heading4",
+    "Heading 4",
+    "Ctrl/Cmd+Alt+4",
+    { key: "4", primary: true, alt: true },
+  ),
+  command(
+    "heading5",
+    "Heading 5",
+    "Ctrl/Cmd+Alt+5",
+    { key: "5", primary: true, alt: true },
+  ),
+  command(
+    "heading6",
+    "Heading 6",
+    "Ctrl/Cmd+Alt+6",
+    { key: "6", primary: true, alt: true },
+  ),
   command("alignLeft", "Align left", "Ctrl/Cmd+L", { key: "l", primary: true }),
   command("alignCenter", "Align center", "Ctrl/Cmd+E", {
     key: "e",

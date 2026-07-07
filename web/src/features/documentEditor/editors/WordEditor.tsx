@@ -407,6 +407,30 @@ export function DocxEditor({
         headingLevel: 2,
         fontSize: headingFontSize(2),
       });
+    } else if (commandId === "heading3") {
+      updateActive({
+        type: "heading",
+        headingLevel: 3,
+        fontSize: headingFontSize(3),
+      });
+    } else if (commandId === "heading4") {
+      updateActive({
+        type: "heading",
+        headingLevel: 4,
+        fontSize: headingFontSize(4),
+      });
+    } else if (commandId === "heading5") {
+      updateActive({
+        type: "heading",
+        headingLevel: 5,
+        fontSize: headingFontSize(5),
+      });
+    } else if (commandId === "heading6") {
+      updateActive({
+        type: "heading",
+        headingLevel: 6,
+        fontSize: headingFontSize(6),
+      });
     } else if (commandId === "alignLeft") {
       updateActive({ align: "left" });
     } else if (commandId === "alignCenter") {
