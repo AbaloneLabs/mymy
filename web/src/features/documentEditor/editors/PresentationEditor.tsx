@@ -155,6 +155,22 @@ export function PptxEditor({
       else duplicateSlide();
     } else if (commandId === "delete") {
       deleteActiveObject();
+    } else if (commandId === "sendBackward") {
+      moveActiveObjectLayer(-1);
+    } else if (commandId === "bringForward") {
+      moveActiveObjectLayer(1);
+    } else if (commandId === "alignLeft") {
+      alignActiveObject("left");
+    } else if (commandId === "alignCenter") {
+      alignActiveObject("center");
+    } else if (commandId === "alignRight") {
+      alignActiveObject("right");
+    } else if (commandId === "alignTop") {
+      alignActiveObject("top");
+    } else if (commandId === "alignMiddle") {
+      alignActiveObject("middle");
+    } else if (commandId === "alignBottom") {
+      alignActiveObject("bottom");
     } else if (commandId === "present") {
       setPresentingIndex(nextVisibleSlideIndex(model.slides, slideIndex, 1, true));
     } else if (commandId === "insertTable") {

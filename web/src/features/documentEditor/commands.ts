@@ -41,6 +41,11 @@ export type EditorCommandId =
   | "alignCenter"
   | "alignRight"
   | "alignJustify"
+  | "alignTop"
+  | "alignMiddle"
+  | "alignBottom"
+  | "sendBackward"
+  | "bringForward"
   | "bulletList"
   | "numberedList"
   | "pageBreak"
@@ -358,6 +363,46 @@ const PRESENTATION_COMMANDS: EditorCommandDefinition[] = [
     { key: "d", primary: true },
   ),
   command("delete", "Delete selection", "Delete", { key: "Delete" }),
+  command("sendBackward", "Send backward", "Ctrl/Cmd+Shift+[", {
+    key: "[",
+    primary: true,
+    shift: true,
+  }),
+  command("bringForward", "Bring forward", "Ctrl/Cmd+Shift+]", {
+    key: "]",
+    primary: true,
+    shift: true,
+  }),
+  command("alignLeft", "Align left", "Alt+Shift+Left", {
+    key: "ArrowLeft",
+    shift: true,
+    alt: true,
+  }),
+  command("alignCenter", "Align center", "Alt+Shift+C", {
+    key: "c",
+    shift: true,
+    alt: true,
+  }),
+  command("alignRight", "Align right", "Alt+Shift+Right", {
+    key: "ArrowRight",
+    shift: true,
+    alt: true,
+  }),
+  command("alignTop", "Align top", "Alt+Shift+Up", {
+    key: "ArrowUp",
+    shift: true,
+    alt: true,
+  }),
+  command("alignMiddle", "Align middle", "Alt+Shift+M", {
+    key: "m",
+    shift: true,
+    alt: true,
+  }),
+  command("alignBottom", "Align bottom", "Alt+Shift+Down", {
+    key: "ArrowDown",
+    shift: true,
+    alt: true,
+  }),
   command("present", "Present", "F5", { key: "F5" }),
   command("insertTable", "Table", "Ctrl/Cmd+Alt+T", {
     key: "t",
