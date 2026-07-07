@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   AlertTriangle,
@@ -23,7 +23,6 @@ import {
 import {
   editorCommandsForKind,
   matchesEditorShortcut,
-  shellCommandsForKind,
   type EditorCommandDefinition,
   type EditorCommandId,
   type EditorCommandRequest,
@@ -142,6 +141,7 @@ function DocumentEditorContent({
   const writeModel = useWriteDocumentEditorModel();
   const keymap = useEditorKeymap();
   const keymapEntries = keymap.data?.shortcuts ?? [];
+  const rootRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<unknown>(() => data.model);
   const [baseKey, setBaseKey] = useState(() => stableJson(data.model));
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -286,13 +286,14 @@ function DocumentEditorContent({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
-      for (const command of shellCommandsForKind(data.editorKind, keymapEntries)) {
-        if (matchesEditorShortcut(event, command)) {
-          event.preventDefault();
-          runShellCommand(command.id);
-          return;
-        }
-      }
+      const target = event.target;
+      if (!(target instanceof Node) || !rootRef.current?.contains(target)) return;
+      const command = editorCommandsForKind(data.editorKind, keymapEntries).find((item) =>
+        matchesEditorShortcut(event, item),
+      );
+      if (!command) return;
+      event.preventDefault();
+      runShellCommand(command.id);
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -300,7 +301,7 @@ function DocumentEditorContent({
   });
 
   return (
-    <>
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-end gap-2 border-b border-[var(--border)] px-4 py-2">
         <button
           type="button"
@@ -430,7 +431,7 @@ function DocumentEditorContent({
           onCommandHandled={clearEditorCommandRequest}
         />
       </div>
-    </>
+    </div>
   );
 }
 
