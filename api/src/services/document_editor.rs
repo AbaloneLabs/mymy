@@ -15,14 +15,20 @@ mod docx_relationships;
 mod docx_tables;
 mod docx_text_parts;
 mod kind;
+mod ooxml_charts;
 mod ooxml_content_types;
 mod ooxml_images;
 mod ooxml_package;
+mod pptx_manifest;
+mod pptx_notes;
 mod pptx_package;
 mod text_formats;
 mod validation;
+mod xlsx_objects;
 mod xlsx_relationships;
 mod xlsx_styles;
+mod xlsx_tables;
+mod xlsx_workbook;
 mod xml_utils;
 
 use std::collections::BTreeMap;
@@ -73,41 +79,64 @@ use self::docx_tables::{
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
 pub use self::kind::editor_kind_for_path;
 use self::kind::mime_type_for_editor;
+use self::ooxml_charts::{
+    ooxml_chart_series, ooxml_chart_series_specs, ooxml_chart_title, ooxml_chart_type,
+    update_ooxml_chart_series, update_ooxml_chart_title, OoxmlChartSeriesSpec,
+};
 use self::ooxml_content_types::{ensure_content_type_default, ensure_content_type_override};
 #[cfg(test)]
 use self::ooxml_images::build_docx_image_paragraph;
 use self::ooxml_images::{
     add_docx_image_replacements, decode_pptx_image_data_url, docx_image_block_from_segment,
-    docx_relationship_targets, next_pptx_media_path,
+    docx_relationship_targets, image_mime_type_from_path, next_pptx_media_path,
 };
-use self::ooxml_package::{read_zip_bytes, read_zip_text, replace_zip_entries, zip_entry_names};
-use self::pptx_package::{
-    append_pptx_notes_content_types, append_pptx_slide_content_types,
-    pptx_part_to_relationship_target, pptx_relationship_targets, pptx_slide_relationship_target,
+use self::ooxml_package::{
+    next_rid, read_zip_bytes, read_zip_text, replace_zip_entries, replacement_zip_text_or_default,
+    upsert_zip_replacement, zip_entry_names,
 };
+#[cfg(test)]
+use self::pptx_manifest::PptxPresentationSlideWrite;
+use self::pptx_manifest::{
+    append_pptx_slide_content_types_for_writes, pptx_presentation_slides, pptx_slide_writes,
+    update_pptx_presentation_manifest,
+};
+use self::pptx_notes::{add_pptx_notes_replacement, pptx_slide_notes};
+use self::pptx_package::{append_pptx_notes_content_types, pptx_slide_relationship_target};
 #[cfg(test)]
 use self::text_formats::parse_delimited;
 use self::text_formats::{delimited_bytes, delimited_model, text_bytes, text_model};
 use self::validation::validate_saved_document_bytes;
 #[cfg(test)]
 use self::validation::{validate_ooxml_package, validate_structured_text_for_path};
+use self::xlsx_objects::{
+    add_xlsx_chart_replacements, add_xlsx_pivot_replacements, parse_xlsx_sheet_objects,
+};
 use self::xlsx_relationships::{
     remove_relationships_by_type, xlsx_empty_relationships, xlsx_part_rels_path,
     xlsx_part_to_relationship_target_from, xlsx_relationship_by_type,
-    xlsx_relationship_target_by_type, xlsx_relationship_target_to_part, xlsx_relationships_by_id,
-    xlsx_worksheet_rels_path,
+    xlsx_relationship_target_by_type, xlsx_relationships_by_id, xlsx_worksheet_rels_path,
 };
 use self::xlsx_styles::{
     append_xlsx_style_to_cell_json, ensure_xlsx_comments_content_types,
     ensure_xlsx_styles_content_type, ensure_xlsx_styles_relationship, xlsx_cell_style_from_model,
     xlsx_hex_color, xlsx_styles_from_xml, XlsxCellStyle, XlsxParsedStyles, XlsxStyleWriter,
 };
+use self::xlsx_tables::add_xlsx_table_replacements;
+#[cfg(test)]
+use self::xlsx_tables::update_xlsx_table_xml;
+use self::xlsx_workbook::{
+    append_xlsx_sheet_content_types, parse_xlsx_defined_names, update_xlsx_defined_names,
+    update_xlsx_workbook_calc_properties, update_xlsx_workbook_manifest, xlsx_model_has_formulas,
+    xlsx_sheet_writes, xlsx_workbook_sheets,
+};
+#[cfg(test)]
+use self::xlsx_workbook::{xlsx_workbook_sheets_from_xml, XlsxWorkbookSheetWrite};
 use self::xml_utils::{
     append_before_or_end, attr_value, escape_xml, extract_text_tags, find_xml_start,
     find_xml_tag_start, first_tag_text, remove_xml_named_elements, replace_empty_xml_element,
     replace_tag_texts, replace_xml_element, set_first_xml_tag_attrs, set_xml_attr, unescape_xml,
     xml_empty_elements, xml_first_empty_tag_attr, xml_has_named_empty_tag,
-    xml_named_empty_elements, xml_named_segments, xml_named_start_tag, xml_segments,
+    xml_named_empty_elements, xml_named_segments, xml_segments,
 };
 #[cfg(test)]
 use crate::models::document_editor::{
@@ -204,19 +233,12 @@ struct PptxChartSpec {
     relationship_id: Option<String>,
     path: Option<String>,
     title: Option<String>,
-    series: Vec<PptxChartSeriesSpec>,
+    series: Vec<OoxmlChartSeriesSpec>,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
     rotation: f64,
-}
-
-#[derive(Debug, Clone)]
-struct PptxChartSeriesSpec {
-    name: Option<String>,
-    categories: Vec<String>,
-    values: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -347,14 +369,6 @@ struct SheetComment {
 }
 
 #[derive(Debug, Clone, Default)]
-struct XlsxSheetObjects {
-    tables: Vec<Value>,
-    charts: Vec<Value>,
-    images: Vec<Value>,
-    pivots: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Default)]
 struct SheetUpdate {
     cells: BTreeMap<String, SheetCellWrite>,
     rows: BTreeMap<u32, SheetRowWrite>,
@@ -374,37 +388,9 @@ struct SheetUpdate {
 }
 
 #[derive(Debug, Clone)]
-struct XlsxWorkbookSheetRef {
-    path: String,
-    name: String,
-    sheet_id: u32,
-    rel_id: String,
-    state: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct XlsxWorkbookSheetWrite {
-    path: String,
-    name: String,
-    state: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 struct XlsxTabColor {
     color: Option<String>,
     source_xml: String,
-}
-
-#[derive(Debug, Clone)]
-struct PptxPresentationSlideRef {
-    path: String,
-    slide_id: usize,
-    rel_id: String,
-}
-
-#[derive(Debug, Clone)]
-struct PptxPresentationSlideWrite {
-    path: String,
 }
 
 pub async fn read_model(
@@ -1065,30 +1051,6 @@ fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
     Ok(json!({ "slides": slides }))
 }
 
-fn pptx_slide_notes(bytes: &[u8], slide_path: &str) -> Option<String> {
-    let notes_path = pptx_slide_notes_path(bytes, slide_path)?;
-    let notes_xml = read_zip_text(bytes, &notes_path).ok()?;
-    let notes = extract_text_tags(&notes_xml, "a:t")
-        .into_iter()
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(notes)
-}
-
-fn pptx_slide_notes_path(bytes: &[u8], slide_path: &str) -> Option<String> {
-    let rels = read_zip_text(bytes, &xlsx_part_rels_path(slide_path)).ok()?;
-    pptx_slide_notes_path_from_rels(slide_path, &rels)
-}
-
-fn pptx_slide_notes_path_from_rels(slide_path: &str, rels: &str) -> Option<String> {
-    xlsx_relationships_by_id(slide_path, rels)
-        .into_iter()
-        .find_map(|(_, (relationship_type, target))| {
-            relationship_type.ends_with("/notesSlide").then_some(target)
-        })
-}
-
 fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
     let slides = model
         .get("slides")
@@ -1351,82 +1313,6 @@ fn add_pptx_chart_clone_replacements(
         upsert_zip_replacement(replacements, rels_path, rels.into_bytes());
     }
     Ok(())
-}
-
-fn add_pptx_notes_replacement(
-    original: &[u8],
-    slide: &Value,
-    slide_path: &str,
-    existing_names: &mut Vec<String>,
-    added_note_paths: &mut Vec<String>,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) -> AppResult<()> {
-    let Some(notes) = slide.get("notes").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    let rels_path = xlsx_part_rels_path(slide_path);
-    let rels = replacement_zip_text_or_default(
-        original,
-        replacements,
-        &rels_path,
-        xlsx_empty_relationships,
-    );
-    if let Some(notes_path) = pptx_slide_notes_path_from_rels(slide_path, &rels) {
-        let notes_xml =
-            read_zip_text(original, &notes_path).unwrap_or_else(|_| build_pptx_notes(""));
-        replacements.push((
-            notes_path,
-            update_pptx_notes_xml(&notes_xml, notes).into_bytes(),
-        ));
-        return Ok(());
-    }
-    if notes.trim().is_empty() {
-        return Ok(());
-    }
-    let notes_path = next_pptx_notes_path(existing_names);
-    existing_names.push(notes_path.clone());
-    added_note_paths.push(notes_path.clone());
-    let relationship_id = format!("rId{}", next_rid(&rels));
-    let target = pptx_slide_relationship_target(&notes_path);
-    let relationship = format!(
-        r#"<Relationship Id="{relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="{}"/>"#,
-        escape_xml(&target)
-    );
-    let rels = append_before_or_end(&rels, "</Relationships>", &relationship);
-    upsert_zip_replacement(replacements, rels_path, rels.into_bytes());
-    replacements.push((notes_path, build_pptx_notes(notes).into_bytes()));
-    Ok(())
-}
-
-fn update_pptx_notes_xml(xml: &str, notes: &str) -> String {
-    if xml.contains("<a:t") {
-        return replace_tag_texts(xml, "a:t", &[notes.to_string()]);
-    }
-    build_pptx_notes(notes)
-}
-
-fn build_pptx_notes(notes: &str) -> String {
-    let paragraphs = notes
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .split('\n')
-        .map(|line| format!(r#"<a:p><a:r><a:t>{}</a:t></a:r></a:p>"#, escape_xml(line)))
-        .collect::<Vec<_>>()
-        .join("");
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="2" name="Notes Placeholder"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{paragraphs}</p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>"#
-    )
-}
-
-fn next_pptx_notes_path(existing_names: &[String]) -> String {
-    let mut index = 1usize;
-    loop {
-        let path = format!("ppt/notesSlides/notesSlide{index}.xml");
-        if !existing_names.iter().any(|name| name == &path) {
-            return path;
-        }
-        index += 1;
-    }
 }
 
 fn next_pptx_chart_path(existing_names: &[String]) -> String {
@@ -1803,518 +1689,6 @@ fn parse_sheet_comments(xml: &str) -> Vec<Value> {
             Some(item)
         })
         .collect()
-}
-
-fn parse_xlsx_sheet_objects(
-    bytes: &[u8],
-    sheet_path: &str,
-    sheet_xml: &str,
-    sheet_rels: Option<&str>,
-) -> XlsxSheetObjects {
-    let Some(sheet_rels) = sheet_rels else {
-        return XlsxSheetObjects::default();
-    };
-    let relationships = xlsx_relationships_by_id(sheet_path, sheet_rels);
-    let mut objects = XlsxSheetObjects {
-        tables: parse_xlsx_sheet_tables(bytes, sheet_xml, &relationships),
-        pivots: parse_xlsx_sheet_pivots(bytes, sheet_xml, &relationships),
-        ..XlsxSheetObjects::default()
-    };
-    for drawing in xml_named_empty_elements(sheet_xml, "drawing") {
-        let Some(relationship_id) = attr_value(&drawing, "r:id") else {
-            continue;
-        };
-        let Some((_, drawing_path)) = relationships.get(&relationship_id) else {
-            continue;
-        };
-        let Ok(drawing_xml) = read_zip_text(bytes, drawing_path) else {
-            continue;
-        };
-        let drawing_rels_path = xlsx_part_rels_path(drawing_path);
-        let drawing_rels = read_zip_text(bytes, &drawing_rels_path).unwrap_or_default();
-        let drawing_relationships = xlsx_relationships_by_id(drawing_path, &drawing_rels);
-        let drawing_objects =
-            parse_xlsx_drawing_objects(bytes, drawing_path, &drawing_xml, &drawing_relationships);
-        objects.charts.extend(drawing_objects.charts);
-        objects.images.extend(drawing_objects.images);
-    }
-    objects
-}
-
-fn parse_xlsx_sheet_tables(
-    bytes: &[u8],
-    sheet_xml: &str,
-    relationships: &BTreeMap<String, (String, String)>,
-) -> Vec<Value> {
-    xml_named_empty_elements(sheet_xml, "tablePart")
-        .into_iter()
-        .filter_map(|table_part| {
-            let relationship_id = attr_value(&table_part, "r:id")?;
-            let (relationship_type, table_path) = relationships.get(&relationship_id)?;
-            if !relationship_type.ends_with("/table") {
-                return None;
-            }
-            let table_xml = read_zip_text(bytes, table_path).unwrap_or_default();
-            let table_start = xml_named_start_tag(&table_xml, "table").unwrap_or_default();
-            let table_style = xml_named_empty_elements(&table_xml, "tableStyleInfo")
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-            let columns = xml_named_empty_elements(&table_xml, "tableColumn")
-                .into_iter()
-                .chain(xml_named_segments(&table_xml, "tableColumn"))
-                .map(|column| {
-                    json!({
-                        "id": attr_value(&column, "id"),
-                        "name": attr_value(&column, "name"),
-                        "totalsRowFunction": attr_value(&column, "totalsRowFunction")
-                    })
-                })
-                .collect::<Vec<_>>();
-            Some(json!({
-                "id": relationship_id,
-                "path": table_path,
-                "name": attr_value(&table_start, "name"),
-                "displayName": attr_value(&table_start, "displayName"),
-                "ref": attr_value(&table_start, "ref"),
-                "autoFilterRef": parse_sheet_auto_filter(&table_xml),
-                "totalsRowShown": attr_value(&table_start, "totalsRowShown")
-                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-                "tableStyleName": attr_value(&table_style, "name"),
-                "showFirstColumn": attr_value(&table_style, "showFirstColumn")
-                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-                "showLastColumn": attr_value(&table_style, "showLastColumn")
-                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-                "showRowStripes": attr_value(&table_style, "showRowStripes")
-                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-                "showColumnStripes": attr_value(&table_style, "showColumnStripes")
-                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
-                "columns": columns
-            }))
-        })
-        .collect()
-}
-
-fn parse_xlsx_sheet_pivots(
-    bytes: &[u8],
-    sheet_xml: &str,
-    relationships: &BTreeMap<String, (String, String)>,
-) -> Vec<Value> {
-    xml_named_empty_elements(sheet_xml, "pivotTableDefinition")
-        .into_iter()
-        .filter_map(|pivot| {
-            let relationship_id = attr_value(&pivot, "r:id")?;
-            let (_, pivot_path) = relationships.get(&relationship_id)?;
-            let pivot_xml = read_zip_text(bytes, pivot_path).unwrap_or_default();
-            Some(json!({
-                "id": relationship_id,
-                "path": pivot_path,
-                "name": attr_value(&pivot_xml, "name"),
-                "cacheId": attr_value(&pivot_xml, "cacheId")
-            }))
-        })
-        .collect()
-}
-
-fn parse_xlsx_drawing_objects(
-    bytes: &[u8],
-    drawing_path: &str,
-    drawing_xml: &str,
-    relationships: &BTreeMap<String, (String, String)>,
-) -> XlsxSheetObjects {
-    let mut objects = XlsxSheetObjects::default();
-    let anchors = xml_segments(drawing_xml, "<xdr:twoCellAnchor", "</xdr:twoCellAnchor>")
-        .into_iter()
-        .chain(xml_segments(
-            drawing_xml,
-            "<xdr:oneCellAnchor",
-            "</xdr:oneCellAnchor>",
-        ));
-    for anchor in anchors {
-        let anchor_json = parse_xlsx_drawing_anchor(&anchor);
-        if let Some(chart) = parse_xlsx_chart_object(bytes, &anchor, relationships, &anchor_json) {
-            objects.charts.push(chart);
-        }
-        if let Some(image) =
-            parse_xlsx_image_object(bytes, drawing_path, &anchor, relationships, &anchor_json)
-        {
-            objects.images.push(image);
-        }
-    }
-    objects
-}
-
-fn parse_xlsx_chart_object(
-    bytes: &[u8],
-    anchor: &str,
-    relationships: &BTreeMap<String, (String, String)>,
-    anchor_json: &Value,
-) -> Option<Value> {
-    let chart = xml_named_empty_elements(anchor, "c:chart")
-        .into_iter()
-        .next()?;
-    let relationship_id = attr_value(&chart, "r:id")?;
-    let (_, chart_path) = relationships.get(&relationship_id)?;
-    let chart_xml = read_zip_text(bytes, chart_path).unwrap_or_default();
-    Some(json!({
-        "id": relationship_id,
-        "path": chart_path,
-        "type": xlsx_chart_type(&chart_xml),
-        "title": xlsx_chart_title(&chart_xml),
-        "categories": pptx_chart_series(&chart_xml)
-            .first()
-            .and_then(|item| item.get("categories"))
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-        "series": pptx_chart_series(&chart_xml),
-        "anchor": anchor_json
-    }))
-}
-
-fn parse_xlsx_image_object(
-    bytes: &[u8],
-    drawing_path: &str,
-    anchor: &str,
-    relationships: &BTreeMap<String, (String, String)>,
-    anchor_json: &Value,
-) -> Option<Value> {
-    let relationship_id = docx_tag_attr(anchor, "<a:blip", "r:embed")
-        .or_else(|| docx_tag_attr(anchor, "<a:blip", "r:link"))?;
-    let (_, image_path) = relationships.get(&relationship_id)?;
-    let mime_type = image_mime_type_from_path(image_path);
-    let media = read_zip_bytes(bytes, image_path).ok();
-    let data_url = media.as_ref().map(|bytes| {
-        format!(
-            "data:{mime_type};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        )
-    });
-    Some(json!({
-        "id": relationship_id,
-        "drawingPath": drawing_path,
-        "mediaPath": image_path,
-        "mimeType": mime_type,
-        "dataUrl": data_url,
-        "anchor": anchor_json
-    }))
-}
-
-fn parse_xlsx_drawing_anchor(anchor: &str) -> Value {
-    let from = xml_named_segments(anchor, "xdr:from")
-        .into_iter()
-        .next()
-        .unwrap_or_default();
-    let to = xml_named_segments(anchor, "xdr:to")
-        .into_iter()
-        .next()
-        .unwrap_or_default();
-    json!({
-        "from": xlsx_marker_position(&from),
-        "to": xlsx_marker_position(&to)
-    })
-}
-
-fn xlsx_marker_position(marker: &str) -> Value {
-    json!({
-        "column": first_tag_text(marker, "xdr:col").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0),
-        "columnOffset": first_tag_text(marker, "xdr:colOff").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0),
-        "row": first_tag_text(marker, "xdr:row").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0),
-        "rowOffset": first_tag_text(marker, "xdr:rowOff").and_then(|value| value.parse::<u32>().ok()).unwrap_or(0)
-    })
-}
-
-fn xlsx_chart_type(chart_xml: &str) -> Option<&'static str> {
-    [
-        ("bar", "<c:barChart"),
-        ("line", "<c:lineChart"),
-        ("area", "<c:areaChart"),
-        ("pie", "<c:pieChart"),
-        ("scatter", "<c:scatterChart"),
-        ("doughnut", "<c:doughnutChart"),
-    ]
-    .into_iter()
-    .find_map(|(kind, marker)| chart_xml.contains(marker).then_some(kind))
-}
-
-fn xlsx_chart_title(chart_xml: &str) -> Option<String> {
-    xml_named_segments(chart_xml, "c:title")
-        .into_iter()
-        .next()
-        .map(|title| extract_text_tags(&title, "a:t").join(""))
-        .filter(|title| !title.is_empty())
-}
-
-fn add_xlsx_table_replacements(
-    original: &[u8],
-    sheet: &Value,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) {
-    let Some(tables) = sheet.get("tables").and_then(Value::as_array) else {
-        return;
-    };
-    for table in tables {
-        let Some(table_path) = table
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|path| valid_xlsx_table_path(path))
-        else {
-            continue;
-        };
-        let Ok(table_xml) = read_zip_text(original, table_path) else {
-            continue;
-        };
-        let updated = update_xlsx_table_xml(&table_xml, table);
-        replacements.push((table_path.to_string(), updated.into_bytes()));
-    }
-}
-
-fn update_xlsx_table_xml(table_xml: &str, table: &Value) -> String {
-    let mut updated = update_xlsx_table_root_attrs(table_xml, table);
-    updated = update_xlsx_table_auto_filter(&updated, table);
-    updated = update_xlsx_table_columns(&updated, table);
-    update_xlsx_table_style_info(&updated, table)
-}
-
-fn update_xlsx_table_root_attrs(table_xml: &str, table: &Value) -> String {
-    let mut attrs = Vec::new();
-    if let Some(name) = xlsx_validation_string(table, "name") {
-        attrs.push(("name", name));
-    }
-    if let Some(display_name) = xlsx_validation_string(table, "displayName") {
-        attrs.push(("displayName", display_name));
-    }
-    if let Some(reference) = xlsx_validation_string(table, "ref")
-        .filter(|reference| valid_xlsx_range_reference(reference))
-    {
-        attrs.push(("ref", reference));
-    }
-    if let Some(totals_row_shown) = table.get("totalsRowShown").and_then(Value::as_bool) {
-        attrs.push((
-            "totalsRowShown",
-            if totals_row_shown { "1" } else { "0" }.to_string(),
-        ));
-    }
-    if attrs.is_empty() {
-        return table_xml.to_string();
-    }
-    set_first_xml_tag_attrs(table_xml, "<table", &attrs)
-}
-
-fn update_xlsx_table_auto_filter(table_xml: &str, table: &Value) -> String {
-    let reference = xlsx_validation_string(table, "autoFilterRef")
-        .or_else(|| xlsx_validation_string(table, "ref"))
-        .filter(|reference| valid_xlsx_range_reference(reference));
-    let auto_filter_xml = reference
-        .as_deref()
-        .map(|reference| format!(r#"<autoFilter ref="{}"/>"#, escape_xml(reference)))
-        .unwrap_or_default();
-    if let Some(replaced) = replace_xml_element(table_xml, "autoFilter", &auto_filter_xml) {
-        return replaced;
-    }
-    if table_xml.contains("<autoFilter") {
-        return replace_empty_xml_element(table_xml, "<autoFilter", &auto_filter_xml);
-    }
-    if auto_filter_xml.is_empty() {
-        return table_xml.to_string();
-    }
-    if let Some(index) = table_xml.find("<tableColumns") {
-        let mut output = String::new();
-        output.push_str(&table_xml[..index]);
-        output.push_str(&auto_filter_xml);
-        output.push_str(&table_xml[index..]);
-        return output;
-    }
-    append_before_or_end(table_xml, "</table>", &auto_filter_xml)
-}
-
-fn update_xlsx_table_columns(table_xml: &str, table: &Value) -> String {
-    let Some(columns) = table.get("columns").and_then(Value::as_array) else {
-        return table_xml.to_string();
-    };
-    let columns_xml = build_xlsx_table_columns(columns);
-    if let Some(replaced) = replace_xml_element(table_xml, "tableColumns", &columns_xml) {
-        return replaced;
-    }
-    if table_xml.contains("<tableColumns") {
-        return replace_empty_xml_element(table_xml, "<tableColumns", &columns_xml);
-    }
-    if let Some(index) = table_xml.find("<tableStyleInfo") {
-        let mut output = String::new();
-        output.push_str(&table_xml[..index]);
-        output.push_str(&columns_xml);
-        output.push_str(&table_xml[index..]);
-        return output;
-    }
-    append_before_or_end(table_xml, "</table>", &columns_xml)
-}
-
-fn build_xlsx_table_columns(columns: &[Value]) -> String {
-    let items = columns
-        .iter()
-        .enumerate()
-        .map(|(index, column)| {
-            let id = xlsx_validation_string(column, "id")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or((index + 1) as u32);
-            let name = xlsx_validation_string(column, "name")
-                .unwrap_or_else(|| format!("Column{}", index + 1));
-            let mut attrs = vec![
-                format!(r#"id="{id}""#),
-                format!(r#"name="{}""#, escape_xml(&name)),
-            ];
-            if let Some(function) = xlsx_validation_string(column, "totalsRowFunction")
-                .filter(|value| valid_xlsx_table_totals_function(value))
-            {
-                attrs.push(format!(r#"totalsRowFunction="{}""#, escape_xml(&function)));
-            }
-            format!("<tableColumn {}/>", attrs.join(" "))
-        })
-        .collect::<String>();
-    format!(
-        r#"<tableColumns count="{}">{items}</tableColumns>"#,
-        columns.len()
-    )
-}
-
-fn valid_xlsx_table_totals_function(value: &str) -> bool {
-    matches!(
-        value,
-        "sum"
-            | "min"
-            | "max"
-            | "average"
-            | "count"
-            | "countNums"
-            | "stdDev"
-            | "var"
-            | "custom"
-            | "none"
-    )
-}
-
-fn update_xlsx_table_style_info(table_xml: &str, table: &Value) -> String {
-    let Some(style_xml) = build_xlsx_table_style_info(table) else {
-        return table_xml.to_string();
-    };
-    if let Some(replaced) = replace_xml_element(table_xml, "tableStyleInfo", &style_xml) {
-        return replaced;
-    }
-    if table_xml.contains("<tableStyleInfo") {
-        return replace_empty_xml_element(table_xml, "<tableStyleInfo", &style_xml);
-    }
-    append_before_or_end(table_xml, "</table>", &style_xml)
-}
-
-fn build_xlsx_table_style_info(table: &Value) -> Option<String> {
-    let mut attrs = Vec::new();
-    if let Some(name) = xlsx_validation_string(table, "tableStyleName") {
-        attrs.push(format!(r#"name="{}""#, escape_xml(&name)));
-    }
-    for (key, attr_name) in [
-        ("showFirstColumn", "showFirstColumn"),
-        ("showLastColumn", "showLastColumn"),
-        ("showRowStripes", "showRowStripes"),
-        ("showColumnStripes", "showColumnStripes"),
-    ] {
-        if let Some(value) = table.get(key).and_then(Value::as_bool) {
-            attrs.push(format!(
-                r#"{attr_name}="{}""#,
-                if value { "1" } else { "0" }
-            ));
-        }
-    }
-    if attrs.is_empty() {
-        None
-    } else {
-        Some(format!("<tableStyleInfo {}/>", attrs.join(" ")))
-    }
-}
-
-fn valid_xlsx_table_path(path: &str) -> bool {
-    path.starts_with("xl/tables/") && path.ends_with(".xml") && !path.contains("..")
-}
-
-fn add_xlsx_chart_replacements(
-    original: &[u8],
-    sheet: &Value,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) {
-    let Some(charts) = sheet.get("charts").and_then(Value::as_array) else {
-        return;
-    };
-    for chart in charts {
-        let Some(chart_path) = chart
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|path| valid_xlsx_chart_path(path))
-        else {
-            continue;
-        };
-        let Ok(chart_xml) = read_zip_text(original, chart_path) else {
-            continue;
-        };
-        let mut updated = chart_xml;
-        if let Some(title) = chart.get("title").and_then(Value::as_str) {
-            updated = update_pptx_chart_title(&updated, title);
-        }
-        updated = update_pptx_chart_series(&updated, &pptx_chart_series_specs(chart));
-        replacements.push((chart_path.to_string(), updated.into_bytes()));
-    }
-}
-
-fn valid_xlsx_chart_path(path: &str) -> bool {
-    path.starts_with("xl/charts/") && path.ends_with(".xml") && !path.contains("..")
-}
-
-fn add_xlsx_pivot_replacements(
-    original: &[u8],
-    sheet: &Value,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) {
-    let Some(pivots) = sheet.get("pivots").and_then(Value::as_array) else {
-        return;
-    };
-    for pivot in pivots {
-        let Some(pivot_path) = pivot
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|path| valid_xlsx_pivot_path(path))
-        else {
-            continue;
-        };
-        let Some(name) = pivot.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let Ok(pivot_xml) = read_zip_text(original, pivot_path) else {
-            continue;
-        };
-        let updated = set_first_xml_tag_attrs(
-            &pivot_xml,
-            "<pivotTableDefinition",
-            &[("name", name.to_string())],
-        );
-        replacements.push((pivot_path.to_string(), updated.into_bytes()));
-    }
-}
-
-fn valid_xlsx_pivot_path(path: &str) -> bool {
-    path.starts_with("xl/pivotTables/") && path.ends_with(".xml") && !path.contains("..")
-}
-
-fn image_mime_type_from_path(path: &str) -> &'static str {
-    match path
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "gif" => "image/gif",
-        "jpg" | "jpeg" => "image/jpeg",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
-        _ => "image/png",
-    }
 }
 
 fn parse_sheet_frozen_pane(xml: &str) -> (u32, u32) {
@@ -2932,375 +2306,6 @@ fn sheet_u32_in_range(value: &Value, key: &str, min: u32, max: u32) -> Option<u3
         .get(key)
         .and_then(Value::as_u64)
         .map(|number| number.clamp(min as u64, max as u64) as u32)
-}
-
-fn xlsx_workbook_sheets(bytes: &[u8]) -> AppResult<Vec<XlsxWorkbookSheetRef>> {
-    let workbook = read_zip_text(bytes, "xl/workbook.xml")?;
-    let rels = read_zip_text(bytes, "xl/_rels/workbook.xml.rels")?;
-    Ok(xlsx_workbook_sheets_from_xml(&workbook, &rels))
-}
-
-fn xlsx_workbook_sheets_from_xml(workbook: &str, rels: &str) -> Vec<XlsxWorkbookSheetRef> {
-    let targets = xlsx_relationship_targets(rels);
-    xml_empty_elements(workbook, "<sheet ")
-        .into_iter()
-        .filter_map(|sheet| {
-            let rel_id = attr_value(&sheet, "r:id")?;
-            let path = targets.get(&rel_id)?.clone();
-            Some(XlsxWorkbookSheetRef {
-                path,
-                name: attr_value(&sheet, "name")
-                    .map(|name| unescape_xml(&name))
-                    .unwrap_or_else(|| "Sheet".to_string()),
-                sheet_id: attr_value(&sheet, "sheetId")
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .unwrap_or(1),
-                rel_id,
-                state: attr_value(&sheet, "state")
-                    .filter(|value| matches!(value.as_str(), "hidden" | "veryHidden")),
-            })
-        })
-        .collect()
-}
-
-fn xlsx_relationship_targets(rels: &str) -> BTreeMap<String, String> {
-    xml_empty_elements(rels, "<Relationship ")
-        .into_iter()
-        .filter_map(|relationship| {
-            let rel_id = attr_value(&relationship, "Id")?;
-            let rel_type = attr_value(&relationship, "Type").unwrap_or_default();
-            if !rel_type.ends_with("/worksheet") {
-                return None;
-            }
-            let target = attr_value(&relationship, "Target")?;
-            Some((rel_id, xlsx_relationship_target_to_part(&target)))
-        })
-        .collect()
-}
-
-fn xlsx_sheet_writes(
-    sheets: &[Value],
-    original_refs: &[XlsxWorkbookSheetRef],
-) -> Vec<XlsxWorkbookSheetWrite> {
-    let mut used_paths = original_refs
-        .iter()
-        .map(|sheet| sheet.path.clone())
-        .collect::<Vec<_>>();
-    let mut writes = Vec::new();
-    for (index, sheet) in sheets.iter().enumerate() {
-        let requested = sheet
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let existing = original_refs
-            .iter()
-            .any(|sheet_ref| sheet_ref.path == requested);
-        let path = if existing || valid_xlsx_sheet_path(&requested) {
-            requested
-        } else {
-            next_xlsx_sheet_path(&used_paths)
-        };
-        if !used_paths.iter().any(|used| used == &path) {
-            used_paths.push(path.clone());
-        }
-        let name = sheet
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("Sheet {}", index + 1));
-        let state = xlsx_validation_string(sheet, "state")
-            .filter(|value| matches!(value.as_str(), "hidden" | "veryHidden"));
-        writes.push(XlsxWorkbookSheetWrite { path, name, state });
-    }
-    writes
-}
-
-fn valid_xlsx_sheet_path(path: &str) -> bool {
-    path.starts_with("xl/worksheets/") && path.ends_with(".xml") && !path.contains("..")
-}
-
-fn next_xlsx_sheet_path(used_paths: &[String]) -> String {
-    let mut index = used_paths
-        .iter()
-        .filter_map(|path| {
-            path.rsplit('/')
-                .next()
-                .and_then(|name| name.strip_prefix("sheet"))
-                .and_then(|name| name.strip_suffix(".xml"))
-                .and_then(|value| value.parse::<usize>().ok())
-        })
-        .max()
-        .unwrap_or(0)
-        + 1;
-    loop {
-        let path = format!("xl/worksheets/sheet{index}.xml");
-        if !used_paths.iter().any(|used| used == &path) {
-            return path;
-        }
-        index += 1;
-    }
-}
-
-fn update_xlsx_workbook_manifest(
-    workbook: &str,
-    rels: &str,
-    sheets: &[XlsxWorkbookSheetWrite],
-) -> (String, String) {
-    let existing_refs = xlsx_workbook_sheets_from_xml(workbook, rels);
-    let existing_by_path = existing_refs
-        .iter()
-        .map(|sheet| (sheet.path.clone(), sheet.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut rels_out = rels.to_string();
-    let mut next_rel = next_rid(rels);
-    let mut next_sheet_id = next_xlsx_sheet_id(workbook);
-    let mut sheet_tags = Vec::new();
-    for sheet in sheets {
-        let (rel_id, sheet_id) = if let Some(existing) = existing_by_path.get(&sheet.path) {
-            (existing.rel_id.clone(), existing.sheet_id)
-        } else {
-            let rel_id = format!("rId{next_rel}");
-            next_rel += 1;
-            let rel = format!(
-                r#"<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="{}"/>"#,
-                xlsx_part_to_relationship_target(&sheet.path)
-            );
-            rels_out = append_before_or_end(&rels_out, "</Relationships>", &rel);
-            let sheet_id = next_sheet_id;
-            next_sheet_id += 1;
-            (rel_id, sheet_id)
-        };
-        let state = sheet
-            .state
-            .as_deref()
-            .map(|state| format!(r#" state="{state}""#))
-            .unwrap_or_default();
-        sheet_tags.push(format!(
-            r#"<sheet name="{}" sheetId="{sheet_id}" r:id="{rel_id}"{state}/>"#,
-            escape_xml(&sheet.name)
-        ));
-    }
-    let sheets_xml = format!("<sheets>{}</sheets>", sheet_tags.join(""));
-    let workbook_out = replace_xml_element(workbook, "sheets", &sheets_xml)
-        .unwrap_or_else(|| append_before_or_end(workbook, "</workbook>", &sheets_xml));
-    (workbook_out, rels_out)
-}
-
-fn xlsx_model_has_formulas(sheets: &[Value]) -> bool {
-    sheets.iter().any(|sheet| {
-        sheet
-            .get("rows")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|row| {
-                row.get("cells")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .any(|cell| {
-                        cell.get("formula")
-                            .and_then(Value::as_str)
-                            .map(|formula| !formula.trim().is_empty())
-                            .unwrap_or(false)
-                            || cell
-                                .get("value")
-                                .and_then(Value::as_str)
-                                .map(|value| value.trim_start().starts_with('='))
-                                .unwrap_or(false)
-                    })
-            })
-    })
-}
-
-fn update_xlsx_workbook_calc_properties(workbook: &str) -> String {
-    let attrs = [
-        ("calcMode", "auto".to_string()),
-        ("fullCalcOnLoad", "1".to_string()),
-        ("forceFullCalc", "1".to_string()),
-    ];
-    if workbook.contains("<calcPr") {
-        return set_first_xml_tag_attrs(workbook, "<calcPr", &attrs);
-    }
-    append_before_or_end(
-        workbook,
-        "</workbook>",
-        r#"<calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/>"#,
-    )
-}
-
-fn parse_xlsx_defined_names(workbook: &str) -> Vec<Value> {
-    xml_named_segments(workbook, "definedName")
-        .into_iter()
-        .filter_map(|defined_name| {
-            let name = attr_value(&defined_name, "name").map(|name| unescape_xml(&name))?;
-            let mut item = json!({
-                "name": name,
-                "value": xlsx_defined_name_text(&defined_name),
-                "sourceXml": defined_name
-            });
-            let source_xml = item["sourceXml"].as_str().unwrap_or_default().to_string();
-            if let Some(local_sheet_id) =
-                attr_value(&source_xml, "localSheetId").and_then(|value| value.parse::<u32>().ok())
-            {
-                item["localSheetId"] = json!(local_sheet_id);
-            }
-            if xml_bool_attr(&source_xml, "hidden") {
-                item["hidden"] = json!(true);
-            }
-            if let Some(comment) = attr_value(&source_xml, "comment") {
-                item["comment"] = json!(unescape_xml(&comment));
-            }
-            Some(item)
-        })
-        .collect()
-}
-
-fn xlsx_defined_name_text(defined_name: &str) -> String {
-    let Some(open_end) = defined_name.find('>') else {
-        return String::new();
-    };
-    let end_marker = "</definedName>";
-    let Some(close_start) = defined_name.rfind(end_marker) else {
-        return String::new();
-    };
-    unescape_xml(&defined_name[open_end + 1..close_start])
-}
-
-fn update_xlsx_defined_names(workbook: &str, defined_names: Option<&Vec<Value>>) -> String {
-    let Some(defined_names) = defined_names else {
-        return workbook.to_string();
-    };
-    let items = defined_names
-        .iter()
-        .filter_map(build_xlsx_defined_name)
-        .collect::<String>();
-    let replacement = if items.is_empty() {
-        String::new()
-    } else {
-        format!("<definedNames>{items}</definedNames>")
-    };
-    if let Some(replaced) = replace_xml_element(workbook, "definedNames", &replacement) {
-        return replaced;
-    }
-    if replacement.is_empty() {
-        return workbook.to_string();
-    }
-    if let Some(index) = workbook.find("<calcPr") {
-        let mut output = String::new();
-        output.push_str(&workbook[..index]);
-        output.push_str(&replacement);
-        output.push_str(&workbook[index..]);
-        return output;
-    }
-    append_before_or_end(workbook, "</workbook>", &replacement)
-}
-
-fn build_xlsx_defined_name(value: &Value) -> Option<String> {
-    let name = xlsx_validation_string(value, "name")?;
-    let text = xlsx_validation_string(value, "value").unwrap_or_default();
-    if let Some(source_xml) = value
-        .get("sourceXml")
-        .and_then(Value::as_str)
-        .filter(|source| source.starts_with("<definedName"))
-    {
-        let mut updated = set_first_xml_tag_attrs(source_xml, "<definedName", &[("name", name)]);
-        if let Some(local_sheet_id) = value
-            .get("localSheetId")
-            .and_then(Value::as_u64)
-            .map(|number| number.min(u32::MAX as u64) as u32)
-        {
-            updated = set_first_xml_tag_attrs(
-                &updated,
-                "<definedName",
-                &[("localSheetId", local_sheet_id.to_string())],
-            );
-        }
-        if value
-            .get("hidden")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            updated =
-                set_first_xml_tag_attrs(&updated, "<definedName", &[("hidden", "1".to_string())]);
-        }
-        if let Some(comment) = xlsx_validation_string(value, "comment") {
-            updated = set_first_xml_tag_attrs(&updated, "<definedName", &[("comment", comment)]);
-        }
-        return Some(replace_xlsx_defined_name_text(&updated, &text));
-    }
-    let mut attrs = vec![format!(r#"name="{}""#, escape_xml(&name))];
-    if let Some(local_sheet_id) = value
-        .get("localSheetId")
-        .and_then(Value::as_u64)
-        .map(|number| number.min(u32::MAX as u64) as u32)
-    {
-        attrs.push(format!(r#"localSheetId="{local_sheet_id}""#));
-    }
-    if value
-        .get("hidden")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        attrs.push(r#"hidden="1""#.to_string());
-    }
-    if let Some(comment) = xlsx_validation_string(value, "comment") {
-        attrs.push(format!(r#"comment="{}""#, escape_xml(&comment)));
-    }
-    Some(format!(
-        "<definedName {}>{}</definedName>",
-        attrs.join(" "),
-        escape_xml(&text)
-    ))
-}
-
-fn replace_xlsx_defined_name_text(source_xml: &str, text: &str) -> String {
-    let Some(open_end) = source_xml.find('>') else {
-        return source_xml.to_string();
-    };
-    let end_marker = "</definedName>";
-    let Some(close_start) = source_xml.rfind(end_marker) else {
-        return source_xml.to_string();
-    };
-    let mut output = String::new();
-    output.push_str(&source_xml[..=open_end]);
-    output.push_str(&escape_xml(text));
-    output.push_str(&source_xml[close_start..]);
-    output
-}
-
-fn xlsx_part_to_relationship_target(path: &str) -> String {
-    path.strip_prefix("xl/").unwrap_or(path).to_string()
-}
-
-fn next_xlsx_sheet_id(workbook: &str) -> u32 {
-    xml_empty_elements(workbook, "<sheet ")
-        .iter()
-        .filter_map(|sheet| attr_value(sheet, "sheetId"))
-        .filter_map(|value| value.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0)
-        + 1
-}
-
-fn append_xlsx_sheet_content_types(
-    content_types: &str,
-    sheets: &[XlsxWorkbookSheetWrite],
-) -> String {
-    let mut output = content_types.to_string();
-    for sheet in sheets {
-        let part_name = format!("/{}", sheet.path);
-        if output.contains(&part_name) {
-            continue;
-        }
-        let override_xml = format!(
-            r#"<Override PartName="{part_name}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#
-        );
-        output = append_before_or_end(&output, "</Types>", &override_xml);
-    }
-    output
 }
 
 fn build_xlsx_worksheet(update: &SheetUpdate) -> String {
@@ -4515,7 +3520,7 @@ fn pptx_slide_charts(bytes: &[u8], slide_path: &str, xml: &str) -> Vec<Value> {
             }
             let chart_xml = read_zip_text(bytes, chart_path).unwrap_or_default();
             let (x, y, width, height, rotation) = pptx_shape_geometry(&frame);
-            let series = pptx_chart_series(&chart_xml);
+            let series = ooxml_chart_series(&chart_xml);
             let categories = series
                 .first()
                 .and_then(|item| item.get("categories"))
@@ -4525,8 +3530,8 @@ fn pptx_slide_charts(bytes: &[u8], slide_path: &str, xml: &str) -> Vec<Value> {
                 "id": format!("chart{}", index + 1),
                 "relationshipId": relationship_id,
                 "path": chart_path,
-                "type": xlsx_chart_type(&chart_xml),
-                "title": xlsx_chart_title(&chart_xml),
+                "type": ooxml_chart_type(&chart_xml),
+                "title": ooxml_chart_title(&chart_xml),
                 "x": x,
                 "y": y,
                 "width": width,
@@ -4537,47 +3542,6 @@ fn pptx_slide_charts(bytes: &[u8], slide_path: &str, xml: &str) -> Vec<Value> {
             }))
         })
         .collect()
-}
-
-fn pptx_chart_series(chart_xml: &str) -> Vec<Value> {
-    xml_named_segments(chart_xml, "c:ser")
-        .into_iter()
-        .enumerate()
-        .map(|(index, series)| {
-            json!({
-                "name": pptx_chart_series_name(&series)
-                    .unwrap_or_else(|| format!("Series {}", index + 1)),
-                "categories": pptx_chart_points(&series, "c:cat"),
-                "values": pptx_chart_points(&series, "c:val")
-            })
-        })
-        .collect()
-}
-
-fn pptx_chart_series_name(series: &str) -> Option<String> {
-    xml_named_segments(series, "c:tx")
-        .into_iter()
-        .next()
-        .and_then(|text| {
-            first_tag_text(&text, "c:v")
-                .or_else(|| first_tag_text(&text, "a:t"))
-                .map(|value| value.trim().to_string())
-        })
-        .filter(|value| !value.is_empty())
-}
-
-fn pptx_chart_points(series: &str, container_tag: &str) -> Vec<String> {
-    xml_named_segments(series, container_tag)
-        .into_iter()
-        .next()
-        .map(|container| {
-            extract_text_tags(&container, "c:v")
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
 }
 
 fn pptx_slide_transition(xml: &str) -> Option<Value> {
@@ -5087,7 +4051,7 @@ fn pptx_chart_specs(slide: &Value) -> Vec<PptxChartSpec> {
                 .get("title")
                 .and_then(Value::as_str)
                 .map(str::to_string),
-            series: pptx_chart_series_specs(chart),
+            series: ooxml_chart_series_specs(chart),
             x: chart
                 .get("x")
                 .and_then(Value::as_f64)
@@ -5111,51 +4075,6 @@ fn pptx_chart_specs(slide: &Value) -> Vec<PptxChartSpec> {
             rotation: normalize_degrees(
                 chart.get("rotation").and_then(Value::as_f64).unwrap_or(0.0),
             ),
-        })
-        .collect()
-}
-
-fn pptx_chart_series_specs(chart: &Value) -> Vec<PptxChartSeriesSpec> {
-    chart
-        .get("series")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|series| PptxChartSeriesSpec {
-            name: series
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            categories: series
-                .get("categories")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| value.to_string())
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-            values: series
-                .get("values")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .map(|value| {
-                            value
-                                .as_str()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| value.to_string())
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
         })
         .collect()
 }
@@ -5817,96 +4736,11 @@ fn add_pptx_chart_replacements(
         }
         let mut updated = chart_xml;
         if let Some(title) = spec.title.as_deref() {
-            updated = update_pptx_chart_title(&updated, title);
+            updated = update_ooxml_chart_title(&updated, title);
         }
-        updated = update_pptx_chart_series(&updated, &spec.series);
+        updated = update_ooxml_chart_series(&updated, &spec.series);
         replacements.push((chart_path, updated.into_bytes()));
     }
-}
-
-fn update_pptx_chart_title(xml: &str, title: &str) -> String {
-    let title_xml = build_pptx_chart_title(title);
-    if let Some(replaced) = replace_xml_element(xml, "c:title", &title_xml) {
-        return replaced;
-    }
-    if let Some(index) = xml.find("<c:plotArea") {
-        let mut output = String::new();
-        output.push_str(&xml[..index]);
-        output.push_str(&title_xml);
-        output.push_str(&xml[index..]);
-        return output;
-    }
-    append_before_or_end(xml, "</c:chart>", &title_xml)
-}
-
-fn build_pptx_chart_title(title: &str) -> String {
-    format!(
-        r#"<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>{}</a:t></a:r></a:p></c:rich></c:tx></c:title>"#,
-        escape_xml(title)
-    )
-}
-
-fn update_pptx_chart_series(xml: &str, specs: &[PptxChartSeriesSpec]) -> String {
-    if specs.is_empty() {
-        return xml.to_string();
-    }
-    let mut output = String::new();
-    let mut rest = xml;
-    let mut index = 0usize;
-    while let Some(start) = find_xml_start(rest, "<c:ser") {
-        output.push_str(&rest[..start]);
-        let after_start = &rest[start..];
-        let Some(end) = after_start.find("</c:ser>") else {
-            output.push_str(after_start);
-            return output;
-        };
-        let end_index = end + "</c:ser>".len();
-        let segment = &after_start[..end_index];
-        if let Some(spec) = specs.get(index) {
-            output.push_str(&update_pptx_chart_series_segment(segment, spec));
-        } else {
-            output.push_str(segment);
-        }
-        index += 1;
-        rest = &after_start[end_index..];
-    }
-    output.push_str(rest);
-    output
-}
-
-fn update_pptx_chart_series_segment(segment: &str, spec: &PptxChartSeriesSpec) -> String {
-    let mut output = if let Some(name) = spec.name.as_deref() {
-        update_pptx_chart_series_name(segment, name)
-    } else {
-        segment.to_string()
-    };
-    output = update_pptx_chart_point_values(&output, "c:cat", &spec.categories);
-    update_pptx_chart_point_values(&output, "c:val", &spec.values)
-}
-
-fn update_pptx_chart_series_name(segment: &str, name: &str) -> String {
-    let Some(tx) = xml_named_segments(segment, "c:tx").into_iter().next() else {
-        return segment.to_string();
-    };
-    let updated_tx = if tx.contains("<c:v") {
-        replace_tag_texts(&tx, "c:v", &[name.to_string()])
-    } else if tx.contains("<a:t") {
-        replace_tag_texts(&tx, "a:t", &[name.to_string()])
-    } else {
-        tx.clone()
-    };
-    segment.replacen(&tx, &updated_tx, 1)
-}
-
-fn update_pptx_chart_point_values(segment: &str, tag: &str, values: &[String]) -> String {
-    if values.is_empty() {
-        return segment.to_string();
-    }
-    let Some(container) = xml_named_segments(segment, tag).into_iter().next() else {
-        return segment.to_string();
-    };
-    let updated_container = replace_tag_texts(&container, "c:v", values);
-    segment.replacen(&container, &updated_container, 1)
 }
 
 fn update_pptx_transition(xml: &str, spec: Option<&PptxTransitionSpec>) -> String {
@@ -6289,196 +5123,12 @@ fn set_xml_start_attr(xml: &str, marker: &str, attr: &str, value: &str) -> Strin
     format!("{}{}{}", &xml[..start], next_tag, &xml[tag_end..])
 }
 
-fn pptx_presentation_slides(bytes: &[u8]) -> AppResult<Vec<PptxPresentationSlideRef>> {
-    let presentation = read_zip_text(bytes, "ppt/presentation.xml")?;
-    let rels = read_zip_text(bytes, "ppt/_rels/presentation.xml.rels")?;
-    Ok(pptx_presentation_slides_from_xml(&presentation, &rels))
-}
-
-fn pptx_presentation_slides_from_xml(
-    presentation: &str,
-    rels: &str,
-) -> Vec<PptxPresentationSlideRef> {
-    let targets = pptx_relationship_targets(rels);
-    xml_empty_elements(presentation, "<p:sldId ")
-        .into_iter()
-        .filter_map(|slide| {
-            let rel_id = attr_value(&slide, "r:id")?;
-            let path = targets.get(&rel_id)?.clone();
-            Some(PptxPresentationSlideRef {
-                path,
-                slide_id: attr_value(&slide, "id")
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(256),
-                rel_id,
-            })
-        })
-        .collect()
-}
-
-fn pptx_slide_writes(
-    slides: &[Value],
-    original_refs: &[PptxPresentationSlideRef],
-) -> Vec<PptxPresentationSlideWrite> {
-    let mut used_paths = original_refs
-        .iter()
-        .map(|slide| slide.path.clone())
-        .collect::<Vec<_>>();
-    slides
-        .iter()
-        .map(|slide| {
-            let requested = slide
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let existing = original_refs
-                .iter()
-                .any(|slide_ref| slide_ref.path == requested);
-            let path = if existing || valid_pptx_slide_path(&requested) {
-                requested
-            } else {
-                next_pptx_slide_path(&used_paths)
-            };
-            if !used_paths.iter().any(|used| used == &path) {
-                used_paths.push(path.clone());
-            }
-            PptxPresentationSlideWrite { path }
-        })
-        .collect()
-}
-
-fn valid_pptx_slide_path(path: &str) -> bool {
-    path.starts_with("ppt/slides/slide") && path.ends_with(".xml") && !path.contains("..")
-}
-
-fn next_pptx_slide_path(used_paths: &[String]) -> String {
-    let mut index = used_paths
-        .iter()
-        .filter_map(|path| {
-            path.rsplit('/')
-                .next()
-                .and_then(|name| name.strip_prefix("slide"))
-                .and_then(|name| name.strip_suffix(".xml"))
-                .and_then(|value| value.parse::<usize>().ok())
-        })
-        .max()
-        .unwrap_or(0)
-        + 1;
-    loop {
-        let path = format!("ppt/slides/slide{index}.xml");
-        if !used_paths.iter().any(|used| used == &path) {
-            return path;
-        }
-        index += 1;
-    }
-}
-
-fn update_pptx_presentation_manifest(
-    presentation: &str,
-    rels: &str,
-    slides: &[PptxPresentationSlideWrite],
-) -> (String, String) {
-    let existing_refs = pptx_presentation_slides_from_xml(presentation, rels);
-    let existing_by_path = existing_refs
-        .iter()
-        .map(|slide| (slide.path.clone(), slide.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut rels_out = rels.to_string();
-    let mut next_rel = next_rid(rels);
-    let mut next_slide_id = next_presentation_slide_id(presentation);
-    let mut slide_tags = Vec::new();
-    for slide in slides {
-        let (rel_id, slide_id) = if let Some(existing) = existing_by_path.get(&slide.path) {
-            (existing.rel_id.clone(), existing.slide_id)
-        } else {
-            let rel_id = format!("rId{next_rel}");
-            next_rel += 1;
-            let rel = format!(
-                r#"<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="{}"/>"#,
-                pptx_part_to_relationship_target(&slide.path)
-            );
-            rels_out = append_before_or_end(&rels_out, "</Relationships>", &rel);
-            let slide_id = next_slide_id;
-            next_slide_id += 1;
-            (rel_id, slide_id)
-        };
-        slide_tags.push(format!(r#"<p:sldId id="{slide_id}" r:id="{rel_id}"/>"#));
-    }
-    let list = format!("<p:sldIdLst>{}</p:sldIdLst>", slide_tags.join(""));
-    let presentation_out = replace_xml_element(presentation, "p:sldIdLst", &list)
-        .unwrap_or_else(|| append_before_or_end(presentation, "</p:presentation>", &list));
-    (presentation_out, rels_out)
-}
-
-fn append_pptx_slide_content_types_for_writes(
-    content_types: &str,
-    slides: &[PptxPresentationSlideWrite],
-) -> String {
-    let slide_ids = slides
-        .iter()
-        .map(|slide| slide.path.clone())
-        .collect::<Vec<_>>();
-    append_pptx_slide_content_types(content_types, &slide_ids)
-}
-
-fn next_rid(rels: &str) -> usize {
-    rels.split("Id=\"rId")
-        .skip(1)
-        .filter_map(|part| {
-            part.chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect::<String>()
-                .parse::<usize>()
-                .ok()
-        })
-        .max()
-        .unwrap_or(0)
-        + 1
-}
-
-fn next_presentation_slide_id(presentation: &str) -> usize {
-    presentation
-        .split("<p:sldId ")
-        .skip(1)
-        .filter_map(|part| attr_value(part, "id"))
-        .filter_map(|id| id.parse::<usize>().ok())
-        .max()
-        .unwrap_or(255)
-        + 1
-}
-
 fn read_shared_strings(bytes: &[u8]) -> AppResult<Vec<String>> {
     let xml = read_zip_text(bytes, "xl/sharedStrings.xml")?;
     Ok(xml_segments(&xml, "<si", "</si>")
         .into_iter()
         .map(|item| extract_text_tags(&item, "t").join(""))
         .collect())
-}
-
-fn replacement_zip_text_or_default<F>(
-    original: &[u8],
-    replacements: &[(String, Vec<u8>)],
-    path: &str,
-    default: F,
-) -> String
-where
-    F: FnOnce() -> String,
-{
-    if let Some((_, bytes)) = replacements.iter().rev().find(|(name, _)| name == path) {
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            return text.to_string();
-        }
-    }
-    read_zip_text(original, path).unwrap_or_else(|_| default())
-}
-
-fn upsert_zip_replacement(replacements: &mut Vec<(String, Vec<u8>)>, path: String, bytes: Vec<u8>) {
-    if let Some((_, existing)) = replacements.iter_mut().find(|(name, _)| name == &path) {
-        *existing = bytes;
-        return;
-    }
-    replacements.push((path, bytes));
 }
 
 #[cfg(test)]

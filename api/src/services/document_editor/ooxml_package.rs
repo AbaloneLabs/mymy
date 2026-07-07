@@ -72,6 +72,50 @@ pub(super) fn zip_entry_names(bytes: &[u8]) -> AppResult<Vec<String>> {
     Ok(names)
 }
 
+pub(super) fn next_rid(rels: &str) -> usize {
+    rels.split("Id=\"rId")
+        .skip(1)
+        .filter_map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+pub(super) fn replacement_zip_text_or_default<F>(
+    original: &[u8],
+    replacements: &[(String, Vec<u8>)],
+    path: &str,
+    default: F,
+) -> String
+where
+    F: FnOnce() -> String,
+{
+    if let Some((_, bytes)) = replacements.iter().rev().find(|(name, _)| name == path) {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return text.to_string();
+        }
+    }
+    read_zip_text(original, path).unwrap_or_else(|_| default())
+}
+
+pub(super) fn upsert_zip_replacement(
+    replacements: &mut Vec<(String, Vec<u8>)>,
+    path: String,
+    bytes: Vec<u8>,
+) {
+    if let Some((_, existing)) = replacements.iter_mut().find(|(name, _)| name == &path) {
+        *existing = bytes;
+        return;
+    }
+    replacements.push((path, bytes));
+}
+
 fn zip_archive(bytes: &[u8]) -> AppResult<ZipArchive<Cursor<&[u8]>>> {
     ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| AppError::BadRequest(format!("Invalid OOXML package: {error}")))

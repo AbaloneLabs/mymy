@@ -17,6 +17,22 @@ pub(super) struct OoxmlImageData {
     pub(super) mime_type: &'static str,
 }
 
+pub(super) fn image_mime_type_from_path(path: &str) -> &'static str {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gif" => "image/gif",
+        "jpg" | "jpeg" => "image/jpeg",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
 pub(super) fn add_docx_image_replacements(
     original: &[u8],
     blocks: &mut [Value],
