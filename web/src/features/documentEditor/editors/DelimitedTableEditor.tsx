@@ -36,7 +36,12 @@ import {
   xlsxRangeFromRef,
 } from "../spreadsheetGeometry";
 import type { CellPosition, SpreadsheetViewport } from "../spreadsheetGeometry";
-import { SpreadsheetColumnSpacer, SpreadsheetSpacerRow, SpreadsheetStatusBar } from "../spreadsheetPanels";
+import {
+  DelimitedTableProfilePanel,
+  SpreadsheetColumnSpacer,
+  SpreadsheetSpacerRow,
+  SpreadsheetStatusBar,
+} from "../spreadsheetPanels";
 import {
   spreadsheetCellClass,
   spreadsheetDateStamp,
@@ -61,6 +66,7 @@ export function DelimitedTableEditor({
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
   const [filterText, setFilterText] = useState("");
+  const [headerRowOverride, setHeaderRowOverride] = useState<boolean | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
@@ -69,6 +75,7 @@ export function DelimitedTableEditor({
   const columnCount = Math.max(MIN_DELIMITED_VISIBLE_COLUMNS, sourceColumnCount);
   const displayRowLimit = Math.max(MIN_DELIMITED_VISIBLE_ROWS, sourceRows.length);
   const rows = ensureDelimitedDisplayRows(sourceRows, displayRowLimit);
+  const headerRow = headerRowOverride ?? delimitedLooksLikeHeader(sourceRows);
   const visibleRows = filteredDelimitedRows(rows, columnCount, filterText);
   const rowWindow = virtualWindow(
     visibleRows.length,
@@ -488,6 +495,11 @@ export function DelimitedTableEditor({
           Final newline
         </label>
       </div>
+      <DelimitedTableProfilePanel
+        rows={sourceRows}
+        headerRow={headerRow}
+        onHeaderRowChange={setHeaderRowOverride}
+      />
       <div
         ref={gridRef}
         onScroll={(event) => setViewport(viewportFromElement(event.currentTarget))}
@@ -522,7 +534,9 @@ export function DelimitedTableEditor({
                       "bg-[var(--accent)]/10 text-[var(--accent)]",
                   )}
                 >
-                  {columnName(columnIndex)}
+                  <span className="block truncate">
+                    {delimitedColumnHeader(columnIndex, sourceRows, headerRow)}
+                  </span>
                 </th>
               ))}
               {columnWindow.end < columnCount && (
@@ -630,4 +644,42 @@ export function DelimitedTableEditor({
 function delimitedLineEndingValue(value: string | undefined) {
   if (value === "\r\n" || value === "\r") return value;
   return "\n";
+}
+
+function delimitedColumnHeader(
+  columnIndex: number,
+  rows: string[][],
+  headerRow: boolean,
+) {
+  const column = columnName(columnIndex);
+  const label = headerRow ? rows[0]?.[columnIndex]?.trim() : "";
+  return label ? `${column} · ${label}` : column;
+}
+
+function delimitedLooksLikeHeader(rows: string[][]) {
+  if (rows.length < 2) return false;
+  const first = rows[0] ?? [];
+  const second = rows[1] ?? [];
+  const columnCount = Math.max(first.length, second.length);
+  if (columnCount === 0) return false;
+  let labelLike = 0;
+  let typeShift = 0;
+  for (let index = 0; index < columnCount; index += 1) {
+    const header = (first[index] ?? "").trim();
+    const value = (second[index] ?? "").trim();
+    if (/^[^\d\s].*/.test(header)) labelLike += 1;
+    if (header && value && delimitedHeaderCellType(header) !== delimitedHeaderCellType(value)) {
+      typeShift += 1;
+    }
+  }
+  return labelLike >= Math.ceil(columnCount / 2) && typeShift > 0;
+}
+
+function delimitedHeaderCellType(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return "empty";
+  if (/^(true|false)$/i.test(normalized)) return "boolean";
+  if (Number.isFinite(Number(normalized.replace(/,/g, "")))) return "number";
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(normalized)) return "date";
+  return "text";
 }

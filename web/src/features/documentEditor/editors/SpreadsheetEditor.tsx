@@ -27,6 +27,7 @@ import {
 import type { XlsxCellStylePatch } from "../spreadsheetPresentation";
 import { SpreadsheetToolbar } from "../spreadsheetToolbar";
 import {
+  SpreadsheetFormulaDependencyPanel,
   SpreadsheetColumnSpacer,
   SpreadsheetObjectStrip,
   SpreadsheetSpacerRow,
@@ -234,6 +235,9 @@ export function XlsxEditor({
     activeCell && sheet?.rows[activeCell.row]?.cells[activeCell.column]
       ? formulaBarXlsxCellValue(sheet.rows[activeCell.row].cells[activeCell.column])
       : "";
+  const activeCellReference = activeCell
+    ? `${columnName(activeCell.column)}${activeCell.row + 1}`
+    : undefined;
   const activeCellObject =
     activeCell && sheet?.rows[activeCell.row]?.cells[activeCell.column]
       ? sheet.rows[activeCell.row].cells[activeCell.column]
@@ -1659,6 +1663,11 @@ export function XlsxEditor({
         onChartSeriesNameChange={updateChartSeriesName}
         onChartPointChange={updateChartSeriesPoint}
         onPivotNameChange={updatePivotName}
+      />
+      <SpreadsheetFormulaDependencyPanel
+        sheet={sheet}
+        activeReference={activeCellReference}
+        onSelectReference={selectReference}
       />
       <div
         ref={gridRef}

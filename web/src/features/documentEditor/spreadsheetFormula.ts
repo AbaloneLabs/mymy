@@ -265,6 +265,38 @@ export function adjustSpreadsheetFormulaReferences(
   );
 }
 
+export function spreadsheetFormulaReferences(formula: string) {
+  try {
+    const tokens = tokenizeSpreadsheetFormula(formula);
+    const references = new Set<string>();
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const colon = tokens[index + 1];
+      const end = tokens[index + 2];
+      if (
+        token.type === "identifier" &&
+        colon?.type === "operator" &&
+        colon.value === ":" &&
+        end?.type === "identifier" &&
+        isSpreadsheetFormulaCellReference(token.value) &&
+        isSpreadsheetFormulaCellReference(end.value)
+      ) {
+        spreadsheetFormulaRangeReferences(token.value, end.value).forEach((reference) =>
+          references.add(reference),
+        );
+        index += 2;
+        continue;
+      }
+      if (token.type === "identifier" && isSpreadsheetFormulaCellReference(token.value)) {
+        references.add(normalizeSpreadsheetFormulaRef(token.value));
+      }
+    }
+    return [...references].sort(compareSpreadsheetFormulaRefs);
+  } catch {
+    return [];
+  }
+}
+
 export function spreadsheetFormulaValueNumber(
   value: SpreadsheetFormulaValue | string | undefined,
 ) {
@@ -569,6 +601,16 @@ function columnIndexFromName(name: string) {
     .toUpperCase()
     .split("")
     .reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
+}
+
+function compareSpreadsheetFormulaRefs(left: string, right: string) {
+  const leftPosition = spreadsheetFormulaReferencePosition(left);
+  const rightPosition = spreadsheetFormulaReferencePosition(right);
+  if (!leftPosition || !rightPosition) return left.localeCompare(right);
+  return (
+    leftPosition.row - rightPosition.row ||
+    leftPosition.column - rightPosition.column
+  );
 }
 
 function spreadsheetFormulaValueText(
