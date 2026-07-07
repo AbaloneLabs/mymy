@@ -2,7 +2,8 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { ChartColumn, ChevronDown, ChevronUp, Move } from "lucide-react";
+import { useState } from "react";
+import { ChartColumn, ChevronDown, ChevronUp, Move, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { builtInFontFamilies } from "./fonts";
 import type {
@@ -208,6 +209,10 @@ export function PptxChartDataEditor({
   chart,
   onSeriesNameChange,
   onPointChange,
+  onAddSeries,
+  onDeleteSeries,
+  onAddPoint,
+  onDeletePoint,
 }: {
   chart: PptxChart;
   onSeriesNameChange: (seriesIndex: number, value: string) => void;
@@ -217,13 +222,25 @@ export function PptxChartDataEditor({
     key: "categories" | "values",
     value: string,
   ) => void;
+  onAddSeries: () => void;
+  onDeleteSeries: (seriesIndex: number) => void;
+  onAddPoint: (seriesIndex: number) => void;
+  onDeletePoint: (seriesIndex: number, pointIndex: number) => void;
 }) {
   const seriesList = chart.series ?? [];
   return (
     <div className="max-h-56 shrink-0 overflow-auto border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs">
       <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
         <ChartColumn className="h-3.5 w-3.5" strokeWidth={1.75} />
-        Chart data
+        <span className="min-w-0 flex-1">Chart data</span>
+        <button
+          type="button"
+          onClick={onAddSeries}
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] normal-case tracking-normal text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        >
+          <Plus className="h-3 w-3" strokeWidth={1.75} />
+          Series
+        </button>
       </div>
       {seriesList.length === 0 ? (
         <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-2 text-[var(--text-muted)]">
@@ -242,18 +259,36 @@ export function PptxChartDataEditor({
                 key={`${series.name ?? "series"}-${seriesIndex}`}
                 className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
               >
-                <label className="mb-2 grid gap-1">
+                <div className="mb-2 grid gap-1">
                   <span className="text-[11px] text-[var(--text-muted)]">
                     Series
                   </span>
-                  <input
-                    value={series.name ?? ""}
-                    onChange={(event) =>
-                      onSeriesNameChange(seriesIndex, event.target.value)
-                    }
-                    className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                  />
-                </label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      value={series.name ?? ""}
+                      onChange={(event) =>
+                        onSeriesNameChange(seriesIndex, event.target.value)
+                      }
+                      className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onAddPoint(seriesIndex)}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      title="Add point"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteSeries(seriesIndex)}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]"
+                      title="Delete series"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    </button>
+                  </div>
+                </div>
                 {rowCount > 0 ? (
                   <table className="w-full table-fixed border-collapse text-xs">
                     <thead>
@@ -264,6 +299,7 @@ export function PptxChartDataEditor({
                         <th className="border border-[var(--border)] px-2 py-1 font-medium">
                           Value
                         </th>
+                        <th className="w-8 border border-[var(--border)] px-1 py-1" />
                       </tr>
                     </thead>
                     <tbody>
@@ -300,6 +336,16 @@ export function PptxChartDataEditor({
                               }
                               className="h-8 w-full bg-transparent px-2 text-xs text-[var(--text)] outline-none focus:bg-[var(--surface-hover)]"
                             />
+                          </td>
+                          <td className="border border-[var(--border)] p-0 text-center">
+                            <button
+                              type="button"
+                              onClick={() => onDeletePoint(seriesIndex, pointIndex)}
+                              className="inline-flex h-8 w-8 items-center justify-center text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]"
+                              title="Delete point"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -383,16 +429,29 @@ export function PptxEditableTable({
   onStartResize,
   onKeyDown,
   onCellChange,
+  onAddRow,
+  onAddColumn,
+  onDeleteRow,
+  onDeleteColumn,
 }: {
   table: PptxTable;
   selected: boolean;
   zIndex: number;
-  onSelect: () => void;
+  onSelect: (event?: ReactPointerEvent<HTMLElement>) => void;
   onStartMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onStartResize: (event: ReactPointerEvent<HTMLElement>) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onCellChange: (rowIndex: number, columnIndex: number, value: string) => void;
+  onAddRow: (rowIndex: number) => void;
+  onAddColumn: (columnIndex: number) => void;
+  onDeleteRow: (rowIndex: number) => void;
+  onDeleteColumn: (columnIndex: number) => void;
 }) {
+  const [activeCell, setActiveCell] = useState({ row: 0, column: 0 });
+  const columnCount = Math.max(0, ...table.rows.map((row) => row.length));
+  const canDeleteRow = table.rows.length > 1;
+  const canDeleteColumn = columnCount > 1;
+
   return (
     <div
       role="button"
@@ -404,13 +463,71 @@ export function PptxEditableTable({
       style={pptxTableStyle(table, zIndex)}
       onPointerDown={(event) => {
         event.stopPropagation();
-        onSelect();
+        onSelect(event);
       }}
       onKeyDown={(event) => {
         if (event.target instanceof HTMLTextAreaElement) return;
         onKeyDown(event);
       }}
     >
+      {selected && (
+        <div className="absolute -top-9 right-0 z-30 flex items-center gap-1 rounded-md border border-neutral-300 bg-white p-1 text-[10px] text-neutral-600 shadow-sm">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAddRow(activeCell.row);
+            }}
+            className="inline-flex h-6 items-center gap-1 rounded border border-neutral-200 px-1.5 hover:bg-neutral-100"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.75} />
+            Row
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onAddColumn(activeCell.column);
+            }}
+            className="inline-flex h-6 items-center gap-1 rounded border border-neutral-200 px-1.5 hover:bg-neutral-100"
+          >
+            <Plus className="h-3 w-3" strokeWidth={1.75} />
+            Col
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDeleteRow(activeCell.row);
+              setActiveCell((current) => ({
+                ...current,
+                row: Math.max(0, current.row - 1),
+              }));
+            }}
+            disabled={!canDeleteRow}
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-neutral-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Delete row"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDeleteColumn(activeCell.column);
+              setActiveCell((current) => ({
+                ...current,
+                column: Math.max(0, current.column - 1),
+              }));
+            }}
+            disabled={!canDeleteColumn}
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-neutral-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Delete column"
+          >
+            <Trash2 className="h-3 w-3" strokeWidth={1.75} />
+          </button>
+        </div>
+      )}
       <table className="h-full w-full table-fixed border-collapse text-xs">
         <tbody>
           {table.rows.map((row, rowIndex) => (
@@ -419,6 +536,13 @@ export function PptxEditableTable({
                 <td key={columnIndex} className="border border-neutral-300 p-0">
                   <textarea
                     value={cell}
+                    onFocus={() => {
+                      onSelect();
+                      setActiveCell({ row: rowIndex, column: columnIndex });
+                    }}
+                    onClick={() =>
+                      setActiveCell({ row: rowIndex, column: columnIndex })
+                    }
                     onChange={(event) =>
                       onCellChange(rowIndex, columnIndex, event.target.value)
                     }

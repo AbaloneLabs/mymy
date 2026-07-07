@@ -26,6 +26,12 @@ export interface SlideDragState {
   startWidth: number;
   startHeight: number;
   rect: DOMRect;
+  groupItems?: Array<{
+    objectKind: "text" | "shape" | "image" | "table" | "chart";
+    objectId: string;
+    startX: number;
+    startY: number;
+  }>;
 }
 
 export const SLIDE_ASPECT_RATIO = 16 / 9;

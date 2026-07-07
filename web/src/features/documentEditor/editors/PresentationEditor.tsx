@@ -73,6 +73,118 @@ import {
   PptxShapeView,
 } from "../pptxEditorPanels";
 
+type PptxObjectKind = SlideDragState["objectKind"];
+type PptxObject =
+  | PptxText
+  | PptxShape
+  | PptxImage
+  | PptxTable
+  | PptxChart;
+type PptxSelectionKey = `${PptxObjectKind}:${string}`;
+type PptxObjectRecord = {
+  objectKind: PptxObjectKind;
+  objectId: string;
+  object: PptxObject;
+};
+type PptxGeometryPatch = Partial<
+  Pick<PptxObject, "x" | "y" | "width" | "height" | "rotation">
+>;
+
+function pptxSelectionKey(
+  objectKind: PptxObjectKind,
+  objectId: string,
+): PptxSelectionKey {
+  return `${objectKind}:${objectId}` as PptxSelectionKey;
+}
+
+function parsePptxSelectionKey(key: PptxSelectionKey) {
+  const separatorIndex = key.indexOf(":");
+  return {
+    objectKind: key.slice(0, separatorIndex) as PptxObjectKind,
+    objectId: key.slice(separatorIndex + 1),
+  };
+}
+
+function pptxSlideObjectRecords(slide: PptxSlide): PptxObjectRecord[] {
+  return [
+    ...slide.texts.map((object) => ({
+      objectKind: "text" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.shapes ?? []).map((object) => ({
+      objectKind: "shape" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.images ?? []).map((object) => ({
+      objectKind: "image" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.tables ?? []).map((object) => ({
+      objectKind: "table" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.charts ?? []).map((object) => ({
+      objectKind: "chart" as const,
+      objectId: object.id,
+      object,
+    })),
+  ];
+}
+
+function patchPptxSlideObjects(
+  slide: PptxSlide,
+  patches: Map<PptxSelectionKey, PptxGeometryPatch>,
+): PptxSlide {
+  return {
+    ...slide,
+    texts: slide.texts.map((object) => ({
+      ...object,
+      ...patches.get(pptxSelectionKey("text", object.id)),
+    })),
+    shapes: (slide.shapes ?? []).map((object) => ({
+      ...object,
+      ...patches.get(pptxSelectionKey("shape", object.id)),
+    })),
+    images: (slide.images ?? []).map((object) => ({
+      ...object,
+      ...patches.get(pptxSelectionKey("image", object.id)),
+    })),
+    tables: (slide.tables ?? []).map((object) => ({
+      ...object,
+      ...patches.get(pptxSelectionKey("table", object.id)),
+    })),
+    charts: (slide.charts ?? []).map((object) => ({
+      ...object,
+      ...patches.get(pptxSelectionKey("chart", object.id)),
+    })),
+  };
+}
+
+function pptxSelectionBounds(records: PptxObjectRecord[]) {
+  const left = Math.min(...records.map((record) => record.object.x ?? 0));
+  const top = Math.min(...records.map((record) => record.object.y ?? 0));
+  const right = Math.max(
+    ...records.map(
+      (record) => (record.object.x ?? 0) + (record.object.width ?? 0),
+    ),
+  );
+  const bottom = Math.max(
+    ...records.map(
+      (record) => (record.object.y ?? 0) + (record.object.height ?? 0),
+    ),
+  );
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
 export function PptxEditor({
   model,
   onChange,
@@ -91,6 +203,9 @@ export function PptxEditor({
   const [activeImageId, setActiveImageId] = useState<string | null>(null);
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [activeChartId, setActiveChartId] = useState<string | null>(null);
+  const [selectedObjectKeys, setSelectedObjectKeys] = useState<PptxSelectionKey[]>(
+    [],
+  );
   const [dragState, setDragState] = useState<SlideDragState | null>(null);
   const [presentingIndex, setPresentingIndex] = useState<number | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -141,6 +256,16 @@ export function PptxEditor({
           : activeChart
             ? (slide?.charts?.length ?? 0)
             : 0;
+  const selectedObjectKeySet = new Set(selectedObjectKeys);
+  const selectedObjects = slide
+    ? pptxSlideObjectRecords(slide).filter((record) =>
+        selectedObjectKeySet.has(
+          pptxSelectionKey(record.objectKind, record.objectId),
+        ),
+      )
+    : [];
+  const hasObjectSelection = selectedObjects.length > 0;
+  const hasMultiSelection = selectedObjects.length > 1;
 
   useEffect(() => {
     function handlePresentationShortcut(event: KeyboardEvent) {
@@ -161,13 +286,13 @@ export function PptxEditor({
     if (commandId === "newSlide") {
       addSlide();
     } else if (commandId === "duplicate") {
-      if (activeObject) {
-        duplicateActiveObject();
+      if (hasObjectSelection || activeObject) {
+        duplicateSelectedObjects();
       } else {
         duplicateSlide();
       }
     } else if (commandId === "delete") {
-      deleteActiveObject();
+      deleteSelectedObjects();
     } else if (commandId === "sendBackward") {
       moveActiveObjectLayer(-1);
     } else if (commandId === "bringForward") {
@@ -205,54 +330,63 @@ export function PptxEditor({
     }, 0);
   }, [commandRequest, onCommandHandled]);
 
-  function selectText(textId: string | null) {
-    setActiveTextId(textId);
-    if (textId) {
-      setActiveShapeId(null);
-      setActiveImageId(null);
-      setActiveTableId(null);
-      setActiveChartId(null);
-    }
+  function activateObjectKey(key: PptxSelectionKey | null) {
+    const parsed = key ? parsePptxSelectionKey(key) : null;
+    setActiveTextId(parsed?.objectKind === "text" ? parsed.objectId : null);
+    setActiveShapeId(parsed?.objectKind === "shape" ? parsed.objectId : null);
+    setActiveImageId(parsed?.objectKind === "image" ? parsed.objectId : null);
+    setActiveTableId(parsed?.objectKind === "table" ? parsed.objectId : null);
+    setActiveChartId(parsed?.objectKind === "chart" ? parsed.objectId : null);
   }
 
-  function selectShape(shapeId: string | null) {
-    setActiveShapeId(shapeId);
-    if (shapeId) {
-      setActiveTextId(null);
-      setActiveImageId(null);
-      setActiveTableId(null);
-      setActiveChartId(null);
-    }
+  function clearObjectSelection() {
+    activateObjectKey(null);
+    setSelectedObjectKeys([]);
   }
 
-  function selectImage(imageId: string | null) {
-    setActiveImageId(imageId);
-    if (imageId) {
-      setActiveTextId(null);
-      setActiveShapeId(null);
-      setActiveTableId(null);
-      setActiveChartId(null);
+  function selectObject(
+    objectKind: PptxObjectKind,
+    objectId: string,
+    additive = false,
+  ) {
+    const key = pptxSelectionKey(objectKind, objectId);
+    if (!additive) {
+      activateObjectKey(key);
+      setSelectedObjectKeys([key]);
+      return;
     }
+    const exists = selectedObjectKeys.includes(key);
+    const next = exists
+      ? selectedObjectKeys.filter((item) => item !== key)
+      : [...selectedObjectKeys, key];
+    const nextActive = exists ? (next.at(-1) ?? null) : key;
+    activateObjectKey(nextActive);
+    setSelectedObjectKeys(next);
   }
 
-  function selectTable(tableId: string | null) {
-    setActiveTableId(tableId);
-    if (tableId) {
-      setActiveTextId(null);
-      setActiveShapeId(null);
-      setActiveImageId(null);
-      setActiveChartId(null);
-    }
+  function selectText(textId: string | null, additive = false) {
+    if (textId) selectObject("text", textId, additive);
+    else if (!additive) clearObjectSelection();
   }
 
-  function selectChart(chartId: string | null) {
-    setActiveChartId(chartId);
-    if (chartId) {
-      setActiveTextId(null);
-      setActiveShapeId(null);
-      setActiveImageId(null);
-      setActiveTableId(null);
-    }
+  function selectShape(shapeId: string | null, additive = false) {
+    if (shapeId) selectObject("shape", shapeId, additive);
+    else if (!additive) clearObjectSelection();
+  }
+
+  function selectImage(imageId: string | null, additive = false) {
+    if (imageId) selectObject("image", imageId, additive);
+    else if (!additive) clearObjectSelection();
+  }
+
+  function selectTable(tableId: string | null, additive = false) {
+    if (tableId) selectObject("table", tableId, additive);
+    else if (!additive) clearObjectSelection();
+  }
+
+  function selectChart(chartId: string | null, additive = false) {
+    if (chartId) selectObject("chart", chartId, additive);
+    else if (!additive) clearObjectSelection();
   }
 
   function updateSlide(patch: Partial<PptxSlide>) {
@@ -440,6 +574,73 @@ export function PptxEditor({
     );
   }
 
+  function addTableRow(tableId: string, afterRowIndex: number) {
+    if (!slide) return;
+    updateSlideTables(slide.id, (tables) =>
+      tables.map((table) => {
+        if (table.id !== tableId) return table;
+        const columnCount = Math.max(
+          1,
+          ...table.rows.map((row) => row.length),
+        );
+        const nextRows = table.rows.map((row) => [...row]);
+        nextRows.splice(afterRowIndex + 1, 0, Array(columnCount).fill(""));
+        return { ...table, rows: nextRows };
+      }),
+    );
+  }
+
+  function addTableColumn(tableId: string, afterColumnIndex: number) {
+    if (!slide) return;
+    updateSlideTables(slide.id, (tables) =>
+      tables.map((table) =>
+        table.id === tableId
+          ? {
+              ...table,
+              rows: table.rows.map((row) => {
+                const nextRow = [...row];
+                nextRow.splice(afterColumnIndex + 1, 0, "");
+                return nextRow;
+              }),
+            }
+          : table,
+      ),
+    );
+  }
+
+  function deleteTableRow(tableId: string, rowIndex: number) {
+    if (!slide) return;
+    updateSlideTables(slide.id, (tables) =>
+      tables.map((table) =>
+        table.id === tableId && table.rows.length > 1
+          ? {
+              ...table,
+              rows: table.rows.filter(
+                (_row, currentRowIndex) => currentRowIndex !== rowIndex,
+              ),
+            }
+          : table,
+      ),
+    );
+  }
+
+  function deleteTableColumn(tableId: string, columnIndex: number) {
+    if (!slide) return;
+    updateSlideTables(slide.id, (tables) =>
+      tables.map((table) => {
+        if (table.id !== tableId) return table;
+        const columnCount = Math.max(0, ...table.rows.map((row) => row.length));
+        if (columnCount <= 1) return table;
+        return {
+          ...table,
+          rows: table.rows.map((row) =>
+            row.filter((_cell, currentColumnIndex) => currentColumnIndex !== columnIndex),
+          ),
+        };
+      }),
+    );
+  }
+
   function updateChartSeriesName(seriesIndex: number, value: string) {
     if (!activeChart) return;
     updateActiveChart({
@@ -462,6 +663,78 @@ export function PptxEditor({
         const nextValues = [...(series[key] ?? [])];
         nextValues[pointIndex] = value;
         return { ...series, [key]: nextValues };
+      }),
+    });
+  }
+
+  function addChartSeries() {
+    if (!activeChart) return;
+    const rowCount = Math.max(
+      activeChart.categories?.length ?? 0,
+      ...(activeChart.series ?? []).map((series) =>
+        Math.max(series.categories?.length ?? 0, series.values?.length ?? 0),
+      ),
+      1,
+    );
+    updateActiveChart({
+      series: [
+        ...(activeChart.series ?? []),
+        {
+          name: `Series ${(activeChart.series ?? []).length + 1}`,
+          categories: Array.from({ length: rowCount }, (_, index) =>
+            activeChart.categories?.[index] ?? `Category ${index + 1}`,
+          ),
+          values: Array.from({ length: rowCount }, () => "0"),
+        },
+      ],
+    });
+  }
+
+  function deleteChartSeries(seriesIndex: number) {
+    if (!activeChart) return;
+    updateActiveChart({
+      series: (activeChart.series ?? []).filter(
+        (_series, currentIndex) => currentIndex !== seriesIndex,
+      ),
+    });
+  }
+
+  function addChartPoint(seriesIndex: number) {
+    if (!activeChart) return;
+    updateActiveChart({
+      series: (activeChart.series ?? []).map((series, currentIndex) => {
+        if (currentIndex !== seriesIndex) return series;
+        const pointIndex = Math.max(
+          series.categories?.length ?? 0,
+          series.values?.length ?? 0,
+          activeChart.categories?.length ?? 0,
+        );
+        return {
+          ...series,
+          categories: [
+            ...(series.categories ?? activeChart.categories ?? []),
+            `Category ${pointIndex + 1}`,
+          ],
+          values: [...(series.values ?? []), "0"],
+        };
+      }),
+    });
+  }
+
+  function deleteChartPoint(seriesIndex: number, pointIndex: number) {
+    if (!activeChart) return;
+    updateActiveChart({
+      series: (activeChart.series ?? []).map((series, currentIndex) => {
+        if (currentIndex !== seriesIndex) return series;
+        return {
+          ...series,
+          categories: (series.categories ?? activeChart.categories ?? []).filter(
+            (_category, currentPointIndex) => currentPointIndex !== pointIndex,
+          ),
+          values: (series.values ?? []).filter(
+            (_value, currentPointIndex) => currentPointIndex !== pointIndex,
+          ),
+        };
       }),
     });
   }
@@ -569,11 +842,7 @@ export function PptxEditor({
     const nextSlides = model.slides.filter((item) => item.id !== slide.id);
     onChange({ slides: nextSlides });
     setPreferredSlideId(nextSlides[0]?.id ?? null);
-    selectText(null);
-    setActiveShapeId(null);
-    setActiveImageId(null);
-    setActiveTableId(null);
-    setActiveChartId(null);
+    clearObjectSelection();
   }
 
   function moveSlide(direction: -1 | 1) {
@@ -912,9 +1181,181 @@ export function PptxEditor({
     }
   }
 
+  function updateObjectGeometries(patches: Map<PptxSelectionKey, PptxGeometryPatch>) {
+    if (!slide || patches.size === 0) return;
+    onChange({
+      slides: model.slides.map((item) =>
+        item.id === slide.id ? patchPptxSlideObjects(item, patches) : item,
+      ),
+    });
+  }
+
+  function moveSelectedObjects(deltaX: number, deltaY: number) {
+    if (!slide || selectedObjects.length === 0) return;
+    const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+    selectedObjects.forEach((record) => {
+      patches.set(pptxSelectionKey(record.objectKind, record.objectId), {
+        x: clampPercent((record.object.x ?? 0) + deltaX),
+        y: clampPercent((record.object.y ?? 0) + deltaY),
+      });
+    });
+    updateObjectGeometries(patches);
+  }
+
+  function duplicateSelectedObjects() {
+    if (!slide || selectedObjects.length <= 1) {
+      duplicateActiveObject();
+      return;
+    }
+    const nextKeys: PptxSelectionKey[] = [];
+    const nextTexts = [...slide.texts];
+    const nextShapes = [...(slide.shapes ?? [])];
+    const nextImages = [...(slide.images ?? [])];
+    const nextTables = [...(slide.tables ?? [])];
+    const nextCharts = [...(slide.charts ?? [])];
+
+    selectedObjects.forEach((record) => {
+      if (record.objectKind === "text") {
+        const source = record.object as PptxText;
+        const next = {
+          ...source,
+          id: nextPptxTextId(nextTexts),
+          x: Math.min((source.x ?? 10) + 2, 100),
+          y: Math.min((source.y ?? 12) + 2, 100),
+        };
+        nextTexts.push(next);
+        nextKeys.push(pptxSelectionKey("text", next.id));
+      } else if (record.objectKind === "shape") {
+        const source = record.object as PptxShape;
+        const next = {
+          ...source,
+          id: nextPptxShapeId(nextShapes),
+          x: Math.min((source.x ?? 24) + 2, 100),
+          y: Math.min((source.y ?? 34) + 2, 100),
+        };
+        nextShapes.push(next);
+        nextKeys.push(pptxSelectionKey("shape", next.id));
+      } else if (record.objectKind === "image") {
+        const source = record.object as PptxImage;
+        const next = {
+          ...source,
+          id: nextPptxImageId(nextImages),
+          relationshipId: undefined,
+          x: Math.min((source.x ?? 24) + 2, 100),
+          y: Math.min((source.y ?? 34) + 2, 100),
+        };
+        nextImages.push(next);
+        nextKeys.push(pptxSelectionKey("image", next.id));
+      } else if (record.objectKind === "table") {
+        const source = record.object as PptxTable;
+        const next = {
+          ...source,
+          id: nextPptxTableId(nextTables),
+          x: Math.min((source.x ?? 18) + 2, 100),
+          y: Math.min((source.y ?? 30) + 2, 100),
+          rows: source.rows.map((row) => [...row]),
+        };
+        nextTables.push(next);
+        nextKeys.push(pptxSelectionKey("table", next.id));
+      } else {
+        const source = record.object as PptxChart;
+        const next = {
+          ...source,
+          id: nextPptxChartId(nextCharts),
+          relationshipId: undefined,
+          x: Math.min((source.x ?? 18) + 2, 100),
+          y: Math.min((source.y ?? 18) + 2, 100),
+          series: (source.series ?? []).map((series) => ({
+            ...series,
+            categories: series.categories ? [...series.categories] : undefined,
+            values: series.values ? [...series.values] : undefined,
+          })),
+          categories: source.categories ? [...source.categories] : undefined,
+        };
+        nextCharts.push(next);
+        nextKeys.push(pptxSelectionKey("chart", next.id));
+      }
+    });
+
+    onChange({
+      slides: model.slides.map((item) =>
+        item.id === slide.id
+          ? {
+              ...item,
+              texts: nextTexts,
+              shapes: nextShapes,
+              images: nextImages,
+              tables: nextTables,
+              charts: nextCharts,
+            }
+          : item,
+      ),
+    });
+    setSelectedObjectKeys(nextKeys);
+    activateObjectKey(nextKeys.at(-1) ?? null);
+  }
+
+  function deleteSelectedObjects() {
+    if (!slide || selectedObjects.length <= 1) {
+      deleteActiveObject();
+      return;
+    }
+    const keys = new Set(selectedObjectKeys);
+    onChange({
+      slides: model.slides.map((item) =>
+        item.id === slide.id
+          ? {
+              ...item,
+              texts: item.texts.filter(
+                (object) => !keys.has(pptxSelectionKey("text", object.id)),
+              ),
+              shapes: (item.shapes ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("shape", object.id)),
+              ),
+              images: (item.images ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("image", object.id)),
+              ),
+              tables: (item.tables ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("table", object.id)),
+              ),
+              charts: (item.charts ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("chart", object.id)),
+              ),
+            }
+          : item,
+      ),
+    });
+    clearObjectSelection();
+  }
+
   function alignActiveObject(
     edge: "left" | "center" | "right" | "top" | "middle" | "bottom",
   ) {
+    if (selectedObjects.length > 1) {
+      const bounds = pptxSelectionBounds(selectedObjects);
+      const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+      selectedObjects.forEach((record) => {
+        const width = record.object.width ?? 20;
+        const height = record.object.height ?? 10;
+        let patch: PptxGeometryPatch;
+        if (edge === "left") {
+          patch = { x: bounds.x };
+        } else if (edge === "center") {
+          patch = { x: bounds.x + bounds.width / 2 - width / 2 };
+        } else if (edge === "right") {
+          patch = { x: bounds.x + bounds.width - width };
+        } else if (edge === "top") {
+          patch = { y: bounds.y };
+        } else if (edge === "middle") {
+          patch = { y: bounds.y + bounds.height / 2 - height / 2 };
+        } else {
+          patch = { y: bounds.y + bounds.height - height };
+        }
+        patches.set(pptxSelectionKey(record.objectKind, record.objectId), patch);
+      });
+      updateObjectGeometries(patches);
+      return;
+    }
     if (!activeObject) return;
     const width = activeObject.width ?? 20;
     const height = activeObject.height ?? 10;
@@ -944,16 +1385,48 @@ export function PptxEditor({
     event.preventDefault();
     event.stopPropagation();
     if (objectKind === "text") {
-      selectText(object.id);
+      if (!selectedObjectKeySet.has(pptxSelectionKey("text", object.id))) {
+        selectText(object.id);
+      } else {
+        activateObjectKey(pptxSelectionKey("text", object.id));
+      }
     } else if (objectKind === "shape") {
-      selectShape(object.id);
+      if (!selectedObjectKeySet.has(pptxSelectionKey("shape", object.id))) {
+        selectShape(object.id);
+      } else {
+        activateObjectKey(pptxSelectionKey("shape", object.id));
+      }
     } else if (objectKind === "image") {
-      selectImage(object.id);
+      if (!selectedObjectKeySet.has(pptxSelectionKey("image", object.id))) {
+        selectImage(object.id);
+      } else {
+        activateObjectKey(pptxSelectionKey("image", object.id));
+      }
     } else if (objectKind === "table") {
-      selectTable(object.id);
+      if (!selectedObjectKeySet.has(pptxSelectionKey("table", object.id))) {
+        selectTable(object.id);
+      } else {
+        activateObjectKey(pptxSelectionKey("table", object.id));
+      }
     } else {
-      selectChart(object.id);
+      if (!selectedObjectKeySet.has(pptxSelectionKey("chart", object.id))) {
+        selectChart(object.id);
+      } else {
+        activateObjectKey(pptxSelectionKey("chart", object.id));
+      }
     }
+    const clickedKey = pptxSelectionKey(objectKind, object.id);
+    const groupItems =
+      mode === "move" &&
+      selectedObjectKeySet.has(clickedKey) &&
+      selectedObjects.length > 1
+        ? selectedObjects.map((record) => ({
+            objectKind: record.objectKind,
+            objectId: record.objectId,
+            startX: record.object.x ?? 0,
+            startY: record.object.y ?? 0,
+          }))
+        : undefined;
     setDragState({
       objectKind,
       objectId: object.id,
@@ -965,6 +1438,7 @@ export function PptxEditor({
       startWidth: object.width ?? 80,
       startHeight: object.height ?? 10,
       rect,
+      groupItems,
     });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -983,7 +1457,16 @@ export function PptxEditor({
             : dragState.objectKind === "table"
               ? updateTableById
               : updateChartById;
-    if (dragState.mode === "move") {
+    if (dragState.groupItems && dragState.mode === "move") {
+      const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+      dragState.groupItems.forEach((item) => {
+        patches.set(pptxSelectionKey(item.objectKind, item.objectId), {
+          x: clampPercent(item.startX + deltaX),
+          y: clampPercent(item.startY + deltaY),
+        });
+      });
+      updateObjectGeometries(patches);
+    } else if (dragState.mode === "move") {
       updateObject(dragState.objectId, {
         x: clampPercent(dragState.startX + deltaX),
         y: clampPercent(dragState.startY + deltaY),
@@ -1038,7 +1521,7 @@ export function PptxEditor({
     const primary = event.ctrlKey || event.metaKey;
     if (primary && event.key.toLowerCase() === "d") {
       event.preventDefault();
-      duplicateActiveObject();
+      duplicateSelectedObjects();
       return;
     }
     const updateActiveObject = activeText
@@ -1053,19 +1536,35 @@ export function PptxEditor({
     const step = event.shiftKey ? 5 : 1;
     if (event.key === "ArrowLeft") {
       event.preventDefault();
+      if (hasMultiSelection) {
+        moveSelectedObjects(-step, 0);
+        return;
+      }
       updateActiveObject({ x: Math.max((activeObject.x ?? 10) - step, 0) });
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
+      if (hasMultiSelection) {
+        moveSelectedObjects(step, 0);
+        return;
+      }
       updateActiveObject({ x: Math.min((activeObject.x ?? 10) + step, 100) });
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
+      if (hasMultiSelection) {
+        moveSelectedObjects(0, -step);
+        return;
+      }
       updateActiveObject({ y: Math.max((activeObject.y ?? 12) - step, 0) });
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
+      if (hasMultiSelection) {
+        moveSelectedObjects(0, step);
+        return;
+      }
       updateActiveObject({ y: Math.min((activeObject.y ?? 12) + step, 100) });
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
-      deleteActiveObject();
+      deleteSelectedObjects();
     }
   }
 
@@ -1220,8 +1719,8 @@ export function PptxEditor({
         />
         <button
           type="button"
-          onClick={duplicateActiveObject}
-          disabled={!activeObject}
+          onClick={duplicateSelectedObjects}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Duplicate selected object"
         >
@@ -1229,8 +1728,8 @@ export function PptxEditor({
         </button>
         <button
           type="button"
-          onClick={deleteActiveObject}
-          disabled={!activeObject}
+          onClick={deleteSelectedObjects}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Delete selected object"
         >
@@ -1239,7 +1738,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => moveActiveObjectLayer(-1)}
-          disabled={!activeObject || activeLayerIndex <= 0}
+          disabled={!activeObject || hasMultiSelection || activeLayerIndex <= 0}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Send backward"
         >
@@ -1250,6 +1749,7 @@ export function PptxEditor({
           onClick={() => moveActiveObjectLayer(1)}
           disabled={
             !activeObject ||
+            hasMultiSelection ||
             !slide ||
             activeLayerIndex >= activeLayerLength - 1
           }
@@ -1261,7 +1761,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("left")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to left edge"
         >
@@ -1270,7 +1770,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("center")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to horizontal center"
         >
@@ -1279,7 +1779,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("right")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to right edge"
         >
@@ -1288,7 +1788,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("top")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to top edge"
         >
@@ -1297,7 +1797,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("middle")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to vertical middle"
         >
@@ -1306,7 +1806,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={() => alignActiveObject("bottom")}
-          disabled={!activeObject}
+          disabled={!hasObjectSelection}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Align to bottom edge"
         >
@@ -1400,7 +1900,7 @@ export function PptxEditor({
                       rotation: normalizeRotation((activeChart?.rotation ?? 0) + 15),
                     })
           }
-          disabled={!activeObject}
+          disabled={!activeObject || hasMultiSelection}
         />
         <label
           className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]"
@@ -1470,7 +1970,12 @@ export function PptxEditor({
             className="h-5 w-6 cursor-pointer bg-transparent disabled:cursor-not-allowed"
           />
         </label>
-        {activeObject && (
+        {hasMultiSelection && (
+          <div className="ml-auto rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
+            {selectedObjects.length} selected
+          </div>
+        )}
+        {activeObject && !hasMultiSelection && (
           <div className="ml-auto flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
             {activeImage && (
               <input
@@ -1614,11 +2119,7 @@ export function PptxEditor({
               type="button"
               onClick={() => {
                 setPreferredSlideId(item.id);
-                selectText(null);
-                setActiveShapeId(null);
-                setActiveImageId(null);
-                setActiveTableId(null);
-                setActiveChartId(null);
+                clearObjectSelection();
               }}
               className={cn(
                 "mb-2 block w-full rounded-md border px-2 py-3 text-left text-xs",
@@ -1658,16 +2159,12 @@ export function PptxEditor({
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerLeave={handleCanvasPointerUp}
-                onPointerDown={() => {
-                  selectText(null);
-                  setActiveShapeId(null);
-                  setActiveImageId(null);
-                  setActiveTableId(null);
-                  setActiveChartId(null);
-                }}
+                onPointerDown={clearObjectSelection}
               >
                 {(slide?.shapes ?? []).map((shape, index) => {
-                  const selected = activeShapeId === shape.id;
+                  const selected =
+                    activeShapeId === shape.id ||
+                    selectedObjectKeySet.has(pptxSelectionKey("shape", shape.id));
                   return (
                     <div
                       key={shape.id}
@@ -1675,7 +2172,10 @@ export function PptxEditor({
                       tabIndex={0}
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        selectShape(shape.id);
+                        selectShape(
+                          shape.id,
+                          event.shiftKey || event.metaKey || event.ctrlKey,
+                        );
                       }}
                       onKeyDown={handleTextKeyDown}
                       className={cn(
@@ -1719,7 +2219,9 @@ export function PptxEditor({
                   );
                 })}
                 {(slide?.images ?? []).map((image, index) => {
-                  const selected = activeImageId === image.id;
+                  const selected =
+                    activeImageId === image.id ||
+                    selectedObjectKeySet.has(pptxSelectionKey("image", image.id));
                   return (
                     <div
                       key={image.id}
@@ -1727,7 +2229,10 @@ export function PptxEditor({
                       tabIndex={0}
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        selectImage(image.id);
+                        selectImage(
+                          image.id,
+                          event.shiftKey || event.metaKey || event.ctrlKey,
+                        );
                       }}
                       onKeyDown={handleTextKeyDown}
                       className={cn(
@@ -1767,7 +2272,9 @@ export function PptxEditor({
                   );
                 })}
                 {(slide?.charts ?? []).map((chart, index) => {
-                  const selected = activeChartId === chart.id;
+                  const selected =
+                    activeChartId === chart.id ||
+                    selectedObjectKeySet.has(pptxSelectionKey("chart", chart.id));
                   return (
                     <div
                       key={chart.id}
@@ -1775,7 +2282,10 @@ export function PptxEditor({
                       tabIndex={0}
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        selectChart(chart.id);
+                        selectChart(
+                          chart.id,
+                          event.shiftKey || event.metaKey || event.ctrlKey,
+                        );
                       }}
                       onKeyDown={handleTextKeyDown}
                       className={cn(
@@ -1818,7 +2328,9 @@ export function PptxEditor({
                   );
                 })}
                 {(slide?.tables ?? []).map((table, index) => {
-                  const selected = activeTableId === table.id;
+                  const selected =
+                    activeTableId === table.id ||
+                    selectedObjectKeySet.has(pptxSelectionKey("table", table.id));
                   return (
                     <PptxEditableTable
                       key={table.id}
@@ -1831,7 +2343,15 @@ export function PptxEditor({
                         index +
                         1
                       }
-                      onSelect={() => selectTable(table.id)}
+                      onSelect={(event) =>
+                        selectTable(
+                          table.id,
+                          Boolean(
+                            event &&
+                              (event.shiftKey || event.metaKey || event.ctrlKey),
+                          ),
+                        )
+                      }
                       onStartMove={(event) =>
                         startObjectDrag(event, "table", table, "move")
                       }
@@ -1842,17 +2362,28 @@ export function PptxEditor({
                       onCellChange={(rowIndex, columnIndex, value) =>
                         updateTableCell(table.id, rowIndex, columnIndex, value)
                       }
+                      onAddRow={(rowIndex) => addTableRow(table.id, rowIndex)}
+                      onAddColumn={(columnIndex) => addTableColumn(table.id, columnIndex)}
+                      onDeleteRow={(rowIndex) => deleteTableRow(table.id, rowIndex)}
+                      onDeleteColumn={(columnIndex) =>
+                        deleteTableColumn(table.id, columnIndex)
+                      }
                     />
                   );
                 })}
                 {slide?.texts.map((textItem, index) => {
-                  const selected = activeTextId === textItem.id;
+                  const selected =
+                    activeTextId === textItem.id ||
+                    selectedObjectKeySet.has(pptxSelectionKey("text", textItem.id));
                   return (
                     <div
                       key={textItem.id}
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        selectText(textItem.id);
+                        selectText(
+                          textItem.id,
+                          event.shiftKey || event.metaKey || event.ctrlKey,
+                        );
                       }}
                       className={cn(
                         "absolute rounded-sm border border-transparent text-neutral-950 outline-none hover:border-neutral-300",
@@ -1945,6 +2476,10 @@ export function PptxEditor({
               chart={activeChart}
               onSeriesNameChange={updateChartSeriesName}
               onPointChange={updateChartSeriesPoint}
+              onAddSeries={addChartSeries}
+              onDeleteSeries={deleteChartSeries}
+              onAddPoint={addChartPoint}
+              onDeletePoint={deleteChartPoint}
             />
           )}
           <div className="grid shrink-0 gap-2 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--text-muted)] md:grid-cols-[1fr_1fr_1fr_1fr_1fr]">
