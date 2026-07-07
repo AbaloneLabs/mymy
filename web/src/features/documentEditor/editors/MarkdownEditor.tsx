@@ -1,12 +1,17 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type {
   ClipboardEvent as ReactClipboardEvent,
   KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Bold,
   Check,
   Code,
+  Copy,
   FileCog,
   Heading1,
   Heading2,
@@ -37,6 +42,7 @@ import remarkGfm from "remark-gfm";
 import { driveBlobUrl, uploadDriveFiles } from "@/features/drive/api";
 import { parentPath } from "@/features/drive/utils";
 import { HighlightedCodeBlock } from "@/components/chat/codeHighlight";
+import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import {
   buildMarkdownSearchRegex,
@@ -48,6 +54,8 @@ import {
   isMarkdownHeadingKey,
   isMarkdownUrl,
   lineForOffset,
+  markdownTableAtLine,
+  markdownTables,
   markdownOutline,
   markdownReferences,
   markdownStats,
@@ -58,8 +66,13 @@ import {
   parseFrontmatter,
   parseFrontmatterFields,
   replaceFrontmatterBody,
+  replaceMarkdownTable,
 } from "../markdownEditorUtils";
-import type { MarkdownHeadingLevel } from "../markdownEditorUtils";
+import type {
+  MarkdownHeadingLevel,
+  MarkdownTableAlignment,
+  MarkdownTableModel,
+} from "../markdownEditorUtils";
 import type { TextModel } from "../models";
 import { ToolbarButton } from "../shared";
 
@@ -83,7 +96,7 @@ export function MarkdownRichEditor({
   const handledCommandTokenRef = useRef<number | null>(null);
   const [mode, setMode] = useState<"source" | "preview">("source");
   const [sidePanel, setSidePanel] =
-    useState<"outline" | "frontmatter" | "references" | null>(null);
+    useState<"outline" | "frontmatter" | "references" | "table" | null>(null);
   const [linkDraft, setLinkDraft] = useState("");
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [imageDraft, setImageDraft] = useState("");
@@ -105,6 +118,9 @@ export function MarkdownRichEditor({
   const lineCount = Math.max(1, model.content.split("\n").length);
   const outline = markdownOutline(model.content);
   const references = markdownReferences(model.content);
+  const tables = markdownTables(model.content);
+  const activeTable =
+    markdownTableAtLine(model.content, cursor.line) ?? tables[0] ?? null;
   const frontmatter = parseFrontmatter(model.content);
   const frontmatterFields = frontmatter
     ? parseFrontmatterFields(frontmatter.content, frontmatter.marker)
@@ -115,9 +131,31 @@ export function MarkdownRichEditor({
     wholeWord,
     regexSearch,
   });
+  const toggleTaskListAtLine = useCallback(
+    (line: number) => {
+      const lines = model.content.split("\n");
+      const index = line - 1;
+      const current = lines[index];
+      if (!current) return;
+      const next = current.replace(
+        /^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s+)/,
+        (_match, prefix: string, checked: string, suffix: string) =>
+          `${prefix}${checked.toLowerCase() === "x" ? " " : "x"}${suffix}`,
+      );
+      if (next === current) return;
+      lines[index] = next;
+      const content = lines.join("\n");
+      onChange({
+        ...model,
+        content,
+        trailingNewline: hasTrailingTextNewline(content),
+      });
+    },
+    [model, onChange],
+  );
   const previewComponents = useMemo(
-    () => markdownPreviewComponents(filePath),
-    [filePath],
+    () => markdownPreviewComponents(filePath, toggleTaskListAtLine),
+    [filePath, toggleTaskListAtLine],
   );
 
   function updateContent(content: string) {
@@ -189,6 +227,176 @@ export function MarkdownRichEditor({
 
   function insertMarkdownTable() {
     insertSourceSnippet("| Header 1 | Header 2 |\n| --- | --- |\n|  |  |\n", 2, 10);
+    setSidePanel("table");
+  }
+
+  function openTablePanel() {
+    if (activeTable) {
+      setSidePanel((current) => (current === "table" ? null : "table"));
+      return;
+    }
+    insertMarkdownTable();
+  }
+
+  function updateMarkdownTable(nextTable: MarkdownTableModel) {
+    if (!activeTable) return;
+    updateContent(replaceMarkdownTable(model.content, activeTable, nextTable));
+  }
+
+  function updateMarkdownTableHeader(columnIndex: number, value: string) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      headers: activeTable.headers.map((header, index) =>
+        index === columnIndex ? value : header,
+      ),
+    });
+  }
+
+  function updateMarkdownTableAlignment(
+    columnIndex: number,
+    alignment: MarkdownTableAlignment,
+  ) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      alignments: activeTable.alignments.map((item, index) =>
+        index === columnIndex ? alignment : item,
+      ),
+    });
+  }
+
+  function updateMarkdownTableCell(
+    rowIndex: number,
+    columnIndex: number,
+    value: string,
+  ) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      rows: activeTable.rows.map((row, index) =>
+        index === rowIndex
+          ? row.map((cell, currentColumn) =>
+              currentColumn === columnIndex ? value : cell,
+            )
+          : row,
+      ),
+    });
+  }
+
+  function addMarkdownTableRow(afterRowIndex?: number) {
+    if (!activeTable) return;
+    const insertAt =
+      afterRowIndex === undefined
+        ? activeTable.rows.length
+        : Math.min(activeTable.rows.length, afterRowIndex + 1);
+    const rows = activeTable.rows.map((row) => [...row]);
+    rows.splice(insertAt, 0, Array(activeTable.headers.length).fill(""));
+    updateMarkdownTable({ ...activeTable, rows });
+  }
+
+  function duplicateMarkdownTableRow(rowIndex: number) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      rows: [
+        ...activeTable.rows.slice(0, rowIndex + 1),
+        [...(activeTable.rows[rowIndex] ?? [])],
+        ...activeTable.rows.slice(rowIndex + 1),
+      ],
+    });
+  }
+
+  function moveMarkdownTableRow(rowIndex: number, direction: -1 | 1) {
+    if (!activeTable) return;
+    const nextIndex = rowIndex + direction;
+    if (nextIndex < 0 || nextIndex >= activeTable.rows.length) return;
+    const rows = activeTable.rows.map((row) => [...row]);
+    const [moved] = rows.splice(rowIndex, 1);
+    rows.splice(nextIndex, 0, moved);
+    updateMarkdownTable({ ...activeTable, rows });
+  }
+
+  function deleteMarkdownTableRow(rowIndex: number) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      rows: activeTable.rows.filter((_, index) => index !== rowIndex),
+    });
+  }
+
+  function addMarkdownTableColumn(afterColumnIndex?: number) {
+    if (!activeTable) return;
+    const insertAt =
+      afterColumnIndex === undefined
+        ? activeTable.headers.length
+        : Math.min(activeTable.headers.length, afterColumnIndex + 1);
+    const headers = [...activeTable.headers];
+    const alignments = [...activeTable.alignments];
+    headers.splice(insertAt, 0, `Column ${insertAt + 1}`);
+    alignments.splice(insertAt, 0, "default");
+    updateMarkdownTable({
+      ...activeTable,
+      headers,
+      alignments,
+      rows: activeTable.rows.map((row) => {
+        const next = [...row];
+        next.splice(insertAt, 0, "");
+        return next;
+      }),
+    });
+  }
+
+  function duplicateMarkdownTableColumn(columnIndex: number) {
+    if (!activeTable) return;
+    updateMarkdownTable({
+      ...activeTable,
+      headers: [
+        ...activeTable.headers.slice(0, columnIndex + 1),
+        `${activeTable.headers[columnIndex] ?? "Column"} copy`,
+        ...activeTable.headers.slice(columnIndex + 1),
+      ],
+      alignments: [
+        ...activeTable.alignments.slice(0, columnIndex + 1),
+        activeTable.alignments[columnIndex] ?? "default",
+        ...activeTable.alignments.slice(columnIndex + 1),
+      ],
+      rows: activeTable.rows.map((row) => [
+        ...row.slice(0, columnIndex + 1),
+        row[columnIndex] ?? "",
+        ...row.slice(columnIndex + 1),
+      ]),
+    });
+  }
+
+  function moveMarkdownTableColumn(columnIndex: number, direction: -1 | 1) {
+    if (!activeTable) return;
+    const nextIndex = columnIndex + direction;
+    if (nextIndex < 0 || nextIndex >= activeTable.headers.length) return;
+    const move = <T,>(items: T[]) => {
+      const next = [...items];
+      const [moved] = next.splice(columnIndex, 1);
+      next.splice(nextIndex, 0, moved);
+      return next;
+    };
+    updateMarkdownTable({
+      ...activeTable,
+      headers: move(activeTable.headers),
+      alignments: move(activeTable.alignments),
+      rows: activeTable.rows.map((row) => move(row)),
+    });
+  }
+
+  function deleteMarkdownTableColumn(columnIndex: number) {
+    if (!activeTable || activeTable.headers.length <= 1) return;
+    updateMarkdownTable({
+      ...activeTable,
+      headers: activeTable.headers.filter((_, index) => index !== columnIndex),
+      alignments: activeTable.alignments.filter((_, index) => index !== columnIndex),
+      rows: activeTable.rows.map((row) =>
+        row.filter((_, index) => index !== columnIndex),
+      ),
+    });
   }
 
   function insertFootnote() {
@@ -676,7 +884,8 @@ export function MarkdownRichEditor({
         <ToolbarButton
           icon={Table}
           label={t("documentEditor.table")}
-          onClick={insertMarkdownTable}
+          active={sidePanel === "table"}
+          onClick={openTablePanel}
         />
         <ToolbarButton
           icon={Plus}
@@ -942,7 +1151,9 @@ export function MarkdownRichEditor({
                   ? t("documentEditor.outline", { defaultValue: "Outline" })
                   : sidePanel === "references"
                     ? t("documentEditor.references", { defaultValue: "References" })
-                    : t("documentEditor.frontmatter", { defaultValue: "Frontmatter" })}
+                    : sidePanel === "table"
+                      ? t("documentEditor.table", { defaultValue: "Table" })
+                      : t("documentEditor.frontmatter", { defaultValue: "Frontmatter" })}
               </span>
               <button
                 type="button"
@@ -1012,6 +1223,22 @@ export function MarkdownRichEditor({
                   </div>
                 )}
               </div>
+            ) : sidePanel === "table" ? (
+              <MarkdownTablePanel
+                table={activeTable}
+                onCreate={insertMarkdownTable}
+                onHeaderChange={updateMarkdownTableHeader}
+                onAlignmentChange={updateMarkdownTableAlignment}
+                onCellChange={updateMarkdownTableCell}
+                onAddRow={addMarkdownTableRow}
+                onDuplicateRow={duplicateMarkdownTableRow}
+                onMoveRow={moveMarkdownTableRow}
+                onDeleteRow={deleteMarkdownTableRow}
+                onAddColumn={addMarkdownTableColumn}
+                onDuplicateColumn={duplicateMarkdownTableColumn}
+                onMoveColumn={moveMarkdownTableColumn}
+                onDeleteColumn={deleteMarkdownTableColumn}
+              />
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {frontmatter ? (
@@ -1107,6 +1334,232 @@ export function MarkdownRichEditor({
   );
 }
 
+function MarkdownTablePanel({
+  table,
+  onCreate,
+  onHeaderChange,
+  onAlignmentChange,
+  onCellChange,
+  onAddRow,
+  onDuplicateRow,
+  onMoveRow,
+  onDeleteRow,
+  onAddColumn,
+  onDuplicateColumn,
+  onMoveColumn,
+  onDeleteColumn,
+}: {
+  table: MarkdownTableModel | null;
+  onCreate: () => void;
+  onHeaderChange: (columnIndex: number, value: string) => void;
+  onAlignmentChange: (
+    columnIndex: number,
+    alignment: MarkdownTableAlignment,
+  ) => void;
+  onCellChange: (rowIndex: number, columnIndex: number, value: string) => void;
+  onAddRow: (afterRowIndex?: number) => void;
+  onDuplicateRow: (rowIndex: number) => void;
+  onMoveRow: (rowIndex: number, direction: -1 | 1) => void;
+  onDeleteRow: (rowIndex: number) => void;
+  onAddColumn: (afterColumnIndex?: number) => void;
+  onDuplicateColumn: (columnIndex: number) => void;
+  onMoveColumn: (columnIndex: number, direction: -1 | 1) => void;
+  onDeleteColumn: (columnIndex: number) => void;
+}) {
+  if (!table) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <button
+          type="button"
+          onClick={onCreate}
+          className="w-full rounded-md border border-dashed border-[var(--border)] px-3 py-8 text-sm text-[var(--accent)] hover:bg-[var(--surface-hover)]"
+        >
+          Insert table
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] p-2">
+        <button type="button" onClick={() => onAddRow()} className={markdownTextButtonClass()}>
+          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+          Row
+        </button>
+        <button
+          type="button"
+          onClick={() => onAddColumn()}
+          className={markdownTextButtonClass()}
+        >
+          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+          Column
+        </button>
+        <span className="ml-auto font-mono text-[10px] text-[var(--text-faint)]">
+          L{table.startLine}-{table.endLine}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        <table className="min-w-full border-collapse text-xs">
+          <thead>
+            <tr>
+              <th className="sticky left-0 top-0 z-20 w-20 border border-[var(--border)] bg-[var(--surface)]" />
+              {table.headers.map((header, columnIndex) => (
+                <th
+                  key={columnIndex}
+                  className="sticky top-0 z-10 min-w-44 border border-[var(--border)] bg-[var(--surface)] p-1 align-top"
+                >
+                  <div className="grid gap-1">
+                    <input
+                      value={header}
+                      onChange={(event) =>
+                        onHeaderChange(columnIndex, event.target.value)
+                      }
+                      className="h-8 min-w-0 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs font-medium text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                    />
+                    <div className="flex items-center gap-1">
+                      <select
+                        value={table.alignments[columnIndex] ?? "default"}
+                        onChange={(event) =>
+                          onAlignmentChange(
+                            columnIndex,
+                            event.target.value as MarkdownTableAlignment,
+                          )
+                        }
+                        className="h-7 min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
+                      >
+                        <option value="default">Default</option>
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                      </select>
+                      <MarkdownIconButton
+                        icon={ArrowLeft}
+                        label="Move column left"
+                        disabled={columnIndex === 0}
+                        onClick={() => onMoveColumn(columnIndex, -1)}
+                      />
+                      <MarkdownIconButton
+                        icon={ArrowRight}
+                        label="Move column right"
+                        disabled={columnIndex === table.headers.length - 1}
+                        onClick={() => onMoveColumn(columnIndex, 1)}
+                      />
+                      <MarkdownIconButton
+                        icon={Copy}
+                        label="Duplicate column"
+                        onClick={() => onDuplicateColumn(columnIndex)}
+                      />
+                      <MarkdownIconButton
+                        icon={Trash2}
+                        label="Delete column"
+                        danger
+                        disabled={table.headers.length <= 1}
+                        onClick={() => onDeleteColumn(columnIndex)}
+                      />
+                    </div>
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                <th className="sticky left-0 z-10 border border-[var(--border)] bg-[var(--surface)] p-1 align-top">
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="min-w-5 text-right font-mono text-[10px] text-[var(--text-faint)]">
+                      {rowIndex + 1}
+                    </span>
+                    <MarkdownIconButton
+                      icon={ArrowUp}
+                      label="Move row up"
+                      disabled={rowIndex === 0}
+                      onClick={() => onMoveRow(rowIndex, -1)}
+                    />
+                    <MarkdownIconButton
+                      icon={ArrowDown}
+                      label="Move row down"
+                      disabled={rowIndex === table.rows.length - 1}
+                      onClick={() => onMoveRow(rowIndex, 1)}
+                    />
+                    <MarkdownIconButton
+                      icon={Plus}
+                      label="Insert row below"
+                      onClick={() => onAddRow(rowIndex)}
+                    />
+                    <MarkdownIconButton
+                      icon={Copy}
+                      label="Duplicate row"
+                      onClick={() => onDuplicateRow(rowIndex)}
+                    />
+                    <MarkdownIconButton
+                      icon={Trash2}
+                      label="Delete row"
+                      danger
+                      onClick={() => onDeleteRow(rowIndex)}
+                    />
+                  </div>
+                </th>
+                {table.headers.map((_header, columnIndex) => (
+                  <td key={columnIndex} className="border border-[var(--border)] p-0">
+                    <textarea
+                      value={row[columnIndex] ?? ""}
+                      onChange={(event) =>
+                        onCellChange(rowIndex, columnIndex, event.target.value)
+                      }
+                      className="h-16 min-w-44 resize-y bg-[var(--bg)] px-2 py-1 font-mono text-xs leading-5 text-[var(--text)] outline-none focus:bg-[var(--surface)]"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {table.rows.length === 0 && (
+              <tr>
+                <td
+                  colSpan={table.headers.length + 1}
+                  className="border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-faint)]"
+                >
+                  Empty table
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MarkdownIconButton({
+  icon: Icon,
+  label,
+  disabled,
+  danger,
+  onClick,
+}: {
+  icon: typeof ArrowUp;
+  label: string;
+  disabled?: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40",
+        danger && "hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]",
+      )}
+      title={label}
+    >
+      <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
+    </button>
+  );
+}
+
 function modeButtonClass(active: boolean) {
   return [
     "rounded-md border px-2 py-1 text-xs",
@@ -1120,7 +1573,10 @@ function markdownTextButtonClass() {
   return "inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]";
 }
 
-function markdownPreviewComponents(filePath: string): Components {
+function markdownPreviewComponents(
+  filePath: string,
+  onTaskListToggle: (line: number) => void,
+): Components {
   return {
     code({ className, children, ...props }) {
       const match = /language-([\w-]+)/.exec(className ?? "");
@@ -1160,6 +1616,22 @@ function markdownPreviewComponents(filePath: string): Components {
           alt={alt ?? ""}
           className="max-w-full rounded-md border border-[var(--border)]"
           src={resolved.href}
+        />
+      );
+    },
+    input({ type, checked, node, ...props }) {
+      const line = node?.position?.start.line;
+      if (type !== "checkbox" || typeof line !== "number") {
+        return <input {...props} type={type} checked={checked} />;
+      }
+      return (
+        <input
+          {...props}
+          type="checkbox"
+          checked={Boolean(checked)}
+          disabled={false}
+          className="mr-1 align-middle"
+          onChange={() => onTaskListToggle(line)}
         />
       );
     },
