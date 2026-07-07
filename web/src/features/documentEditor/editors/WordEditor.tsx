@@ -68,6 +68,31 @@ const DOCX_PAGE_PRESETS = [
   { label: "Legal", value: "legal", width: 12_240, height: 20_160 },
 ] as const;
 
+const DOCX_FORMAT_KEYS = [
+  "type",
+  "headingLevel",
+  "bold",
+  "italic",
+  "underline",
+  "strikethrough",
+  "verticalAlign",
+  "fontFamily",
+  "fontSize",
+  "color",
+  "highlight",
+  "align",
+  "listKind",
+  "indentLeft",
+  "spacingBefore",
+  "spacingAfter",
+  "lineSpacing",
+  "pageBreakBefore",
+] as const;
+
+type DocxFormatClipboard = Partial<
+  Pick<DocxBlock, (typeof DOCX_FORMAT_KEYS)[number]>
+>;
+
 export function DocxEditor({
   model,
   onChange,
@@ -86,6 +111,8 @@ export function DocxEditor({
   const [textPartsOpen, setTextPartsOpen] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
+  const [formatClipboard, setFormatClipboard] =
+    useState<DocxFormatClipboard | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const activeBlock =
@@ -153,6 +180,26 @@ export function DocxEditor({
       relationshipId: target ? activeBlock?.relationshipId : undefined,
     });
     setLinkInputOpen(false);
+  }
+
+  function applyNormalStyle() {
+    if (!isDocxTextBlock(activeBlock)) return;
+    updateActive({
+      type: "paragraph",
+      headingLevel: undefined,
+      fontSize: activeBlock.fontSize ?? "14",
+      listKind: undefined,
+    });
+  }
+
+  function copyActiveFormatting() {
+    if (!isDocxTextBlock(activeBlock)) return;
+    setFormatClipboard(pickDocxFormatting(activeBlock));
+  }
+
+  function pasteActiveFormatting() {
+    if (!formatClipboard || !isDocxTextBlock(activeBlock)) return;
+    updateActive(formatClipboard);
   }
 
   function replaceBlocks(blocks: DocxBlock[], nextActiveId?: string) {
@@ -291,6 +338,23 @@ export function DocxEditor({
         headingLevel: undefined,
         fontSize: "14",
       });
+    } else if (event.shiftKey && key === "n") {
+      event.preventDefault();
+      updateBlock(index, {
+        type: "paragraph",
+        headingLevel: undefined,
+        fontSize: model.blocks[index]?.fontSize ?? "14",
+        listKind: undefined,
+      });
+    } else if (event.shiftKey && key === "c") {
+      event.preventDefault();
+      const block = model.blocks[index];
+      if (isDocxTextBlock(block)) setFormatClipboard(pickDocxFormatting(block));
+    } else if (event.shiftKey && key === "v") {
+      event.preventDefault();
+      if (formatClipboard && isDocxTextBlock(model.blocks[index])) {
+        updateBlock(index, formatClipboard);
+      }
     } else if (key === "l") {
       event.preventDefault();
       updateBlock(index, { align: "left" });
@@ -393,6 +457,8 @@ export function DocxEditor({
       updateActive({ underline: !activeBlock.underline });
     } else if (commandId === "link") {
       openLinkEditor();
+    } else if (commandId === "normalStyle") {
+      applyNormalStyle();
     } else if (commandId === "strikethrough") {
       updateActive({ strikethrough: !activeBlock.strikethrough });
     } else if (commandId === "heading1") {
@@ -451,6 +517,10 @@ export function DocxEditor({
       adjustActiveIndent(360);
     } else if (commandId === "outdent") {
       adjustActiveIndent(-360);
+    } else if (commandId === "copyFormatting") {
+      copyActiveFormatting();
+    } else if (commandId === "pasteFormatting") {
+      pasteActiveFormatting();
     } else {
       return false;
     }
@@ -864,6 +934,25 @@ export function DocxEditor({
           onClick={openLinkEditor}
           active={Boolean(activeBlock?.target)}
           disabled={!activeBlock || activeBlock.type === "table" || activeBlock.type === "image"}
+        />
+        <ToolbarButton
+          icon={FileText}
+          label="Normal style"
+          onClick={applyNormalStyle}
+          active={activeBlock?.type === "paragraph" && !activeBlock.listKind}
+          disabled={!isDocxTextBlock(activeBlock)}
+        />
+        <ToolbarButton
+          icon={Copy}
+          label="Copy formatting"
+          onClick={copyActiveFormatting}
+          disabled={!isDocxTextBlock(activeBlock)}
+        />
+        <ToolbarButton
+          icon={Eraser}
+          label="Paste formatting"
+          onClick={pasteActiveFormatting}
+          disabled={!formatClipboard || !isDocxTextBlock(activeBlock)}
         />
         {linkInputOpen && (
           <form
@@ -2161,6 +2250,14 @@ function isDocxTextBlock(
   block: DocxBlock | undefined,
 ): block is DocxBlock & { type: "paragraph" | "heading" } {
   return block?.type === "paragraph" || block?.type === "heading";
+}
+
+function pickDocxFormatting(block: DocxBlock): DocxFormatClipboard {
+  return Object.fromEntries(
+    DOCX_FORMAT_KEYS.map((key) => [key, block[key]]).filter(
+      ([, value]) => value !== undefined,
+    ),
+  ) as DocxFormatClipboard;
 }
 
 function sectionBreakLabel(kind: DocxBlock["breakKind"]) {

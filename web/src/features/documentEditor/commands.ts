@@ -31,6 +31,7 @@ export type EditorCommandId =
   | "underline"
   | "strikethrough"
   | "link"
+  | "normalStyle"
   | "heading1"
   | "heading2"
   | "heading3"
@@ -56,6 +57,8 @@ export type EditorCommandId =
   | "image"
   | "insertTable"
   | "outline"
+  | "copyFormatting"
+  | "pasteFormatting"
   | "newSlide"
   | "duplicate"
   | "delete"
@@ -134,6 +137,11 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
   command("italic", "Italic", "Ctrl/Cmd+I", { key: "i", primary: true }),
   command("underline", "Underline", "Ctrl/Cmd+U", { key: "u", primary: true }),
   command("link", "Link", "Ctrl/Cmd+K", { key: "k", primary: true }),
+  command("normalStyle", "Normal style", "Ctrl/Cmd+Shift+N", {
+    key: "n",
+    primary: true,
+    shift: true,
+  }),
   command("strikethrough", "Strikethrough", "Ctrl/Cmd+Shift+X", {
     key: "x",
     primary: true,
@@ -198,6 +206,16 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
   }),
   command("indent", "Indent", "Ctrl/Cmd+]", { key: "]", primary: true }),
   command("outdent", "Outdent", "Ctrl/Cmd+[", { key: "[", primary: true }),
+  command("copyFormatting", "Copy formatting", "Ctrl/Cmd+Shift+C", {
+    key: "c",
+    primary: true,
+    shift: true,
+  }),
+  command("pasteFormatting", "Paste formatting", "Ctrl/Cmd+Shift+V", {
+    key: "v",
+    primary: true,
+    shift: true,
+  }),
 ];
 
 const MARKDOWN_COMMANDS: EditorCommandDefinition[] = [
