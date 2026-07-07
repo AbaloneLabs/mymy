@@ -34,6 +34,8 @@ import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import {
   DOCX_PAGE_PRESETS,
+  DEFAULT_DOCX_TABLE_COLUMN_WIDTH,
+  DEFAULT_DOCX_TABLE_ROW_HEIGHT,
   allocateDocxBlockId,
   docxPagePresetValue,
   docxPageStyle,
@@ -42,6 +44,8 @@ import {
   isDocxTextBlock,
   nextDocxBlockId,
   nextDocxNoteId,
+  normalizeDocxTableColumnWidths,
+  normalizeDocxTableRowHeights,
   normalizeDocxTableRow,
   pickDocxFormatting,
   pointsToTwips,
@@ -230,6 +234,10 @@ export function DocxEditor({
       text: "",
       headingLevel: type === "heading" ? 1 : undefined,
       rows: type === "table" ? [["", ""], ["", ""]] : undefined,
+      tableColumnWidths:
+        type === "table" ? normalizeDocxTableColumnWidths(undefined, 2) : undefined,
+      tableRowHeights:
+        type === "table" ? normalizeDocxTableRowHeights(undefined, 2) : undefined,
       fontFamily: activeBlock?.fontFamily ?? builtInFontFamilies[0],
       fontSize: type === "heading" ? headingFontSize(1) : "14",
       align: "left" as const,
@@ -613,8 +621,13 @@ export function DocxEditor({
     const block = model.blocks[blockIndex];
     const rows = block.rows ?? [[""]];
     const columns = tableColumnCount(rows);
+    const heights = normalizeDocxTableRowHeights(block.tableRowHeights, rows.length);
     updateBlock(blockIndex, {
       rows: [...rows.map((row) => normalizeDocxTableRow(row, columns)), Array(columns).fill("")],
+      tableRowHeights: [
+        ...heights,
+        heights.at(-1) ?? DEFAULT_DOCX_TABLE_ROW_HEIGHT,
+      ],
     });
   }
 
@@ -628,16 +641,20 @@ export function DocxEditor({
     const columns = tableColumnCount(rows);
     const normalizedRows = rows.map((row) => normalizeDocxTableRow(row, columns));
     const insertAt = position === "above" ? rowIndex : rowIndex + 1;
+    const heights = normalizeDocxTableRowHeights(block.tableRowHeights, rows.length);
+    heights.splice(insertAt, 0, heights[rowIndex] ?? DEFAULT_DOCX_TABLE_ROW_HEIGHT);
     normalizedRows.splice(insertAt, 0, Array(columns).fill(""));
-    updateBlock(blockIndex, { rows: normalizedRows });
+    updateBlock(blockIndex, { rows: normalizedRows, tableRowHeights: heights });
   }
 
   function addTableColumn(blockIndex: number) {
     const block = model.blocks[blockIndex];
     const rows = block.rows ?? [[""]];
     const columns = tableColumnCount(rows);
+    const widths = normalizeDocxTableColumnWidths(block.tableColumnWidths, columns);
     updateBlock(blockIndex, {
       rows: rows.map((row) => [...normalizeDocxTableRow(row, columns), ""]),
+      tableColumnWidths: [...widths, widths.at(-1) ?? DEFAULT_DOCX_TABLE_COLUMN_WIDTH],
     });
   }
 
@@ -650,12 +667,19 @@ export function DocxEditor({
     const rows = block.rows ?? [[""]];
     const columns = tableColumnCount(rows);
     const insertAt = position === "left" ? columnIndex : columnIndex + 1;
+    const widths = normalizeDocxTableColumnWidths(block.tableColumnWidths, columns);
+    widths.splice(
+      insertAt,
+      0,
+      widths[columnIndex] ?? DEFAULT_DOCX_TABLE_COLUMN_WIDTH,
+    );
     updateBlock(blockIndex, {
       rows: rows.map((row) => {
         const cells = normalizeDocxTableRow(row, columns);
         cells.splice(insertAt, 0, "");
         return cells;
       }),
+      tableColumnWidths: widths,
     });
   }
 
@@ -664,20 +688,29 @@ export function DocxEditor({
     const rows = block.rows ?? [[""]];
     const columns = tableColumnCount(rows);
     const normalizedRows = rows.map((row) => normalizeDocxTableRow(row, columns));
+    const heights = normalizeDocxTableRowHeights(block.tableRowHeights, rows.length);
     normalizedRows.splice(rowIndex + 1, 0, [...normalizedRows[rowIndex]]);
-    updateBlock(blockIndex, { rows: normalizedRows });
+    heights.splice(rowIndex + 1, 0, heights[rowIndex] ?? DEFAULT_DOCX_TABLE_ROW_HEIGHT);
+    updateBlock(blockIndex, { rows: normalizedRows, tableRowHeights: heights });
   }
 
   function duplicateTableColumn(blockIndex: number, columnIndex: number) {
     const block = model.blocks[blockIndex];
     const rows = block.rows ?? [[""]];
     const columns = tableColumnCount(rows);
+    const widths = normalizeDocxTableColumnWidths(block.tableColumnWidths, columns);
+    widths.splice(
+      columnIndex + 1,
+      0,
+      widths[columnIndex] ?? DEFAULT_DOCX_TABLE_COLUMN_WIDTH,
+    );
     updateBlock(blockIndex, {
       rows: rows.map((row) => {
         const cells = normalizeDocxTableRow(row, columns);
         cells.splice(columnIndex + 1, 0, cells[columnIndex] ?? "");
         return cells;
       }),
+      tableColumnWidths: widths,
     });
   }
 
@@ -688,9 +721,12 @@ export function DocxEditor({
     const nextIndex = rowIndex + direction;
     if (nextIndex < 0 || nextIndex >= rows.length) return;
     const normalizedRows = rows.map((row) => normalizeDocxTableRow(row, columns));
+    const heights = normalizeDocxTableRowHeights(block.tableRowHeights, rows.length);
     const [moved] = normalizedRows.splice(rowIndex, 1);
     normalizedRows.splice(nextIndex, 0, moved);
-    updateBlock(blockIndex, { rows: normalizedRows });
+    const [movedHeight] = heights.splice(rowIndex, 1);
+    heights.splice(nextIndex, 0, movedHeight);
+    updateBlock(blockIndex, { rows: normalizedRows, tableRowHeights: heights });
   }
 
   function moveTableColumn(
@@ -703,6 +739,9 @@ export function DocxEditor({
     const columns = tableColumnCount(rows);
     const nextIndex = columnIndex + direction;
     if (nextIndex < 0 || nextIndex >= columns) return;
+    const widths = normalizeDocxTableColumnWidths(block.tableColumnWidths, columns);
+    const [movedWidth] = widths.splice(columnIndex, 1);
+    widths.splice(nextIndex, 0, movedWidth);
     updateBlock(blockIndex, {
       rows: rows.map((row) => {
         const cells = normalizeDocxTableRow(row, columns);
@@ -710,6 +749,7 @@ export function DocxEditor({
         cells.splice(nextIndex, 0, moved);
         return cells;
       }),
+      tableColumnWidths: widths,
     });
   }
 
@@ -719,6 +759,10 @@ export function DocxEditor({
     if (rows.length <= 1) return;
     updateBlock(blockIndex, {
       rows: rows.filter((_, currentRowIndex) => currentRowIndex !== rowIndex),
+      tableRowHeights: normalizeDocxTableRowHeights(
+        block.tableRowHeights,
+        rows.length,
+      ).filter((_, currentRowIndex) => currentRowIndex !== rowIndex),
     });
   }
 
@@ -733,6 +777,10 @@ export function DocxEditor({
           (_, currentColumnIndex) => currentColumnIndex !== columnIndex,
         ),
       ),
+      tableColumnWidths: normalizeDocxTableColumnWidths(
+        block.tableColumnWidths,
+        columns,
+      ).filter((_, currentColumnIndex) => currentColumnIndex !== columnIndex),
     });
   }
 
@@ -763,7 +811,42 @@ export function DocxEditor({
         nextRows[startRow + rowOffset][startColumn + columnOffset] = value;
       });
     });
-    updateBlock(blockIndex, { rows: nextRows });
+    updateBlock(blockIndex, {
+      rows: nextRows,
+      tableColumnWidths: normalizeDocxTableColumnWidths(
+        block.tableColumnWidths,
+        requiredColumns,
+      ),
+      tableRowHeights: normalizeDocxTableRowHeights(
+        block.tableRowHeights,
+        requiredRows,
+      ),
+    });
+  }
+
+  function updateTableColumnWidth(
+    blockIndex: number,
+    columnIndex: number,
+    width: number,
+  ) {
+    const block = model.blocks[blockIndex];
+    const rows = block.rows ?? [[""]];
+    const columns = tableColumnCount(rows);
+    const widths = normalizeDocxTableColumnWidths(block.tableColumnWidths, columns);
+    widths[columnIndex] = width;
+    updateBlock(blockIndex, { tableColumnWidths: widths });
+  }
+
+  function updateTableRowHeight(
+    blockIndex: number,
+    rowIndex: number,
+    height: number,
+  ) {
+    const block = model.blocks[blockIndex];
+    const rows = block.rows ?? [[""]];
+    const heights = normalizeDocxTableRowHeights(block.tableRowHeights, rows.length);
+    heights[rowIndex] = height;
+    updateBlock(blockIndex, { tableRowHeights: heights });
   }
 
   function updateImageBlock(index: number, patch: Partial<DocxBlock>) {
@@ -850,6 +933,8 @@ export function DocxEditor({
                 text: "",
                 headingLevel: undefined,
                 rows: undefined,
+                tableColumnWidths: undefined,
+                tableRowHeights: undefined,
                 listKind: undefined,
                 target: undefined,
                 relationshipId: undefined,
@@ -862,6 +947,8 @@ export function DocxEditor({
                 text: "",
                 headingLevel: undefined,
                 rows: undefined,
+                tableColumnWidths: undefined,
+                tableRowHeights: undefined,
                 listKind: undefined,
                 target: undefined,
                 relationshipId: undefined,
@@ -872,13 +959,25 @@ export function DocxEditor({
             const headingMatch = /^heading:(\d)$/.exec(value);
             const type = headingMatch ? "heading" : (value as DocxBlock["type"]);
             const headingLevel = headingMatch ? Number(headingMatch[1]) : undefined;
+            const tableRows = activeBlock?.rows ?? [["", ""], ["", ""]];
             updateActive({
               type,
               headingLevel,
               text: type === "table" ? "" : activeBlock?.text ?? "",
-              rows:
+              rows: type === "table" ? tableRows : undefined,
+              tableColumnWidths:
                 type === "table"
-                  ? (activeBlock?.rows ?? [["", ""], ["", ""]])
+                  ? normalizeDocxTableColumnWidths(
+                      activeBlock?.tableColumnWidths,
+                      tableColumnCount(tableRows),
+                    )
+                  : undefined,
+              tableRowHeights:
+                type === "table"
+                  ? normalizeDocxTableRowHeights(
+                      activeBlock?.tableRowHeights,
+                      tableRows.length,
+                    )
                   : undefined,
               fontSize:
                 type === "heading"
@@ -1411,6 +1510,12 @@ export function DocxEditor({
                   }
                   onMoveColumn={(columnIndex, direction) =>
                     moveTableColumn(index, columnIndex, direction)
+                  }
+                  onColumnWidthChange={(columnIndex, width) =>
+                    updateTableColumnWidth(index, columnIndex, width)
+                  }
+                  onRowHeightChange={(rowIndex, height) =>
+                    updateTableRowHeight(index, rowIndex, height)
                   }
                   onDeleteRow={(rowIndex) => deleteTableRow(index, rowIndex)}
                   onDeleteColumn={(columnIndex) =>

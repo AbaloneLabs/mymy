@@ -9,6 +9,12 @@ import type { DocxBlock, DocxNote, DocxPageSettings } from "./models";
  * focused on command handling and rendering.
  */
 export const TWIPS_PER_INCH = 1440;
+export const DEFAULT_DOCX_TABLE_COLUMN_WIDTH = 2400;
+export const MIN_DOCX_TABLE_COLUMN_WIDTH = 720;
+export const MAX_DOCX_TABLE_COLUMN_WIDTH = 14400;
+export const DEFAULT_DOCX_TABLE_ROW_HEIGHT = 360;
+export const MIN_DOCX_TABLE_ROW_HEIGHT = 240;
+export const MAX_DOCX_TABLE_ROW_HEIGHT = 7200;
 
 const DOCX_HEADING_FONT_SIZES: Record<number, string> = {
   1: "32",
@@ -91,6 +97,36 @@ export function tableColumnCount(rows: string[][]) {
 export function normalizeDocxTableRow(row: string[], columnCount: number) {
   if (row.length >= columnCount) return row;
   return [...row, ...Array(columnCount - row.length).fill("")];
+}
+
+export function normalizeDocxTableColumnWidths(
+  widths: number[] | undefined,
+  columnCount: number,
+) {
+  return Array.from({ length: columnCount }, (_, index) =>
+    Math.min(
+      MAX_DOCX_TABLE_COLUMN_WIDTH,
+      Math.max(
+        MIN_DOCX_TABLE_COLUMN_WIDTH,
+        Math.round(widths?.[index] ?? DEFAULT_DOCX_TABLE_COLUMN_WIDTH),
+      ),
+    ),
+  );
+}
+
+export function normalizeDocxTableRowHeights(
+  heights: number[] | undefined,
+  rowCount: number,
+) {
+  return Array.from({ length: rowCount }, (_, index) =>
+    Math.min(
+      MAX_DOCX_TABLE_ROW_HEIGHT,
+      Math.max(
+        MIN_DOCX_TABLE_ROW_HEIGHT,
+        Math.round(heights?.[index] ?? DEFAULT_DOCX_TABLE_ROW_HEIGHT),
+      ),
+    ),
+  );
 }
 
 export function clampTableCell(

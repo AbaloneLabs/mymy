@@ -41,6 +41,12 @@ const DOCX_BULLET_NUM_ID: &str = "9001";
 const DOCX_NUMBER_NUM_ID: &str = "9002";
 const DOCX_BULLET_ABSTRACT_NUM_ID: &str = "9001";
 const DOCX_NUMBER_ABSTRACT_NUM_ID: &str = "9002";
+const DOCX_DEFAULT_TABLE_COLUMN_WIDTH: u32 = 2400;
+const DOCX_MIN_TABLE_COLUMN_WIDTH: u32 = 720;
+const DOCX_MAX_TABLE_COLUMN_WIDTH: u32 = 14_400;
+const DOCX_DEFAULT_TABLE_ROW_HEIGHT: u32 = 360;
+const DOCX_MIN_TABLE_ROW_HEIGHT: u32 = 240;
+const DOCX_MAX_TABLE_ROW_HEIGHT: u32 = 7200;
 
 #[derive(Debug, Clone)]
 struct PptxTextSpec {
@@ -788,7 +794,9 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
             blocks.push(json!({
                 "id": format!("tbl{}", index + 1),
                 "type": "table",
-                "rows": parse_docx_table_rows(&segment)
+                "rows": parse_docx_table_rows(&segment),
+                "tableColumnWidths": parse_docx_table_column_widths(&segment),
+                "tableRowHeights": parse_docx_table_row_heights(&segment)
             }));
             index += 1;
             continue;
@@ -1266,6 +1274,31 @@ fn parse_docx_table_rows(table: &str) -> Vec<Vec<String>> {
                 .collect::<Vec<_>>()
         })
         .filter(|row| !row.is_empty())
+        .collect()
+}
+
+fn parse_docx_table_column_widths(table: &str) -> Vec<u32> {
+    xml_segments(table, "<w:tr", "</w:tr>")
+        .into_iter()
+        .find_map(|row| {
+            let widths = xml_segments(&row, "<w:tc", "</w:tc>")
+                .into_iter()
+                .filter_map(|cell| docx_tag_attr(&cell, "<w:tcW", "w:w"))
+                .filter_map(|value| value.parse::<u32>().ok())
+                .collect::<Vec<_>>();
+            (!widths.is_empty()).then_some(widths)
+        })
+        .unwrap_or_default()
+}
+
+fn parse_docx_table_row_heights(table: &str) -> Vec<u32> {
+    xml_segments(table, "<w:tr", "</w:tr>")
+        .into_iter()
+        .map(|row| {
+            docx_tag_attr(&row, "<w:trHeight", "w:val")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(DOCX_DEFAULT_TABLE_ROW_HEIGHT)
+        })
         .collect()
 }
 
@@ -4446,22 +4479,66 @@ fn build_docx_table(block: &Value) -> String {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let column_widths = block
+        .get("tableColumnWidths")
+        .and_then(Value::as_array)
+        .map(|widths| {
+            widths
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|width| {
+                    width.clamp(
+                        u64::from(DOCX_MIN_TABLE_COLUMN_WIDTH),
+                        u64::from(DOCX_MAX_TABLE_COLUMN_WIDTH),
+                    ) as u32
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let row_heights = block
+        .get("tableRowHeights")
+        .and_then(Value::as_array)
+        .map(|heights| {
+            heights
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|height| {
+                    height.clamp(
+                        u64::from(DOCX_MIN_TABLE_ROW_HEIGHT),
+                        u64::from(DOCX_MAX_TABLE_ROW_HEIGHT),
+                    ) as u32
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let rows_xml = rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| {
             let cells = row.as_array().cloned().unwrap_or_default();
+            let row_height = row_heights
+                .get(row_index)
+                .copied()
+                .unwrap_or(DOCX_DEFAULT_TABLE_ROW_HEIGHT);
             let cells_xml = cells
                 .iter()
-                .map(|cell| {
+                .enumerate()
+                .map(|(cell_index, cell)| {
                     let text = cell.as_str().unwrap_or_default();
+                    let width = column_widths
+                        .get(cell_index)
+                        .copied()
+                        .unwrap_or(DOCX_DEFAULT_TABLE_COLUMN_WIDTH);
                     format!(
-                        r#"<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:p><w:r>{}</w:r></w:p></w:tc>"#,
+                        r#"<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr><w:p><w:r>{}</w:r></w:p></w:tc>"#,
                         docx_text_with_breaks(text)
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            format!("<w:tr>{cells_xml}</w:tr>")
+            format!(
+                r#"<w:tr><w:trPr><w:trHeight w:val="{row_height}" w:hRule="atLeast"/></w:trPr>{cells_xml}</w:tr>"#
+            )
         })
         .collect::<Vec<_>>()
         .join("");
@@ -11332,7 +11409,7 @@ mod tests {
 
     #[test]
     fn docx_table_rows_parse_and_save_basic_cells() {
-        let table = r#"<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+        let table = r#"<w:tbl><w:tr><w:trPr><w:trHeight w:val="420" w:hRule="atLeast"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="1800" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="600" w:hRule="atLeast"/></w:trPr><w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
 
         let rows = parse_docx_table_rows(table);
         assert_eq!(
@@ -11342,12 +11419,20 @@ mod tests {
                 vec!["A2".to_string(), "B2".to_string()],
             ]
         );
+        assert_eq!(parse_docx_table_column_widths(table), vec![1800, 3000]);
+        assert_eq!(parse_docx_table_row_heights(table), vec![420, 600]);
 
         let xml = build_docx_table(&json!({
             "type": "table",
-            "rows": [["C1", "D1"], ["C2", "D2\nD3"]]
+            "rows": [["C1", "D1"], ["C2", "D2\nD3"]],
+            "tableColumnWidths": [1800, 3000],
+            "tableRowHeights": [420, 600]
         }));
         assert!(xml.contains("<w:tbl>"));
+        assert!(xml.contains(r#"<w:tcW w:w="1800" w:type="dxa"/>"#));
+        assert!(xml.contains(r#"<w:tcW w:w="3000" w:type="dxa"/>"#));
+        assert!(xml.contains(r#"<w:trHeight w:val="420" w:hRule="atLeast"/>"#));
+        assert!(xml.contains(r#"<w:trHeight w:val="600" w:hRule="atLeast"/>"#));
         assert!(xml.contains("<w:t xml:space=\"preserve\">C1</w:t>"));
         assert!(xml.contains("<w:t xml:space=\"preserve\">D2</w:t>"));
         assert!(xml.contains("<w:br/><w:t xml:space=\"preserve\">D3</w:t>"));

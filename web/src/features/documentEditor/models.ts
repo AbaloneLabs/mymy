@@ -18,6 +18,8 @@ export interface DocxBlock {
   text: string;
   headingLevel?: number;
   rows?: string[][];
+  tableColumnWidths?: number[];
+  tableRowHeights?: number[];
   relationshipId?: string;
   target?: string;
   footnoteId?: string;

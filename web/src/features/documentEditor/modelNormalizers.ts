@@ -99,6 +99,16 @@ export function normalizeDocxModel(model: unknown): DocxModel {
                 : [],
             )
           : undefined,
+        tableColumnWidths: Array.isArray(item.tableColumnWidths)
+          ? item.tableColumnWidths
+              .map((width) => numericField(width))
+              .filter((width): width is number => width !== undefined)
+          : undefined,
+        tableRowHeights: Array.isArray(item.tableRowHeights)
+          ? item.tableRowHeights
+              .map((height) => numericField(height))
+              .filter((height): height is number => height !== undefined)
+          : undefined,
         relationshipId:
           typeof item.relationshipId === "string" ? item.relationshipId : undefined,
         target: typeof item.target === "string" ? item.target : undefined,

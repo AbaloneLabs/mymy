@@ -33,6 +33,10 @@ import {
   clampImageDimension,
   clampTableCell,
   inchesToTwips,
+  MIN_DOCX_TABLE_COLUMN_WIDTH,
+  MIN_DOCX_TABLE_ROW_HEIGHT,
+  normalizeDocxTableColumnWidths,
+  normalizeDocxTableRowHeights,
   normalizeDocxTableRow,
   tableClipboardMatrix,
   tableColumnCount,
@@ -482,6 +486,8 @@ export function DocxTableBlock({
   onDuplicateColumn,
   onMoveRow,
   onMoveColumn,
+  onColumnWidthChange,
+  onRowHeightChange,
   onDeleteRow,
   onDeleteColumn,
   onClearCell,
@@ -499,6 +505,8 @@ export function DocxTableBlock({
   onDuplicateColumn: (column: number) => void;
   onMoveRow: (row: number, direction: -1 | 1) => void;
   onMoveColumn: (column: number, direction: -1 | 1) => void;
+  onColumnWidthChange: (column: number, width: number) => void;
+  onRowHeightChange: (row: number, height: number) => void;
   onDeleteRow: (row: number) => void;
   onDeleteColumn: (column: number) => void;
   onClearCell: (row: number, column: number) => void;
@@ -511,6 +519,15 @@ export function DocxTableBlock({
   const rows = block.rows && block.rows.length > 0 ? block.rows : [[""]];
   const columns = tableColumnCount(rows);
   const normalizedRows = rows.map((row) => normalizeDocxTableRow(row, columns));
+  const columnWidths = normalizeDocxTableColumnWidths(
+    block.tableColumnWidths,
+    columns,
+  );
+  const rowHeights = normalizeDocxTableRowHeights(
+    block.tableRowHeights,
+    normalizedRows.length,
+  );
+  const tableWidth = columnWidths.reduce((total, width) => total + width, 0);
   const selectedCell = clampTableCell(activeCell, normalizedRows.length, columns);
 
   function selectCell(row: number, column: number) {
@@ -529,6 +546,52 @@ export function DocxTableBlock({
       textarea?.focus();
       textarea?.select();
     });
+  }
+
+  function startColumnResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    columnIndex: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = columnWidths[columnIndex];
+    const handleMove = (moveEvent: PointerEvent) => {
+      const nextWidth = Math.max(
+        MIN_DOCX_TABLE_COLUMN_WIDTH,
+        startWidth + (moveEvent.clientX - startX) * 15,
+      );
+      onColumnWidthChange(columnIndex, nextWidth);
+    };
+    const handleUp = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+  }
+
+  function startRowResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    rowIndex: number,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startY = event.clientY;
+    const startHeight = rowHeights[rowIndex];
+    const handleMove = (moveEvent: PointerEvent) => {
+      const nextHeight = Math.max(
+        MIN_DOCX_TABLE_ROW_HEIGHT,
+        startHeight + (moveEvent.clientY - startY) * 15,
+      );
+      onRowHeightChange(rowIndex, nextHeight);
+    };
+    const handleUp = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
   }
 
   function handleCellKeyDown(
@@ -631,7 +694,21 @@ export function DocxTableBlock({
         <div className="mx-1 h-5 w-px bg-neutral-200" />
         <DocxTableActionButton icon={Eraser} label="Clear cell" onClick={() => selectedCell && onClearCell(selectedCell.row, selectedCell.column)} disabled={!selectedCell} />
       </div>
-      <table className="w-full border-collapse text-sm">
+      <table
+        className="border-collapse text-sm"
+        style={{ width: twipsToCssPixels(tableWidth) }}
+      >
+        <colgroup>
+          {columnWidths.map((width, columnIndex) => (
+            <col
+              key={columnIndex}
+              style={{
+                width: twipsToCssPixels(width),
+                minWidth: twipsToCssPixels(width),
+              }}
+            />
+          ))}
+        </colgroup>
         <thead>
           <tr>
             <th className="w-8 border border-neutral-300 bg-neutral-50" />
@@ -639,9 +716,13 @@ export function DocxTableBlock({
               <th
                 key={columnIndex}
                 className={cn(
-                  "border border-neutral-300 bg-neutral-50 px-1 py-1 text-center text-[11px] font-medium text-neutral-500",
+                  "group relative border border-neutral-300 bg-neutral-50 px-1 py-1 text-center text-[11px] font-medium text-neutral-500",
                   selectedCell?.column === columnIndex && "bg-lime-50 text-lime-700",
                 )}
+                style={{
+                  width: twipsToCssPixels(columnWidths[columnIndex]),
+                  minWidth: twipsToCssPixels(columnWidths[columnIndex]),
+                }}
               >
                 <button
                   type="button"
@@ -651,18 +732,33 @@ export function DocxTableBlock({
                 >
                   {columnName(columnIndex)}
                 </button>
+                <button
+                  type="button"
+                  onPointerDown={(event) => startColumnResize(event, columnIndex)}
+                  className="absolute right-0 top-0 h-full w-2 cursor-col-resize opacity-0 hover:bg-lime-300/50 group-hover:opacity-100"
+                  title="Resize column"
+                />
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {normalizedRows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+            <tr
+              key={rowIndex}
+              style={{
+                height: twipsToCssPixels(rowHeights[rowIndex]),
+              }}
+            >
               <th
                 className={cn(
-                  "border border-neutral-300 bg-neutral-50 px-1 py-1 text-[11px] font-medium text-neutral-500",
+                  "group relative border border-neutral-300 bg-neutral-50 px-1 py-1 text-[11px] font-medium text-neutral-500",
                   selectedCell?.row === rowIndex && "bg-lime-50 text-lime-700",
                 )}
+                style={{
+                  height: twipsToCssPixels(rowHeights[rowIndex]),
+                  minHeight: twipsToCssPixels(rowHeights[rowIndex]),
+                }}
               >
                 <button
                   type="button"
@@ -672,6 +768,12 @@ export function DocxTableBlock({
                 >
                   {rowIndex + 1}
                 </button>
+                <button
+                  type="button"
+                  onPointerDown={(event) => startRowResize(event, rowIndex)}
+                  className="absolute bottom-0 left-0 h-2 w-full cursor-row-resize opacity-0 hover:bg-lime-300/50 group-hover:opacity-100"
+                  title="Resize row"
+                />
               </th>
               {row.map((cell, columnIndex) => (
                 <td
@@ -697,6 +799,9 @@ export function DocxTableBlock({
                       onCellChange(rowIndex, columnIndex, event.target.value)
                     }
                     className="min-h-10 w-full resize-y bg-transparent px-2 py-1 text-sm leading-5 outline-none focus:bg-white"
+                    style={{
+                      minHeight: twipsToCssPixels(rowHeights[rowIndex]),
+                    }}
                   />
                 </td>
               ))}
