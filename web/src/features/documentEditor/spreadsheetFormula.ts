@@ -2,11 +2,242 @@ import { columnName } from "./models";
 
 export type SpreadsheetFormulaValue = number | string | boolean;
 
+export interface SpreadsheetFormulaFunction {
+  name: string;
+  signature: string;
+  description: string;
+  category: "Math" | "Logical" | "Text" | "Date";
+}
+
+export const SPREADSHEET_FORMULA_FUNCTIONS: SpreadsheetFormulaFunction[] = [
+  {
+    name: "SUM",
+    signature: "SUM(number1, [number2], ...)",
+    description: "Adds numbers, cell references, and ranges.",
+    category: "Math",
+  },
+  {
+    name: "AVERAGE",
+    signature: "AVERAGE(number1, [number2], ...)",
+    description: "Returns the arithmetic mean of numeric arguments.",
+    category: "Math",
+  },
+  {
+    name: "COUNT",
+    signature: "COUNT(value1, [value2], ...)",
+    description: "Counts numeric values.",
+    category: "Math",
+  },
+  {
+    name: "COUNTA",
+    signature: "COUNTA(value1, [value2], ...)",
+    description: "Counts non-empty values.",
+    category: "Math",
+  },
+  {
+    name: "MIN",
+    signature: "MIN(number1, [number2], ...)",
+    description: "Returns the smallest numeric value.",
+    category: "Math",
+  },
+  {
+    name: "MAX",
+    signature: "MAX(number1, [number2], ...)",
+    description: "Returns the largest numeric value.",
+    category: "Math",
+  },
+  {
+    name: "ABS",
+    signature: "ABS(number)",
+    description: "Returns the absolute value.",
+    category: "Math",
+  },
+  {
+    name: "ROUND",
+    signature: "ROUND(number, digits)",
+    description: "Rounds a number to a fixed number of digits.",
+    category: "Math",
+  },
+  {
+    name: "POWER",
+    signature: "POWER(number, power)",
+    description: "Raises a number to a power.",
+    category: "Math",
+  },
+  {
+    name: "SQRT",
+    signature: "SQRT(number)",
+    description: "Returns the square root.",
+    category: "Math",
+  },
+  {
+    name: "IF",
+    signature: "IF(test, value_if_true, value_if_false)",
+    description: "Returns one value when a condition is true and another when false.",
+    category: "Logical",
+  },
+  {
+    name: "AND",
+    signature: "AND(condition1, [condition2], ...)",
+    description: "Returns TRUE when every argument is true.",
+    category: "Logical",
+  },
+  {
+    name: "OR",
+    signature: "OR(condition1, [condition2], ...)",
+    description: "Returns TRUE when any argument is true.",
+    category: "Logical",
+  },
+  {
+    name: "NOT",
+    signature: "NOT(condition)",
+    description: "Reverses a logical value.",
+    category: "Logical",
+  },
+  {
+    name: "LEN",
+    signature: "LEN(text)",
+    description: "Returns the number of characters in text.",
+    category: "Text",
+  },
+  {
+    name: "CONCAT",
+    signature: "CONCAT(value1, [value2], ...)",
+    description: "Joins values into one text value.",
+    category: "Text",
+  },
+  {
+    name: "CONCATENATE",
+    signature: "CONCATENATE(value1, [value2], ...)",
+    description: "Joins values into one text value.",
+    category: "Text",
+  },
+  {
+    name: "LEFT",
+    signature: "LEFT(text, [count])",
+    description: "Returns characters from the start of text.",
+    category: "Text",
+  },
+  {
+    name: "RIGHT",
+    signature: "RIGHT(text, [count])",
+    description: "Returns characters from the end of text.",
+    category: "Text",
+  },
+  {
+    name: "MID",
+    signature: "MID(text, start, count)",
+    description: "Returns characters from the middle of text.",
+    category: "Text",
+  },
+  {
+    name: "LOWER",
+    signature: "LOWER(text)",
+    description: "Converts text to lowercase.",
+    category: "Text",
+  },
+  {
+    name: "UPPER",
+    signature: "UPPER(text)",
+    description: "Converts text to uppercase.",
+    category: "Text",
+  },
+  {
+    name: "TRIM",
+    signature: "TRIM(text)",
+    description: "Removes extra spaces from text.",
+    category: "Text",
+  },
+  {
+    name: "TODAY",
+    signature: "TODAY()",
+    description: "Returns the current date as an Excel serial number.",
+    category: "Date",
+  },
+  {
+    name: "NOW",
+    signature: "NOW()",
+    description: "Returns the current date and time as an Excel serial number.",
+    category: "Date",
+  },
+  {
+    name: "DATE",
+    signature: "DATE(year, month, day)",
+    description: "Builds an Excel date serial number.",
+    category: "Date",
+  },
+];
+
 type SpreadsheetFormulaToken =
   | { type: "number"; value: string }
   | { type: "string"; value: string }
   | { type: "identifier"; value: string }
   | { type: "operator"; value: string };
+
+type SpreadsheetFormulaEvaluator = (
+  args: SpreadsheetFormulaValue[],
+  numbers: number[],
+) => SpreadsheetFormulaValue;
+
+const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator> = {
+  SUM: (_args, numbers) => numbers.reduce((total, value) => total + value, 0),
+  AVERAGE: (_args, numbers) =>
+    numbers.length === 0
+      ? 0
+      : numbers.reduce((total, value) => total + value, 0) / numbers.length,
+  COUNT: (args) =>
+    args.filter(
+      (value) =>
+        spreadsheetFormulaValueText(value) !== "" && Number.isFinite(Number(value)),
+    ).length,
+  COUNTA: (args) =>
+    args.filter((value) => spreadsheetFormulaValueText(value) !== "").length,
+  MIN: (_args, numbers) => (numbers.length === 0 ? 0 : Math.min(...numbers)),
+  MAX: (_args, numbers) => (numbers.length === 0 ? 0 : Math.max(...numbers)),
+  ABS: (_args, numbers) => Math.abs(numbers[0] ?? 0),
+  ROUND: (_args, numbers) => {
+    const places = Math.trunc(numbers[1] ?? 0);
+    const multiplier = 10 ** places;
+    return Math.round((numbers[0] ?? 0) * multiplier) / multiplier;
+  },
+  POWER: (_args, numbers) => (numbers[0] ?? 0) ** (numbers[1] ?? 0),
+  SQRT: (_args, numbers) => Math.sqrt(numbers[0] ?? 0),
+  IF: (args) =>
+    spreadsheetFormulaValueBoolean(args[0])
+      ? (args[1] ?? true)
+      : (args[2] ?? false),
+  AND: (args) => args.every(spreadsheetFormulaValueBoolean),
+  OR: (args) => args.some(spreadsheetFormulaValueBoolean),
+  NOT: (args) => !spreadsheetFormulaValueBoolean(args[0]),
+  LEN: (args) => spreadsheetFormulaValueText(args[0]).length,
+  CONCAT: (args) => args.map(spreadsheetFormulaValueText).join(""),
+  CONCATENATE: (args) => args.map(spreadsheetFormulaValueText).join(""),
+  LEFT: (args, numbers) =>
+    spreadsheetFormulaValueText(args[0]).slice(
+      0,
+      Math.max(0, Math.trunc(numbers[1] ?? 1)),
+    ),
+  RIGHT: (args, numbers) => {
+    const text = spreadsheetFormulaValueText(args[0]);
+    return text.slice(Math.max(0, text.length - Math.trunc(numbers[1] ?? 1)));
+  },
+  MID: (args, numbers) => {
+    const text = spreadsheetFormulaValueText(args[0]);
+    const start = Math.max(0, Math.trunc(numbers[1] ?? 1) - 1);
+    return text.slice(start, start + Math.max(0, Math.trunc(numbers[2] ?? 1)));
+  },
+  LOWER: (args) => spreadsheetFormulaValueText(args[0]).toLowerCase(),
+  UPPER: (args) => spreadsheetFormulaValueText(args[0]).toUpperCase(),
+  TRIM: (args) => spreadsheetFormulaValueText(args[0]).trim().replace(/\s+/g, " "),
+  TODAY: () => excelSerialFromDate(new Date()),
+  NOW: () => excelSerialFromDateTime(new Date()),
+  DATE: (_args, numbers) =>
+    excelSerialFromDateParts(
+      Math.trunc(numbers[0] ?? 1900),
+      Math.trunc(numbers[1] ?? 1),
+      Math.trunc(numbers[2] ?? 1),
+    ),
+};
 
 export function evaluateSpreadsheetFormula(
   formula: string,
@@ -181,76 +412,8 @@ class SpreadsheetFormulaParser {
     this.consumeOperator(")");
     const upper = name.toUpperCase();
     const numbers = args.map(spreadsheetFormulaValueNumber);
-    if (upper === "SUM") return numbers.reduce((total, value) => total + value, 0);
-    if (upper === "AVERAGE") {
-      return numbers.length === 0
-        ? 0
-        : numbers.reduce((total, value) => total + value, 0) / numbers.length;
-    }
-    if (upper === "COUNT") {
-      return args.filter(
-        (value) =>
-          spreadsheetFormulaValueText(value) !== "" && Number.isFinite(Number(value)),
-      ).length;
-    }
-    if (upper === "COUNTA") {
-      return args.filter((value) => spreadsheetFormulaValueText(value) !== "").length;
-    }
-    if (upper === "MIN") return numbers.length === 0 ? 0 : Math.min(...numbers);
-    if (upper === "MAX") return numbers.length === 0 ? 0 : Math.max(...numbers);
-    if (upper === "ABS") return Math.abs(numbers[0] ?? 0);
-    if (upper === "ROUND") {
-      const places = Math.trunc(numbers[1] ?? 0);
-      const multiplier = 10 ** places;
-      return Math.round((numbers[0] ?? 0) * multiplier) / multiplier;
-    }
-    if (upper === "POWER") return (numbers[0] ?? 0) ** (numbers[1] ?? 0);
-    if (upper === "SQRT") return Math.sqrt(numbers[0] ?? 0);
-    if (upper === "IF") {
-      return spreadsheetFormulaValueBoolean(args[0])
-        ? (args[1] ?? true)
-        : (args[2] ?? false);
-    }
-    if (upper === "AND") return args.every(spreadsheetFormulaValueBoolean);
-    if (upper === "OR") return args.some(spreadsheetFormulaValueBoolean);
-    if (upper === "NOT") return !spreadsheetFormulaValueBoolean(args[0]);
-    if (upper === "LEN") return spreadsheetFormulaValueText(args[0]).length;
-    if (upper === "CONCAT" || upper === "CONCATENATE") {
-      return args.map(spreadsheetFormulaValueText).join("");
-    }
-    if (upper === "LEFT") {
-      return spreadsheetFormulaValueText(args[0]).slice(
-        0,
-        Math.max(0, Math.trunc(numbers[1] ?? 1)),
-      );
-    }
-    if (upper === "RIGHT") {
-      const text = spreadsheetFormulaValueText(args[0]);
-      return text.slice(Math.max(0, text.length - Math.trunc(numbers[1] ?? 1)));
-    }
-    if (upper === "MID") {
-      const text = spreadsheetFormulaValueText(args[0]);
-      const start = Math.max(0, Math.trunc(numbers[1] ?? 1) - 1);
-      return text.slice(start, start + Math.max(0, Math.trunc(numbers[2] ?? 1)));
-    }
-    if (upper === "LOWER") {
-      return spreadsheetFormulaValueText(args[0]).toLowerCase();
-    }
-    if (upper === "UPPER") {
-      return spreadsheetFormulaValueText(args[0]).toUpperCase();
-    }
-    if (upper === "TRIM") {
-      return spreadsheetFormulaValueText(args[0]).trim().replace(/\s+/g, " ");
-    }
-    if (upper === "TODAY") return excelSerialFromDate(new Date());
-    if (upper === "NOW") return excelSerialFromDateTime(new Date());
-    if (upper === "DATE") {
-      return excelSerialFromDateParts(
-        Math.trunc(numbers[0] ?? 1900),
-        Math.trunc(numbers[1] ?? 1),
-        Math.trunc(numbers[2] ?? 1),
-      );
-    }
+    const evaluator = SPREADSHEET_FORMULA_EVALUATORS[upper];
+    if (evaluator) return evaluator(args, numbers);
     throw new Error("Unsupported formula function");
   }
 
