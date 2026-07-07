@@ -119,6 +119,8 @@ const DEFAULT_XLSX_COLUMN_WIDTH = 16;
 const DEFAULT_XLSX_ROW_HEIGHT = 24;
 const MIN_XLSX_VISIBLE_COLUMNS = 702;
 const MIN_XLSX_VISIBLE_ROWS = 1000;
+const MIN_DELIMITED_VISIBLE_COLUMNS = MIN_XLSX_VISIBLE_COLUMNS;
+const MIN_DELIMITED_VISIBLE_ROWS = MIN_XLSX_VISIBLE_ROWS;
 const XLSX_FONT_SIZES = ["8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "32"];
 const XLSX_NUMBER_FORMATS = [
   { label: "General", value: "" },
@@ -1816,8 +1818,11 @@ export function DelimitedTableEditor({
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
-  const columnCount = Math.max(1, ...model.rows.map((row) => row.length));
-  const rows = model.rows.length > 0 ? model.rows : [Array(columnCount).fill("")];
+  const sourceRows = model.rows.length > 0 ? model.rows : [[]];
+  const sourceColumnCount = Math.max(1, ...sourceRows.map((row) => row.length));
+  const columnCount = Math.max(MIN_DELIMITED_VISIBLE_COLUMNS, sourceColumnCount);
+  const displayRowLimit = Math.max(MIN_DELIMITED_VISIBLE_ROWS, sourceRows.length);
+  const rows = ensureDelimitedDisplayRows(sourceRows, displayRowLimit);
   const visibleRows = filteredDelimitedRows(rows, columnCount, filterText);
   const rowWindow = virtualWindow(
     visibleRows.length,
@@ -1854,14 +1859,16 @@ export function DelimitedTableEditor({
   }
 
   function updateCell(rowIndex: number, columnIndex: number, value: string) {
+    const requiredColumns = Math.max(sourceColumnCount, columnIndex + 1);
     commitDelimitedRows(
-      rows.map((row, currentRowIndex) => {
-        const normalized = normalizeRow(row, columnCount);
-        if (currentRowIndex !== rowIndex) return normalized;
-        return normalized.map((cell, currentColumnIndex) =>
-          currentColumnIndex === columnIndex ? value : cell,
-        );
-      }),
+      ensureDelimitedRows(sourceRows, rowIndex + 1, requiredColumns).map(
+        (row, currentRowIndex) => {
+          if (currentRowIndex !== rowIndex) return row;
+          return row.map((cell, currentColumnIndex) =>
+            currentColumnIndex === columnIndex ? value : cell,
+          );
+        },
+      ),
     );
   }
 
@@ -1873,11 +1880,10 @@ export function DelimitedTableEditor({
     if (matrix.length === 0) return;
     const requiredRows = startRow + matrix.length;
     const requiredColumns = Math.max(
-      columnCount,
+      sourceColumnCount,
       startColumn + Math.max(...matrix.map((row) => row.length)),
     );
-    const nextRows = Array.from({ length: Math.max(rows.length, requiredRows) }, (_, rowIndex) => {
-      const row = normalizeRow(rows[rowIndex] ?? [], requiredColumns);
+    const nextRows = ensureDelimitedRows(sourceRows, requiredRows, requiredColumns).map((row, rowIndex) => {
       const pastedRow = matrix[rowIndex - startRow];
       if (!pastedRow) return row;
       return row.map((cell, columnIndex) => {
@@ -1940,7 +1946,9 @@ export function DelimitedTableEditor({
 
   function sortRowsByActiveColumn(direction: "asc" | "desc") {
     if (!activeCell) return;
-    commitDelimitedRows(sortDelimitedRows(rows, columnCount, activeCell.column, direction));
+    commitDelimitedRows(
+      sortDelimitedRows(sourceRows, sourceColumnCount, activeCell.column, direction),
+    );
   }
 
   const handleCommandRequest = useEffectEvent(
@@ -1973,9 +1981,10 @@ export function DelimitedTableEditor({
   }, [commandRequest, onCommandHandled]);
 
   function addRow() {
-    const insertAt = activeCell ? activeCell.row + 1 : rows.length;
-    const nextRows = rows.map((row) => normalizeRow(row, columnCount));
-    nextRows.splice(insertAt, 0, Array(columnCount).fill(""));
+    const insertAt = activeCell ? activeCell.row + 1 : sourceRows.length;
+    const requiredColumns = Math.max(sourceColumnCount, (activeCell?.column ?? 0) + 1);
+    const nextRows = ensureDelimitedRows(sourceRows, insertAt, requiredColumns);
+    nextRows.splice(insertAt, 0, Array(requiredColumns).fill(""));
     commitDelimitedRows(nextRows);
     setActiveCell({ row: insertAt, column: activeCell?.column ?? 0 });
     setSelectionAnchor({ row: insertAt, column: activeCell?.column ?? 0 });
@@ -1983,10 +1992,11 @@ export function DelimitedTableEditor({
   }
 
   function addColumn() {
-    const insertAt = activeCell ? activeCell.column + 1 : columnCount;
+    const insertAt = activeCell ? activeCell.column + 1 : sourceColumnCount;
+    const requiredColumns = Math.max(sourceColumnCount, insertAt);
     commitDelimitedRows(
-      rows.map((row) => {
-        const next = normalizeRow(row, columnCount);
+      ensureDelimitedRows(sourceRows, Math.max(1, sourceRows.length), requiredColumns).map((row) => {
+        const next = normalizeRow(row, requiredColumns);
         next.splice(insertAt, 0, "");
         return next;
       }),
@@ -1997,18 +2007,18 @@ export function DelimitedTableEditor({
   }
 
   function deleteActiveRow() {
-    if (!activeCell || rows.length <= 1) return;
-    commitDelimitedRows(rows.filter((_, index) => index !== activeCell.row));
+    if (!activeCell || activeCell.row >= sourceRows.length || sourceRows.length <= 1) return;
+    commitDelimitedRows(sourceRows.filter((_, index) => index !== activeCell.row));
     setActiveCell(null);
     setSelectionAnchor(null);
     setSelectionEnd(null);
   }
 
   function deleteActiveColumn() {
-    if (!activeCell || columnCount <= 1) return;
+    if (!activeCell || activeCell.column >= sourceColumnCount || sourceColumnCount <= 1) return;
     commitDelimitedRows(
-      rows.map((row) =>
-        normalizeRow(row, columnCount).filter((_, index) => index !== activeCell.column),
+      sourceRows.map((row) =>
+        normalizeRow(row, sourceColumnCount).filter((_, index) => index !== activeCell.column),
       ),
     );
     setActiveCell(null);
@@ -2024,7 +2034,7 @@ export function DelimitedTableEditor({
   function selectReference(reference: string) {
     const range = xlsxRangeFromRef(reference.trim());
     if (!range) return;
-    const clamped = clampCellRange(range, rows.length, columnCount);
+    const clamped = clampCellRange(range, displayRowLimit, columnCount);
     setActiveCell({ row: clamped.top, column: clamped.left });
     setSelectionAnchor({ row: clamped.top, column: clamped.left });
     setSelectionEnd({ row: clamped.bottom, column: clamped.right });
@@ -2066,7 +2076,7 @@ export function DelimitedTableEditor({
     }
     if (event.key === "ArrowDown" && event.shiftKey) {
       event.preventDefault();
-      selectCell({ row: Math.min(row + 1, rows.length - 1), column }, true);
+      selectCell({ row: Math.min(row + 1, displayRowLimit - 1), column }, true);
       return;
     }
     if (event.key === "ArrowUp" && event.shiftKey) {
@@ -2096,7 +2106,7 @@ export function DelimitedTableEditor({
     if (event.key === "Enter") {
       event.preventDefault();
       focusCell(
-        event.shiftKey ? Math.max(row - 1, 0) : Math.min(row + 1, rows.length - 1),
+        event.shiftKey ? Math.max(row - 1, 0) : Math.min(row + 1, displayRowLimit - 1),
         column,
       );
     } else if (event.key === "Tab") {
@@ -2105,7 +2115,7 @@ export function DelimitedTableEditor({
       const nextColumn = column + direction;
       if (nextColumn >= 0 && nextColumn < columnCount) {
         focusCell(row, nextColumn);
-      } else if (!event.shiftKey && row < rows.length - 1) {
+      } else if (!event.shiftKey && row < displayRowLimit - 1) {
         focusCell(row + 1, 0);
       } else if (event.shiftKey && row > 0) {
         focusCell(row - 1, columnCount - 1);
@@ -2142,8 +2152,8 @@ export function DelimitedTableEditor({
         onSortDesc={() => sortRowsByActiveColumn("desc")}
         filterText={filterText}
         onFilterTextChange={setFilterText}
-        canDeleteRow={Boolean(activeCell && rows.length > 1)}
-        canDeleteColumn={Boolean(activeCell && columnCount > 1)}
+        canDeleteRow={Boolean(activeCell && activeCell.row < sourceRows.length && sourceRows.length > 1)}
+        canDeleteColumn={Boolean(activeCell && activeCell.column < sourceColumnCount && sourceColumnCount > 1)}
         canClearCell={Boolean(activeCell)}
         canCopy={Boolean(selectionRange)}
         canFillDown={Boolean(selectionRange && selectionRange.bottom > selectionRange.top)}
@@ -2222,9 +2232,9 @@ export function DelimitedTableEditor({
                 <th
                   key={columnIndex}
                   onClick={() => {
-                    selectCell({ row: 0, column: columnIndex });
-                    setSelectionEnd({
-                      row: Math.max(0, rows.length - 1),
+                      selectCell({ row: 0, column: columnIndex });
+                      setSelectionEnd({
+                      row: Math.max(0, displayRowLimit - 1),
                       column: columnIndex,
                     });
                   }}
@@ -4270,6 +4280,22 @@ function ensureXlsxRows(
       ),
     };
   });
+}
+
+function ensureDelimitedRows(
+  rows: string[][],
+  requiredRows: number,
+  requiredColumns: number,
+) {
+  return Array.from({ length: Math.max(rows.length, requiredRows) }, (_, rowIndex) =>
+    normalizeRow(rows[rowIndex] ?? [], requiredColumns),
+  );
+}
+
+function ensureDelimitedDisplayRows(rows: string[][], rowCount: number) {
+  return Array.from({ length: Math.max(rows.length, rowCount) }, (_, rowIndex) =>
+    rows[rowIndex] ?? [],
+  );
 }
 
 function ensureXlsxDisplayRows(sheet: XlsxSheet, rowCount: number): XlsxRow[] {
