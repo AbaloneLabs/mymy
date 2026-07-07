@@ -24,7 +24,24 @@ pub struct DocumentEditorModelResponse {
     pub editor_kind: DocumentEditorKind,
     pub mime_type: String,
     pub fingerprint: String,
+    pub compatibility_warnings: Vec<DocumentCompatibilityWarning>,
     pub model: Value,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCompatibilityWarning {
+    pub code: String,
+    pub severity: DocumentCompatibilityWarningSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DocumentCompatibilityWarningSeverity {
+    Info,
+    Warning,
+    Danger,
 }
 
 #[derive(Debug, Deserialize)]

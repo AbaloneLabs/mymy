@@ -44,6 +44,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             axum::routing::post(create_drive_folder),
         )
         .route("/api/drive/blob", get(read_drive_blob))
+        .route("/api/drive/download-package", get(read_drive_package))
 }
 
 pub async fn list_drive_providers(
@@ -94,6 +95,28 @@ pub async fn read_drive_blob(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    Ok(response)
+}
+
+pub async fn read_drive_package(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DrivePathQuery>,
+) -> AppResult<Response> {
+    let path = query.path.unwrap_or_else(|| "/drive".to_string());
+    let (bytes, package_name) = drive_service::document_package(&state, &path)?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"{}\"",
+            package_name.replace('"', "")
+        ))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+    );
     Ok(response)
 }
 

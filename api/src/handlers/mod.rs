@@ -9,6 +9,7 @@ pub mod chat;
 pub mod cron;
 pub mod document_editor;
 pub mod drive;
+pub mod editor_settings;
 pub mod extensions;
 pub mod goals;
 pub mod investments;
@@ -29,6 +30,7 @@ pub mod task_statuses;
 pub mod tasks;
 pub mod transactions;
 pub mod versions;
+pub mod web_viewer;
 
 use std::sync::Arc;
 
@@ -46,6 +48,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(projects::routes())
         .merge(drive::routes())
         .merge(document_editor::routes())
+        .merge(editor_settings::routes())
         .merge(sandbox::routes())
         .merge(chat::routes())
         .merge(cron::routes())
@@ -69,6 +72,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(transactions::routes())
         .merge(audit::routes())
         .merge(versions::routes())
+        .merge(web_viewer::routes())
         .route("/api/health", get(health))
 }
 

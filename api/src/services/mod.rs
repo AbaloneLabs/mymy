@@ -12,6 +12,7 @@ pub mod cron;
 pub mod document_editor;
 pub mod drive;
 pub mod drive_sync;
+pub mod editor_settings;
 pub mod extensions;
 pub mod file_observations;
 pub mod goals;

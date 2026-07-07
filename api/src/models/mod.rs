@@ -7,6 +7,7 @@ pub mod calendar;
 pub mod chat;
 pub mod document_editor;
 pub mod drive;
+pub mod editor_settings;
 pub mod goal;
 pub mod investment;
 pub mod knowledge;

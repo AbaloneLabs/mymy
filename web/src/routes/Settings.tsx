@@ -7,6 +7,7 @@ import { AgentToolPermissionsSection } from "@/components/settings/AgentToolPerm
 import { GitSystemSection } from "@/components/settings/GitSystemSection";
 import { LlmProviderSection } from "@/components/settings/LlmProviderSection";
 import { ExtensionsSection } from "@/components/settings/ExtensionsSection";
+import { EditorSettingsSection } from "@/components/settings/EditorSettingsSection";
 import { SkillsSection } from "@/components/settings/SkillsSection";
 import { SecuritySection } from "@/components/settings/SecuritySection";
 import { AuditLogSection } from "@/components/settings/AuditLogSection";
@@ -43,6 +44,7 @@ type SettingsTab =
   | "calendar"
   | "notes"
   | "tasks"
+  | "editor"
   | "agents"
   | "models"
   | "skills"
@@ -59,6 +61,7 @@ const VALID_TABS: SettingsTab[] = [
   "calendar",
   "notes",
   "tasks",
+  "editor",
   "agents",
   "models",
   "skills",
@@ -72,7 +75,7 @@ const VALID_TABS: SettingsTab[] = [
 /** Tab groups for visual separation with dividers. */
 const TAB_GROUPS: { tabs: SettingsTab[] }[] = [
   { tabs: ["general", "pin"] },
-  { tabs: ["chat", "calendar", "notes", "tasks"] },
+  { tabs: ["chat", "calendar", "notes", "tasks", "editor"] },
   { tabs: ["agents", "models", "skills", "extensions", "security", "git"] },
   { tabs: ["audit"] },
   { tabs: ["about"] },
@@ -145,6 +148,14 @@ export default function Settings() {
                   description={t("settings.tasks.description")}
                 >
                   <TaskStatusManager />
+                </SectionCard>
+              )}
+              {activeTab === "editor" && (
+                <SectionCard
+                  title={t("settings.editor.title")}
+                  description={t("settings.editor.description")}
+                >
+                  <EditorSettingsSection />
                 </SectionCard>
               )}
               {activeTab === "agents" && (

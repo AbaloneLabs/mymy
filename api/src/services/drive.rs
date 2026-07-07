@@ -10,13 +10,16 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use serde_json::json;
 use sqlx::FromRow;
 use uuid::Uuid;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::error::{AppError, AppResult};
 use crate::models::drive::{
@@ -26,6 +29,7 @@ use crate::models::drive::{
     DriveTrashResponse, DriveUploadResponse,
 };
 use crate::services::document_editor::editor_kind_for_path;
+use crate::services::editor_settings;
 use crate::state::AppState;
 
 pub const DRIVE_PREFIX: &str = "/drive";
@@ -427,6 +431,94 @@ pub fn blob_path(state: &AppState, logical_path: &str) -> AppResult<(PathBuf, St
     }
     let mime_type = mime_type_for_path(&resolved.physical_path).to_string();
     Ok((resolved.physical_path, mime_type))
+}
+
+pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<u8>, String)> {
+    let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
+    let metadata = fs::metadata(&resolved.physical_path)?;
+    if !metadata.is_file() {
+        return Err(AppError::BadRequest("Drive path is not a file".into()));
+    }
+    let document_name = resolved
+        .physical_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::BadRequest("Invalid Drive file name".into()))?;
+    let document_bytes = fs::read(&resolved.physical_path)?;
+    let font_files = editor_settings::custom_font_files_for_package(state)?;
+
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    writer
+        .start_file(format!("document/{document_name}"), options)
+        .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
+    writer
+        .write_all(&document_bytes)
+        .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+
+    let mut packaged_fonts = Vec::new();
+    for (index, item) in font_files.iter().enumerate() {
+        let font_name = &item.font.file_name;
+        let font_path = &item.path;
+        let package_path = format!("fonts/{:02}-{}", index + 1, font_name);
+        let bytes = fs::read(font_path)?;
+        writer
+            .start_file(&package_path, options)
+            .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
+        writer
+            .write_all(&bytes)
+            .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+        packaged_fonts.push(json!({
+            "fileName": font_name,
+            "displayName": item.font.display_name,
+            "familyName": item.font.family_name,
+            "subfamilyName": item.font.subfamily_name,
+            "fullName": item.font.full_name,
+            "postscriptName": item.font.postscript_name,
+            "version": item.font.version,
+            "license": item.font.license,
+            "licenseUrl": item.font.license_url,
+            "weightClass": item.font.weight_class,
+            "widthClass": item.font.width_class,
+            "embedding": item.font.embedding,
+            "supportedScripts": item.font.supported_scripts,
+            "packagePath": package_path,
+        }));
+    }
+
+    let manifest = json!({
+        "document": {
+            "fileName": document_name,
+            "drivePath": resolved.logical_path,
+        },
+        "fonts": packaged_fonts,
+        "note": "Fonts are included for compatibility when opening this document outside mymy. Respect each font license before sharing the package.",
+    });
+    writer
+        .start_file("mymy-font-package.json", options)
+        .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
+    writer
+        .write_all(
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|error| AppError::Internal(format!("package manifest failed: {error}")))?
+                .as_bytes(),
+        )
+        .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+    writer
+        .start_file("FONT_LICENSE_NOTICE.txt", options)
+        .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
+    writer
+        .write_all(
+            b"mymy includes uploaded custom font files in this package for document compatibility. Review and respect each font license before redistribution.\n",
+        )
+        .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+
+    let cursor = writer
+        .finish()
+        .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
+    let package_name = format!("{}-with-fonts.zip", file_stem_or_name(&document_name));
+    Ok((cursor.into_inner(), package_name))
 }
 
 pub async fn write_file(state: &AppState, logical_path: &str, content: &str) -> AppResult<()> {
@@ -842,6 +934,14 @@ fn restored_file_name(file_name: &str, stamp: &str, index: usize) -> String {
     }
 }
 
+fn file_stem_or_name(file_name: &str) -> String {
+    Path::new(file_name)
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| file_name.to_string())
+}
+
 fn canonical_workspace_roots(roots: Vec<PathBuf>) -> AppResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     for root in roots {
@@ -1020,7 +1120,7 @@ fn metadata_updated_at(metadata: &fs::Metadata) -> Option<String> {
     })
 }
 
-fn mime_type_for_path(path: &Path) -> &'static str {
+pub fn mime_type_for_path(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -1120,6 +1220,9 @@ fn extract_docx_text(path: &Path) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use sqlx::postgres::PgPoolOptions;
+    use zip::ZipArchive;
 
     #[test]
     fn logical_drive_path_maps_to_physical_root() {
@@ -1143,5 +1246,83 @@ mod tests {
     fn normalize_logical_drive_path_rejects_similar_prefixes() {
         let err = normalize_logical_drive_path("/drivefoo").unwrap_err();
         assert!(err.to_string().contains("Drive paths must start"));
+    }
+
+    #[tokio::test]
+    async fn document_package_includes_document_and_uploaded_fonts() {
+        let agent_data_dir =
+            std::env::temp_dir().join(format!("mymy-drive-package-test-{}", Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&agent_data_dir);
+        fs::create_dir_all(agent_data_dir.join("drive/agents/elena")).unwrap();
+
+        let state = test_state(agent_data_dir.clone());
+        fs::write(
+            agent_data_dir.join("drive/agents/elena/test.md"),
+            b"# Test document\n",
+        )
+        .unwrap();
+        editor_settings::upload_font(
+            &state,
+            "Custom Font.ttf",
+            bytes::Bytes::from_static(b"font-bytes"),
+        )
+        .unwrap();
+
+        let (bytes, package_name) =
+            document_package(&state, "/drive/agents/elena/test.md").unwrap();
+        assert_eq!(package_name, "test-with-fonts.zip");
+
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut document = String::new();
+        archive
+            .by_name("document/test.md")
+            .unwrap()
+            .read_to_string(&mut document)
+            .unwrap();
+        assert_eq!(document, "# Test document\n");
+
+        let mut font = Vec::new();
+        archive
+            .by_name("fonts/01-Custom Font.ttf")
+            .unwrap()
+            .read_to_end(&mut font)
+            .unwrap();
+        assert_eq!(font, b"font-bytes");
+
+        let mut manifest = String::new();
+        archive
+            .by_name("mymy-font-package.json")
+            .unwrap()
+            .read_to_string(&mut manifest)
+            .unwrap();
+        assert!(manifest.contains("\"drivePath\": \"/drive/agents/elena/test.md\""));
+        assert!(manifest.contains("\"packagePath\": \"fonts/01-Custom Font.ttf\""));
+
+        archive.by_name("FONT_LICENSE_NOTICE.txt").unwrap();
+        let _ = fs::remove_dir_all(agent_data_dir);
+    }
+
+    fn test_state(agent_data_dir: PathBuf) -> AppState {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://mymy:mymy@localhost/mymy")
+            .unwrap();
+        AppState::new(
+            db,
+            Config {
+                database_url: "postgres://mymy:mymy@localhost/mymy".to_string(),
+                port: 0,
+                cors_origins: Vec::new(),
+                agent_data_dir,
+                auth_cookie_secure: false,
+                cron_tick_interval_secs: 60,
+                cron_timezone: "UTC".to_string(),
+                cron_output_keep: 50,
+                drive_s3_bucket: None,
+                drive_s3_region: None,
+                drive_s3_endpoint: None,
+                sandbox_runner_url: None,
+                sandbox_preview_host: "127.0.0.1".to_string(),
+            },
+        )
     }
 }

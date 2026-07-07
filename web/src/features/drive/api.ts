@@ -180,6 +180,18 @@ export function driveBlobUrl(path: string) {
   return `${API_BASE}/drive/blob?${params.toString()}`;
 }
 
+export function drivePackageUrl(path: string) {
+  const params = new URLSearchParams();
+  params.set("path", path);
+  return `${API_BASE}/drive/download-package?${params.toString()}`;
+}
+
+export function driveHtmlViewerUrl(path: string) {
+  const params = new URLSearchParams();
+  params.set("path", path);
+  return `${API_BASE}/web-viewer/drive?${params.toString()}`;
+}
+
 export function previewUrl(token: string) {
   return `${API_BASE}/previews/${token}`;
 }

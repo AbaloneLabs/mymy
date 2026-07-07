@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { driveBlobUrl } from "@/features/drive/api";
 import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
+import { LightweightBrowserPane } from "./LightweightBrowserPane";
 import type { DriveFileResponse } from "@/types/drive";
 
 export function DriveFileViewer({
@@ -23,6 +24,9 @@ export function DriveFileViewer({
   }
 
   const blobUrl = driveBlobUrl(file.path);
+  if (isHtmlFile(file)) {
+    return <LightweightBrowserPane path={file.path} />;
+  }
   if (file.mimeType.startsWith("image/")) {
     return (
       <img
@@ -71,5 +75,14 @@ export function DriveFileViewer({
       <ExternalLink className="h-4 w-4" strokeWidth={1.5} />
       {t("drive.openFile")}
     </a>
+  );
+}
+
+function isHtmlFile(file: DriveFileResponse) {
+  const name = file.name.toLowerCase();
+  return (
+    file.mimeType === "text/html" ||
+    name.endsWith(".html") ||
+    name.endsWith(".htm")
   );
 }

@@ -13,6 +13,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
+import { LightweightBrowserPane } from "@/features/drive/components/LightweightBrowserPane";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
 import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
@@ -311,11 +312,28 @@ export default function Chat() {
           </div>
           {editorPath && (
             <div className="fixed inset-0 z-40 bg-[var(--bg)] xl:static xl:z-auto xl:min-w-0">
-              <DocumentEditorPane
-                path={editorPath}
-                onClose={closeDocumentEditor}
-                onDirtyChange={setEditorDirty}
-              />
+              {isHtmlPreviewPath(editorPath) ? (
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="flex h-12 shrink-0 items-center justify-end border-b border-[var(--border)] px-4">
+                    <button
+                      type="button"
+                      onClick={closeDocumentEditor}
+                      className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    >
+                      {t("common.close")}
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <LightweightBrowserPane path={editorPath} />
+                  </div>
+                </div>
+              ) : (
+                <DocumentEditorPane
+                  path={editorPath}
+                  onClose={closeDocumentEditor}
+                  onDirtyChange={setEditorDirty}
+                />
+              )}
             </div>
           )}
         </div>
@@ -332,4 +350,8 @@ export default function Chat() {
       )}
     </AppLayout>
   );
+}
+
+function isHtmlPreviewPath(path: string) {
+  return /\.html?$/i.test(path);
 }

@@ -423,7 +423,11 @@ function FileMutationResultPanel({
   onOpenDocument?: (path: string) => void;
 }) {
   const { t } = useTranslation();
-  const canOpen = status === "done" && isDocumentEditorPath(result.path) && onOpenDocument;
+  const htmlPreview = isHtmlPreviewPath(result.path);
+  const canOpen =
+    status === "done" &&
+    (isDocumentEditorPath(result.path) || htmlPreview) &&
+    onOpenDocument;
   const content = (
     <>
       <ToolPanelHeader
@@ -448,7 +452,7 @@ function FileMutationResultPanel({
         {canOpen && (
           <span className="ml-auto inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--accent)]">
             <ExternalLink className="h-3 w-3" strokeWidth={1.75} />
-            {t("chat.openEditor")}
+            {htmlPreview ? t("chat.openPreview") : t("chat.openEditor")}
           </span>
         )}
       </div>
@@ -1380,6 +1384,10 @@ function isDocumentEditorPath(path: string) {
   return /\.(md|markdown|txt|log|json|ya?ml|toml|csv|tsv|css|mjs|cjs|jsx?|tsx?|rs|py|sh|docx|xlsx|pptx)$/i.test(
     path,
   );
+}
+
+function isHtmlPreviewPath(path: string) {
+  return /\.html?$/i.test(path);
 }
 
 function parseTodoResult(value: string): TodoResult | null {

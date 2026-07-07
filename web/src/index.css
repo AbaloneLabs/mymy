@@ -30,6 +30,7 @@
   --status-active: #26d07c;
   --status-success: #26d07c;
   --status-idle: #62666d;
+  --status-warning: #f59e0b;
   --status-error: #eb5757;
 
   /* Typography */

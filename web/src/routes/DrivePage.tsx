@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import {
+  Download,
   ExternalLink,
   FolderPlus,
   HardDrive,
@@ -9,6 +10,7 @@ import {
   RotateCcw,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppLayout } from "@/components/AppLayout";
@@ -18,6 +20,7 @@ import { DriveFileViewer } from "@/features/drive/components/DriveFileViewer";
 import { LoadingLine, StatusPill } from "@/features/drive/components/DriveStatus";
 import {
   previewUrl,
+  drivePackageUrl,
   useCreateDriveFolder,
   useCreatePreviewEndpoint,
   useDeleteDrivePath,
@@ -270,6 +273,25 @@ export default function DrivePage() {
                   </p>
                 )}
               </div>
+              {selectedFile && (
+                <>
+                  <a
+                    href={drivePackageUrl(selectedFile.path)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    title={t("drive.downloadPackage")}
+                  >
+                    <Download className="h-4 w-4" strokeWidth={1.75} />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={closeSelectedFile}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    title={t("common.close")}
+                  >
+                    <X className="h-4 w-4" strokeWidth={1.75} />
+                  </button>
+                </>
+              )}
             </div>
             <div
               className={cn(
