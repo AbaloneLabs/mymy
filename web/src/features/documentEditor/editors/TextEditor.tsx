@@ -28,6 +28,31 @@ import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import { isRecord } from "../models";
 import type { TextModel } from "../models";
+import {
+  cloneJsonValue,
+  coerceJsonEditorValue,
+  deleteJsonPathValue,
+  firstJsonChildPathSegment,
+  getJsonPathValue,
+  insertJsonObjectEntry,
+  isTabularJson,
+  jsonCellToString,
+  jsonEditorValueType,
+  jsonPathExists,
+  jsonPathLabel,
+  jsonPathsEqual,
+  jsonPrimitiveClass,
+  nextJsonColumnKey,
+  nextJsonObjectKey,
+  nextJsonTableObjectKey,
+  parentJsonPath,
+  parseJsonCell,
+  parseJsonContent,
+  setJsonPathValue,
+  sortJsonValue,
+  tabularJsonModel,
+} from "../textJsonUtils";
+import type { JsonPathSegment, JsonTableRow } from "../textJsonUtils";
 
 type TextEditorKind = "json" | "yaml" | "toml" | "code" | "text";
 type TextEditorMode = "source" | "tree" | "table" | "preview";
@@ -1180,19 +1205,6 @@ interface SourceOutlineItem {
   line: number;
   kind: string;
   label: string;
-}
-
-type JsonPathSegment = string | number;
-
-interface JsonTableRow {
-  key?: string;
-  value: Record<string, unknown>;
-}
-
-interface JsonTableModel {
-  kind: "array" | "object";
-  rows: JsonTableRow[];
-  columns: string[];
 }
 
 interface ConfigEntry {
@@ -3253,273 +3265,6 @@ function JsonIconButton({
       <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
     </button>
   );
-}
-
-function cloneJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(cloneJsonValue);
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]),
-    );
-  }
-  return value;
-}
-
-function jsonPathsEqual(left: JsonPathSegment[], right: JsonPathSegment[]) {
-  return left.length === right.length && left.every((segment, index) => segment === right[index]);
-}
-
-function parentJsonPath(path: JsonPathSegment[]) {
-  return path.slice(0, Math.max(0, path.length - 1));
-}
-
-function jsonPathLabel(path: JsonPathSegment[]) {
-  if (path.length === 0) return "$";
-  return path.reduce(
-    (label, segment) =>
-      typeof segment === "number" ? `${label}[${segment}]` : `${label}.${segment}`,
-    "$",
-  );
-}
-
-function getJsonPathValue(value: unknown, path: JsonPathSegment[]): unknown {
-  let current = value;
-  for (const segment of path) {
-    if (Array.isArray(current) && typeof segment === "number") {
-      current = current[segment];
-    } else if (isRecord(current) && typeof segment === "string") {
-      current = current[segment];
-    } else {
-      return undefined;
-    }
-  }
-  return current;
-}
-
-function jsonPathExists(value: unknown, path: JsonPathSegment[]) {
-  if (path.length === 0) return true;
-  let current = value;
-  for (const segment of path) {
-    if (Array.isArray(current) && typeof segment === "number" && segment in current) {
-      current = current[segment];
-    } else if (isRecord(current) && typeof segment === "string" && segment in current) {
-      current = current[segment];
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
-function setJsonPathValue(value: unknown, path: JsonPathSegment[], nextValue: unknown): unknown {
-  if (path.length === 0) return nextValue;
-  const [segment, ...rest] = path;
-  if (Array.isArray(value) && typeof segment === "number") {
-    return value.map((item, index) =>
-      index === segment ? setJsonPathValue(item, rest, nextValue) : item,
-    );
-  }
-  if (isRecord(value) && typeof segment === "string") {
-    return {
-      ...value,
-      [segment]: setJsonPathValue(value[segment], rest, nextValue),
-    };
-  }
-  return value;
-}
-
-function deleteJsonPathValue(value: unknown, path: JsonPathSegment[]): unknown {
-  if (path.length === 0) return value;
-  if (path.length === 1) {
-    const [segment] = path;
-    if (Array.isArray(value) && typeof segment === "number") {
-      return value.filter((_, index) => index !== segment);
-    }
-    if (isRecord(value) && typeof segment === "string") {
-      const next = { ...value };
-      delete next[segment];
-      return next;
-    }
-    return value;
-  }
-  const [segment, ...rest] = path;
-  if (Array.isArray(value) && typeof segment === "number") {
-    return value.map((item, index) =>
-      index === segment ? deleteJsonPathValue(item, rest) : item,
-    );
-  }
-  if (isRecord(value) && typeof segment === "string") {
-    return {
-      ...value,
-      [segment]: deleteJsonPathValue(value[segment], rest),
-    };
-  }
-  return value;
-}
-
-function firstJsonChildPathSegment(value: unknown): JsonPathSegment | null {
-  if (Array.isArray(value)) return value.length > 0 ? 0 : null;
-  if (isRecord(value)) return Object.keys(value)[0] ?? null;
-  return null;
-}
-
-function nextJsonObjectKey(value: Record<string, unknown>, prefix = "key") {
-  let index = Object.keys(value).length + 1;
-  let key = `${prefix}${index}`;
-  while (key in value) {
-    index += 1;
-    key = `${prefix}${index}`;
-  }
-  return key;
-}
-
-function insertJsonObjectEntry(
-  value: Record<string, unknown>,
-  afterKey: string,
-  key: string,
-  insertedValue: unknown,
-) {
-  const entries = Object.entries(value);
-  const result: Record<string, unknown> = {};
-  let inserted = false;
-  for (const [entryKey, entryValue] of entries) {
-    result[entryKey] = entryValue;
-    if (entryKey === afterKey) {
-      result[key] = insertedValue;
-      inserted = true;
-    }
-  }
-  if (!inserted) result[key] = insertedValue;
-  return result;
-}
-
-function jsonEditorValueType(value: unknown) {
-  if (Array.isArray(value)) return "array";
-  if (isRecord(value)) return "object";
-  if (value === null) return "null";
-  if (typeof value === "number") return "number";
-  if (typeof value === "boolean") return "boolean";
-  return "string";
-}
-
-function coerceJsonEditorValue(value: unknown, nextType: string): unknown {
-  if (nextType === "object") return isRecord(value) ? value : {};
-  if (nextType === "array") return Array.isArray(value) ? value : [];
-  if (nextType === "number") {
-    const next = Number(value);
-    return Number.isFinite(next) ? next : 0;
-  }
-  if (nextType === "boolean") return Boolean(value);
-  if (nextType === "null") return null;
-  return typeof value === "string" ? value : String(value ?? "");
-}
-
-function jsonPrimitiveClass(value: unknown) {
-  if (typeof value === "string") return "text-[var(--status-success)]";
-  if (typeof value === "number") return "text-[var(--accent)]";
-  if (typeof value === "boolean") return "text-[var(--status-warning)]";
-  if (value === null) return "text-[var(--text-faint)]";
-  return "text-[var(--text-muted)]";
-}
-
-function parseJsonContent(content: string): unknown {
-  try {
-    return JSON.parse(content || "null");
-  } catch {
-    return undefined;
-  }
-}
-
-function isTabularJson(value: unknown) {
-  return tabularJsonModel(value) !== null;
-}
-
-function tabularJsonModel(value: unknown): JsonTableModel | null {
-  if (Array.isArray(value) && value.every((item) => isRecord(item))) {
-    const records = value as Array<Record<string, unknown>>;
-    return {
-      kind: "array",
-      rows: records.map((row) => ({ value: row })),
-      columns: jsonTableColumns(records),
-    };
-  }
-  if (!isRecord(value)) return null;
-  const entries = Object.entries(value);
-  if (!entries.every(([, item]) => isRecord(item))) return null;
-  const records = entries.map(([, item]) => item as Record<string, unknown>);
-  return {
-    kind: "object",
-    rows: entries.map(([key, item]) => ({
-      key,
-      value: item as Record<string, unknown>,
-    })),
-    columns: jsonTableColumns(records),
-  };
-}
-
-function sortJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJsonValue);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => [key, sortJsonValue(item)]),
-  );
-}
-
-function jsonTableColumns(rows: Array<Record<string, unknown>>) {
-  const columns = new Set<string>();
-  for (const row of rows) {
-    for (const key of Object.keys(row)) columns.add(key);
-  }
-  return Array.from(columns);
-}
-
-function nextJsonColumnKey(columns: string[]) {
-  let index = columns.length + 1;
-  while (columns.includes(`key${index}`)) index += 1;
-  return `key${index}`;
-}
-
-function nextJsonTableObjectKey(rows: JsonTableRow[], prefix = "row") {
-  const existing = new Set(rows.map((row) => row.key).filter(Boolean));
-  let index = rows.length + 1;
-  let key = `${prefix}${index}`;
-  while (existing.has(key)) {
-    index += 1;
-    key = `${prefix}${index}`;
-  }
-  return key;
-}
-
-function jsonCellToString(value: unknown) {
-  if (typeof value === "string") return value;
-  if (value === undefined) return "";
-  if (typeof value === "number" || typeof value === "boolean" || value === null) {
-    return String(value);
-  }
-  return JSON.stringify(value);
-}
-
-function parseJsonCell(value: string, previous: unknown) {
-  const trimmed = value.trim();
-  if (trimmed === "null") return null;
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  if (typeof previous === "number" && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  if (
-    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-    (trimmed.startsWith("[") && trimmed.endsWith("]"))
-  ) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      return value;
-    }
-  }
-  return value;
 }
 
 function escapeRegExp(value: string) {
