@@ -3,33 +3,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import {
-  AlignCenter,
-  AlignLeft,
-  AlignRight,
-  Bold,
-  BringToFront,
-  ChevronDown,
-  ChevronUp,
-  Circle,
-  Copy,
-  EyeOff,
-  Image as ImageIcon,
-  Italic,
-  Minus,
-  Play,
-  Plus,
-  RotateCw,
-  SendToBack,
-  Square,
-  Strikethrough,
-  Table as TableIcon,
-  Trash2,
-  Type,
-  Underline,
-} from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import { builtInFontFamilies } from "../fonts";
 import {
@@ -44,7 +18,6 @@ import {
   nextPptxTableId,
   nextPptxTextId,
   nextVisibleSlideIndex,
-  normalizeRotation,
   reorderPptxObjectsById,
 } from "../pptxEditorUtils";
 import type { SlideDragState } from "../pptxEditorUtils";
@@ -74,15 +47,14 @@ import type {
   PptxText,
   PptxTransition,
 } from "../models";
-import { FontFamilySelect, ToolbarButton } from "../shared";
 import {
-  PercentInput,
   PptxAnimationInspector,
   PptxChartDataEditor,
   PptxObjectLayerPanel,
   PptxPresentationOverlay,
   PptxSlideNavigator,
 } from "../pptxEditorPanels";
+import { PptxEditorToolbar } from "../pptxEditorToolbar";
 import { PptxSlideCanvas } from "../pptxSlideCanvas";
 
 export function PptxEditor({
@@ -1552,521 +1524,46 @@ export function PptxEditor({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] px-3 py-2">
-        <button
-          type="button"
-          onClick={addSlide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-        >
-          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          New slide
-        </button>
-        <button
-          type="button"
-          onClick={duplicateSlide}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Duplicate slide
-        </button>
-        <button
-          type="button"
-          onClick={() => moveSlide(-1)}
-          disabled={!slide || model.slides[0]?.id === slide.id}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Move slide up"
-        >
-          <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => moveSlide(1)}
-          disabled={!slide || model.slides.at(-1)?.id === slide.id}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Move slide down"
-        >
-          <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={deleteSlide}
-          disabled={!slide || model.slides.length <= 1}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Delete slide"
-        >
-          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={toggleSlideHidden}
-          disabled={!slide}
-          className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40",
-            slide?.hidden && "border-[var(--accent)] text-[var(--accent)]",
-          )}
-          title={slide?.hidden ? "Unhide slide" : "Hide slide"}
-        >
-          <EyeOff className="h-3.5 w-3.5" strokeWidth={1.75} />
-          {slide?.hidden ? "Hidden" : "Hide"}
-        </button>
-        <button
-          type="button"
-          onClick={() => setPresentingIndex(firstVisibleSlideIndex(model.slides))}
-          disabled={model.slides.length === 0}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Present from beginning"
-        >
-          <Play className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Present
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            setPresentingIndex(
-              nextVisibleSlideIndex(model.slides, slideIndex, 1, true),
-            )
-          }
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Present current slide"
-        >
-          <Play className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Current
-        </button>
-        <button
-          type="button"
-          onClick={addTextBox}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <Type className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Text box
-        </button>
-        <button
-          type="button"
-          onClick={() => addShape("rect")}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <Square className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Rectangle
-        </button>
-        <button
-          type="button"
-          onClick={() => addShape("ellipse")}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <Circle className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Ellipse
-        </button>
-        <button
-          type="button"
-          onClick={() => addShape("line")}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <Minus className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Line
-        </button>
-        <button
-          type="button"
-          onClick={() => imageInputRef.current?.click()}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <ImageIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Image
-        </button>
-        <button
-          type="button"
-          onClick={addTable}
-          disabled={!slide}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-        >
-          <TableIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-          Table
-        </button>
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            if (file) addImageFile(file);
-            event.currentTarget.value = "";
-          }}
-        />
-        <button
-          type="button"
-          onClick={duplicateSelectedObjects}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Duplicate selected object"
-        >
-          <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={deleteSelectedObjects}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Delete selected object"
-        >
-          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => moveActiveObjectLayer(-1)}
-          disabled={!activeObject || hasMultiSelection || activeLayerIndex <= 0}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Send backward"
-        >
-          <SendToBack className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => moveActiveObjectLayer(1)}
-          disabled={
-            !activeObject ||
-            hasMultiSelection ||
-            !slide ||
-            activeLayerIndex >= activeLayerLength - 1
-          }
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Bring forward"
-        >
-          <BringToFront className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("left")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to left edge"
-        >
-          <AlignLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("center")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to horizontal center"
-        >
-          <AlignCenter className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("right")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to right edge"
-        >
-          <AlignRight className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("top")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to top edge"
-        >
-          <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("middle")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to vertical middle"
-        >
-          <AlignCenter className="h-3.5 w-3.5 rotate-90" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => alignActiveObject("bottom")}
-          disabled={!hasObjectSelection}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Align to bottom edge"
-        >
-          <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => distributeSelectedObjects("horizontal")}
-          disabled={selectedObjects.length <= 2}
-          className="inline-flex h-8 items-center rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Distribute horizontally"
-        >
-          Dist H
-        </button>
-        <button
-          type="button"
-          onClick={() => distributeSelectedObjects("vertical")}
-          disabled={selectedObjects.length <= 2}
-          className="inline-flex h-8 items-center rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Distribute vertically"
-        >
-          Dist V
-        </button>
-        <FontFamilySelect
-          value={activeText?.fontFamily}
-          onChange={(fontFamily) => updateActiveText({ fontFamily })}
-          compact
-        />
-        <select
-          value={activeText?.fontSize ?? "18"}
-          onChange={(event) => updateActiveText({ fontSize: event.target.value })}
-          disabled={!activeText}
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-        >
-          {["12", "14", "16", "18", "20", "24", "28", "32", "36", "44"].map((size) => (
-            <option key={size} value={size}>
-              {size}
-            </option>
-          ))}
-        </select>
-        <ToolbarButton
-          icon={Bold}
-          label={t("documentEditor.bold")}
-          onClick={() => updateActiveText({ bold: !activeText?.bold })}
-          active={activeText?.bold}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={Italic}
-          label={t("documentEditor.italic")}
-          onClick={() => updateActiveText({ italic: !activeText?.italic })}
-          active={activeText?.italic}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={Underline}
-          label={t("documentEditor.underline", { defaultValue: "Underline" })}
-          onClick={() => updateActiveText({ underline: !activeText?.underline })}
-          active={activeText?.underline}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={Strikethrough}
-          label="Strikethrough"
-          onClick={() =>
-            updateActiveText({ strikethrough: !activeText?.strikethrough })
-          }
-          active={activeText?.strikethrough}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={AlignLeft}
-          label="Left"
-          onClick={() => updateActiveText({ align: "left" })}
-          active={!activeText?.align || activeText.align === "left"}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={AlignCenter}
-          label="Center"
-          onClick={() => updateActiveText({ align: "center" })}
-          active={activeText?.align === "center"}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={AlignRight}
-          label="Right"
-          onClick={() => updateActiveText({ align: "right" })}
-          active={activeText?.align === "right"}
-          disabled={!activeText}
-        />
-        <ToolbarButton
-          icon={RotateCw}
-          label="Rotate"
-          onClick={() =>
-            activeText
-              ? updateActiveText({
-                  rotation: normalizeRotation((activeText.rotation ?? 0) + 15),
-                })
-              : activeShape
-                ? updateActiveShape({
-                    rotation: normalizeRotation((activeShape.rotation ?? 0) + 15),
-                  })
-                : activeImage
-                  ? updateActiveImage({
-                      rotation: normalizeRotation((activeImage.rotation ?? 0) + 15),
-                    })
-                  : updateActiveChart({
-                      rotation: normalizeRotation((activeChart?.rotation ?? 0) + 15),
-                    })
-          }
-          disabled={!activeObject || hasMultiSelection}
-        />
-        <label
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]"
-          title="Text color"
-        >
-          Text
-          <input
-            type="color"
-            value={activeText?.color ?? "#111827"}
-            onChange={(event) => updateActiveText({ color: event.target.value })}
-            disabled={!activeText}
-            className="h-5 w-6 cursor-pointer bg-transparent disabled:cursor-not-allowed"
-          />
-        </label>
-        <label
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]"
-          title="Fill color"
-        >
-          Fill
-          <input
-            type="color"
-            value={activeText?.fillColor ?? activeShape?.fillColor ?? "#ffffff"}
-            onChange={(event) =>
-              activeText
-                ? updateActiveText({ fillColor: event.target.value })
-                : updateActiveShape({ fillColor: event.target.value })
-            }
-            disabled={(!activeText && !activeShape) || activeShape?.kind === "line"}
-            className="h-5 w-6 cursor-pointer bg-transparent disabled:cursor-not-allowed"
-          />
-        </label>
-        {activeShape && (
-          <>
-            <label
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]"
-              title="Stroke color"
-            >
-              Stroke
-              <input
-                type="color"
-                value={activeShape.strokeColor ?? "#111827"}
-                onChange={(event) =>
-                  updateActiveShape({ strokeColor: event.target.value })
-                }
-                className="h-5 w-6 cursor-pointer bg-transparent"
-              />
-            </label>
-            <PercentInput
-              label="SW"
-              value={activeShape.strokeWidth ?? 2}
-              min={0}
-              max={12}
-              onChange={(strokeWidth) => updateActiveShape({ strokeWidth })}
-            />
-          </>
-        )}
-        <label
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]"
-          title="Slide background"
-        >
-          Slide
-          <input
-            type="color"
-            value={slide?.backgroundColor ?? "#ffffff"}
-            onChange={(event) => updateSlide({ backgroundColor: event.target.value })}
-            disabled={!slide}
-            className="h-5 w-6 cursor-pointer bg-transparent disabled:cursor-not-allowed"
-          />
-        </label>
-        {hasMultiSelection && (
-          <div className="ml-auto rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
-            {selectedObjects.length} selected
-          </div>
-        )}
-        {activeObject && !hasMultiSelection && (
-          <div className="ml-auto flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
-            {activeImage && (
-              <input
-                value={activeImage.altText ?? ""}
-                onChange={(event) =>
-                  updateActiveImage({ altText: event.target.value })
-                }
-                placeholder="Alt text"
-                className="h-8 w-36 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              />
-            )}
-            {activeChart && (
-              <input
-                value={activeChart.title ?? ""}
-                onChange={(event) =>
-                  updateActiveChart({ title: event.target.value })
-                }
-                placeholder="Chart title"
-                className="h-8 w-40 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              />
-            )}
-            <PercentInput
-              label="X"
-              value={activeObject.x ?? 10}
-              onChange={(x) =>
-                activeText
-                  ? updateActiveText({ x })
-                  : activeShape
-                    ? updateActiveShape({ x })
-                    : activeImage
-                      ? updateActiveImage({ x })
-                      : updateActiveChart({ x })
-              }
-            />
-            <PercentInput
-              label="Y"
-              value={activeObject.y ?? 12}
-              onChange={(y) =>
-                activeText
-                  ? updateActiveText({ y })
-                  : activeShape
-                    ? updateActiveShape({ y })
-                    : activeImage
-                      ? updateActiveImage({ y })
-                      : updateActiveChart({ y })
-              }
-            />
-            <PercentInput
-              label="W"
-              value={activeObject.width ?? 80}
-              onChange={(width) =>
-                activeText
-                  ? updateActiveText({ width })
-                  : activeShape
-                    ? updateActiveShape({ width })
-                    : activeImage
-                      ? updateActiveImage({ width })
-                      : updateActiveChart({ width })
-              }
-            />
-            <PercentInput
-              label="H"
-              value={activeObject.height ?? 10}
-              onChange={(height) =>
-                activeText
-                  ? updateActiveText({ height })
-                  : activeShape
-                    ? updateActiveShape({ height })
-                    : activeImage
-                      ? updateActiveImage({ height })
-                      : updateActiveChart({ height })
-              }
-            />
-            <PercentInput
-              label="R"
-              value={activeObject.rotation ?? 0}
-              min={0}
-              max={359}
-              onChange={(rotation) =>
-                activeText
-                  ? updateActiveText({ rotation })
-                  : activeShape
-                    ? updateActiveShape({ rotation })
-                    : activeImage
-                      ? updateActiveImage({ rotation })
-                      : updateActiveChart({ rotation })
-              }
-            />
-          </div>
-        )}
-      </div>
+      <PptxEditorToolbar
+        model={model}
+        slide={slide}
+        activeText={activeText}
+        activeShape={activeShape}
+        activeImage={activeImage}
+        activeTable={activeTable}
+        activeChart={activeChart}
+        activeObject={activeObject}
+        activeLayerIndex={activeLayerIndex}
+        activeLayerLength={activeLayerLength}
+        hasObjectSelection={hasObjectSelection}
+        hasMultiSelection={hasMultiSelection}
+        selectedObjectCount={selectedObjects.length}
+        imageInputRef={imageInputRef}
+        onAddSlide={addSlide}
+        onDuplicateSlide={duplicateSlide}
+        onMoveSlide={moveSlide}
+        onDeleteSlide={deleteSlide}
+        onToggleSlideHidden={toggleSlideHidden}
+        onPresentBeginning={() => setPresentingIndex(firstVisibleSlideIndex(model.slides))}
+        onPresentCurrent={() =>
+          setPresentingIndex(nextVisibleSlideIndex(model.slides, slideIndex, 1, true))
+        }
+        onAddTextBox={addTextBox}
+        onAddShape={addShape}
+        onAddImageFile={addImageFile}
+        onAddTable={addTable}
+        onDuplicateSelectedObjects={duplicateSelectedObjects}
+        onDeleteSelectedObjects={deleteSelectedObjects}
+        onMoveActiveObjectLayer={moveActiveObjectLayer}
+        onAlignActiveObject={alignActiveObject}
+        onDistributeSelectedObjects={distributeSelectedObjects}
+        onUpdateSlide={updateSlide}
+        onUpdateActiveText={updateActiveText}
+        onUpdateActiveShape={updateActiveShape}
+        onUpdateActiveImage={updateActiveImage}
+        onUpdateActiveTable={updateActiveTable}
+        onUpdateActiveChart={updateActiveChart}
+      />
       {presentingSlide && presentingIndex !== null && (
         <PptxPresentationOverlay
           slides={model.slides}

@@ -3,8 +3,6 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { ArrowLeft, ArrowRight, Copy, Plus, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import {
   remapXlsxDefinedNameSheetScopes,
@@ -20,7 +18,6 @@ import { SpreadsheetDefinedNamesPanel } from "../spreadsheetDefinedNamesPanel";
 import { rangeToClipboardText } from "../spreadsheetData";
 import { SpreadsheetGrid } from "../spreadsheetGrid";
 import {
-  normalizeColorInputValue,
   normalizeXlsxStylePatch,
   spreadsheetDateStamp,
   spreadsheetTimeStamp,
@@ -41,6 +38,7 @@ import {
   SpreadsheetObjectStrip,
   SpreadsheetStatusBar,
 } from "../spreadsheetPanels";
+import { SpreadsheetSheetTabs } from "../spreadsheetSheetTabs";
 import {
   DEFAULT_XLSX_COLUMN_WIDTH,
   DEFAULT_XLSX_ROW_HEIGHT,
@@ -1711,112 +1709,21 @@ export function XlsxEditor({
         canFormat={Boolean(activeCell || selectionRange)}
         canSort={Boolean(activeCell)}
       />
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--border)] px-3 py-2">
-        {model.sheets.map((item) => {
-          const hidden = item.state === "hidden" || item.state === "veryHidden";
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setPreferredSheetId(item.id);
-                setActiveCell(null);
-              }}
-              className={cn(
-                "rounded-md border-t-2 px-2 py-1 text-xs",
-                item.id === sheet?.id
-                  ? "bg-[var(--accent)] text-white"
-                  : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
-                hidden && "opacity-60",
-              )}
-              style={{
-                borderTopColor: item.tabColor ?? "transparent",
-              }}
-              title={hidden ? `Sheet is ${item.state}` : undefined}
-            >
-              {item.name}
-              {hidden && <span className="ml-1 text-[10px] uppercase">{item.state}</span>}
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          onClick={addSheet}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          title="Add sheet"
-        >
-          <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={duplicateSheet}
-          disabled={!sheet}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Duplicate sheet"
-        >
-          <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={deleteSheet}
-          disabled={!sheet || model.sheets.length <= 1}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Delete sheet"
-        >
-          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => moveSheet(-1)}
-          disabled={!sheet || model.sheets.findIndex((item) => item.id === sheet.id) <= 0}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Move sheet left"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          onClick={() => moveSheet(1)}
-          disabled={
-            !sheet ||
-            model.sheets.findIndex((item) => item.id === sheet.id) >=
-              model.sheets.length - 1
-          }
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-          title="Move sheet right"
-        >
-          <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.75} />
-        </button>
-        {sheet && (
-          <>
-            <input
-              value={sheet.name}
-              onChange={(event) => renameSheet(event.target.value)}
-              className="ml-auto h-7 w-40 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              aria-label="Sheet name"
-            />
-            <select
-              value={sheet.state ?? "visible"}
-              onChange={(event) =>
-                updateSheetState(event.currentTarget.value as XlsxSheet["state"])
-              }
-              className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-              aria-label="Sheet visibility"
-            >
-              <option value="visible">Visible</option>
-              <option value="hidden">Hidden</option>
-              <option value="veryHidden">Very hidden</option>
-            </select>
-            <input
-              type="color"
-              value={normalizeColorInputValue(sheet.tabColor)}
-              onChange={(event) => updateSheetTabColor(event.currentTarget.value)}
-              className="h-7 w-9 cursor-pointer rounded-md border border-[var(--border)] bg-[var(--bg)] p-1"
-              aria-label="Sheet tab color"
-            />
-          </>
-        )}
-      </div>
+      <SpreadsheetSheetTabs
+        sheets={model.sheets}
+        activeSheet={sheet}
+        onSelectSheet={(sheetId) => {
+          setPreferredSheetId(sheetId);
+          setActiveCell(null);
+        }}
+        onAddSheet={addSheet}
+        onDuplicateSheet={duplicateSheet}
+        onDeleteSheet={deleteSheet}
+        onMoveSheet={moveSheet}
+        onRenameSheet={renameSheet}
+        onSheetStateChange={updateSheetState}
+        onSheetTabColorChange={updateSheetTabColor}
+      />
       <SpreadsheetObjectStrip
         sheet={sheet}
         onTableChange={updateTable}

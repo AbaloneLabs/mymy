@@ -18,8 +18,10 @@ mod kind;
 mod ooxml_content_types;
 mod ooxml_images;
 mod ooxml_package;
+mod pptx_package;
 mod text_formats;
 mod validation;
+mod xlsx_relationships;
 mod xlsx_styles;
 mod xml_utils;
 
@@ -79,12 +81,22 @@ use self::ooxml_images::{
     docx_relationship_targets, next_pptx_media_path,
 };
 use self::ooxml_package::{read_zip_bytes, read_zip_text, replace_zip_entries, zip_entry_names};
+use self::pptx_package::{
+    append_pptx_notes_content_types, append_pptx_slide_content_types,
+    pptx_part_to_relationship_target, pptx_relationship_targets, pptx_slide_relationship_target,
+};
 #[cfg(test)]
 use self::text_formats::parse_delimited;
 use self::text_formats::{delimited_bytes, delimited_model, text_bytes, text_model};
 use self::validation::validate_saved_document_bytes;
 #[cfg(test)]
 use self::validation::{validate_ooxml_package, validate_structured_text_for_path};
+use self::xlsx_relationships::{
+    remove_relationships_by_type, xlsx_empty_relationships, xlsx_part_rels_path,
+    xlsx_part_to_relationship_target_from, xlsx_relationship_by_type,
+    xlsx_relationship_target_by_type, xlsx_relationship_target_to_part, xlsx_relationships_by_id,
+    xlsx_worksheet_rels_path,
+};
 use self::xlsx_styles::{
     append_xlsx_style_to_cell_json, ensure_xlsx_comments_content_types,
     ensure_xlsx_styles_content_type, ensure_xlsx_styles_relationship, xlsx_cell_style_from_model,
@@ -1432,14 +1444,6 @@ fn valid_pptx_chart_path(path: &str) -> bool {
     path.starts_with("ppt/charts/") && path.ends_with(".xml") && !path.contains("..")
 }
 
-fn pptx_slide_relationship_target(target_path: &str) -> String {
-    if target_path.starts_with("ppt/") {
-        format!("../{}", target_path.trim_start_matches("ppt/"))
-    } else {
-        target_path.to_string()
-    }
-}
-
 fn parse_sheet_rows(
     xml: &str,
     shared_strings: &[String],
@@ -2297,24 +2301,6 @@ fn valid_xlsx_pivot_path(path: &str) -> bool {
     path.starts_with("xl/pivotTables/") && path.ends_with(".xml") && !path.contains("..")
 }
 
-fn xlsx_relationships_by_id(source_part: &str, rels: &str) -> BTreeMap<String, (String, String)> {
-    xml_named_empty_elements(rels, "Relationship")
-        .into_iter()
-        .filter_map(|relationship| {
-            let relationship_id = attr_value(&relationship, "Id")?;
-            let relationship_type = attr_value(&relationship, "Type").unwrap_or_default();
-            let target = attr_value(&relationship, "Target")?;
-            Some((
-                relationship_id,
-                (
-                    relationship_type,
-                    xlsx_relationship_target_to_part_from(source_part, &target),
-                ),
-            ))
-        })
-        .collect()
-}
-
 fn image_mime_type_from_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -2329,23 +2315,6 @@ fn image_mime_type_from_path(path: &str) -> &'static str {
         "webp" => "image/webp",
         _ => "image/png",
     }
-}
-
-fn xlsx_relationship_target_by_type(
-    source_part: &str,
-    rels: &str,
-    type_suffix: &str,
-) -> Option<String> {
-    xml_named_empty_elements(rels, "Relationship")
-        .into_iter()
-        .find_map(|relationship| {
-            let relationship_type = attr_value(&relationship, "Type").unwrap_or_default();
-            if !relationship_type.ends_with(type_suffix) {
-                return None;
-            }
-            let target = attr_value(&relationship, "Target")?;
-            Some(xlsx_relationship_target_to_part_from(source_part, &target))
-        })
 }
 
 fn parse_sheet_frozen_pane(xml: &str) -> (u32, u32) {
@@ -3007,56 +2976,6 @@ fn xlsx_relationship_targets(rels: &str) -> BTreeMap<String, String> {
             Some((rel_id, xlsx_relationship_target_to_part(&target)))
         })
         .collect()
-}
-
-fn xlsx_relationship_target_to_part(target: &str) -> String {
-    let target = target.trim_start_matches('/');
-    if target.starts_with("xl/") {
-        target.to_string()
-    } else {
-        format!("xl/{target}")
-    }
-}
-
-fn xlsx_relationship_target_to_part_from(source_part: &str, target: &str) -> String {
-    let target = target.trim_start_matches('/');
-    if target.starts_with("xl/") {
-        return target.to_string();
-    }
-    let base = source_part
-        .rsplit_once('/')
-        .map(|(directory, _)| directory)
-        .unwrap_or_default();
-    let mut segments = base
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for segment in target.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                segments.pop();
-            }
-            value => segments.push(value.to_string()),
-        }
-    }
-    segments.join("/")
-}
-
-fn xlsx_worksheet_rels_path(sheet_path: &str) -> String {
-    xlsx_part_rels_path(sheet_path)
-}
-
-fn xlsx_part_rels_path(part_path: &str) -> String {
-    let Some((directory, file_name)) = part_path.rsplit_once('/') else {
-        return format!("_rels/{part_path}.rels");
-    };
-    format!("{directory}/_rels/{file_name}.rels")
-}
-
-fn xlsx_empty_relationships() -> String {
-    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#.to_string()
 }
 
 fn xlsx_sheet_writes(
@@ -4212,27 +4131,6 @@ fn update_sheet_comments_package(
     Some(legacy_drawing_id)
 }
 
-fn xlsx_relationship_by_type(
-    source_part: &str,
-    rels: &str,
-    type_suffix: &str,
-) -> Option<(String, String)> {
-    xml_named_empty_elements(rels, "Relationship")
-        .into_iter()
-        .find_map(|relationship| {
-            let relationship_id = attr_value(&relationship, "Id")?;
-            let relationship_type = attr_value(&relationship, "Type").unwrap_or_default();
-            if !relationship_type.ends_with(type_suffix) {
-                return None;
-            }
-            let target = attr_value(&relationship, "Target")?;
-            Some((
-                relationship_id,
-                xlsx_relationship_target_to_part_from(source_part, &target),
-            ))
-        })
-}
-
 fn ensure_xlsx_sheet_relationship(
     rels: &str,
     source_part: &str,
@@ -4284,13 +4182,6 @@ fn next_xlsx_vml_path(existing_names: &[String], replacements: &[(String, Vec<u8
     }
 }
 
-fn xlsx_part_to_relationship_target_from(source_part: &str, target_part: &str) -> String {
-    if source_part.starts_with("xl/worksheets/") && target_part.starts_with("xl/") {
-        return format!("../{}", target_part.trim_start_matches("xl/"));
-    }
-    target_part.to_string()
-}
-
 fn build_xlsx_comments_xml(comments: &[SheetComment]) -> String {
     let mut author_ids = BTreeMap::new();
     for comment in comments {
@@ -4337,27 +4228,6 @@ fn build_xlsx_comments_vml(comments: &[SheetComment]) -> String {
     format!(
         r##"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>{shapes}</xml>"##
     )
-}
-
-fn remove_relationships_by_type(rels: &str, type_suffix: &str) -> String {
-    let mut output = String::new();
-    let mut rest = rels;
-    while let Some(start) = find_xml_tag_start(rest, "Relationship") {
-        output.push_str(&rest[..start]);
-        let after_start = &rest[start..];
-        let Some(end) = after_start.find('>') else {
-            output.push_str(after_start);
-            return output;
-        };
-        let element = &after_start[..=end];
-        let relationship_type = attr_value(element, "Type").unwrap_or_default();
-        if !relationship_type.ends_with(type_suffix) {
-            output.push_str(element);
-        }
-        rest = &after_start[end + 1..];
-    }
-    output.push_str(rest);
-    output
 }
 
 fn insert_sheet_data(xml: &str, sheet_data: &str) -> String {
@@ -6419,21 +6289,6 @@ fn set_xml_start_attr(xml: &str, marker: &str, attr: &str, value: &str) -> Strin
     format!("{}{}{}", &xml[..start], next_tag, &xml[tag_end..])
 }
 
-fn append_pptx_slide_content_types(content_types: &str, slide_ids: &[String]) -> String {
-    let mut output = content_types.to_string();
-    for slide_id in slide_ids {
-        let part_name = format!("/{}", slide_id);
-        if output.contains(&part_name) {
-            continue;
-        }
-        let override_xml = format!(
-            r#"<Override PartName="{part_name}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#
-        );
-        output = append_before_or_end(&output, "</Types>", &override_xml);
-    }
-    output
-}
-
 fn pptx_presentation_slides(bytes: &[u8]) -> AppResult<Vec<PptxPresentationSlideRef>> {
     let presentation = read_zip_text(bytes, "ppt/presentation.xml")?;
     let rels = read_zip_text(bytes, "ppt/_rels/presentation.xml.rels")?;
@@ -6459,30 +6314,6 @@ fn pptx_presentation_slides_from_xml(
             })
         })
         .collect()
-}
-
-fn pptx_relationship_targets(rels: &str) -> BTreeMap<String, String> {
-    xml_empty_elements(rels, "<Relationship ")
-        .into_iter()
-        .filter_map(|relationship| {
-            let rel_id = attr_value(&relationship, "Id")?;
-            let rel_type = attr_value(&relationship, "Type").unwrap_or_default();
-            if !rel_type.ends_with("/slide") {
-                return None;
-            }
-            let target = attr_value(&relationship, "Target")?;
-            Some((rel_id, pptx_relationship_target_to_part(&target)))
-        })
-        .collect()
-}
-
-fn pptx_relationship_target_to_part(target: &str) -> String {
-    let target = target.trim_start_matches('/');
-    if target.starts_with("ppt/") {
-        target.to_string()
-    } else {
-        format!("ppt/{target}")
-    }
 }
 
 fn pptx_slide_writes(
@@ -6580,10 +6411,6 @@ fn update_pptx_presentation_manifest(
     (presentation_out, rels_out)
 }
 
-fn pptx_part_to_relationship_target(path: &str) -> String {
-    path.strip_prefix("ppt/").unwrap_or(path).to_string()
-}
-
 fn append_pptx_slide_content_types_for_writes(
     content_types: &str,
     slides: &[PptxPresentationSlideWrite],
@@ -6593,21 +6420,6 @@ fn append_pptx_slide_content_types_for_writes(
         .map(|slide| slide.path.clone())
         .collect::<Vec<_>>();
     append_pptx_slide_content_types(content_types, &slide_ids)
-}
-
-fn append_pptx_notes_content_types(content_types: &str, notes_paths: &[String]) -> String {
-    let mut output = content_types.to_string();
-    for notes_path in notes_paths {
-        let part_name = format!("/{notes_path}");
-        if output.contains(&format!(r#"PartName="{part_name}""#)) {
-            continue;
-        }
-        let override_xml = format!(
-            r#"<Override PartName="{part_name}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>"#
-        );
-        output = append_before_or_end(&output, "</Types>", &override_xml);
-    }
-    output
 }
 
 fn next_rid(rels: &str) -> usize {

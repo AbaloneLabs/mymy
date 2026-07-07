@@ -1,41 +1,11 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import {
-  AlignCenter,
-  AlignJustify,
-  AlignLeft,
-  AlignRight,
-  Bold,
-  ChevronDown,
-  ChevronUp,
-  Copy,
-  Eraser,
-  FileText,
-  Heading1,
-  Highlighter,
-  Image as ImageIcon,
-  IndentDecrease,
-  IndentIncrease,
-  Italic,
-  Link,
-  List,
-  ListOrdered,
-  Palette,
-  Plus,
-  Strikethrough,
-  Subscript,
-  Superscript,
-  Table,
-  Trash2,
-  Underline,
-} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import {
   DOCX_PAGE_PRESETS,
   allocateDocxBlockId,
-  docxPagePresetValue,
   docxPageStyle,
   focusDocxBlock,
   headingFontSize,
@@ -45,13 +15,10 @@ import {
   normalizeDocxTableColumnWidths,
   normalizeDocxTableRowHeights,
   pickDocxFormatting,
-  pointsToTwips,
   readImageDisplaySize,
   sectionBreakLabel,
-  tableColumnCount,
   textOffsetWithin,
   twipsToCssPixels,
-  twipsToPoints,
 } from "../docxEditorUtils";
 import type { DocxFormatClipboard } from "../docxEditorUtils";
 import { builtInFontFamilies } from "../fonts";
@@ -61,14 +28,13 @@ import type {
   DocxModel,
   DocxPageSettings,
 } from "../models";
-import { FontFamilySelect, ToolbarButton } from "../shared";
 import {
   DocxImageBlock,
-  DocxMarginInput,
   DocxRuler,
   DocxTableBlock,
   DocxTextPartsPanel,
 } from "../docxEditorBlocks";
+import { DocxEditorToolbar } from "../docxEditorToolbar";
 import {
   addDocxTableColumn,
   addDocxTableRow,
@@ -794,518 +760,37 @@ export function DocxEditor({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--surface)]">
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-2">
-        <select
-          value={
-            activeBlock?.type === "heading"
-              ? `heading:${activeBlock.headingLevel ?? 1}`
-              : activeBlock?.type ?? "paragraph"
-          }
-          onChange={(event) => {
-            const value = event.target.value;
-            if (value === "image") return;
-            if (value === "pageBreak") {
-              updateActive({
-                type: "pageBreak",
-                text: "",
-                headingLevel: undefined,
-                rows: undefined,
-                tableColumnWidths: undefined,
-                tableRowHeights: undefined,
-                tableStyle: undefined,
-                tableBorderColor: undefined,
-                tableBorderSize: undefined,
-                tableCellBackground: undefined,
-                tableHeaderRow: undefined,
-                tableHeaderBackground: undefined,
-                tableCellVerticalAlign: undefined,
-                listKind: undefined,
-                target: undefined,
-                relationshipId: undefined,
-              });
-              return;
-            }
-            if (value === "sectionBreak") {
-              updateActive({
-                type: "sectionBreak",
-                text: "",
-                headingLevel: undefined,
-                rows: undefined,
-                tableColumnWidths: undefined,
-                tableRowHeights: undefined,
-                tableStyle: undefined,
-                tableBorderColor: undefined,
-                tableBorderSize: undefined,
-                tableCellBackground: undefined,
-                tableHeaderRow: undefined,
-                tableHeaderBackground: undefined,
-                tableCellVerticalAlign: undefined,
-                listKind: undefined,
-                target: undefined,
-                relationshipId: undefined,
-                breakKind: activeBlock?.breakKind ?? "nextPage",
-              });
-              return;
-            }
-            const headingMatch = /^heading:(\d)$/.exec(value);
-            const type = headingMatch ? "heading" : (value as DocxBlock["type"]);
-            const headingLevel = headingMatch ? Number(headingMatch[1]) : undefined;
-            const tableRows = activeBlock?.rows ?? [["", ""], ["", ""]];
-            updateActive({
-              type,
-              headingLevel,
-              text: type === "table" ? "" : activeBlock?.text ?? "",
-              rows: type === "table" ? tableRows : undefined,
-              tableColumnWidths:
-                type === "table"
-                  ? normalizeDocxTableColumnWidths(
-                      activeBlock?.tableColumnWidths,
-                      tableColumnCount(tableRows),
-                    )
-                  : undefined,
-              tableRowHeights:
-                type === "table"
-                  ? normalizeDocxTableRowHeights(
-                      activeBlock?.tableRowHeights,
-                      tableRows.length,
-                    )
-                  : undefined,
-              tableStyle: type === "table" ? activeBlock?.tableStyle : undefined,
-              tableBorderColor:
-                type === "table" ? activeBlock?.tableBorderColor : undefined,
-              tableBorderSize:
-                type === "table" ? activeBlock?.tableBorderSize : undefined,
-              tableCellBackground:
-                type === "table" ? activeBlock?.tableCellBackground : undefined,
-              tableHeaderRow:
-                type === "table" ? activeBlock?.tableHeaderRow : undefined,
-              tableHeaderBackground:
-                type === "table" ? activeBlock?.tableHeaderBackground : undefined,
-              tableCellVerticalAlign:
-                type === "table" ? activeBlock?.tableCellVerticalAlign : undefined,
-              fontSize:
-                type === "heading"
-                  ? headingFontSize(headingLevel ?? 1)
-                  : activeBlock?.fontSize ?? "14",
-            });
-          }}
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          title={t("documentEditor.style", { defaultValue: "Style" })}
-        >
-          <option value="paragraph">Normal text</option>
-          {Array.from({ length: 6 }, (_, index) => index + 1).map((level) => (
-            <option key={level} value={`heading:${level}`}>
-              Heading {level}
-            </option>
-          ))}
-          <option value="table">Table</option>
-          <option value="pageBreak">Page break</option>
-          <option value="sectionBreak">Section break</option>
-          {activeBlock?.type === "image" && <option value="image">Image</option>}
-        </select>
-        {activeBlock?.type === "sectionBreak" && (
-          <select
-            value={activeBlock.breakKind ?? "nextPage"}
-            onChange={(event) =>
-              updateActive({
-                breakKind: event.target.value as NonNullable<DocxBlock["breakKind"]>,
-              })
-            }
-            className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            title="Section break kind"
-          >
-            <option value="nextPage">Next page</option>
-            <option value="continuous">Continuous</option>
-            <option value="evenPage">Even page</option>
-            <option value="oddPage">Odd page</option>
-          </select>
-        )}
-        <FontFamilySelect
-          value={activeBlock?.fontFamily}
-          onChange={(fontFamily) => updateActive({ fontFamily })}
-          compact
-        />
-        <select
-          value={
-            activeBlock?.fontSize ??
-            (activeBlock?.type === "heading"
-              ? headingFontSize(activeBlock.headingLevel ?? 1)
-              : "14")
-          }
-          onChange={(event) => updateActive({ fontSize: event.target.value })}
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          title={t("documentEditor.fontSize", { defaultValue: "Font size" })}
-        >
-          {["10", "11", "12", "14", "16", "18", "20", "24", "28", "32", "36"].map((size) => (
-            <option key={size} value={size}>
-              {size}
-            </option>
-          ))}
-        </select>
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-        <ToolbarButton
-          icon={Bold}
-          label={t("documentEditor.bold")}
-          onClick={() => updateActive({ bold: !activeBlock?.bold })}
-          active={activeBlock?.bold}
-        />
-        <ToolbarButton
-          icon={Italic}
-          label={t("documentEditor.italic")}
-          onClick={() => updateActive({ italic: !activeBlock?.italic })}
-          active={activeBlock?.italic}
-        />
-        <ToolbarButton
-          icon={Underline}
-          label={t("documentEditor.underline", { defaultValue: "Underline" })}
-          onClick={() => updateActive({ underline: !activeBlock?.underline })}
-          active={activeBlock?.underline}
-        />
-        <ToolbarButton
-          icon={Link}
-          label={t("documentEditor.link")}
-          onClick={openLinkEditor}
-          active={Boolean(activeBlock?.target)}
-          disabled={!activeBlock || activeBlock.type === "table" || activeBlock.type === "image"}
-        />
-        <ToolbarButton
-          icon={FileText}
-          label="Normal style"
-          onClick={applyNormalStyle}
-          active={activeBlock?.type === "paragraph" && !activeBlock.listKind}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={Copy}
-          label="Copy formatting"
-          onClick={copyActiveFormatting}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={Eraser}
-          label="Paste formatting"
-          onClick={pasteActiveFormatting}
-          disabled={!formatClipboard || !isDocxTextBlock(activeBlock)}
-        />
-        {linkInputOpen && (
-          <form
-            className="flex min-w-56 items-center gap-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              applyLinkDraft();
-            }}
-          >
-            <input
-              value={linkDraft}
-              onChange={(event) => setLinkDraft(event.target.value)}
-              placeholder={t("documentEditor.linkUrl")}
-              className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            />
-            <button
-              type="submit"
-              className="inline-flex h-8 items-center rounded-md bg-[var(--accent)] px-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
-            >
-              {t("documentEditor.applyLink")}
-            </button>
-          </form>
-        )}
-        <ToolbarButton
-          icon={Strikethrough}
-          label="Strikethrough"
-          onClick={() =>
-            updateActive({ strikethrough: !activeBlock?.strikethrough })
-          }
-          active={activeBlock?.strikethrough}
-        />
-        <ToolbarButton
-          icon={Superscript}
-          label="Superscript"
-          onClick={() => toggleActiveVerticalAlign("superscript")}
-          active={activeBlock?.verticalAlign === "superscript"}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={Subscript}
-          label="Subscript"
-          onClick={() => toggleActiveVerticalAlign("subscript")}
-          active={activeBlock?.verticalAlign === "subscript"}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={Highlighter}
-          label={t("documentEditor.highlight", { defaultValue: "Highlight" })}
-          onClick={() =>
-            updateActive({ highlight: activeBlock?.highlight ? undefined : "#fef08a" })
-          }
-          active={Boolean(activeBlock?.highlight)}
-        />
-        <label
-          className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-          title={t("documentEditor.textColor", { defaultValue: "Text color" })}
-        >
-          <Palette className="h-4 w-4" strokeWidth={1.75} />
-          <input
-            type="color"
-            value={activeBlock?.color ?? "#111827"}
-            onChange={(event) => updateActive({ color: event.target.value })}
-            className="sr-only"
-          />
-        </label>
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-        <ToolbarButton
-          icon={AlignLeft}
-          label="Left"
-          onClick={() => updateActive({ align: "left" })}
-          active={!activeBlock?.align || activeBlock.align === "left"}
-        />
-        <ToolbarButton
-          icon={AlignCenter}
-          label="Center"
-          onClick={() => updateActive({ align: "center" })}
-          active={activeBlock?.align === "center"}
-        />
-        <ToolbarButton
-          icon={AlignRight}
-          label="Right"
-          onClick={() => updateActive({ align: "right" })}
-          active={activeBlock?.align === "right"}
-        />
-        <ToolbarButton
-          icon={AlignJustify}
-          label="Justify"
-          onClick={() => updateActive({ align: "justify" })}
-          active={activeBlock?.align === "justify"}
-        />
-        <ToolbarButton
-          icon={IndentDecrease}
-          label={t("documentEditor.outdent", { defaultValue: "Outdent" })}
-          onClick={() => adjustActiveIndent(-360)}
-          disabled={!activeBlock?.indentLeft}
-        />
-        <ToolbarButton
-          icon={IndentIncrease}
-          label={t("documentEditor.indent", { defaultValue: "Indent" })}
-          onClick={() => adjustActiveIndent(360)}
-        />
-        <ToolbarButton
-          icon={List}
-          label={t("documentEditor.bullets")}
-          onClick={() => toggleActiveList("bullet")}
-          active={activeBlock?.listKind === "bullet"}
-          disabled={!activeBlock || activeBlock.type === "table"}
-        />
-        <ToolbarButton
-          icon={ListOrdered}
-          label={t("documentEditor.numbered")}
-          onClick={() => toggleActiveList("number")}
-          active={activeBlock?.listKind === "number"}
-          disabled={!activeBlock || activeBlock.type === "table"}
-        />
-        <select
-          value={activeBlock?.lineSpacing ?? 276}
-          onChange={(event) => updateActive({ lineSpacing: Number(event.target.value) })}
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          title={t("documentEditor.lineSpacing", { defaultValue: "Line spacing" })}
-        >
-          <option value={240}>1.0</option>
-          <option value={276}>1.15</option>
-          <option value={360}>1.5</option>
-          <option value={480}>2.0</option>
-        </select>
-        <label className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]">
-          Before
-          <input
-            type="number"
-            min={0}
-            max={72}
-            value={twipsToPoints(activeBlock?.spacingBefore ?? 0)}
-            onChange={(event) =>
-              updateActive({ spacingBefore: pointsToTwips(Number(event.target.value)) })
-            }
-            className="w-12 bg-transparent text-xs text-[var(--text)] outline-none"
-          />
-        </label>
-        <label className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]">
-          After
-          <input
-            type="number"
-            min={0}
-            max={72}
-            value={twipsToPoints(activeBlock?.spacingAfter ?? 0)}
-            onChange={(event) =>
-              updateActive({ spacingAfter: pointsToTwips(Number(event.target.value)) })
-            }
-            className="w-12 bg-transparent text-xs text-[var(--text)] outline-none"
-          />
-        </label>
-        <ToolbarButton
-          icon={FileText}
-          label="Page break before"
-          onClick={() =>
-            updateActive({ pageBreakBefore: !activeBlock?.pageBreakBefore })
-          }
-          active={activeBlock?.pageBreakBefore}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={FileText}
-          label="Footnote"
-          onClick={() => insertNoteReference("footnote")}
-          active={Boolean(activeBlock?.footnoteId)}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <ToolbarButton
-          icon={FileText}
-          label="Endnote"
-          onClick={() => insertNoteReference("endnote")}
-          active={Boolean(activeBlock?.endnoteId)}
-          disabled={!isDocxTextBlock(activeBlock)}
-        />
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-        <select
-          value={docxPagePresetValue(page)}
-          onChange={(event) => updatePagePreset(event.target.value)}
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          title={t("documentEditor.pageSize", {
-            defaultValue: "Page size",
-          })}
-        >
-          <option value="custom">Custom</option>
-          {DOCX_PAGE_PRESETS.map((preset) => (
-            <option key={preset.value} value={preset.value}>
-              {preset.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={page?.orientation ?? "portrait"}
-          onChange={(event) =>
-            updatePageOrientation(
-              event.target.value === "landscape" ? "landscape" : "portrait",
-            )
-          }
-          className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          title={t("documentEditor.pageOrientation", {
-            defaultValue: "Page orientation",
-          })}
-        >
-          <option value="portrait">Portrait</option>
-          <option value="landscape">Landscape</option>
-        </select>
-        <DocxMarginInput
-          label="Top"
-          value={page?.marginTop}
-          onChange={(marginTop) => updatePage({ marginTop })}
-        />
-        <DocxMarginInput
-          label="Right"
-          value={page?.marginRight}
-          onChange={(marginRight) => updatePage({ marginRight })}
-        />
-        <DocxMarginInput
-          label="Bottom"
-          value={page?.marginBottom}
-          onChange={(marginBottom) => updatePage({ marginBottom })}
-        />
-        <DocxMarginInput
-          label="Left"
-          value={page?.marginLeft}
-          onChange={(marginLeft) => updatePage({ marginLeft })}
-        />
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-        {hasDocumentParts && (
-          <>
-            <button
-              type="button"
-              onClick={() => setTextPartsOpen((current) => !current)}
-              className={cn(
-                "inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]",
-                textPartsOpen && "border-[var(--accent)] text-[var(--accent)]",
-              )}
-            >
-              <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
-              Parts
-            </button>
-            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          </>
-        )}
-        <ToolbarButton
-          icon={ChevronUp}
-          label="Move up"
-          onClick={() => moveActiveBlock(-1)}
-        />
-        <ToolbarButton
-          icon={ChevronDown}
-          label="Move down"
-          onClick={() => moveActiveBlock(1)}
-        />
-        <ToolbarButton
-          icon={Trash2}
-          label={t("common.delete")}
-          onClick={deleteActiveBlock}
-        />
-        <div className="ml-auto flex items-center gap-1">
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            className="sr-only"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) insertImageFile(file);
-              event.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => imageInputRef.current?.click()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <ImageIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Image
-          </button>
-          <button
-            type="button"
-            onClick={() => addBlock("heading")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <Heading1 className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Heading
-          </button>
-          <button
-            type="button"
-            onClick={() => addBlock("table")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <Table className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Table
-          </button>
-          <button
-            type="button"
-            onClick={insertPageBreak}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Page break
-          </button>
-          <button
-            type="button"
-            onClick={insertSectionBreak}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Section break
-          </button>
-          <button
-            type="button"
-            onClick={() => addBlock("paragraph")}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
-            {t("documentEditor.addParagraph")}
-          </button>
-        </div>
-      </div>
+      <DocxEditorToolbar
+        activeBlock={activeBlock}
+        page={page}
+        linkInputOpen={linkInputOpen}
+        linkDraft={linkDraft}
+        canPasteFormatting={Boolean(formatClipboard)}
+        hasDocumentParts={hasDocumentParts}
+        textPartsOpen={textPartsOpen}
+        imageInputRef={imageInputRef}
+        onUpdateActive={updateActive}
+        onOpenLinkEditor={openLinkEditor}
+        onApplyLinkDraft={applyLinkDraft}
+        onSetLinkDraft={setLinkDraft}
+        onApplyNormalStyle={applyNormalStyle}
+        onCopyActiveFormatting={copyActiveFormatting}
+        onPasteActiveFormatting={pasteActiveFormatting}
+        onToggleActiveVerticalAlign={toggleActiveVerticalAlign}
+        onAdjustActiveIndent={adjustActiveIndent}
+        onToggleActiveList={toggleActiveList}
+        onInsertNoteReference={insertNoteReference}
+        onUpdatePagePreset={updatePagePreset}
+        onUpdatePageOrientation={updatePageOrientation}
+        onUpdatePage={updatePage}
+        onToggleTextPartsOpen={() => setTextPartsOpen((current) => !current)}
+        onMoveActiveBlock={moveActiveBlock}
+        onDeleteActiveBlock={deleteActiveBlock}
+        onInsertImageFile={insertImageFile}
+        onAddBlock={addBlock}
+        onInsertPageBreak={insertPageBreak}
+        onInsertSectionBreak={insertSectionBreak}
+      />
       {hasDocumentParts && textPartsOpen && (
         <DocxTextPartsPanel
           headers={model.headers ?? []}

@@ -3,39 +3,13 @@ import type {
   ClipboardEvent as ReactClipboardEvent,
   KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import {
-  Bold,
-  Check,
-  Code,
-  FileCog,
-  Heading1,
-  Heading2,
-  Heading3,
-  Heading4,
-  Heading5,
-  Heading6,
-  Image,
-  Italic,
-  Link,
-  List,
-  ListOrdered,
-  ListTree,
-  Loader2,
-  Plus,
-  ListTodo,
-  Quote,
-  Search,
-  Strikethrough,
-  Table,
-  Upload,
-} from "lucide-react";
-import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { uploadDriveFiles } from "@/features/drive/api";
 import { parentPath } from "@/features/drive/utils";
 import type { EditorCommandRequest } from "../commands";
-import { modeButtonClass, markdownTextButtonClass } from "../markdownEditorChrome";
+import { MarkdownEditorToolbar } from "../markdownEditorToolbar";
+import { MarkdownGoToLineBar, MarkdownSearchBar } from "../markdownSearchBars";
 import {
   buildMarkdownSearchRegex,
   countMarkdownSearchMatches,
@@ -69,7 +43,6 @@ import type {
   MarkdownTableModel,
 } from "../markdownEditorUtils";
 import type { TextModel } from "../models";
-import { ToolbarButton } from "../shared";
 
 export function MarkdownRichEditor({
   filePath,
@@ -84,7 +57,6 @@ export function MarkdownRichEditor({
   commandRequest?: EditorCommandRequest | null;
   onCommandHandled?: (request: EditorCommandRequest) => void;
 }) {
-  const { t } = useTranslation();
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const lineNumberRef = useRef<HTMLPreElement>(null);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
@@ -208,6 +180,22 @@ export function MarkdownRichEditor({
   function applyBlockquote() {
     transformSelectedSourceLines((line) =>
       /^\s*>\s?/.test(line) ? line : line.replace(/^(\s*)/, "$1> "),
+    );
+  }
+
+  function applyBulletList() {
+    transformSelectedSourceLines((line) =>
+      /^\s*(?:[-*+]|\d+\.)\s+/.test(line)
+        ? line
+        : line.replace(/^(\s*)/, "$1- "),
+    );
+  }
+
+  function applyNumberedList() {
+    transformSelectedSourceLines((line) =>
+      /^\s*(?:[-*+]|\d+\.)\s+/.test(line)
+        ? line
+        : line.replace(/^(\s*)/, (_match, indent: string) => `${indent}1. `),
     );
   }
 
@@ -826,281 +814,79 @@ export function MarkdownRichEditor({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] px-3 py-2">
-        <ToolbarButton icon={Heading1} label="H1" onClick={() => applyHeading(1)} />
-        <ToolbarButton icon={Heading2} label="H2" onClick={() => applyHeading(2)} />
-        <ToolbarButton icon={Heading3} label="H3" onClick={() => applyHeading(3)} />
-        <ToolbarButton icon={Heading4} label="H4" onClick={() => applyHeading(4)} />
-        <ToolbarButton icon={Heading5} label="H5" onClick={() => applyHeading(5)} />
-        <ToolbarButton icon={Heading6} label="H6" onClick={() => applyHeading(6)} />
-        <ToolbarButton icon={Bold} label={t("documentEditor.bold")} onClick={() => wrapSourceSelection("**")} />
-        <ToolbarButton icon={Italic} label={t("documentEditor.italic")} onClick={() => wrapSourceSelection("*")} />
-        <ToolbarButton icon={Strikethrough} label="Strike" onClick={() => wrapSourceSelection("~~")} />
-        <ToolbarButton
-          icon={List}
-          label={t("documentEditor.bullets")}
-          onClick={() =>
-            transformSelectedSourceLines((line) =>
-              /^\s*(?:[-*+]|\d+\.)\s+/.test(line)
-                ? line
-                : line.replace(/^(\s*)/, "$1- "),
-            )
-          }
-        />
-        <ToolbarButton
-          icon={ListOrdered}
-          label={t("documentEditor.numbered")}
-          onClick={() =>
-            transformSelectedSourceLines((line) =>
-              /^\s*(?:[-*+]|\d+\.)\s+/.test(line)
-                ? line
-                : line.replace(/^(\s*)/, (_match, indent: string) => `${indent}1. `),
-            )
-          }
-        />
-        <ToolbarButton icon={ListTodo} label="Task list" onClick={insertTaskList} />
-        <ToolbarButton icon={Quote} label={t("documentEditor.quote")} onClick={applyBlockquote} />
-        <ToolbarButton icon={Code} label={t("documentEditor.code")} onClick={applyInlineCode} />
-        <ToolbarButton
-          icon={Link}
-          label={t("documentEditor.link")}
-          onClick={() => {
-            setLinkInputOpen((current) => !current);
-          }}
-        />
-        <ToolbarButton
-          icon={Image}
-          label="Image"
-          onClick={() => {
-            setImageInputOpen((current) => !current);
-          }}
-        />
-        <ToolbarButton
-          icon={Table}
-          label={t("documentEditor.table")}
-          active={sidePanel === "table"}
-          onClick={openTablePanel}
-        />
-        <ToolbarButton
-          icon={Plus}
-          label={t("documentEditor.footnote", { defaultValue: "Footnote" })}
-          onClick={insertFootnote}
-        />
-        <ToolbarButton
-          icon={ListTree}
-          label={t("documentEditor.outline", { defaultValue: "Outline" })}
-          active={sidePanel === "outline"}
-          onClick={() => setSidePanel((current) => (current === "outline" ? null : "outline"))}
-        />
-        <ToolbarButton
-          icon={FileCog}
-          label={t("documentEditor.frontmatter", { defaultValue: "Frontmatter" })}
-          active={sidePanel === "frontmatter"}
-          onClick={openFrontmatterPanel}
-        />
-        <ToolbarButton
-          icon={Link}
-          label={t("documentEditor.references", { defaultValue: "References" })}
-          active={sidePanel === "references"}
-          onClick={() =>
-            setSidePanel((current) => (current === "references" ? null : "references"))
-          }
-        />
-        <ToolbarButton
-          icon={Search}
-          label={t("documentEditor.find", { defaultValue: "Find" })}
-          active={searchOpen}
-          onClick={() => {
-            setSearchOpen((current) => !current);
-            setMode("source");
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => {
-            setGoToLineDraft(String(cursor.line));
-            setGoToLineOpen((current) => !current);
-            setMode("source");
-          }}
-          className={markdownTextButtonClass()}
-        >
-          L:
-          {t("documentEditor.goToLine", { defaultValue: "Go to line" })}
-        </button>
-        <button
-          type="button"
-          onClick={togglePreview}
-          className={modeButtonClass(mode === "preview")}
-        >
-          {mode === "preview"
-            ? t("documentEditor.source", { defaultValue: "Source" })
-            : t("documentEditor.preview")}
-        </button>
-        {linkInputOpen && (
-          <form
-            className="flex min-w-48 items-center gap-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submitLink();
-            }}
-          >
-            <input
-              value={linkDraft}
-              onChange={(event) => setLinkDraft(event.target.value)}
-              placeholder={t("documentEditor.linkUrl")}
-              className="h-8 min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            />
-            <button
-              type="submit"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
-              title={t("documentEditor.applyLink")}
-            >
-              <Check className="h-3.5 w-3.5" strokeWidth={1.75} />
-            </button>
-          </form>
-        )}
-        {imageInputOpen && (
-          <form
-            className="flex min-w-72 items-center gap-1"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submitImage();
-            }}
-          >
-            <input
-              value={imageDraft}
-              onChange={(event) => setImageDraft(event.target.value)}
-              placeholder="Image path or URL"
-              className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            />
-            <input
-              value={imageAltDraft}
-              onChange={(event) => setImageAltDraft(event.target.value)}
-              placeholder="Alt"
-              className="h-8 w-24 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            />
-            <button
-              type="button"
-              onClick={() => imageFileInputRef.current?.click()}
-              disabled={uploadingImage}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              title="Upload image"
-            >
-              {uploadingImage ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.75} />
-              ) : (
-                <Upload className="h-3.5 w-3.5" strokeWidth={1.75} />
-              )}
-            </button>
-            <input
-              ref={imageFileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0];
-                if (file) void uploadAndInsertImage(file);
-                event.currentTarget.value = "";
-              }}
-            />
-            <button
-              type="submit"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
-              title="Insert image"
-            >
-              <Check className="h-3.5 w-3.5" strokeWidth={1.75} />
-            </button>
-            {imageUploadError && (
-              <span className="max-w-48 truncate text-[11px] text-[var(--status-error)]">
-                {imageUploadError}
-              </span>
-            )}
-          </form>
-        )}
-      </div>
+      <MarkdownEditorToolbar
+        mode={mode}
+        sidePanel={sidePanel}
+        searchOpen={searchOpen}
+        linkInputOpen={linkInputOpen}
+        linkDraft={linkDraft}
+        imageInputOpen={imageInputOpen}
+        imageDraft={imageDraft}
+        imageAltDraft={imageAltDraft}
+        uploadingImage={uploadingImage}
+        imageUploadError={imageUploadError}
+        imageFileInputRef={imageFileInputRef}
+        onApplyHeading={applyHeading}
+        onWrapSelection={wrapSourceSelection}
+        onApplyBulletList={applyBulletList}
+        onApplyNumberedList={applyNumberedList}
+        onInsertTaskList={insertTaskList}
+        onApplyBlockquote={applyBlockquote}
+        onApplyInlineCode={applyInlineCode}
+        onToggleLinkInput={() => setLinkInputOpen((current) => !current)}
+        onToggleImageInput={() => setImageInputOpen((current) => !current)}
+        onOpenTablePanel={openTablePanel}
+        onInsertFootnote={insertFootnote}
+        onToggleOutlinePanel={() =>
+          setSidePanel((current) => (current === "outline" ? null : "outline"))
+        }
+        onOpenFrontmatterPanel={openFrontmatterPanel}
+        onToggleReferencesPanel={() =>
+          setSidePanel((current) => (current === "references" ? null : "references"))
+        }
+        onToggleSearch={() => {
+          setSearchOpen((current) => !current);
+          setMode("source");
+        }}
+        onOpenGoToLine={() => {
+          setGoToLineDraft(String(cursor.line));
+          setGoToLineOpen((current) => !current);
+          setMode("source");
+        }}
+        onTogglePreview={togglePreview}
+        onSubmitLink={submitLink}
+        onLinkDraftChange={setLinkDraft}
+        onSubmitImage={submitImage}
+        onImageDraftChange={setImageDraft}
+        onImageAltDraftChange={setImageAltDraft}
+        onUploadImageFile={(file) => void uploadAndInsertImage(file)}
+      />
       {searchOpen && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2">
-          <input
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
-            placeholder={t("documentEditor.find", { defaultValue: "Find" })}
-            className="h-8 min-w-48 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          />
-          <input
-            value={replaceDraft}
-            onChange={(event) => setReplaceDraft(event.target.value)}
-            placeholder={t("documentEditor.replace", { defaultValue: "Replace" })}
-            className="h-8 min-w-48 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          />
-          <button type="button" onClick={findNext} className={markdownTextButtonClass()}>
-            Next
-          </button>
-          <button type="button" onClick={replaceNext} className={markdownTextButtonClass()}>
-            Replace
-          </button>
-          <button type="button" onClick={replaceAll} className={markdownTextButtonClass()}>
-            All
-          </button>
-          <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
-            <input
-              type="checkbox"
-              checked={matchCase}
-              onChange={(event) => setMatchCase(event.target.checked)}
-            />
-            Aa
-          </label>
-          <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
-            <input
-              type="checkbox"
-              checked={wholeWord}
-              onChange={(event) => setWholeWord(event.target.checked)}
-            />
-            Word
-          </label>
-          <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
-            <input
-              type="checkbox"
-              checked={regexSearch}
-              onChange={(event) => setRegexSearch(event.target.checked)}
-            />
-            .*
-          </label>
-          <span className="text-xs text-[var(--text-faint)]">
-            {searchMatches} matches
-          </span>
-        </div>
+        <MarkdownSearchBar
+          searchDraft={searchDraft}
+          replaceDraft={replaceDraft}
+          matchCase={matchCase}
+          wholeWord={wholeWord}
+          regexSearch={regexSearch}
+          searchMatches={searchMatches}
+          onSearchDraftChange={setSearchDraft}
+          onReplaceDraftChange={setReplaceDraft}
+          onFindNext={findNext}
+          onReplaceNext={replaceNext}
+          onReplaceAll={replaceAll}
+          onMatchCaseChange={setMatchCase}
+          onWholeWordChange={setWholeWord}
+          onRegexSearchChange={setRegexSearch}
+        />
       )}
       {goToLineOpen && (
-        <form
-          className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submitGoToLine();
-          }}
-        >
-          <span className="text-xs text-[var(--text-muted)]">
-            {t("documentEditor.goToLine", { defaultValue: "Go to line" })}
-          </span>
-          <input
-            value={goToLineDraft}
-            onChange={(event) => setGoToLineDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setGoToLineOpen(false);
-              }
-            }}
-            type="number"
-            min={1}
-            max={lineCount}
-            className="h-8 w-28 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-            autoFocus
-          />
-          <span className="text-xs text-[var(--text-faint)]">/ {lineCount}</span>
-          <button type="submit" className={markdownTextButtonClass()}>
-            Go
-          </button>
-        </form>
+        <MarkdownGoToLineBar
+          draft={goToLineDraft}
+          lineCount={lineCount}
+          onDraftChange={setGoToLineDraft}
+          onSubmit={submitGoToLine}
+          onClose={() => setGoToLineOpen(false)}
+        />
       )}
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 flex-1">
