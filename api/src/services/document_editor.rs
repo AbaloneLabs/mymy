@@ -9,6 +9,7 @@ mod docx_comments;
 mod docx_notes;
 mod docx_tables;
 mod docx_text_parts;
+mod ooxml_images;
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
@@ -42,6 +43,11 @@ use self::docx_tables::{
     parse_docx_table_style,
 };
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
+use self::ooxml_images::{
+    add_docx_image_replacements, build_docx_image_paragraph, decode_pptx_image_data_url,
+    docx_image_block_from_segment, docx_image_relationship_id, docx_relationship_targets,
+    next_pptx_media_path,
+};
 
 const PPTX_SLIDE_WIDTH_EMU: f64 = 9_144_000.0;
 const PPTX_SLIDE_HEIGHT_EMU: f64 = 5_143_500.0;
@@ -995,64 +1001,6 @@ fn docx_blocks_have_lists(blocks: &[Value]) -> bool {
     })
 }
 
-fn add_docx_image_replacements(
-    original: &[u8],
-    blocks: &mut [Value],
-    relationships: &mut String,
-    content_types: &mut String,
-    replacements: &mut Vec<(String, Vec<u8>)>,
-) -> AppResult<bool> {
-    let mut changed = false;
-    let mut names = zip_entry_names(original).unwrap_or_default();
-    let mut next_relationship_id = next_rid(relationships);
-    for block in blocks.iter_mut() {
-        if block.get("type").and_then(Value::as_str) != Some("image") {
-            continue;
-        }
-        let has_relationship = block
-            .get("relationshipId")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty());
-        if has_relationship {
-            continue;
-        }
-        let Some(data_url) = block.get("dataUrl").and_then(Value::as_str) else {
-            return Err(AppError::BadRequest(
-                "Inserted DOCX image requires a data URL".into(),
-            ));
-        };
-        let image = decode_docx_image_data_url(data_url)?;
-        let media_path = next_docx_media_path(&names, image.extension);
-        names.push(media_path.clone());
-        let target = media_path
-            .strip_prefix("word/")
-            .unwrap_or(media_path.as_str())
-            .to_string();
-        let relationship_id = format!("rId{next_relationship_id}");
-        next_relationship_id += 1;
-        let relationship = format!(
-            r#"<Relationship Id="{relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
-            escape_xml(&target)
-        );
-        *relationships = append_before_or_end(relationships, "</Relationships>", &relationship);
-        *content_types =
-            ensure_content_type_default(content_types, image.extension, image.mime_type);
-        block["relationshipId"] = json!(relationship_id);
-        block["target"] = json!(target);
-        block["mediaPath"] = json!(media_path.clone());
-        block["mimeType"] = json!(image.mime_type);
-        if block.get("width").and_then(Value::as_u64).is_none() {
-            block["width"] = json!(320);
-        }
-        if block.get("height").and_then(Value::as_u64).is_none() {
-            block["height"] = json!(180);
-        }
-        replacements.push((media_path, image.bytes));
-        changed = true;
-    }
-    Ok(changed)
-}
-
 fn add_docx_hyperlink_relationships(blocks: &mut [Value], relationships: &mut String) -> bool {
     let mut changed = false;
     let mut next_relationship_id = next_rid(relationships);
@@ -1112,90 +1060,6 @@ fn upsert_docx_hyperlink_relationship(rels: &str, relationship_id: &str, target:
         escape_xml(target)
     );
     append_before_or_end(rels, "</Relationships>", &relationship)
-}
-
-struct DocxImageData {
-    bytes: Vec<u8>,
-    extension: &'static str,
-    mime_type: &'static str,
-}
-
-fn decode_docx_image_data_url(data_url: &str) -> AppResult<DocxImageData> {
-    decode_ooxml_image_data_url(data_url, "DOCX")
-}
-
-fn decode_pptx_image_data_url(data_url: &str) -> AppResult<DocxImageData> {
-    decode_ooxml_image_data_url(data_url, "PPTX")
-}
-
-fn decode_ooxml_image_data_url(data_url: &str, package_kind: &str) -> AppResult<DocxImageData> {
-    let Some((header, encoded)) = data_url.split_once(',') else {
-        return Err(AppError::BadRequest(format!(
-            "Invalid {package_kind} image data URL"
-        )));
-    };
-    if !header.contains(";base64") {
-        return Err(AppError::BadRequest(format!(
-            "{package_kind} image data URL must be base64 encoded"
-        )));
-    }
-    let mime = header
-        .strip_prefix("data:")
-        .and_then(|value| value.split(';').next())
-        .unwrap_or_default();
-    let Some((mime_type, extension)) = docx_image_mime_extension(mime) else {
-        return Err(AppError::BadRequest(format!(
-            "Unsupported {package_kind} image type: {mime}"
-        )));
-    };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| {
-            AppError::BadRequest(format!("Invalid {package_kind} image data: {error}"))
-        })?;
-    if bytes.is_empty() {
-        return Err(AppError::BadRequest(format!(
-            "{package_kind} image data is empty"
-        )));
-    }
-    Ok(DocxImageData {
-        bytes,
-        extension,
-        mime_type,
-    })
-}
-
-fn docx_image_mime_extension(mime: &str) -> Option<(&'static str, &'static str)> {
-    match mime.to_ascii_lowercase().as_str() {
-        "image/png" => Some(("image/png", "png")),
-        "image/jpeg" | "image/jpg" => Some(("image/jpeg", "jpg")),
-        "image/gif" => Some(("image/gif", "gif")),
-        "image/webp" => Some(("image/webp", "webp")),
-        "image/svg+xml" => Some(("image/svg+xml", "svg")),
-        _ => None,
-    }
-}
-
-fn next_docx_media_path(existing_names: &[String], extension: &str) -> String {
-    let mut index = 1usize;
-    loop {
-        let path = format!("word/media/mymy-image-{index}.{extension}");
-        if !existing_names.iter().any(|name| name == &path) {
-            return path;
-        }
-        index += 1;
-    }
-}
-
-fn next_pptx_media_path(existing_names: &[String], extension: &str) -> String {
-    let mut index = 1usize;
-    loop {
-        let path = format!("ppt/media/mymy-image-{index}.{extension}");
-        if !existing_names.iter().any(|name| name == &path) {
-            return path;
-        }
-        index += 1;
-    }
 }
 
 fn ensure_content_type_default(content_types: &str, extension: &str, content_type: &str) -> String {
@@ -1286,135 +1150,6 @@ fn docx_body_segments(document: &str) -> Vec<String> {
         rest = &after_start[end_index..];
     }
     segments
-}
-
-fn docx_image_block_from_segment(
-    segment: &str,
-    relationships: &BTreeMap<String, String>,
-    bytes: &[u8],
-    index: usize,
-) -> Option<Value> {
-    let relationship_id = docx_image_relationship_id(segment)?;
-    let target = relationships.get(&relationship_id)?.to_string();
-    let media_path = docx_relationship_target_path(&target);
-    let media = read_zip_bytes(bytes, &media_path).ok()?;
-    let mime_type = mime_type_for_path_string(&media_path);
-    let data_url = format!(
-        "data:{mime_type};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(media)
-    );
-    let (width, height) = docx_image_extent(segment);
-    let mut block = json!({
-        "id": format!("img{}", index + 1),
-        "type": "image",
-        "text": "",
-        "relationshipId": relationship_id,
-        "target": target,
-        "mediaPath": media_path,
-        "mimeType": mime_type,
-        "dataUrl": data_url,
-        "width": width,
-        "height": height,
-        "altText": docx_image_alt_text(segment),
-        "sourceXml": segment
-    });
-    if let Some(rotation) = docx_image_rotation(segment) {
-        block["imageRotation"] = json!(rotation);
-    }
-    for (attr, key) in [
-        ("l", "imageCropLeft"),
-        ("t", "imageCropTop"),
-        ("r", "imageCropRight"),
-        ("b", "imageCropBottom"),
-    ] {
-        if let Some(value) = docx_image_crop_percent(segment, attr) {
-            block[key] = json!(value);
-        }
-    }
-    Some(block)
-}
-
-fn docx_relationship_targets(rels: &str) -> BTreeMap<String, String> {
-    xml_named_empty_elements(rels, "Relationship")
-        .into_iter()
-        .filter_map(|relationship| {
-            let id = attr_value(&relationship, "Id")?;
-            let target = attr_value(&relationship, "Target")?;
-            Some((id, target))
-        })
-        .collect()
-}
-
-fn docx_relationship_target_path(target: &str) -> String {
-    let clean = target.trim_start_matches('/');
-    if clean.starts_with("word/") {
-        clean.to_string()
-    } else if let Some(stripped) = clean.strip_prefix("../") {
-        stripped.to_string()
-    } else {
-        format!("word/{clean}")
-    }
-}
-
-fn docx_image_relationship_id(segment: &str) -> Option<String> {
-    docx_tag_attr(segment, "<a:blip", "r:embed")
-        .or_else(|| docx_tag_attr(segment, "<v:imagedata", "r:id"))
-}
-
-fn docx_image_extent(segment: &str) -> (Option<u32>, Option<u32>) {
-    (
-        docx_tag_attr(segment, "<wp:extent", "cx")
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(emu_to_css_pixels),
-        docx_tag_attr(segment, "<wp:extent", "cy")
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(emu_to_css_pixels),
-    )
-}
-
-fn docx_image_alt_text(segment: &str) -> Option<String> {
-    docx_tag_attr(segment, "<wp:docPr", "descr")
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| docx_tag_attr(segment, "<wp:docPr", "title"))
-        .or_else(|| docx_tag_attr(segment, "<wp:docPr", "name"))
-}
-
-fn docx_image_rotation(segment: &str) -> Option<i32> {
-    docx_tag_attr(segment, "<a:xfrm", "rot")
-        .and_then(|value| value.parse::<i64>().ok())
-        .map(|value| ((value as f64 / 60_000.0).round() as i32).clamp(-360, 360))
-        .filter(|value| *value != 0)
-}
-
-fn docx_image_crop_percent(segment: &str, attr: &str) -> Option<f64> {
-    docx_tag_attr(segment, "<a:srcRect", attr)
-        .and_then(|value| value.parse::<f64>().ok())
-        .map(|value| (value / 1000.0).clamp(0.0, 100.0))
-        .filter(|value| *value > 0.0)
-}
-
-fn emu_to_css_pixels(value: u64) -> u32 {
-    ((value as f64 / 9_525.0).round() as u32).clamp(1, 10_000)
-}
-
-fn css_pixels_to_emu(value: u64) -> u64 {
-    value.clamp(1, 10_000) * 9_525
-}
-
-fn mime_type_for_path_string(path: &str) -> &'static str {
-    match path
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "gif" => "image/gif",
-        "jpg" | "jpeg" => "image/jpeg",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
-        _ => "image/png",
-    }
 }
 
 fn docx_tag_attr(xml: &str, marker: &str, attr: &str) -> Option<String> {
@@ -4381,134 +4116,6 @@ fn build_docx_section_break(block: &Value) -> String {
         .filter(|value| matches!(*value, "nextPage" | "continuous" | "evenPage" | "oddPage"))
         .unwrap_or("nextPage");
     format!(r#"<w:p><w:pPr><w:sectPr><w:type w:val="{break_kind}"/></w:sectPr></w:pPr></w:p>"#)
-}
-
-fn build_docx_image_paragraph(block: &Value) -> String {
-    if let Some(source_xml) = block.get("sourceXml").and_then(Value::as_str) {
-        return update_docx_image_source_xml(source_xml, block);
-    }
-    let relationship_id = block
-        .get("relationshipId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let width = docx_u32_model_attr(block, "width", 10_000)
-        .map(u64::from)
-        .map(css_pixels_to_emu)
-        .unwrap_or(1_905_000);
-    let height = docx_u32_model_attr(block, "height", 10_000)
-        .map(u64::from)
-        .map(css_pixels_to_emu)
-        .unwrap_or(1_905_000);
-    let alt = block
-        .get("altText")
-        .and_then(Value::as_str)
-        .map(escape_xml)
-        .unwrap_or_default();
-    let rotation = docx_image_rotation_units(block)
-        .map(|value| format!(r#" rot="{value}""#))
-        .unwrap_or_default();
-    let src_rect = docx_image_src_rect_xml(block).unwrap_or_default();
-    format!(
-        r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{width}" cy="{height}"/><wp:docPr id="1" name="Picture" descr="{alt}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{relationship_id}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm{rotation}><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#
-    )
-}
-
-fn update_docx_image_source_xml(source_xml: &str, block: &Value) -> String {
-    let mut output = source_xml.to_string();
-    let width = docx_u32_model_attr(block, "width", 10_000)
-        .map(u64::from)
-        .map(css_pixels_to_emu);
-    let height = docx_u32_model_attr(block, "height", 10_000)
-        .map(u64::from)
-        .map(css_pixels_to_emu);
-    if let (Some(cx), Some(cy)) = (width, height) {
-        output = set_first_xml_tag_attrs(
-            &output,
-            "<wp:extent",
-            &[("cx", cx.to_string()), ("cy", cy.to_string())],
-        );
-        output = set_first_xml_tag_attrs(
-            &output,
-            "<a:ext",
-            &[("cx", cx.to_string()), ("cy", cy.to_string())],
-        );
-    }
-    if let Some(alt) = block.get("altText").and_then(Value::as_str) {
-        output = set_first_xml_tag_attrs(
-            &output,
-            "<wp:docPr",
-            &[("descr", alt.to_string()), ("title", alt.to_string())],
-        );
-    }
-    if let Some(rotation) = docx_image_rotation_units(block) {
-        output = set_first_xml_tag_attrs(&output, "<a:xfrm", &[("rot", rotation.to_string())]);
-    }
-    if let Some(src_rect) = docx_image_src_rect_xml(block) {
-        output = replace_or_insert_docx_image_src_rect(&output, &src_rect);
-    }
-    output
-}
-
-fn docx_image_rotation_units(block: &Value) -> Option<i64> {
-    block
-        .get("imageRotation")
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite())
-        .map(|value| value.round().clamp(-360.0, 360.0) as i64 * 60_000)
-}
-
-fn docx_image_src_rect_xml(block: &Value) -> Option<String> {
-    let crops = [
-        ("imageCropLeft", "l"),
-        ("imageCropTop", "t"),
-        ("imageCropRight", "r"),
-        ("imageCropBottom", "b"),
-    ]
-    .into_iter()
-    .filter_map(|(key, attr)| {
-        block.get(key)?;
-        let value = block
-            .get(key)
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite())
-            .unwrap_or(0.0)
-            .clamp(0.0, 100.0);
-        Some(format!(r#"{attr}="{}""#, (value * 1000.0).round() as u32))
-    })
-    .collect::<Vec<_>>();
-    (!crops.is_empty()).then(|| format!("<a:srcRect {}/>", crops.join(" ")))
-}
-
-fn replace_or_insert_docx_image_src_rect(xml: &str, src_rect: &str) -> String {
-    if let Some(start) = xml.find("<a:srcRect") {
-        let after_start = &xml[start..];
-        if let Some(end) = after_start.find("/>") {
-            let mut output = String::new();
-            output.push_str(&xml[..start]);
-            output.push_str(src_rect);
-            output.push_str(&after_start[end + 2..]);
-            return output;
-        }
-    }
-    if let Some(stretch_start) = xml.find("<a:stretch") {
-        let mut output = String::new();
-        output.push_str(&xml[..stretch_start]);
-        output.push_str(src_rect);
-        output.push_str(&xml[stretch_start..]);
-        return output;
-    }
-    if let Some(blip_start) = xml.find("<a:blip") {
-        let after_blip = &xml[blip_start..];
-        if let Some(blip_end) = after_blip.find("/>") {
-            let insert_at = blip_start + blip_end + 2;
-            let mut output = String::new();
-            output.push_str(&xml[..insert_at]);
-            output.push_str(src_rect);
-            output.push_str(&xml[insert_at..]);
-            return output;
-        }
-    }
-    xml.to_string()
 }
 
 fn build_docx_paragraph(block: &Value) -> String {

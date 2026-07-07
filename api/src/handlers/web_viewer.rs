@@ -6,7 +6,7 @@
 //! same policy boundary, and send iframe-focused headers that prevent the page
 //! from reaching back into the main mymy application.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -47,7 +47,7 @@ pub async fn read_drive_html(
     }
     let html = tokio::fs::read_to_string(&resolved.physical_path).await?;
     let root = parent_logical_path(&resolved.logical_path)?;
-    let html = rewrite_html_for_viewer(&html, &root);
+    let html = rewrite_html_for_viewer(&html, &root, &root);
     html_response(html)
 }
 
@@ -56,7 +56,7 @@ pub async fn read_drive_asset(
     AxumPath(asset): AxumPath<String>,
     Query(query): Query<WebViewerAssetQuery>,
 ) -> AppResult<Response> {
-    let logical_path = resolve_asset_logical_path(&query.root, &asset)?;
+    let logical_path = resolve_asset_logical_path(&query.root, &query.root, &asset)?;
     let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, &logical_path)?;
     let metadata = std::fs::metadata(&resolved.physical_path)?;
     if !metadata.is_file() {
@@ -64,8 +64,9 @@ pub async fn read_drive_asset(
     }
     if is_html_path(&resolved.physical_path) {
         let html = tokio::fs::read_to_string(&resolved.physical_path).await?;
-        let root = parent_logical_path(&resolved.logical_path)?;
-        return html_response(rewrite_html_for_viewer(&html, &root));
+        let root = drive::normalize_logical_drive_path(&query.root)?;
+        let base = parent_logical_path(&resolved.logical_path)?;
+        return html_response(rewrite_html_for_viewer(&html, &root, &base));
     }
     let bytes = tokio::fs::read(&resolved.physical_path).await?;
     let content_type = HeaderValue::from_static(drive::mime_type_for_path(&resolved.physical_path));
@@ -107,15 +108,15 @@ fn html_response(html: String) -> AppResult<Response> {
     Ok(response)
 }
 
-fn rewrite_html_for_viewer(html: &str, root: &str) -> String {
+fn rewrite_html_for_viewer(html: &str, root: &str, base: &str) -> String {
     let mut output = html.to_string();
     for attr in ["src", "href", "poster"] {
-        output = rewrite_html_attribute(&output, attr, root);
+        output = rewrite_html_attribute(&output, attr, root, base);
     }
     inject_viewer_bootstrap(&output)
 }
 
-fn rewrite_html_attribute(html: &str, attr: &str, root: &str) -> String {
+fn rewrite_html_attribute(html: &str, attr: &str, root: &str, base: &str) -> String {
     let mut current = html.to_string();
     for quote in ['"', '\''] {
         let mut output = String::new();
@@ -131,7 +132,7 @@ fn rewrite_html_attribute(html: &str, attr: &str, root: &str) -> String {
                 return output;
             };
             let value = &after_value_start[..value_end];
-            output.push_str(&rewrite_html_url(attr, value, root));
+            output.push_str(&rewrite_html_url(attr, value, root, base));
             rest = &after_value_start[value_end..];
         }
         output.push_str(rest);
@@ -140,20 +141,17 @@ fn rewrite_html_attribute(html: &str, attr: &str, root: &str) -> String {
     current
 }
 
-fn rewrite_html_url(attr: &str, value: &str, root: &str) -> String {
+fn rewrite_html_url(attr: &str, value: &str, root: &str, base: &str) -> String {
     if should_leave_url(value) {
         return value.to_string();
     }
     if attr.eq_ignore_ascii_case("href") && is_external_web_url(value) {
         return value.to_string();
     }
-    let Ok(logical_path) = resolve_asset_logical_path(root, value) else {
+    let Ok(logical_path) = resolve_asset_logical_path(root, base, value) else {
         return "about:blank".to_string();
     };
-    let relative = logical_path
-        .trim_start_matches(root)
-        .trim_start_matches('/')
-        .to_string();
+    let relative = relative_logical_path(&logical_path, root);
     format!(
         "/api/web-viewer/assets/{}?root={}",
         encode_asset_path(&relative),
@@ -177,18 +175,20 @@ fn should_leave_url(value: &str) -> bool {
 }
 
 fn inject_viewer_bootstrap(html: &str) -> String {
-    const SCRIPT: &str = r#"<script>
+    const SCRIPT: &str = r##"<script>
 (() => {
   document.addEventListener("click", (event) => {
     const anchor = event.target && event.target.closest ? event.target.closest("a[href]") : null;
     if (!anchor) return;
+    const rawHref = anchor.getAttribute("href") || "";
+    if (rawHref.trim().startsWith("#")) return;
     const href = anchor.href;
     if (!href) return;
     event.preventDefault();
     window.parent.postMessage({ type: "mymy-web-viewer:navigate", href }, "*");
   }, true);
 })();
-</script>"#;
+</script>"##;
     if let Some(index) = html.rfind("</body>") {
         let mut output = String::new();
         output.push_str(&html[..index]);
@@ -200,8 +200,14 @@ fn inject_viewer_bootstrap(html: &str) -> String {
     }
 }
 
-fn resolve_asset_logical_path(root: &str, asset: &str) -> AppResult<String> {
+fn resolve_asset_logical_path(root: &str, base: &str, asset: &str) -> AppResult<String> {
     let normalized_root = drive::normalize_logical_drive_path(root)?;
+    let normalized_base = drive::normalize_logical_drive_path(base)?;
+    if !is_same_or_child_logical_path(&normalized_base, &normalized_root) {
+        return Err(AppError::BadRequest(
+            "Asset base escapes viewer root".into(),
+        ));
+    }
     if asset.contains('\\') {
         return Err(AppError::BadRequest("Invalid asset path".into()));
     }
@@ -212,15 +218,31 @@ fn resolve_asset_logical_path(root: &str, asset: &str) -> AppResult<String> {
     }
     let path_without_query = asset.split(['?', '#']).next().unwrap_or_default();
     let decoded = percent_decode(path_without_query)?;
-    let mut path = PathBuf::from(&normalized_root);
-    for component in Path::new(&decoded).components() {
+    if decoded.contains('\\') {
+        return Err(AppError::BadRequest("Invalid asset path".into()));
+    }
+    let root_parts = logical_drive_parts(&normalized_root);
+    let mut parts = if decoded.starts_with('/') {
+        root_parts.clone()
+    } else {
+        logical_drive_parts(&normalized_base)
+    };
+    for component in Path::new(decoded.trim_start_matches('/')).components() {
         match component {
-            std::path::Component::Normal(part) => path.push(part),
+            std::path::Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .ok_or_else(|| AppError::BadRequest("Invalid asset path".into()))?;
+                parts.push(part.to_string());
+            }
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                return Err(AppError::BadRequest(
-                    "Asset path escapes viewer root".into(),
-                ));
+                if parts.len() <= root_parts.len() {
+                    return Err(AppError::BadRequest(
+                        "Asset path escapes viewer root".into(),
+                    ));
+                }
+                parts.pop();
             }
             std::path::Component::RootDir | std::path::Component::Prefix(_) => {
                 return Err(AppError::BadRequest(
@@ -229,17 +251,43 @@ fn resolve_asset_logical_path(root: &str, asset: &str) -> AppResult<String> {
             }
         }
     }
-    let logical = path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string();
-    if logical == normalized_root || logical.starts_with(&format!("{normalized_root}/")) {
-        drive::normalize_logical_drive_path(&logical)
+    let logical = logical_path_from_parts(&parts);
+    if is_same_or_child_logical_path(&logical, &normalized_root) {
+        Ok(logical)
     } else {
         Err(AppError::BadRequest(
             "Asset path escapes viewer root".into(),
         ))
+    }
+}
+
+fn logical_drive_parts(path: &str) -> Vec<String> {
+    path.trim_start_matches(drive::DRIVE_PREFIX)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn logical_path_from_parts(parts: &[String]) -> String {
+    if parts.is_empty() {
+        drive::DRIVE_PREFIX.to_string()
+    } else {
+        format!("{}/{}", drive::DRIVE_PREFIX, parts.join("/"))
+    }
+}
+
+fn is_same_or_child_logical_path(path: &str, root: &str) -> bool {
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+fn relative_logical_path(path: &str, root: &str) -> String {
+    if path == root {
+        String::new()
+    } else {
+        path.strip_prefix(&format!("{root}/"))
+            .unwrap_or(path)
+            .to_string()
     }
 }
 
@@ -285,20 +333,63 @@ mod tests {
     #[test]
     fn resolves_relative_asset_under_root() {
         assert_eq!(
-            resolve_asset_logical_path("/drive/agents/elena/site", "css/app.css").unwrap(),
+            resolve_asset_logical_path(
+                "/drive/agents/elena/site",
+                "/drive/agents/elena/site",
+                "css/app.css",
+            )
+            .unwrap(),
             "/drive/agents/elena/site/css/app.css"
         );
     }
 
     #[test]
+    fn resolves_nested_relative_asset_without_escaping_root() {
+        assert_eq!(
+            resolve_asset_logical_path(
+                "/drive/agents/elena/site",
+                "/drive/agents/elena/site/pages",
+                "../index.html",
+            )
+            .unwrap(),
+            "/drive/agents/elena/site/index.html"
+        );
+        assert!(resolve_asset_logical_path(
+            "/drive/agents/elena/site",
+            "/drive/agents/elena/site/pages",
+            "../../secret.html",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resolves_root_relative_asset_under_viewer_root() {
+        assert_eq!(
+            resolve_asset_logical_path(
+                "/drive/agents/elena/site",
+                "/drive/agents/elena/site/pages",
+                "/assets/app.css",
+            )
+            .unwrap(),
+            "/drive/agents/elena/site/assets/app.css"
+        );
+    }
+
+    #[test]
     fn rejects_asset_parent_escape() {
-        assert!(resolve_asset_logical_path("/drive/agents/elena/site", "../secret.txt").is_err());
+        assert!(resolve_asset_logical_path(
+            "/drive/agents/elena/site",
+            "/drive/agents/elena/site",
+            "../secret.txt",
+        )
+        .is_err());
     }
 
     #[test]
     fn rewrites_relative_html_urls_to_asset_route() {
         let html = r#"<link href="style.css"><script src='app.js'></script>"#;
-        let rewritten = rewrite_html_for_viewer(html, "/drive/agents/elena/site");
+        let rewritten =
+            rewrite_html_for_viewer(html, "/drive/agents/elena/site", "/drive/agents/elena/site");
         assert!(rewritten.contains(
             r#"href="/api/web-viewer/assets/style.css?root=%2Fdrive%2Fagents%2Felena%2Fsite""#
         ));
@@ -311,10 +402,28 @@ mod tests {
     #[test]
     fn keeps_external_href_but_blocks_external_resources() {
         let html = r#"<a href="https://example.com/page">open</a><img src="https://example.com/a.png"><script src="//example.com/app.js"></script>"#;
-        let rewritten = rewrite_html_for_viewer(html, "/drive/agents/elena/site");
+        let rewritten =
+            rewrite_html_for_viewer(html, "/drive/agents/elena/site", "/drive/agents/elena/site");
 
         assert!(rewritten.contains(r#"href="https://example.com/page""#));
         assert!(rewritten.contains(r#"src="about:blank""#));
         assert!(rewritten.contains(r#"src="about:blank""#));
+    }
+
+    #[test]
+    fn rewrites_nested_html_urls_against_current_base() {
+        let html = r#"<a href="../index.html">home</a><img src="/assets/logo.png">"#;
+        let rewritten = rewrite_html_for_viewer(
+            html,
+            "/drive/agents/elena/site",
+            "/drive/agents/elena/site/pages",
+        );
+
+        assert!(rewritten.contains(
+            r#"href="/api/web-viewer/assets/index.html?root=%2Fdrive%2Fagents%2Felena%2Fsite""#
+        ));
+        assert!(rewritten.contains(
+            r#"src="/api/web-viewer/assets/assets/logo.png?root=%2Fdrive%2Fagents%2Felena%2Fsite""#
+        ));
     }
 }

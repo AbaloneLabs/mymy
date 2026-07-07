@@ -143,6 +143,7 @@ function LightweightBrowserSession({
         src={current.url}
         title={current.label}
         sandbox="allow-scripts allow-forms allow-popups-by-user-activation"
+        referrerPolicy="no-referrer"
         className="min-h-0 flex-1 border-0 bg-white"
       />
     </div>
@@ -165,11 +166,11 @@ function isViewerNavigateMessage(
 function normalizeViewerUrl(href: string) {
   try {
     const url = new URL(href, window.location.href);
-    if (url.pathname !== "/api/web-viewer/drive" && !url.pathname.startsWith("/api/web-viewer/assets/")) {
+    if (!isViewerPath(url.pathname) || !isAllowedViewerOrigin(url)) {
       return null;
     }
     const base = apiOrigin();
-    return `${base}${url.pathname}${url.search}`;
+    return `${base}${url.pathname}${url.search}${url.hash}`;
   } catch {
     return null;
   }
@@ -179,7 +180,7 @@ function externalViewerUrl(href: string) {
   try {
     const url = new URL(href, window.location.href);
     if (url.protocol === "http:" || url.protocol === "https:") {
-      if (url.pathname === "/api/web-viewer/drive" || url.pathname.startsWith("/api/web-viewer/assets/")) {
+      if (isViewerPath(url.pathname) && isAllowedViewerOrigin(url)) {
         return null;
       }
       return url.toString();
@@ -197,12 +198,29 @@ function apiOrigin() {
   return "";
 }
 
+function isViewerPath(pathname: string) {
+  return (
+    pathname === "/api/web-viewer/drive" ||
+    pathname.startsWith("/api/web-viewer/assets/")
+  );
+}
+
+function isAllowedViewerOrigin(url: URL) {
+  const origin = apiOrigin();
+  if (!origin) return url.origin === window.location.origin;
+  return url.origin === new URL(origin, window.location.href).origin;
+}
+
 function labelFromViewerUrl(url: string) {
   try {
     const parsed = new URL(url, window.location.href);
     const path = parsed.searchParams.get("path");
     if (path) return path;
     const asset = parsed.pathname.split("/api/web-viewer/assets/").at(1);
+    const root = parsed.searchParams.get("root");
+    if (asset && root) {
+      return `${root.replace(/\/$/, "")}/${decodeURIComponent(asset).replace(/^\//, "")}`;
+    }
     return asset ? decodeURIComponent(asset) : parsed.pathname;
   } catch {
     return url;
