@@ -466,6 +466,36 @@ export function XlsxEditor({
     }
   }
 
+  function selectAllCells() {
+    setActiveCell({ row: 0, column: 0 });
+    setSelectionAnchor({ row: 0, column: 0 });
+    setSelectionEnd({
+      row: Math.max(0, displayRowLimit - 1),
+      column: Math.max(0, columnCount - 1),
+    });
+    scrollCellIntoView(gridRef.current, 0, 0);
+  }
+
+  function selectColumn(column: number) {
+    setActiveCell({ row: 0, column });
+    setSelectionAnchor({ row: 0, column });
+    setSelectionEnd({
+      row: Math.max(0, displayRowLimit - 1),
+      column,
+    });
+    scrollCellIntoView(gridRef.current, 0, column);
+  }
+
+  function selectRow(row: number) {
+    setActiveCell({ row, column: 0 });
+    setSelectionAnchor({ row, column: 0 });
+    setSelectionEnd({
+      row,
+      column: Math.max(0, columnCount - 1),
+    });
+    scrollCellIntoView(gridRef.current, row, 0);
+  }
+
   async function copySelection() {
     if (!sheet || !selectionRange) return;
     await navigator.clipboard?.writeText(rangeToClipboardText(selectedValues));
@@ -1610,7 +1640,15 @@ export function XlsxEditor({
         <table className="border-collapse text-xs shadow-sm">
           <thead>
             <tr>
-              <th className="sticky left-0 top-0 z-20 h-8 min-w-12 border border-[var(--border)] bg-[var(--surface)]" />
+              <th
+                onClick={selectAllCells}
+                className={cn(
+                  "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
+                  rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
+                    "bg-[var(--accent)]/10 text-[var(--accent)]",
+                )}
+                title="Select all cells"
+              />
               {columnWindow.start > 0 && (
                 <th
                   aria-hidden="true"
@@ -1621,14 +1659,12 @@ export function XlsxEditor({
               {visibleColumnIndexes.map((index) => (
                 <th
                   key={index}
-                  onClick={() => {
-                    selectCell({ row: 0, column: index });
-                    setSelectionEnd({
-                      row: Math.max(0, displayRowLimit - 1),
-                      column: index,
-                    });
-                  }}
-                  className="group relative sticky top-0 z-10 h-8 min-w-32 border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)]"
+                  onClick={() => selectColumn(index)}
+                  className={cn(
+                    "group relative sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
+                    rangeCoversColumn(selectionRange, index, displayRowLimit) &&
+                      "bg-[var(--accent)]/10 text-[var(--accent)]",
+                  )}
                   style={{
                     minWidth: xlsxColumnWidthPx(sheet, index),
                     width: xlsxColumnWidthPx(sheet, index),
@@ -1665,14 +1701,12 @@ export function XlsxEditor({
                 style={{ height: xlsxRowHeightPx(row) }}
               >
                 <th
-                  onClick={() => {
-                    selectCell({ row: rowIndex, column: 0 });
-                    setSelectionEnd({
-                      row: rowIndex,
-                      column: Math.max(0, columnCount - 1),
-                    });
-                  }}
-                  className="group relative sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]"
+                  onClick={() => selectRow(rowIndex)}
+                  className={cn(
+                    "group relative sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
+                    rangeCoversRow(selectionRange, rowIndex, columnCount) &&
+                      "bg-[var(--accent)]/10 text-[var(--accent)]",
+                  )}
                 >
                   {row.index || rowIndex + 1}
                   <button
@@ -1912,6 +1946,36 @@ export function DelimitedTableEditor({
       setSelectionAnchor(position);
       setSelectionEnd(position);
     }
+  }
+
+  function selectAllCells() {
+    setActiveCell({ row: 0, column: 0 });
+    setSelectionAnchor({ row: 0, column: 0 });
+    setSelectionEnd({
+      row: Math.max(0, displayRowLimit - 1),
+      column: Math.max(0, columnCount - 1),
+    });
+    scrollCellIntoView(gridRef.current, 0, 0);
+  }
+
+  function selectColumn(column: number) {
+    setActiveCell({ row: 0, column });
+    setSelectionAnchor({ row: 0, column });
+    setSelectionEnd({
+      row: Math.max(0, displayRowLimit - 1),
+      column,
+    });
+    scrollCellIntoView(gridRef.current, 0, column);
+  }
+
+  function selectRow(row: number) {
+    setActiveCell({ row, column: 0 });
+    setSelectionAnchor({ row, column: 0 });
+    setSelectionEnd({
+      row,
+      column: Math.max(0, columnCount - 1),
+    });
+    scrollCellIntoView(gridRef.current, row, 0);
   }
 
   async function copySelection() {
@@ -2229,7 +2293,15 @@ export function DelimitedTableEditor({
         <table className="border-collapse text-xs shadow-sm">
           <thead>
             <tr>
-              <th className="sticky left-0 top-0 z-20 h-8 min-w-12 border border-[var(--border)] bg-[var(--surface)]" />
+              <th
+                onClick={selectAllCells}
+                className={cn(
+                  "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
+                  rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
+                    "bg-[var(--accent)]/10 text-[var(--accent)]",
+                )}
+                title="Select all cells"
+              />
               {columnWindow.start > 0 && (
                 <th
                   aria-hidden="true"
@@ -2240,14 +2312,12 @@ export function DelimitedTableEditor({
               {visibleColumnIndexes.map((columnIndex) => (
                 <th
                   key={columnIndex}
-                  onClick={() => {
-                      selectCell({ row: 0, column: columnIndex });
-                      setSelectionEnd({
-                      row: Math.max(0, displayRowLimit - 1),
-                      column: columnIndex,
-                    });
-                  }}
-                  className="sticky top-0 z-10 h-8 min-w-32 border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)]"
+                  onClick={() => selectColumn(columnIndex)}
+                  className={cn(
+                    "sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
+                    rangeCoversColumn(selectionRange, columnIndex, displayRowLimit) &&
+                      "bg-[var(--accent)]/10 text-[var(--accent)]",
+                  )}
                 >
                   {columnName(columnIndex)}
                 </th>
@@ -2273,14 +2343,12 @@ export function DelimitedTableEditor({
               return (
                 <tr key={rowIndex}>
                   <th
-                    onClick={() => {
-                      selectCell({ row: rowIndex, column: 0 });
-                      setSelectionEnd({
-                        row: rowIndex,
-                        column: Math.max(0, columnCount - 1),
-                      });
-                    }}
-                    className="sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]"
+                    onClick={() => selectRow(rowIndex)}
+                    className={cn(
+                      "sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
+                      rangeCoversRow(selectionRange, rowIndex, columnCount) &&
+                        "bg-[var(--accent)]/10 text-[var(--accent)]",
+                    )}
                   >
                     {rowIndex + 1}
                   </th>
@@ -4236,6 +4304,48 @@ function spreadsheetCellClass(
     "border border-[var(--border)]",
     selected && "bg-[var(--accent)]/5",
     active && "outline outline-2 outline-[var(--accent)]",
+  );
+}
+
+function rangeCoversSheet(
+  range: NormalizedCellRange | null,
+  rowCount: number,
+  columnCount: number,
+) {
+  return Boolean(
+    range &&
+      range.top <= 0 &&
+      range.left <= 0 &&
+      range.bottom >= Math.max(0, rowCount - 1) &&
+      range.right >= Math.max(0, columnCount - 1),
+  );
+}
+
+function rangeCoversColumn(
+  range: NormalizedCellRange | null,
+  column: number,
+  rowCount: number,
+) {
+  return Boolean(
+    range &&
+      range.left <= column &&
+      range.right >= column &&
+      range.top <= 0 &&
+      range.bottom >= Math.max(0, rowCount - 1),
+  );
+}
+
+function rangeCoversRow(
+  range: NormalizedCellRange | null,
+  row: number,
+  columnCount: number,
+) {
+  return Boolean(
+    range &&
+      range.top <= row &&
+      range.bottom >= row &&
+      range.left <= 0 &&
+      range.right >= Math.max(0, columnCount - 1),
   );
 }
 
