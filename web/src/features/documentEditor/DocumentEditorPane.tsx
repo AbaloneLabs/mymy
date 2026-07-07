@@ -30,10 +30,8 @@ import {
 import { MarkdownRichEditor } from "@/features/documentEditor/editors/MarkdownEditor";
 import { PlainTextEditor } from "@/features/documentEditor/editors/TextEditor";
 import { DocxEditor } from "@/features/documentEditor/editors/WordEditor";
-import {
-  DelimitedTableEditor,
-  XlsxEditor,
-} from "@/features/documentEditor/editors/SpreadsheetEditor";
+import { DelimitedTableEditor } from "@/features/documentEditor/editors/DelimitedTableEditor";
+import { XlsxEditor } from "@/features/documentEditor/editors/SpreadsheetEditor";
 import { PptxEditor } from "@/features/documentEditor/editors/PresentationEditor";
 import {
   normalizeDelimitedTableModel,
