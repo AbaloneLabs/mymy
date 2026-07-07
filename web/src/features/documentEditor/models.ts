@@ -251,7 +251,13 @@ export interface XlsxTable {
   name?: string;
   displayName?: string;
   ref?: string;
+  autoFilterRef?: string;
   totalsRowShown?: boolean;
+  tableStyleName?: string;
+  showFirstColumn?: boolean;
+  showLastColumn?: boolean;
+  showRowStripes?: boolean;
+  showColumnStripes?: boolean;
   columns?: XlsxTableColumn[];
 }
 

@@ -6,6 +6,17 @@ import type {
 import { ArrowLeft, ArrowRight, Copy, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
+import {
+  remapXlsxDefinedNameSheetScopes,
+  renameXlsxDefinedNameSheetReferences,
+  shiftXlsxDefinedNamesForColumnDelete,
+  shiftXlsxDefinedNamesForColumnInsert,
+  shiftXlsxDefinedNamesForRowDelete,
+  shiftXlsxDefinedNamesForRowInsert,
+  xlsxDefinedNameTarget,
+  xlsxDefinedNameValueForSheet,
+} from "../spreadsheetDefinedNames";
+import { SpreadsheetDefinedNamesPanel } from "../spreadsheetDefinedNamesPanel";
 import { xlsxConditionalCellStyle } from "../spreadsheetConditionalFormatting";
 import {
   clipboardDataToMatrix,
@@ -132,6 +143,7 @@ import type {
   XlsxConditionalRule,
   XlsxComment,
   XlsxDataValidation,
+  XlsxDefinedName,
   XlsxHyperlink,
   XlsxPageMargins,
   XlsxPageSetup,
@@ -139,6 +151,8 @@ import type {
   XlsxPivot,
   XlsxSheet,
   XlsxSheetProtection,
+  XlsxTable,
+  XlsxTableColumn,
 } from "../models";
 
 export function XlsxEditor({
@@ -202,6 +216,10 @@ export function XlsxEditor({
     visibleColumns.slice(columnWindow.end),
   );
   const selectionRange = normalizeCellRange(selectionAnchor, selectionEnd);
+  const activeDefinedNameValue =
+    sheet && selectionRange
+      ? xlsxDefinedNameValueForSheet(sheet.name, selectionRange)
+      : undefined;
   const fillPreviewRange = fillDrag
     ? spreadsheetFillTargetRange(fillDrag.source, fillDrag.end)
     : null;
@@ -264,7 +282,13 @@ export function XlsxEditor({
   const selectionSummary = summarizeSelection(selectedValues);
 
   function commitXlsxModel(next: XlsxModel) {
-    onChange(recalculateXlsxModel(next));
+    onChange(
+      recalculateXlsxModel({
+        ...next,
+        definedNames:
+          next.definedNames ?? model.definedNames?.map((definedName) => ({ ...definedName })),
+      }),
+    );
   }
 
   function updateCell(rowIndex: number, cellIndex: number, value: string) {
@@ -333,6 +357,42 @@ export function XlsxEditor({
         item.id === sheet.id ? { ...item, rows } : item,
       ),
     });
+  }
+
+  function updateSheetTables(updater: (tables: XlsxTable[]) => XlsxTable[]) {
+    if (!sheet) return;
+    commitXlsxModel({
+      sheets: model.sheets.map((item) =>
+        item.id === sheet.id
+          ? { ...item, tables: updater(item.tables ?? []) }
+          : item,
+      ),
+    });
+  }
+
+  function updateTable(tableId: string, patch: Partial<XlsxTable>) {
+    updateSheetTables((tables) =>
+      tables.map((table) => (table.id === tableId ? { ...table, ...patch } : table)),
+    );
+  }
+
+  function updateTableColumn(
+    tableId: string,
+    columnIndex: number,
+    patch: Partial<XlsxTableColumn>,
+  ) {
+    updateSheetTables((tables) =>
+      tables.map((table) =>
+        table.id === tableId
+          ? {
+              ...table,
+              columns: (table.columns ?? []).map((column, currentIndex) =>
+                currentIndex === columnIndex ? { ...column, ...patch } : column,
+              ),
+            }
+          : table,
+      ),
+    );
   }
 
   function updateSheetCharts(updater: (charts: XlsxChart[]) => XlsxChart[]) {
@@ -590,9 +650,18 @@ export function XlsxEditor({
                 item.comments,
                 insertAt,
               ),
+              tables: shiftXlsxTables(item.tables, (reference) =>
+                shiftXlsxRangeForRowInsert(reference, insertAt),
+              ),
               autoFilter: shiftXlsxRangeForRowInsert(item.autoFilter, insertAt),
             }
           : item,
+      ),
+      definedNames: shiftXlsxDefinedNamesForRowInsert(
+        model.definedNames,
+        model.sheets,
+        sheet.id,
+        insertAt,
       ),
     });
     setActiveCell({ row: insertAt, column: activeCell?.column ?? 0 });
@@ -626,6 +695,9 @@ export function XlsxEditor({
                 item.comments,
                 insertAt,
               ),
+              tables: shiftXlsxTables(item.tables, (reference) =>
+                shiftXlsxRangeForColumnInsert(reference, insertAt),
+              ),
               autoFilter: shiftXlsxRangeForColumnInsert(item.autoFilter, insertAt),
               rows: item.rows.map((row, rowIndex) => ({
                 ...row,
@@ -641,6 +713,12 @@ export function XlsxEditor({
               })),
             }
           : item,
+      ),
+      definedNames: shiftXlsxDefinedNamesForColumnInsert(
+        model.definedNames,
+        model.sheets,
+        sheet.id,
+        insertAt,
       ),
     });
     setActiveCell({ row: activeCell?.row ?? 0, column: insertAt });
@@ -712,7 +790,14 @@ export function XlsxEditor({
   function deleteSheet() {
     if (!sheet || model.sheets.length <= 1) return;
     const nextSheets = model.sheets.filter((item) => item.id !== sheet.id);
-    commitXlsxModel({ sheets: nextSheets });
+    commitXlsxModel({
+      sheets: nextSheets,
+      definedNames: remapXlsxDefinedNameSheetScopes(
+        model.definedNames,
+        model.sheets,
+        nextSheets,
+      ),
+    });
     setPreferredSheetId(nextSheets[0]?.id ?? null);
     setActiveCell(null);
     setSelectionAnchor(null);
@@ -721,9 +806,15 @@ export function XlsxEditor({
 
   function renameSheet(name: string) {
     if (!sheet) return;
+    const nextSheets = model.sheets.map((item) =>
+      item.id === sheet.id ? { ...item, name } : item,
+    );
     commitXlsxModel({
-      sheets: model.sheets.map((item) =>
-        item.id === sheet.id ? { ...item, name } : item,
+      sheets: nextSheets,
+      definedNames: renameXlsxDefinedNameSheetReferences(
+        model.definedNames,
+        sheet.name,
+        name,
       ),
     });
   }
@@ -762,7 +853,14 @@ export function XlsxEditor({
     const nextSheets = [...model.sheets];
     const [moved] = nextSheets.splice(index, 1);
     nextSheets.splice(nextIndex, 0, moved);
-    commitXlsxModel({ sheets: nextSheets });
+    commitXlsxModel({
+      sheets: nextSheets,
+      definedNames: remapXlsxDefinedNameSheetScopes(
+        model.definedNames,
+        model.sheets,
+        nextSheets,
+      ),
+    });
   }
 
   function sortRowsByActiveColumn(direction: "asc" | "desc") {
@@ -815,12 +913,21 @@ export function XlsxEditor({
                 item.comments,
                 activeCell.row,
               ),
+              tables: shiftXlsxTables(item.tables, (reference) =>
+                shiftXlsxRangeForRowDelete(reference, activeCell.row),
+              ),
               autoFilter: shiftXlsxRangeForRowDelete(
                 item.autoFilter,
                 activeCell.row,
               ),
             }
           : item,
+      ),
+      definedNames: shiftXlsxDefinedNamesForRowDelete(
+        model.definedNames,
+        model.sheets,
+        sheet.id,
+        activeCell.row,
       ),
     });
     setActiveCell(null);
@@ -866,12 +973,21 @@ export function XlsxEditor({
                 item.comments,
                 activeCell.column,
               ),
+              tables: shiftXlsxTables(item.tables, (reference) =>
+                shiftXlsxRangeForColumnDelete(reference, activeCell.column),
+              ),
               autoFilter: shiftXlsxRangeForColumnDelete(
                 item.autoFilter,
                 activeCell.column,
               ),
             }
           : item,
+      ),
+      definedNames: shiftXlsxDefinedNamesForColumnDelete(
+        model.definedNames,
+        model.sheets,
+        sheet.id,
+        activeCell.column,
       ),
     });
     setActiveCell(null);
@@ -1360,6 +1476,62 @@ export function XlsxEditor({
     scrollCellIntoView(gridRef.current, clamped.top, clamped.left);
   }
 
+  function addDefinedNameFromSelection() {
+    if (!sheet || !selectionRange || !activeDefinedNameValue) return;
+    const localSheetId = model.sheets.findIndex((item) => item.id === sheet.id);
+    const next: XlsxDefinedName = {
+      name: nextDefinedName(model.definedNames ?? [], localSheetId),
+      value: activeDefinedNameValue,
+      localSheetId: localSheetId >= 0 ? localSheetId : undefined,
+    };
+    commitXlsxModel({
+      sheets: model.sheets,
+      definedNames: [...(model.definedNames ?? []), next],
+    });
+  }
+
+  function updateDefinedName(index: number, next: XlsxDefinedName) {
+    commitXlsxModel({
+      sheets: model.sheets,
+      definedNames: (model.definedNames ?? []).map((definedName, currentIndex) =>
+        currentIndex === index ? next : definedName,
+      ),
+    });
+  }
+
+  function deleteDefinedName(index: number) {
+    commitXlsxModel({
+      sheets: model.sheets,
+      definedNames: (model.definedNames ?? []).filter(
+        (_, currentIndex) => currentIndex !== index,
+      ),
+    });
+  }
+
+  function selectDefinedName(definedName: XlsxDefinedName) {
+    const target = xlsxDefinedNameTarget(definedName.value);
+    if (!target) return;
+    const targetSheetIndex =
+      target.sheetName !== undefined
+        ? model.sheets.findIndex((item) => item.name === target.sheetName)
+        : definedName.localSheetId;
+    const targetSheet =
+      targetSheetIndex !== undefined
+        ? model.sheets[targetSheetIndex]
+        : sheet;
+    if (!targetSheet) return;
+    const targetColumnCount = xlsxColumnCount(targetSheet);
+    const targetRowCount = xlsxDisplayRowCount(targetSheet);
+    const clamped = clampCellRange(target.range, targetRowCount, targetColumnCount);
+    setPreferredSheetId(targetSheet.id);
+    setActiveCell({ row: clamped.top, column: clamped.left });
+    setSelectionAnchor({ row: clamped.top, column: clamped.left });
+    setSelectionEnd({ row: clamped.bottom, column: clamped.right });
+    requestAnimationFrame(() => {
+      scrollCellIntoView(gridRef.current, clamped.top, clamped.left);
+    });
+  }
+
   function focusCell(row: number, column: number) {
     selectCell({ row, column });
     scrollCellIntoView(gridRef.current, row, column);
@@ -1659,10 +1831,21 @@ export function XlsxEditor({
       </div>
       <SpreadsheetObjectStrip
         sheet={sheet}
+        onTableChange={updateTable}
+        onTableColumnChange={updateTableColumn}
         onChartTitleChange={updateChartTitle}
         onChartSeriesNameChange={updateChartSeriesName}
         onChartPointChange={updateChartSeriesPoint}
         onPivotNameChange={updatePivotName}
+      />
+      <SpreadsheetDefinedNamesPanel
+        definedNames={model.definedNames ?? []}
+        sheets={model.sheets}
+        activeSelectionValue={activeDefinedNameValue}
+        onAddFromSelection={addDefinedNameFromSelection}
+        onChange={updateDefinedName}
+        onDelete={deleteDefinedName}
+        onSelect={selectDefinedName}
       />
       <SpreadsheetFormulaDependencyPanel
         sheet={sheet}
@@ -1928,4 +2111,32 @@ function spreadsheetRangeContainsCell(
 function positiveModulo(value: number, divisor: number) {
   if (divisor <= 0) return 0;
   return ((value % divisor) + divisor) % divisor;
+}
+
+function shiftXlsxTables(
+  tables: XlsxTable[] | undefined,
+  shiftRange: (reference: string | undefined) => string | undefined,
+) {
+  return tables?.map((table) => ({
+    ...table,
+    ref: shiftRange(table.ref) ?? table.ref,
+    autoFilterRef: shiftRange(table.autoFilterRef) ?? table.autoFilterRef,
+  }));
+}
+
+function nextDefinedName(
+  definedNames: XlsxDefinedName[],
+  localSheetId: number,
+) {
+  const scopeKey = localSheetId >= 0 ? localSheetId : "workbook";
+  const namesInScope = new Set(
+    definedNames
+      .filter((definedName) => (definedName.localSheetId ?? "workbook") === scopeKey)
+      .map((definedName) => definedName.name.toLowerCase()),
+  );
+  for (let index = 1; index < 10_000; index += 1) {
+    const candidate = `Selection_${index}`;
+    if (!namesInScope.has(candidate.toLowerCase())) return candidate;
+  }
+  return `Selection_${Date.now()}`;
 }

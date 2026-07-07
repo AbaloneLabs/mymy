@@ -647,8 +647,20 @@ function normalizeXlsxTable(value: unknown): XlsxTable | null {
     displayName:
       typeof item.displayName === "string" ? item.displayName : undefined,
     ref: typeof item.ref === "string" ? item.ref : undefined,
+    autoFilterRef:
+      typeof item.autoFilterRef === "string" ? item.autoFilterRef : undefined,
     totalsRowShown:
       typeof item.totalsRowShown === "boolean" ? item.totalsRowShown : undefined,
+    tableStyleName:
+      typeof item.tableStyleName === "string" ? item.tableStyleName : undefined,
+    showFirstColumn:
+      typeof item.showFirstColumn === "boolean" ? item.showFirstColumn : undefined,
+    showLastColumn:
+      typeof item.showLastColumn === "boolean" ? item.showLastColumn : undefined,
+    showRowStripes:
+      typeof item.showRowStripes === "boolean" ? item.showRowStripes : undefined,
+    showColumnStripes:
+      typeof item.showColumnStripes === "boolean" ? item.showColumnStripes : undefined,
     columns: Array.isArray(item.columns)
       ? item.columns
           .map((column) => normalizeXlsxTableColumn(column))

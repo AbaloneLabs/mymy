@@ -2032,6 +2032,7 @@ fn update_xlsx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
                 updated_xml = update_sheet_legacy_drawing(&updated_xml, None);
             }
         }
+        add_xlsx_table_replacements(original, sheet, &mut replacements);
         add_xlsx_chart_replacements(original, sheet, &mut replacements);
         add_xlsx_pivot_replacements(original, sheet, &mut replacements);
         if rels_replacement != original_rels {
@@ -2934,6 +2935,10 @@ fn parse_xlsx_sheet_tables(
             }
             let table_xml = read_zip_text(bytes, table_path).unwrap_or_default();
             let table_start = xml_named_start_tag(&table_xml, "table").unwrap_or_default();
+            let table_style = xml_named_empty_elements(&table_xml, "tableStyleInfo")
+                .into_iter()
+                .next()
+                .unwrap_or_default();
             let columns = xml_named_empty_elements(&table_xml, "tableColumn")
                 .into_iter()
                 .chain(xml_named_segments(&table_xml, "tableColumn"))
@@ -2951,7 +2956,17 @@ fn parse_xlsx_sheet_tables(
                 "name": attr_value(&table_start, "name"),
                 "displayName": attr_value(&table_start, "displayName"),
                 "ref": attr_value(&table_start, "ref"),
+                "autoFilterRef": parse_sheet_auto_filter(&table_xml),
                 "totalsRowShown": attr_value(&table_start, "totalsRowShown")
+                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+                "tableStyleName": attr_value(&table_style, "name"),
+                "showFirstColumn": attr_value(&table_style, "showFirstColumn")
+                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+                "showLastColumn": attr_value(&table_style, "showLastColumn")
+                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+                "showRowStripes": attr_value(&table_style, "showRowStripes")
+                    .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+                "showColumnStripes": attr_value(&table_style, "showColumnStripes")
                     .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
                 "columns": columns
             }))
@@ -3106,6 +3121,196 @@ fn xlsx_chart_title(chart_xml: &str) -> Option<String> {
         .next()
         .map(|title| extract_text_tags(&title, "a:t").join(""))
         .filter(|title| !title.is_empty())
+}
+
+fn add_xlsx_table_replacements(
+    original: &[u8],
+    sheet: &Value,
+    replacements: &mut Vec<(String, Vec<u8>)>,
+) {
+    let Some(tables) = sheet.get("tables").and_then(Value::as_array) else {
+        return;
+    };
+    for table in tables {
+        let Some(table_path) = table
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| valid_xlsx_table_path(path))
+        else {
+            continue;
+        };
+        let Ok(table_xml) = read_zip_text(original, table_path) else {
+            continue;
+        };
+        let updated = update_xlsx_table_xml(&table_xml, table);
+        replacements.push((table_path.to_string(), updated.into_bytes()));
+    }
+}
+
+fn update_xlsx_table_xml(table_xml: &str, table: &Value) -> String {
+    let mut updated = update_xlsx_table_root_attrs(table_xml, table);
+    updated = update_xlsx_table_auto_filter(&updated, table);
+    updated = update_xlsx_table_columns(&updated, table);
+    update_xlsx_table_style_info(&updated, table)
+}
+
+fn update_xlsx_table_root_attrs(table_xml: &str, table: &Value) -> String {
+    let mut attrs = Vec::new();
+    if let Some(name) = xlsx_validation_string(table, "name") {
+        attrs.push(("name", name));
+    }
+    if let Some(display_name) = xlsx_validation_string(table, "displayName") {
+        attrs.push(("displayName", display_name));
+    }
+    if let Some(reference) = xlsx_validation_string(table, "ref")
+        .filter(|reference| valid_xlsx_range_reference(reference))
+    {
+        attrs.push(("ref", reference));
+    }
+    if let Some(totals_row_shown) = table.get("totalsRowShown").and_then(Value::as_bool) {
+        attrs.push((
+            "totalsRowShown",
+            if totals_row_shown { "1" } else { "0" }.to_string(),
+        ));
+    }
+    if attrs.is_empty() {
+        return table_xml.to_string();
+    }
+    set_first_xml_tag_attrs(table_xml, "<table", &attrs)
+}
+
+fn update_xlsx_table_auto_filter(table_xml: &str, table: &Value) -> String {
+    let reference = xlsx_validation_string(table, "autoFilterRef")
+        .or_else(|| xlsx_validation_string(table, "ref"))
+        .filter(|reference| valid_xlsx_range_reference(reference));
+    let auto_filter_xml = reference
+        .as_deref()
+        .map(|reference| format!(r#"<autoFilter ref="{}"/>"#, escape_xml(reference)))
+        .unwrap_or_default();
+    if let Some(replaced) = replace_xml_element(table_xml, "autoFilter", &auto_filter_xml) {
+        return replaced;
+    }
+    if table_xml.contains("<autoFilter") {
+        return replace_empty_xml_element(table_xml, "<autoFilter", &auto_filter_xml);
+    }
+    if auto_filter_xml.is_empty() {
+        return table_xml.to_string();
+    }
+    if let Some(index) = table_xml.find("<tableColumns") {
+        let mut output = String::new();
+        output.push_str(&table_xml[..index]);
+        output.push_str(&auto_filter_xml);
+        output.push_str(&table_xml[index..]);
+        return output;
+    }
+    append_before_or_end(table_xml, "</table>", &auto_filter_xml)
+}
+
+fn update_xlsx_table_columns(table_xml: &str, table: &Value) -> String {
+    let Some(columns) = table.get("columns").and_then(Value::as_array) else {
+        return table_xml.to_string();
+    };
+    let columns_xml = build_xlsx_table_columns(columns);
+    if let Some(replaced) = replace_xml_element(table_xml, "tableColumns", &columns_xml) {
+        return replaced;
+    }
+    if table_xml.contains("<tableColumns") {
+        return replace_empty_xml_element(table_xml, "<tableColumns", &columns_xml);
+    }
+    if let Some(index) = table_xml.find("<tableStyleInfo") {
+        let mut output = String::new();
+        output.push_str(&table_xml[..index]);
+        output.push_str(&columns_xml);
+        output.push_str(&table_xml[index..]);
+        return output;
+    }
+    append_before_or_end(table_xml, "</table>", &columns_xml)
+}
+
+fn build_xlsx_table_columns(columns: &[Value]) -> String {
+    let items = columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let id = xlsx_validation_string(column, "id")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or((index + 1) as u32);
+            let name = xlsx_validation_string(column, "name")
+                .unwrap_or_else(|| format!("Column{}", index + 1));
+            let mut attrs = vec![
+                format!(r#"id="{id}""#),
+                format!(r#"name="{}""#, escape_xml(&name)),
+            ];
+            if let Some(function) = xlsx_validation_string(column, "totalsRowFunction")
+                .filter(|value| valid_xlsx_table_totals_function(value))
+            {
+                attrs.push(format!(r#"totalsRowFunction="{}""#, escape_xml(&function)));
+            }
+            format!("<tableColumn {}/>", attrs.join(" "))
+        })
+        .collect::<String>();
+    format!(
+        r#"<tableColumns count="{}">{items}</tableColumns>"#,
+        columns.len()
+    )
+}
+
+fn valid_xlsx_table_totals_function(value: &str) -> bool {
+    matches!(
+        value,
+        "sum"
+            | "min"
+            | "max"
+            | "average"
+            | "count"
+            | "countNums"
+            | "stdDev"
+            | "var"
+            | "custom"
+            | "none"
+    )
+}
+
+fn update_xlsx_table_style_info(table_xml: &str, table: &Value) -> String {
+    let Some(style_xml) = build_xlsx_table_style_info(table) else {
+        return table_xml.to_string();
+    };
+    if let Some(replaced) = replace_xml_element(table_xml, "tableStyleInfo", &style_xml) {
+        return replaced;
+    }
+    if table_xml.contains("<tableStyleInfo") {
+        return replace_empty_xml_element(table_xml, "<tableStyleInfo", &style_xml);
+    }
+    append_before_or_end(table_xml, "</table>", &style_xml)
+}
+
+fn build_xlsx_table_style_info(table: &Value) -> Option<String> {
+    let mut attrs = Vec::new();
+    if let Some(name) = xlsx_validation_string(table, "tableStyleName") {
+        attrs.push(format!(r#"name="{}""#, escape_xml(&name)));
+    }
+    for (key, attr_name) in [
+        ("showFirstColumn", "showFirstColumn"),
+        ("showLastColumn", "showLastColumn"),
+        ("showRowStripes", "showRowStripes"),
+        ("showColumnStripes", "showColumnStripes"),
+    ] {
+        if let Some(value) = table.get(key).and_then(Value::as_bool) {
+            attrs.push(format!(
+                r#"{attr_name}="{}""#,
+                if value { "1" } else { "0" }
+            ));
+        }
+    }
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(format!("<tableStyleInfo {}/>", attrs.join(" ")))
+    }
+}
+
+fn valid_xlsx_table_path(path: &str) -> bool {
+    path.starts_with("xl/tables/") && path.ends_with(".xml") && !path.contains("..")
 }
 
 fn add_xlsx_chart_replacements(
@@ -10091,7 +10296,7 @@ mod tests {
         let drawing_xml = r#"<xdr:wsDr><xdr:twoCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:row>2</xdr:row></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>9</xdr:row></xdr:to><xdr:graphicFrame><a:graphic><a:graphicData><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></xdr:graphicFrame></xdr:twoCellAnchor><xdr:oneCellAnchor><xdr:from><xdr:col>5</xdr:col><xdr:row>6</xdr:row></xdr:from><xdr:pic><xdr:blipFill><a:blip r:embed="rIdImage"/></xdr:blipFill></xdr:pic></xdr:oneCellAnchor></xdr:wsDr>"#;
         let drawing_rels = r#"<Relationships><Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/><Relationship Id="rIdImage" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>"#;
         let chart_xml = r#"<c:chartSpace><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Series A</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>120</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#;
-        let table_xml = r#"<table name="Table1" displayName="Sales" ref="A1:B3" totalsRowShown="1"><tableColumns count="2"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Revenue" totalsRowFunction="sum"/></tableColumns></table>"#;
+        let table_xml = r#"<table name="Table1" displayName="Sales" ref="A1:B3" totalsRowShown="1"><autoFilter ref="A1:B3"/><tableColumns count="2"><tableColumn id="1" name="Region"/><tableColumn id="2" name="Revenue" totalsRowFunction="sum"/></tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="1" showRowStripes="1" showColumnStripes="0"/></table>"#;
         let pivot_xml =
             r#"<pivotTableDefinition name="Pivot A" cacheId="3"></pivotTableDefinition>"#;
         let bytes = test_ooxml_package(&[
@@ -10125,12 +10330,51 @@ mod tests {
         assert_eq!(objects.tables[0]["path"], "xl/tables/table1.xml");
         assert_eq!(objects.tables[0]["displayName"], "Sales");
         assert_eq!(objects.tables[0]["ref"], "A1:B3");
+        assert_eq!(objects.tables[0]["autoFilterRef"], "A1:B3");
         assert_eq!(objects.tables[0]["totalsRowShown"], true);
+        assert_eq!(objects.tables[0]["tableStyleName"], "TableStyleMedium2");
+        assert_eq!(objects.tables[0]["showLastColumn"], true);
+        assert_eq!(objects.tables[0]["showRowStripes"], true);
         assert_eq!(objects.tables[0]["columns"][1]["name"], "Revenue");
         assert_eq!(objects.tables[0]["columns"][1]["totalsRowFunction"], "sum");
         assert_eq!(objects.pivots[0]["path"], "xl/pivotTables/pivotTable1.xml");
         assert_eq!(objects.pivots[0]["name"], "Pivot A");
         assert_eq!(objects.pivots[0]["cacheId"], "3");
+    }
+
+    #[test]
+    fn xlsx_table_update_writes_table_metadata() {
+        let xml = r#"<table name="OldTable" displayName="Old" ref="A1:B3" totalsRowShown="0"><autoFilter ref="A1:B3"/><tableColumns count="2"><tableColumn id="1" name="Old A"/><tableColumn id="2" name="Old B"/></tableColumns><tableStyleInfo name="TableStyleLight1" showRowStripes="1"/></table>"#;
+        let table = json!({
+            "name": "Table1",
+            "displayName": "Sales",
+            "ref": "A1:C5",
+            "autoFilterRef": "A1:C5",
+            "totalsRowShown": true,
+            "tableStyleName": "TableStyleMedium9",
+            "showFirstColumn": true,
+            "showLastColumn": false,
+            "showRowStripes": true,
+            "showColumnStripes": true,
+            "columns": [
+                { "id": "1", "name": "Region" },
+                { "id": "2", "name": "Revenue", "totalsRowFunction": "sum" },
+                { "id": "3", "name": "Margin", "totalsRowFunction": "average" }
+            ]
+        });
+
+        let updated = update_xlsx_table_xml(xml, &table);
+
+        assert!(updated.contains(
+            r#"<table name="Table1" displayName="Sales" ref="A1:C5" totalsRowShown="1">"#
+        ));
+        assert!(updated.contains(r#"<autoFilter ref="A1:C5"/>"#));
+        assert!(updated.contains(r#"<tableColumns count="3">"#));
+        assert!(updated.contains(r#"<tableColumn id="2" name="Revenue" totalsRowFunction="sum"/>"#));
+        assert!(updated.contains(
+            r#"<tableStyleInfo name="TableStyleMedium9" showFirstColumn="1" showLastColumn="0" showRowStripes="1" showColumnStripes="1"/>"#
+        ));
+        assert!(!updated.contains("OldTable"));
     }
 
     #[test]
