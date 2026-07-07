@@ -45,6 +45,8 @@ export type EditorCommandId =
   | "alignTop"
   | "alignMiddle"
   | "alignBottom"
+  | "distributeHorizontal"
+  | "distributeVertical"
   | "sendBackward"
   | "bringForward"
   | "bulletList"
@@ -455,6 +457,16 @@ const PRESENTATION_COMMANDS: EditorCommandDefinition[] = [
   }),
   command("alignBottom", "Align bottom", "Alt+Shift+Down", {
     key: "ArrowDown",
+    shift: true,
+    alt: true,
+  }),
+  command("distributeHorizontal", "Distribute horizontal", "Alt+Shift+H", {
+    key: "h",
+    shift: true,
+    alt: true,
+  }),
+  command("distributeVertical", "Distribute vertical", "Alt+Shift+V", {
+    key: "v",
     shift: true,
     alt: true,
   }),

@@ -16,6 +16,7 @@ import {
   EyeOff,
   Image as ImageIcon,
   Italic,
+  Layers,
   Minus,
   Move,
   Play,
@@ -264,6 +265,17 @@ export function PptxEditor({
         ),
       )
     : [];
+  const activeObjectKey = activeText
+    ? pptxSelectionKey("text", activeText.id)
+    : activeShape
+      ? pptxSelectionKey("shape", activeShape.id)
+      : activeImage
+        ? pptxSelectionKey("image", activeImage.id)
+        : activeTable
+          ? pptxSelectionKey("table", activeTable.id)
+          : activeChart
+            ? pptxSelectionKey("chart", activeChart.id)
+            : null;
   const hasObjectSelection = selectedObjects.length > 0;
   const hasMultiSelection = selectedObjects.length > 1;
 
@@ -309,6 +321,10 @@ export function PptxEditor({
       alignActiveObject("middle");
     } else if (commandId === "alignBottom") {
       alignActiveObject("bottom");
+    } else if (commandId === "distributeHorizontal") {
+      distributeSelectedObjects("horizontal");
+    } else if (commandId === "distributeVertical") {
+      distributeSelectedObjects("vertical");
     } else if (commandId === "present") {
       setPresentingIndex(nextVisibleSlideIndex(model.slides, slideIndex, 1, true));
     } else if (commandId === "insertTable") {
@@ -1082,87 +1098,36 @@ export function PptxEditor({
     }
   }
 
-  function moveActiveTextLayer(direction: -1 | 1) {
-    if (!slide || !activeText) return;
-    const index = slide.texts.findIndex((text) => text.id === activeText.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= slide.texts.length) return;
-    updateSlideTexts(slide.id, (texts) => {
-      const next = [...texts];
-      const [moved] = next.splice(index, 1);
-      next.splice(nextIndex, 0, moved);
-      return next;
-    });
-  }
-
-  function moveActiveShapeLayer(direction: -1 | 1) {
-    if (!slide || !activeShape) return;
-    const shapes = slide.shapes ?? [];
-    const index = shapes.findIndex((shape) => shape.id === activeShape.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= shapes.length) return;
-    updateSlideShapes(slide.id, (items) => {
-      const next = [...items];
-      const [moved] = next.splice(index, 1);
-      next.splice(nextIndex, 0, moved);
-      return next;
-    });
-  }
-
-  function moveActiveImageLayer(direction: -1 | 1) {
-    if (!slide || !activeImage) return;
-    const images = slide.images ?? [];
-    const index = images.findIndex((image) => image.id === activeImage.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= images.length) return;
-    updateSlideImages(slide.id, (items) => {
-      const next = [...items];
-      const [moved] = next.splice(index, 1);
-      next.splice(nextIndex, 0, moved);
-      return next;
-    });
-  }
-
-  function moveActiveTableLayer(direction: -1 | 1) {
-    if (!slide || !activeTable) return;
-    const tables = slide.tables ?? [];
-    const index = tables.findIndex((table) => table.id === activeTable.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= tables.length) return;
-    updateSlideTables(slide.id, (items) => {
-      const next = [...items];
-      const [moved] = next.splice(index, 1);
-      next.splice(nextIndex, 0, moved);
-      return next;
-    });
-  }
-
-  function moveActiveChartLayer(direction: -1 | 1) {
-    if (!slide || !activeChart) return;
-    const charts = slide.charts ?? [];
-    const index = charts.findIndex((chart) => chart.id === activeChart.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= charts.length) return;
-    updateSlideCharts(slide.id, (items) => {
-      const next = [...items];
-      const [moved] = next.splice(index, 1);
-      next.splice(nextIndex, 0, moved);
-      return next;
-    });
-  }
-
   function moveActiveObjectLayer(direction: -1 | 1) {
-    if (activeText) {
-      moveActiveTextLayer(direction);
-    } else if (activeShape) {
-      moveActiveShapeLayer(direction);
-    } else if (activeImage) {
-      moveActiveImageLayer(direction);
-    } else if (activeTable) {
-      moveActiveTableLayer(direction);
-    } else if (activeChart) {
-      moveActiveChartLayer(direction);
+    if (activeObjectKey) moveObjectLayer(activeObjectKey, direction);
+  }
+
+  function moveObjectLayer(key: PptxSelectionKey, direction: -1 | 1) {
+    if (!slide) return;
+    const parsed = parsePptxSelectionKey(key);
+    if (parsed.objectKind === "text") {
+      updateSlideTexts(slide.id, (items) =>
+        reorderPptxObjectsById(items, parsed.objectId, direction),
+      );
+    } else if (parsed.objectKind === "shape") {
+      updateSlideShapes(slide.id, (items) =>
+        reorderPptxObjectsById(items, parsed.objectId, direction),
+      );
+    } else if (parsed.objectKind === "image") {
+      updateSlideImages(slide.id, (items) =>
+        reorderPptxObjectsById(items, parsed.objectId, direction),
+      );
+    } else if (parsed.objectKind === "table") {
+      updateSlideTables(slide.id, (items) =>
+        reorderPptxObjectsById(items, parsed.objectId, direction),
+      );
+    } else {
+      updateSlideCharts(slide.id, (items) =>
+        reorderPptxObjectsById(items, parsed.objectId, direction),
+      );
     }
+    activateObjectKey(key);
+    setSelectedObjectKeys((current) => (current.includes(key) ? current : [key]));
   }
 
   function updateActiveObjectGeometry(
@@ -1372,6 +1337,45 @@ export function PptxEditor({
     } else {
       updateActiveObjectGeometry({ y: Math.max(0, 100 - height) });
     }
+  }
+
+  function distributeSelectedObjects(axis: "horizontal" | "vertical") {
+    if (!slide || selectedObjects.length <= 2) return;
+    const sorted = [...selectedObjects].sort((left, right) =>
+      axis === "horizontal"
+        ? (left.object.x ?? 0) - (right.object.x ?? 0)
+        : (left.object.y ?? 0) - (right.object.y ?? 0),
+    );
+    const first = sorted[0];
+    const last = sorted.at(-1);
+    if (!first || !last) return;
+    const start = axis === "horizontal" ? (first.object.x ?? 0) : (first.object.y ?? 0);
+    const end =
+      axis === "horizontal"
+        ? (last.object.x ?? 0) + (last.object.width ?? 0)
+        : (last.object.y ?? 0) + (last.object.height ?? 0);
+    const occupied = sorted.reduce(
+      (total, record) =>
+        total +
+        (axis === "horizontal"
+          ? (record.object.width ?? 0)
+          : (record.object.height ?? 0)),
+      0,
+    );
+    const gap = Math.max(0, (end - start - occupied) / (sorted.length - 1));
+    let cursor = start;
+    const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
+    sorted.forEach((record) => {
+      const key = pptxSelectionKey(record.objectKind, record.objectId);
+      if (axis === "horizontal") {
+        patches.set(key, { x: clampPercent(cursor) });
+        cursor += (record.object.width ?? 0) + gap;
+      } else {
+        patches.set(key, { y: clampPercent(cursor) });
+        cursor += (record.object.height ?? 0) + gap;
+      }
+    });
+    updateObjectGeometries(patches);
   }
 
   function startObjectDrag(
@@ -1811,6 +1815,24 @@ export function PptxEditor({
           title="Align to bottom edge"
         >
           <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          onClick={() => distributeSelectedObjects("horizontal")}
+          disabled={selectedObjects.length <= 2}
+          className="inline-flex h-8 items-center rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+          title="Distribute horizontally"
+        >
+          Dist H
+        </button>
+        <button
+          type="button"
+          onClick={() => distributeSelectedObjects("vertical")}
+          disabled={selectedObjects.length <= 2}
+          className="inline-flex h-8 items-center rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+          title="Distribute vertically"
+        >
+          Dist V
         </button>
         <FontFamilySelect
           value={activeText?.fontFamily}
@@ -2603,7 +2625,189 @@ export function PptxEditor({
             />
           </label>
         </div>
+        {slide && (
+          <PptxObjectLayerPanel
+            slide={slide}
+            activeKey={activeObjectKey}
+            selectedKeys={selectedObjectKeySet}
+            onSelect={(key, additive) => {
+              const parsed = parsePptxSelectionKey(key);
+              selectObject(parsed.objectKind, parsed.objectId, additive);
+            }}
+            onMove={moveObjectLayer}
+          />
+        )}
       </div>
     </div>
   );
+}
+
+function PptxObjectLayerPanel({
+  slide,
+  activeKey,
+  selectedKeys,
+  onSelect,
+  onMove,
+}: {
+  slide: PptxSlide;
+  activeKey: PptxSelectionKey | null;
+  selectedKeys: Set<PptxSelectionKey>;
+  onSelect: (key: PptxSelectionKey, additive: boolean) => void;
+  onMove: (key: PptxSelectionKey, direction: -1 | 1) => void;
+}) {
+  const records = [...pptxSlideLayerRecords(slide)].reverse();
+  return (
+    <aside className="w-56 shrink-0 overflow-y-auto border-l border-[var(--border)] bg-[var(--bg)] p-2">
+      <div className="mb-2 flex items-center gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+        <Layers className="h-3.5 w-3.5" strokeWidth={1.75} />
+        Objects
+      </div>
+      {records.length === 0 ? (
+        <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-4 text-center text-xs text-[var(--text-faint)]">
+          Empty slide
+        </div>
+      ) : (
+        <div className="grid gap-1">
+          {records.map((record) => {
+            const key = pptxSelectionKey(record.objectKind, record.objectId);
+            const selected = selectedKeys.has(key);
+            const typeIndex = pptxLayerTypeIndex(slide, record);
+            const typeLength = pptxLayerTypeLength(slide, record.objectKind);
+            return (
+              <div
+                key={key}
+                className={cn(
+                  "grid grid-cols-[minmax(0,1fr)_auto] gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] p-1.5",
+                  selected && "border-[var(--accent)] bg-[var(--surface-hover)]",
+                  activeKey === key && "ring-1 ring-[var(--accent)]/40",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={(event) =>
+                    onSelect(key, event.shiftKey || event.metaKey || event.ctrlKey)
+                  }
+                  className="min-w-0 text-left"
+                  title={pptxLayerLabel(record)}
+                >
+                  <span className="block truncate text-xs font-medium text-[var(--text)]">
+                    {pptxLayerLabel(record)}
+                  </span>
+                  <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">
+                    {record.objectKind} · {record.objectId}
+                  </span>
+                </button>
+                <div className="flex gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => onMove(key, 1)}
+                    disabled={typeIndex >= typeLength - 1}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Bring forward"
+                  >
+                    <ChevronUp className="h-3 w-3" strokeWidth={1.75} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onMove(key, -1)}
+                    disabled={typeIndex <= 0}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Send backward"
+                  >
+                    <ChevronDown className="h-3 w-3" strokeWidth={1.75} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function pptxSlideLayerRecords(slide: PptxSlide): PptxObjectRecord[] {
+  return [
+    ...(slide.shapes ?? []).map((object) => ({
+      objectKind: "shape" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.images ?? []).map((object) => ({
+      objectKind: "image" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.charts ?? []).map((object) => ({
+      objectKind: "chart" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...(slide.tables ?? []).map((object) => ({
+      objectKind: "table" as const,
+      objectId: object.id,
+      object,
+    })),
+    ...slide.texts.map((object) => ({
+      objectKind: "text" as const,
+      objectId: object.id,
+      object,
+    })),
+  ];
+}
+
+function pptxLayerLabel(record: PptxObjectRecord) {
+  if (record.objectKind === "text") {
+    const text = (record.object as PptxText).text.trim();
+    return text || "Text box";
+  }
+  if (record.objectKind === "shape") return (record.object as PptxShape).kind;
+  if (record.objectKind === "image") {
+    const image = record.object as PptxImage;
+    return image.altText || image.mediaPath || "Image";
+  }
+  if (record.objectKind === "table") {
+    const table = record.object as PptxTable;
+    return `Table ${table.rows.length}x${Math.max(0, ...table.rows.map((row) => row.length))}`;
+  }
+  const chart = record.object as PptxChart;
+  return chart.title || chart.type || "Chart";
+}
+
+function pptxLayerTypeIndex(slide: PptxSlide, record: PptxObjectRecord) {
+  if (record.objectKind === "text") {
+    return slide.texts.findIndex((item) => item.id === record.objectId);
+  }
+  if (record.objectKind === "shape") {
+    return (slide.shapes ?? []).findIndex((item) => item.id === record.objectId);
+  }
+  if (record.objectKind === "image") {
+    return (slide.images ?? []).findIndex((item) => item.id === record.objectId);
+  }
+  if (record.objectKind === "table") {
+    return (slide.tables ?? []).findIndex((item) => item.id === record.objectId);
+  }
+  return (slide.charts ?? []).findIndex((item) => item.id === record.objectId);
+}
+
+function pptxLayerTypeLength(slide: PptxSlide, objectKind: PptxObjectKind) {
+  if (objectKind === "text") return slide.texts.length;
+  if (objectKind === "shape") return slide.shapes?.length ?? 0;
+  if (objectKind === "image") return slide.images?.length ?? 0;
+  if (objectKind === "table") return slide.tables?.length ?? 0;
+  return slide.charts?.length ?? 0;
+}
+
+function reorderPptxObjectsById<T extends { id: string }>(
+  items: T[],
+  id: string,
+  direction: -1 | 1,
+) {
+  const index = items.findIndex((item) => item.id === id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return items;
+  const next = [...items];
+  const [moved] = next.splice(index, 1);
+  next.splice(nextIndex, 0, moved);
+  return next;
 }
