@@ -202,6 +202,30 @@ export function DocxEditor({
     updateActive(formatClipboard);
   }
 
+  function insertFootnoteReference(blockIndex?: number) {
+    const targetIndex =
+      blockIndex ??
+      model.blocks.findIndex((block) => block.id === activeBlock?.id);
+    const block = model.blocks[targetIndex];
+    if (!isDocxTextBlock(block)) return;
+    const footnotes = model.footnotes ?? [];
+    const footnoteId =
+      block.footnoteId ??
+      nextDocxNoteId(footnotes, model.blocks, "footnoteId");
+    const noteExists = footnotes.some((note) => note.id === footnoteId);
+    onChange({
+      ...model,
+      blocks: model.blocks.map((item, index) =>
+        index === targetIndex ? { ...item, footnoteId } : item,
+      ),
+      footnotes: noteExists
+        ? footnotes
+        : [...footnotes, { id: footnoteId, kind: "footnote", text: "" }],
+    });
+    setActiveBlockId(block.id);
+    setTextPartsOpen(true);
+  }
+
   function replaceBlocks(blocks: DocxBlock[], nextActiveId?: string) {
     onChange({ ...model, blocks });
     if (nextActiveId !== undefined) {
@@ -355,6 +379,9 @@ export function DocxEditor({
       if (formatClipboard && isDocxTextBlock(model.blocks[index])) {
         updateBlock(index, formatClipboard);
       }
+    } else if (event.altKey && key === "f") {
+      event.preventDefault();
+      insertFootnoteReference(index);
     } else if (key === "l") {
       event.preventDefault();
       updateBlock(index, { align: "left" });
@@ -521,6 +548,8 @@ export function DocxEditor({
       copyActiveFormatting();
     } else if (commandId === "pasteFormatting") {
       pasteActiveFormatting();
+    } else if (commandId === "footnote") {
+      insertFootnoteReference();
     } else {
       return false;
     }
@@ -1114,6 +1143,13 @@ export function DocxEditor({
           active={activeBlock?.pageBreakBefore}
           disabled={!isDocxTextBlock(activeBlock)}
         />
+        <ToolbarButton
+          icon={FileText}
+          label="Footnote"
+          onClick={() => insertFootnoteReference()}
+          active={Boolean(activeBlock?.footnoteId)}
+          disabled={!isDocxTextBlock(activeBlock)}
+        />
         <div className="mx-1 h-5 w-px bg-[var(--border)]" />
         <select
           value={docxPagePresetValue(page)}
@@ -1379,90 +1415,104 @@ export function DocxEditor({
               );
             }
             return (
-              <div
-                key={block.id}
-                contentEditable
-                suppressContentEditableWarning
-                onFocus={() => setActiveBlockId(block.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                    event.preventDefault();
-                    insertPageBreak();
-                    return;
+              <div key={block.id} className="relative">
+                <div
+                  contentEditable
+                  suppressContentEditableWarning
+                  onFocus={() => setActiveBlockId(block.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                      event.preventDefault();
+                      insertPageBreak();
+                      return;
+                    }
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      splitTextBlockAtCaret(index, event.currentTarget);
+                      return;
+                    }
+                    if (event.key === "Backspace" && mergeWithPreviousBlock(index, event.currentTarget)) {
+                      event.preventDefault();
+                      return;
+                    }
+                    handleBlockShortcut(event, index);
+                  }}
+                  onPaste={(event) => {
+                    const text = event.clipboardData.getData("text/plain");
+                    if (text.includes("\n") || text.includes("\r")) {
+                      event.preventDefault();
+                      pasteTextIntoBlock(index, event.currentTarget, text);
+                    }
+                  }}
+                  onInput={(event) =>
+                    updateBlock(index, { text: event.currentTarget.textContent ?? "" })
                   }
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    splitTextBlockAtCaret(index, event.currentTarget);
-                    return;
-                  }
-                  if (event.key === "Backspace" && mergeWithPreviousBlock(index, event.currentTarget)) {
-                    event.preventDefault();
-                    return;
-                  }
-                  handleBlockShortcut(event, index);
-                }}
-                onPaste={(event) => {
-                  const text = event.clipboardData.getData("text/plain");
-                  if (text.includes("\n") || text.includes("\r")) {
-                    event.preventDefault();
-                    pasteTextIntoBlock(index, event.currentTarget, text);
-                  }
-                }}
-                onInput={(event) =>
-                  updateBlock(index, { text: event.currentTarget.textContent ?? "" })
-                }
-                data-docx-block={block.id}
-                className={cn(
-                  "min-h-7 rounded-sm px-1 py-1 outline-none",
-                  isActive && "ring-1 ring-[var(--accent)]/30",
-                  block.type === "heading" ? "mb-3 mt-4 font-semibold" : "mb-2 leading-7",
-                  block.pageBreakBefore &&
-                    "mt-8 border-t border-dashed border-neutral-300 pt-4",
+                  data-docx-block={block.id}
+                  className={cn(
+                    "min-h-7 rounded-sm px-1 py-1 outline-none",
+                    isActive && "ring-1 ring-[var(--accent)]/30",
+                    block.type === "heading" ? "mb-3 mt-4 font-semibold" : "mb-2 leading-7",
+                    block.pageBreakBefore &&
+                      "mt-8 border-t border-dashed border-neutral-300 pt-4",
+                  )}
+                  style={{
+                    fontFamily: block.fontFamily || builtInFontFamilies[0],
+                    fontSize: `${block.fontSize ?? (block.type === "heading" ? headingFontSize(block.headingLevel ?? 1) : "14")}px`,
+                    fontWeight: block.bold || block.type === "heading" ? 700 : 400,
+                    fontStyle: block.italic ? "italic" : undefined,
+                    verticalAlign:
+                      block.verticalAlign === "superscript"
+                        ? "super"
+                        : block.verticalAlign === "subscript"
+                          ? "sub"
+                          : undefined,
+                    textDecorationLine: [
+                      block.underline || block.target ? "underline" : "",
+                      block.strikethrough ? "line-through" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                    color: block.target ? (block.color ?? "#2563eb") : block.color,
+                    textAlign: block.align ?? "left",
+                    display: block.listKind ? "list-item" : undefined,
+                    listStyleType:
+                      block.listKind === "bullet"
+                        ? "disc"
+                        : block.listKind === "number"
+                          ? "decimal"
+                          : undefined,
+                    listStylePosition: block.listKind ? "outside" : undefined,
+                    marginLeft: block.listKind ? "1.5rem" : undefined,
+                    paddingLeft: block.indentLeft
+                      ? `${twipsToCssPixels(block.indentLeft)}px`
+                      : undefined,
+                    lineHeight: block.lineSpacing
+                      ? String(block.lineSpacing / 240)
+                      : undefined,
+                    marginTop: block.spacingBefore
+                      ? `${twipsToCssPixels(block.spacingBefore)}px`
+                      : undefined,
+                    marginBottom: block.spacingAfter
+                      ? `${twipsToCssPixels(block.spacingAfter)}px`
+                      : undefined,
+                    backgroundColor: block.highlight,
+                  }}
+                >
+                  {block.text}
+                </div>
+                {block.footnoteId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveBlockId(block.id);
+                      setTextPartsOpen(true);
+                    }}
+                    className="absolute right-0 top-0 -translate-y-1/3 rounded-sm px-1 align-super text-[10px] font-semibold text-blue-700 hover:bg-blue-50"
+                    title="Footnote"
+                  >
+                    {block.footnoteId}
+                  </button>
                 )}
-                style={{
-                  fontFamily: block.fontFamily || builtInFontFamilies[0],
-                  fontSize: `${block.fontSize ?? (block.type === "heading" ? headingFontSize(block.headingLevel ?? 1) : "14")}px`,
-                  fontWeight: block.bold || block.type === "heading" ? 700 : 400,
-                  fontStyle: block.italic ? "italic" : undefined,
-                  verticalAlign:
-                    block.verticalAlign === "superscript"
-                      ? "super"
-                      : block.verticalAlign === "subscript"
-                        ? "sub"
-                        : undefined,
-                  textDecorationLine: [
-                    block.underline || block.target ? "underline" : "",
-                    block.strikethrough ? "line-through" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" "),
-                  color: block.target ? (block.color ?? "#2563eb") : block.color,
-                  textAlign: block.align ?? "left",
-                  display: block.listKind ? "list-item" : undefined,
-                  listStyleType:
-                    block.listKind === "bullet"
-                      ? "disc"
-                      : block.listKind === "number"
-                        ? "decimal"
-                        : undefined,
-                  listStylePosition: block.listKind ? "outside" : undefined,
-                  marginLeft: block.listKind ? "1.5rem" : undefined,
-                  paddingLeft: block.indentLeft
-                    ? `${twipsToCssPixels(block.indentLeft)}px`
-                    : undefined,
-                  lineHeight: block.lineSpacing
-                    ? String(block.lineSpacing / 240)
-                    : undefined,
-                  marginTop: block.spacingBefore
-                    ? `${twipsToCssPixels(block.spacingBefore)}px`
-                    : undefined,
-                  marginBottom: block.spacingAfter
-                    ? `${twipsToCssPixels(block.spacingAfter)}px`
-                    : undefined,
-                  backgroundColor: block.highlight,
-                }}
-              >
-                {block.text}
               </div>
             );
           })}
@@ -2265,6 +2315,30 @@ function sectionBreakLabel(kind: DocxBlock["breakKind"]) {
   if (kind === "evenPage") return "even page";
   if (kind === "oddPage") return "odd page";
   return "next page";
+}
+
+function nextDocxNoteId(
+  notes: DocxNote[],
+  blocks: DocxBlock[],
+  key: "footnoteId" | "endnoteId",
+) {
+  const usedIds = new Set<string>();
+  notes.forEach((note) => usedIds.add(note.id));
+  blocks.forEach((block) => {
+    const id = block[key];
+    if (id) usedIds.add(id);
+  });
+  let index =
+    Math.max(
+      0,
+      ...Array.from(usedIds)
+        .map((id) => Number.parseInt(id, 10))
+        .filter(Number.isFinite),
+    ) + 1;
+  while (usedIds.has(String(index))) {
+    index += 1;
+  }
+  return String(index);
 }
 
 function nextDocxBlockId(

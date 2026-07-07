@@ -5,7 +5,7 @@
 //! writes the edited model back by replacing the relevant XML parts while
 //! preserving the rest of the package.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
@@ -30,6 +30,36 @@ const DOCX_BULLET_NUM_ID: &str = "9001";
 const DOCX_NUMBER_NUM_ID: &str = "9002";
 const DOCX_BULLET_ABSTRACT_NUM_ID: &str = "9001";
 const DOCX_NUMBER_ABSTRACT_NUM_ID: &str = "9002";
+
+#[derive(Debug, Clone, Copy)]
+struct DocxNotePartSpec {
+    path: &'static str,
+    item_tag: &'static str,
+    root_tag: &'static str,
+    relationship_target: &'static str,
+    relationship_type: &'static str,
+    content_type: &'static str,
+}
+
+const DOCX_FOOTNOTE_PART: DocxNotePartSpec = DocxNotePartSpec {
+    path: "word/footnotes.xml",
+    item_tag: "w:footnote",
+    root_tag: "w:footnotes",
+    relationship_target: "footnotes.xml",
+    relationship_type:
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes",
+    content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+};
+
+const DOCX_ENDNOTE_PART: DocxNotePartSpec = DocxNotePartSpec {
+    path: "word/endnotes.xml",
+    item_tag: "w:endnote",
+    root_tag: "w:endnotes",
+    relationship_target: "endnotes.xml",
+    relationship_type:
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes",
+    content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml",
+};
 
 #[derive(Debug, Clone)]
 struct PptxTextSpec {
@@ -847,6 +877,12 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
         if let Some(target) = hyperlink_target {
             block["target"] = json!(target);
         }
+        if let Some(footnote_id) = docx_tag_attr(&segment, "<w:footnoteReference", "w:id") {
+            block["footnoteId"] = json!(footnote_id);
+        }
+        if let Some(endnote_id) = docx_tag_attr(&segment, "<w:endnoteReference", "w:id") {
+            block["endnoteId"] = json!(endnote_id);
+        }
         blocks.push(block);
         index += 1;
     }
@@ -888,18 +924,20 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
     add_docx_text_part_replacements(original, model.get("headers"), "header", &mut replacements);
     add_docx_text_part_replacements(original, model.get("footers"), "footer", &mut replacements);
     add_docx_comment_replacements(original, model.get("comments"), &mut replacements);
-    add_docx_note_replacements(
+    let footnotes_changed = add_docx_note_replacements(
         original,
         model.get("footnotes"),
-        "word/footnotes.xml",
-        "w:footnote",
+        DOCX_FOOTNOTE_PART,
+        &mut relationships,
+        &mut content_types,
         &mut replacements,
     );
-    add_docx_note_replacements(
+    let endnotes_changed = add_docx_note_replacements(
         original,
         model.get("endnotes"),
-        "word/endnotes.xml",
-        "w:endnote",
+        DOCX_ENDNOTE_PART,
+        &mut relationships,
+        &mut content_types,
         &mut replacements,
     );
     let numbering_changed = if docx_blocks_have_lists(&blocks) {
@@ -913,7 +951,12 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
     } else {
         false
     };
-    if manifest_changed || numbering_changed || hyperlinks_changed {
+    if manifest_changed
+        || numbering_changed
+        || hyperlinks_changed
+        || footnotes_changed
+        || endnotes_changed
+    {
         replacements.push((
             "word/_rels/document.xml.rels".to_string(),
             relationships.into_bytes(),
@@ -1367,18 +1410,29 @@ fn add_docx_comment_replacements(
 fn add_docx_note_replacements(
     original: &[u8],
     value: Option<&Value>,
-    path: &str,
-    tag: &str,
+    spec: DocxNotePartSpec,
+    relationships: &mut String,
+    content_types: &mut String,
     replacements: &mut Vec<(String, Vec<u8>)>,
-) {
+) -> bool {
     let Some(notes) = value.and_then(Value::as_array) else {
-        return;
+        return false;
     };
-    let Ok(xml) = read_zip_text(original, path) else {
-        return;
+    if notes.is_empty() {
+        return false;
     };
-    let updated = update_docx_notes_xml(&xml, notes, tag);
-    replacements.push((path.to_string(), updated.into_bytes()));
+    let xml = read_zip_text(original, spec.path)
+        .unwrap_or_else(|_| empty_docx_notes_xml(spec.root_tag, spec.item_tag));
+    let updated = update_docx_notes_xml(&xml, notes, spec.item_tag);
+    replacements.push((spec.path.to_string(), updated.into_bytes()));
+    *relationships = ensure_docx_part_relationship(
+        relationships,
+        spec.relationship_type,
+        spec.relationship_target,
+    );
+    *content_types =
+        ensure_content_type_override(content_types, &format!("/{}", spec.path), spec.content_type);
+    true
 }
 
 fn update_docx_comments_xml(xml: &str, comments: &[Value]) -> String {
@@ -1423,6 +1477,7 @@ fn update_docx_notes_xml(xml: &str, notes: &[Value], tag: &str) -> String {
     let mut output = String::new();
     let mut rest = xml;
     let end_tag = format!("</{tag}>");
+    let mut seen_ids = BTreeSet::new();
     while let Some(start) = find_xml_tag_start(rest, tag) {
         output.push_str(&rest[..start]);
         let after_start = &rest[start..];
@@ -1433,15 +1488,64 @@ fn update_docx_notes_xml(xml: &str, notes: &[Value], tag: &str) -> String {
         let end_index = end + end_tag.len();
         let segment = &after_start[..end_index];
         let id = docx_tag_attr(segment, &format!("<{tag}"), "w:id");
-        if let Some(note) = id.and_then(|value| note_map.get(&value)) {
-            output.push_str(&update_docx_note_segment(segment, note));
+        if let Some(id) = id {
+            seen_ids.insert(id.clone());
+            if let Some(note) = note_map.get(&id) {
+                output.push_str(&update_docx_note_segment(segment, note));
+            } else {
+                output.push_str(segment);
+            }
         } else {
             output.push_str(segment);
         }
         rest = &after_start[end_index..];
     }
     output.push_str(rest);
-    output
+    let missing_notes = notes
+        .iter()
+        .filter_map(|note| build_missing_docx_note_segment(note, tag, &seen_ids))
+        .collect::<Vec<_>>()
+        .join("");
+    if missing_notes.is_empty() {
+        return output;
+    }
+    let root_end_tag = if tag == "w:footnote" {
+        "</w:footnotes>"
+    } else {
+        "</w:endnotes>"
+    };
+    append_before_or_end(&output, root_end_tag, &missing_notes)
+}
+
+fn empty_docx_notes_xml(root_tag: &str, tag: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><{root_tag} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><{tag} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></{tag}><{tag} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></{tag}></{root_tag}>"#
+    )
+}
+
+fn build_missing_docx_note_segment(
+    note: &Value,
+    tag: &str,
+    seen_ids: &BTreeSet<String>,
+) -> Option<String> {
+    let id = note.get("id").and_then(Value::as_str)?.trim();
+    if id.is_empty() || id.starts_with('-') || id == "0" || seen_ids.contains(id) {
+        return None;
+    }
+    let paragraphs = note
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .split('\n')
+        .map(docx_plain_paragraph_xml)
+        .collect::<Vec<_>>()
+        .join("");
+    Some(format!(
+        r#"<{tag} w:id="{}">{paragraphs}</{tag}>"#,
+        escape_xml(id)
+    ))
 }
 
 fn update_docx_comment_segment(segment: &str, comment: &Value) -> String {
@@ -1846,6 +1950,16 @@ fn ensure_docx_numbering_relationship(rels: &str) -> String {
     let relationship = format!(
         r#"<Relationship Id="{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#
     );
+    append_before_or_end(rels, "</Relationships>", &relationship)
+}
+
+fn ensure_docx_part_relationship(rels: &str, relationship_type: &str, target: &str) -> String {
+    if rels.contains(relationship_type) || rels.contains(&format!(r#"Target="{target}""#)) {
+        return rels.to_string();
+    }
+    let rel_id = format!("rId{}", next_rid(rels));
+    let relationship =
+        format!(r#"<Relationship Id="{rel_id}" Type="{relationship_type}" Target="{target}"/>"#);
     append_before_or_end(rels, "</Relationships>", &relationship)
 }
 
@@ -4360,7 +4474,9 @@ fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
                     output.push_str(&build_docx_image_paragraph(block));
                 } else if matches!(block_type, Some("pageBreak" | "sectionBreak")) || is_table {
                     output.push_str(&build_docx_block(block));
-                } else if docx_paragraph_has_complex_content(segment) {
+                } else if docx_paragraph_has_complex_content(segment)
+                    && !docx_paragraph_needs_note_reference_rebuild(segment, block)
+                {
                     let replacement = block
                         .get("text")
                         .and_then(Value::as_str)
@@ -4533,6 +4649,16 @@ fn build_docx_paragraph(block: &Value) -> String {
     let run_properties = docx_run_properties(block);
     let text_xml = docx_text_with_breaks(text);
     let run = format!("<w:r>{run_properties}{text_xml}</w:r>");
+    let note_references = format!(
+        "{}{}",
+        docx_note_reference_run(
+            block,
+            "footnoteId",
+            "w:footnoteReference",
+            "FootnoteReference"
+        ),
+        docx_note_reference_run(block, "endnoteId", "w:endnoteReference", "EndnoteReference")
+    );
     if let Some(relationship_id) = block
         .get("relationshipId")
         .and_then(Value::as_str)
@@ -4540,12 +4666,43 @@ fn build_docx_paragraph(block: &Value) -> String {
         .filter(|value| !value.is_empty())
     {
         format!(
-            r#"<w:p>{style}<w:hyperlink r:id="{}">{run}</w:hyperlink></w:p>"#,
+            r#"<w:p>{style}<w:hyperlink r:id="{}">{run}</w:hyperlink>{note_references}</w:p>"#,
             escape_xml(relationship_id)
         )
     } else {
-        format!("<w:p>{style}{run}</w:p>")
+        format!("<w:p>{style}{run}{note_references}</w:p>")
     }
+}
+
+fn docx_note_reference_run(block: &Value, field: &str, tag: &str, reference_style: &str) -> String {
+    let Some(id) = block
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return String::new();
+    };
+    format!(
+        r#"<w:r><w:rPr><w:rStyle w:val="{reference_style}"/></w:rPr><{tag} w:id="{}"/></w:r>"#,
+        escape_xml(id)
+    )
+}
+
+fn docx_paragraph_needs_note_reference_rebuild(paragraph: &str, block: &Value) -> bool {
+    [
+        ("footnoteId", "<w:footnoteReference"),
+        ("endnoteId", "<w:endnoteReference"),
+    ]
+    .iter()
+    .any(|(field, tag)| {
+        block
+            .get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_some_and(|id| docx_tag_attr(paragraph, tag, "w:id").as_deref() != Some(id))
+    })
 }
 
 fn docx_text_with_breaks(text: &str) -> String {
@@ -10792,6 +10949,21 @@ mod tests {
     }
 
     #[test]
+    fn docx_paragraph_builder_writes_note_references() {
+        let xml = build_docx_paragraph(&json!({
+            "type": "paragraph",
+            "text": "Body",
+            "footnoteId": "2",
+            "endnoteId": "3"
+        }));
+
+        assert!(xml.contains(r#"<w:footnoteReference w:id="2"/>"#));
+        assert!(xml.contains(r#"<w:endnoteReference w:id="3"/>"#));
+        assert!(xml.contains(r#"<w:rStyle w:val="FootnoteReference"/>"#));
+        assert!(xml.contains(r#"<w:rStyle w:val="EndnoteReference"/>"#));
+    }
+
+    #[test]
     fn docx_model_exposes_superscript_and_subscript() {
         let bytes = test_ooxml_package(&[(
             "word/document.xml",
@@ -11182,6 +11354,19 @@ mod tests {
     }
 
     #[test]
+    fn docx_model_exposes_body_note_references() {
+        let bytes = test_ooxml_package(&[(
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:r><w:t>Footed</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p><w:p><w:r><w:t>Ended</w:t></w:r><w:r><w:endnoteReference w:id="3"/></w:r></w:p></w:body></w:document>"#,
+        )]);
+
+        let model = docx_model(&bytes).expect("DOCX note references should parse");
+
+        assert_eq!(model["blocks"][0]["footnoteId"], "2");
+        assert_eq!(model["blocks"][1]["endnoteId"], "3");
+    }
+
+    #[test]
     fn docx_update_rewrites_existing_footnotes_and_endnotes() {
         let original = test_ooxml_package(&[
             (
@@ -11215,6 +11400,48 @@ mod tests {
         assert!(!footnotes.contains("Old foot"));
         assert!(endnotes.contains(">New end<"));
         assert!(!endnotes.contains("Old end"));
+    }
+
+    #[test]
+    fn docx_update_adds_footnotes_part_relationship_and_content_type() {
+        let original = test_ooxml_package(&[
+            (
+                "word/document.xml",
+                r#"<w:document><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>"#,
+            ),
+            (
+                "word/_rels/document.xml.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#,
+            ),
+            (
+                "[Content_Types].xml",
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+            ),
+        ]);
+        let updated = update_docx(
+            &original,
+            &json!({
+                "blocks": [{ "type": "paragraph", "text": "Body", "footnoteId": "2" }],
+                "footnotes": [{ "id": "2", "text": "New footnote\nSecond line" }]
+            }),
+        )
+        .expect("DOCX should add footnotes part");
+
+        let document = read_zip_text(&updated, "word/document.xml").unwrap();
+        let footnotes = read_zip_text(&updated, "word/footnotes.xml").unwrap();
+        let rels = read_zip_text(&updated, "word/_rels/document.xml.rels").unwrap();
+        let content_types = read_zip_text(&updated, "[Content_Types].xml").unwrap();
+
+        assert!(document.contains(r#"<w:footnoteReference w:id="2"/>"#));
+        assert!(footnotes.contains(r#"<w:footnote w:id="2">"#));
+        assert!(footnotes.contains(">New footnote<"));
+        assert!(footnotes.contains(">Second line<"));
+        assert!(rels.contains("relationships/footnotes"));
+        assert!(rels.contains(r#"Target="footnotes.xml""#));
+        assert!(content_types.contains(r#"PartName="/word/footnotes.xml""#));
+        assert!(content_types.contains(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"
+        ));
     }
 
     #[test]

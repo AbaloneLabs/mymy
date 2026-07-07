@@ -20,6 +20,8 @@ export interface DocxBlock {
   rows?: string[][];
   relationshipId?: string;
   target?: string;
+  footnoteId?: string;
+  endnoteId?: string;
   mediaPath?: string;
   mimeType?: string;
   dataUrl?: string;
@@ -529,6 +531,10 @@ export function normalizeDocxModel(model: unknown): DocxModel {
         relationshipId:
           typeof item.relationshipId === "string" ? item.relationshipId : undefined,
         target: typeof item.target === "string" ? item.target : undefined,
+        footnoteId:
+          typeof item.footnoteId === "string" ? item.footnoteId : undefined,
+        endnoteId:
+          typeof item.endnoteId === "string" ? item.endnoteId : undefined,
         mediaPath:
           typeof item.mediaPath === "string" ? item.mediaPath : undefined,
         mimeType: typeof item.mimeType === "string" ? item.mimeType : undefined,

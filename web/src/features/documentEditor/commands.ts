@@ -59,6 +59,7 @@ export type EditorCommandId =
   | "outline"
   | "copyFormatting"
   | "pasteFormatting"
+  | "footnote"
   | "newSlide"
   | "duplicate"
   | "delete"
@@ -215,6 +216,11 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
     key: "v",
     primary: true,
     shift: true,
+  }),
+  command("footnote", "Footnote", "Ctrl/Cmd+Alt+F", {
+    key: "f",
+    primary: true,
+    alt: true,
   }),
 ];
 
