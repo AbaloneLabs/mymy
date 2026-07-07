@@ -52,6 +52,40 @@ import {
 } from "../spreadsheetFormula";
 import type { SpreadsheetFormulaFunction } from "../spreadsheetFormula";
 import {
+  DEFAULT_XLSX_COLUMN_WIDTH,
+  DEFAULT_XLSX_ROW_HEIGHT,
+  MIN_DELIMITED_VISIBLE_COLUMNS,
+  MIN_DELIMITED_VISIBLE_ROWS,
+  MIN_XLSX_VISIBLE_COLUMNS,
+  MIN_XLSX_VISIBLE_ROWS,
+  SPREADSHEET_COLUMN_WIDTH,
+  SPREADSHEET_HEADER_HEIGHT,
+  SPREADSHEET_ROW_HEADER_WIDTH,
+  SPREADSHEET_ROW_HEIGHT,
+  clampCellRange,
+  clampNumber,
+  emptyViewport,
+  indexRange,
+  normalizeCellRange,
+  rangeCoversColumn,
+  rangeCoversRow,
+  rangeCoversSheet,
+  rangeIndexes,
+  rangeToA1,
+  scrollCellIntoView,
+  singleCellRange,
+  spacerColumnCount,
+  viewportFromElement,
+  virtualWindow,
+  xlsxCellPositionFromRef,
+  xlsxRangeFromRef,
+} from "../spreadsheetGeometry";
+import type {
+  CellPosition,
+  NormalizedCellRange,
+  SpreadsheetViewport,
+} from "../spreadsheetGeometry";
+import {
   columnName,
   normalizeRow,
   normalizeXlsxCells,
@@ -78,25 +112,6 @@ import type {
   XlsxTable,
 } from "../models";
 
-interface CellPosition {
-  row: number;
-  column: number;
-}
-
-interface NormalizedCellRange {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}
-
-interface SpreadsheetViewport {
-  scrollTop: number;
-  scrollLeft: number;
-  width: number;
-  height: number;
-}
-
 type XlsxCellStylePatch = Partial<
   Pick<
     XlsxCell,
@@ -120,16 +135,6 @@ type XlsxDataValidationOperator = NonNullable<XlsxDataValidation["operator"]>;
 type XlsxConditionalRuleType = NonNullable<XlsxConditionalRule["type"]>;
 type XlsxConditionalOperator = NonNullable<XlsxConditionalRule["operator"]>;
 
-const SPREADSHEET_ROW_HEIGHT = 32;
-const SPREADSHEET_COLUMN_WIDTH = 128;
-const SPREADSHEET_ROW_HEADER_WIDTH = 48;
-const SPREADSHEET_HEADER_HEIGHT = 32;
-const DEFAULT_XLSX_COLUMN_WIDTH = 16;
-const DEFAULT_XLSX_ROW_HEIGHT = 24;
-const MIN_XLSX_VISIBLE_COLUMNS = 702;
-const MIN_XLSX_VISIBLE_ROWS = 1000;
-const MIN_DELIMITED_VISIBLE_COLUMNS = MIN_XLSX_VISIBLE_COLUMNS;
-const MIN_DELIMITED_VISIBLE_ROWS = MIN_XLSX_VISIBLE_ROWS;
 const XLSX_FONT_SIZES = ["8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "32"];
 const XLSX_NUMBER_FORMATS = [
   { label: "General", value: "" },
@@ -4206,87 +4211,6 @@ function SpreadsheetColumnSpacer({ width }: { width: number }) {
   );
 }
 
-function virtualWindow(
-  total: number,
-  scrollOffset: number,
-  viewportSize: number,
-  itemSize: number,
-  overscan: number,
-) {
-  if (total <= 0) return { start: 0, end: 0 };
-  const safeViewport = Math.max(viewportSize, itemSize * 8);
-  const firstVisible = Math.floor(Math.max(0, scrollOffset) / itemSize);
-  const visibleCount = Math.ceil(safeViewport / itemSize);
-  const start = Math.min(total - 1, Math.max(0, firstVisible - overscan));
-  const end = Math.min(total, firstVisible + visibleCount + overscan);
-  return { start, end: Math.min(total, Math.max(start + 1, end)) };
-}
-
-function indexRange(start: number, end: number) {
-  return Array.from({ length: Math.max(0, end - start) }, (_, index) => start + index);
-}
-
-function spacerColumnCount(
-  window: { start: number; end: number },
-  totalColumns: number,
-) {
-  return (window.start > 0 ? 1 : 0) + (window.end < totalColumns ? 1 : 0);
-}
-
-const emptyViewport: SpreadsheetViewport = {
-  scrollTop: 0,
-  scrollLeft: 0,
-  width: 0,
-  height: 0,
-};
-
-function viewportFromElement(element: HTMLDivElement): SpreadsheetViewport {
-  return {
-    scrollTop: element.scrollTop,
-    scrollLeft: element.scrollLeft,
-    width: element.clientWidth,
-    height: element.clientHeight,
-  };
-}
-
-function scrollCellIntoView(
-  element: HTMLDivElement | null,
-  row: number,
-  column: number,
-) {
-  if (!element) return;
-  const targetTop = SPREADSHEET_HEADER_HEIGHT + row * SPREADSHEET_ROW_HEIGHT;
-  const targetBottom = targetTop + SPREADSHEET_ROW_HEIGHT;
-  const targetLeft =
-    SPREADSHEET_ROW_HEADER_WIDTH + column * SPREADSHEET_COLUMN_WIDTH;
-  const targetRight = targetLeft + SPREADSHEET_COLUMN_WIDTH;
-
-  if (targetTop < element.scrollTop) {
-    element.scrollTop = targetTop;
-  } else if (targetBottom > element.scrollTop + element.clientHeight) {
-    element.scrollTop = targetBottom - element.clientHeight;
-  }
-
-  if (targetLeft < element.scrollLeft + SPREADSHEET_ROW_HEADER_WIDTH) {
-    element.scrollLeft = Math.max(0, targetLeft - SPREADSHEET_ROW_HEADER_WIDTH);
-  } else if (targetRight > element.scrollLeft + element.clientWidth) {
-    element.scrollLeft = targetRight - element.clientWidth;
-  }
-}
-
-function normalizeCellRange(
-  start: CellPosition | null,
-  end: CellPosition | null,
-): NormalizedCellRange | null {
-  if (!start || !end) return null;
-  return {
-    top: Math.min(start.row, end.row),
-    right: Math.max(start.column, end.column),
-    bottom: Math.max(start.row, end.row),
-    left: Math.min(start.column, end.column),
-  };
-}
-
 function spreadsheetCellClass(
   activeCell: CellPosition | null,
   selectionRange: NormalizedCellRange | null,
@@ -4304,48 +4228,6 @@ function spreadsheetCellClass(
     "border border-[var(--border)]",
     selected && "bg-[var(--accent)]/5",
     active && "outline outline-2 outline-[var(--accent)]",
-  );
-}
-
-function rangeCoversSheet(
-  range: NormalizedCellRange | null,
-  rowCount: number,
-  columnCount: number,
-) {
-  return Boolean(
-    range &&
-      range.top <= 0 &&
-      range.left <= 0 &&
-      range.bottom >= Math.max(0, rowCount - 1) &&
-      range.right >= Math.max(0, columnCount - 1),
-  );
-}
-
-function rangeCoversColumn(
-  range: NormalizedCellRange | null,
-  column: number,
-  rowCount: number,
-) {
-  return Boolean(
-    range &&
-      range.left <= column &&
-      range.right >= column &&
-      range.top <= 0 &&
-      range.bottom >= Math.max(0, rowCount - 1),
-  );
-}
-
-function rangeCoversRow(
-  range: NormalizedCellRange | null,
-  row: number,
-  columnCount: number,
-) {
-  return Boolean(
-    range &&
-      range.top <= row &&
-      range.bottom >= row &&
-      range.left <= 0 &&
-      range.right >= Math.max(0, columnCount - 1),
   );
 }
 
@@ -4654,14 +4536,6 @@ function reindexXlsxRows(rows: XlsxRow[], columnCount: number) {
   });
 }
 
-function rangeIndexes(start: number, end: number) {
-  return Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => start + index);
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function optionalTrimmedString(value: string | undefined) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -4701,59 +4575,6 @@ function xlsxAnchorLabel(anchor: XlsxChart["anchor"]) {
   const to = anchor?.to;
   if (to?.row === undefined || to.column === undefined) return start;
   return `${start}:${columnName(to.column)}${to.row + 1}`;
-}
-
-function singleCellRange(range: NormalizedCellRange) {
-  return range.top === range.bottom && range.left === range.right;
-}
-
-function rangeToA1(range: NormalizedCellRange) {
-  return `${columnName(range.left)}${range.top + 1}:${columnName(range.right)}${range.bottom + 1}`;
-}
-
-function xlsxRangeFromRef(ref: string): NormalizedCellRange | null {
-  const [start, end = start] = ref.split(":");
-  const startPosition = xlsxCellPositionFromRef(start);
-  const endPosition = xlsxCellPositionFromRef(end);
-  if (!startPosition || !endPosition) return null;
-  return {
-    top: Math.min(startPosition.row, endPosition.row),
-    right: Math.max(startPosition.column, endPosition.column),
-    bottom: Math.max(startPosition.row, endPosition.row),
-    left: Math.min(startPosition.column, endPosition.column),
-  };
-}
-
-function clampCellRange(
-  range: NormalizedCellRange,
-  rowCount: number,
-  columnCount: number,
-): NormalizedCellRange {
-  const maxRow = Math.max(0, rowCount - 1);
-  const maxColumn = Math.max(0, columnCount - 1);
-  return {
-    top: Math.min(maxRow, Math.max(0, range.top)),
-    right: Math.min(maxColumn, Math.max(0, range.right)),
-    bottom: Math.min(maxRow, Math.max(0, range.bottom)),
-    left: Math.min(maxColumn, Math.max(0, range.left)),
-  };
-}
-
-function xlsxCellPositionFromRef(ref: string | undefined): CellPosition | null {
-  if (!ref) return null;
-  const match = /^([A-Z]+)(\d+)$/i.exec(ref.replace(/\$/g, ""));
-  if (!match) return null;
-  return {
-    row: Math.max(0, Number(match[2]) - 1),
-    column: columnIndexFromName(match[1]),
-  };
-}
-
-function columnIndexFromName(name: string) {
-  return name
-    .toUpperCase()
-    .split("")
-    .reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
 }
 
 function nonOverlappingMergedRanges(
