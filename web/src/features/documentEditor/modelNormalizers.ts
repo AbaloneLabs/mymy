@@ -109,6 +109,19 @@ export function normalizeDocxModel(model: unknown): DocxModel {
               .map((height) => numericField(height))
               .filter((height): height is number => height !== undefined)
           : undefined,
+        tableStyle:
+          typeof item.tableStyle === "string" ? item.tableStyle : undefined,
+        tableBorderColor: hexColorField(item.tableBorderColor),
+        tableBorderSize: numericField(item.tableBorderSize),
+        tableCellBackground: hexColorField(item.tableCellBackground),
+        tableHeaderRow: item.tableHeaderRow === true,
+        tableHeaderBackground: hexColorField(item.tableHeaderBackground),
+        tableCellVerticalAlign:
+          item.tableCellVerticalAlign === "center" ||
+          item.tableCellVerticalAlign === "bottom" ||
+          item.tableCellVerticalAlign === "top"
+            ? item.tableCellVerticalAlign
+            : undefined,
         relationshipId:
           typeof item.relationshipId === "string" ? item.relationshipId : undefined,
         target: typeof item.target === "string" ? item.target : undefined,
@@ -1167,4 +1180,14 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 function numericField(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function hexColorField(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().startsWith("#")
+    ? value.trim()
+    : `#${value.trim()}`;
+  return /^#[0-9a-fA-F]{6}$/.test(normalized)
+    ? normalized.toUpperCase()
+    : undefined;
 }

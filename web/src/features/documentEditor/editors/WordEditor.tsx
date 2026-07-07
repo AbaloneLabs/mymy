@@ -720,6 +720,12 @@ export function DocxEditor({
     updateBlock(blockIndex, resizeDocxTableRow(block, rowIndex, height));
   }
 
+  function updateTableStyle(blockIndex: number, patch: Partial<DocxBlock>) {
+    const block = model.blocks[blockIndex];
+    if (block?.type !== "table") return;
+    updateBlock(blockIndex, patch);
+  }
+
   function updateImageBlock(index: number, patch: Partial<DocxBlock>) {
     const block = model.blocks[index];
     if (!block || block.type !== "image") return;
@@ -806,6 +812,13 @@ export function DocxEditor({
                 rows: undefined,
                 tableColumnWidths: undefined,
                 tableRowHeights: undefined,
+                tableStyle: undefined,
+                tableBorderColor: undefined,
+                tableBorderSize: undefined,
+                tableCellBackground: undefined,
+                tableHeaderRow: undefined,
+                tableHeaderBackground: undefined,
+                tableCellVerticalAlign: undefined,
                 listKind: undefined,
                 target: undefined,
                 relationshipId: undefined,
@@ -820,6 +833,13 @@ export function DocxEditor({
                 rows: undefined,
                 tableColumnWidths: undefined,
                 tableRowHeights: undefined,
+                tableStyle: undefined,
+                tableBorderColor: undefined,
+                tableBorderSize: undefined,
+                tableCellBackground: undefined,
+                tableHeaderRow: undefined,
+                tableHeaderBackground: undefined,
+                tableCellVerticalAlign: undefined,
                 listKind: undefined,
                 target: undefined,
                 relationshipId: undefined,
@@ -850,6 +870,19 @@ export function DocxEditor({
                       tableRows.length,
                     )
                   : undefined,
+              tableStyle: type === "table" ? activeBlock?.tableStyle : undefined,
+              tableBorderColor:
+                type === "table" ? activeBlock?.tableBorderColor : undefined,
+              tableBorderSize:
+                type === "table" ? activeBlock?.tableBorderSize : undefined,
+              tableCellBackground:
+                type === "table" ? activeBlock?.tableCellBackground : undefined,
+              tableHeaderRow:
+                type === "table" ? activeBlock?.tableHeaderRow : undefined,
+              tableHeaderBackground:
+                type === "table" ? activeBlock?.tableHeaderBackground : undefined,
+              tableCellVerticalAlign:
+                type === "table" ? activeBlock?.tableCellVerticalAlign : undefined,
               fontSize:
                 type === "heading"
                   ? headingFontSize(headingLevel ?? 1)
@@ -1388,6 +1421,7 @@ export function DocxEditor({
                   onRowHeightChange={(rowIndex, height) =>
                     updateTableRowHeight(index, rowIndex, height)
                   }
+                  onStyleChange={(patch) => updateTableStyle(index, patch)}
                   onDeleteRow={(rowIndex) => deleteTableRow(index, rowIndex)}
                   onDeleteColumn={(columnIndex) =>
                     deleteTableColumn(index, columnIndex)

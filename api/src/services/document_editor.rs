@@ -7,6 +7,7 @@
 
 mod docx_comments;
 mod docx_notes;
+mod docx_tables;
 mod docx_text_parts;
 
 use std::collections::BTreeMap;
@@ -33,6 +34,13 @@ use self::docx_notes::{
     add_docx_note_replacements, docx_note_reference_run, docx_notes,
     docx_paragraph_needs_note_reference_rebuild, DOCX_ENDNOTE_PART, DOCX_FOOTNOTE_PART,
 };
+use self::docx_tables::{
+    build_docx_table, parse_docx_table_border_color, parse_docx_table_border_size,
+    parse_docx_table_cell_background, parse_docx_table_cell_vertical_align,
+    parse_docx_table_column_widths, parse_docx_table_header_background,
+    parse_docx_table_header_row, parse_docx_table_row_heights, parse_docx_table_rows,
+    parse_docx_table_style,
+};
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
 
 const PPTX_SLIDE_WIDTH_EMU: f64 = 9_144_000.0;
@@ -41,12 +49,6 @@ const DOCX_BULLET_NUM_ID: &str = "9001";
 const DOCX_NUMBER_NUM_ID: &str = "9002";
 const DOCX_BULLET_ABSTRACT_NUM_ID: &str = "9001";
 const DOCX_NUMBER_ABSTRACT_NUM_ID: &str = "9002";
-const DOCX_DEFAULT_TABLE_COLUMN_WIDTH: u32 = 2400;
-const DOCX_MIN_TABLE_COLUMN_WIDTH: u32 = 720;
-const DOCX_MAX_TABLE_COLUMN_WIDTH: u32 = 14_400;
-const DOCX_DEFAULT_TABLE_ROW_HEIGHT: u32 = 360;
-const DOCX_MIN_TABLE_ROW_HEIGHT: u32 = 240;
-const DOCX_MAX_TABLE_ROW_HEIGHT: u32 = 7200;
 
 #[derive(Debug, Clone)]
 struct PptxTextSpec {
@@ -791,13 +793,35 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
     let mut index = 0usize;
     for segment in docx_body_segments(&document) {
         if segment.starts_with("<w:tbl") {
-            blocks.push(json!({
+            let mut table_block = json!({
                 "id": format!("tbl{}", index + 1),
                 "type": "table",
                 "rows": parse_docx_table_rows(&segment),
                 "tableColumnWidths": parse_docx_table_column_widths(&segment),
                 "tableRowHeights": parse_docx_table_row_heights(&segment)
-            }));
+            });
+            if let Some(style) = parse_docx_table_style(&segment) {
+                table_block["tableStyle"] = json!(style);
+            }
+            if let Some(color) = parse_docx_table_border_color(&segment) {
+                table_block["tableBorderColor"] = json!(color);
+            }
+            if let Some(size) = parse_docx_table_border_size(&segment) {
+                table_block["tableBorderSize"] = json!(size);
+            }
+            if let Some(background) = parse_docx_table_cell_background(&segment) {
+                table_block["tableCellBackground"] = json!(background);
+            }
+            if parse_docx_table_header_row(&segment) {
+                table_block["tableHeaderRow"] = json!(true);
+            }
+            if let Some(background) = parse_docx_table_header_background(&segment) {
+                table_block["tableHeaderBackground"] = json!(background);
+            }
+            if let Some(align) = parse_docx_table_cell_vertical_align(&segment) {
+                table_block["tableCellVerticalAlign"] = json!(align);
+            }
+            blocks.push(table_block);
             index += 1;
             continue;
         }
@@ -1262,44 +1286,6 @@ fn docx_body_segments(document: &str) -> Vec<String> {
         rest = &after_start[end_index..];
     }
     segments
-}
-
-fn parse_docx_table_rows(table: &str) -> Vec<Vec<String>> {
-    xml_segments(table, "<w:tr", "</w:tr>")
-        .into_iter()
-        .map(|row| {
-            xml_segments(&row, "<w:tc", "</w:tc>")
-                .into_iter()
-                .map(|cell| extract_text_tags(&cell, "w:t").join(""))
-                .collect::<Vec<_>>()
-        })
-        .filter(|row| !row.is_empty())
-        .collect()
-}
-
-fn parse_docx_table_column_widths(table: &str) -> Vec<u32> {
-    xml_segments(table, "<w:tr", "</w:tr>")
-        .into_iter()
-        .find_map(|row| {
-            let widths = xml_segments(&row, "<w:tc", "</w:tc>")
-                .into_iter()
-                .filter_map(|cell| docx_tag_attr(&cell, "<w:tcW", "w:w"))
-                .filter_map(|value| value.parse::<u32>().ok())
-                .collect::<Vec<_>>();
-            (!widths.is_empty()).then_some(widths)
-        })
-        .unwrap_or_default()
-}
-
-fn parse_docx_table_row_heights(table: &str) -> Vec<u32> {
-    xml_segments(table, "<w:tr", "</w:tr>")
-        .into_iter()
-        .map(|row| {
-            docx_tag_attr(&row, "<w:trHeight", "w:val")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(DOCX_DEFAULT_TABLE_ROW_HEIGHT)
-        })
-        .collect()
 }
 
 fn docx_image_block_from_segment(
@@ -4471,80 +4457,6 @@ fn docx_text_with_breaks(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
-}
-
-fn build_docx_table(block: &Value) -> String {
-    let rows = block
-        .get("rows")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let column_widths = block
-        .get("tableColumnWidths")
-        .and_then(Value::as_array)
-        .map(|widths| {
-            widths
-                .iter()
-                .filter_map(Value::as_u64)
-                .map(|width| {
-                    width.clamp(
-                        u64::from(DOCX_MIN_TABLE_COLUMN_WIDTH),
-                        u64::from(DOCX_MAX_TABLE_COLUMN_WIDTH),
-                    ) as u32
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let row_heights = block
-        .get("tableRowHeights")
-        .and_then(Value::as_array)
-        .map(|heights| {
-            heights
-                .iter()
-                .filter_map(Value::as_u64)
-                .map(|height| {
-                    height.clamp(
-                        u64::from(DOCX_MIN_TABLE_ROW_HEIGHT),
-                        u64::from(DOCX_MAX_TABLE_ROW_HEIGHT),
-                    ) as u32
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let rows_xml = rows
-        .iter()
-        .enumerate()
-        .map(|(row_index, row)| {
-            let cells = row.as_array().cloned().unwrap_or_default();
-            let row_height = row_heights
-                .get(row_index)
-                .copied()
-                .unwrap_or(DOCX_DEFAULT_TABLE_ROW_HEIGHT);
-            let cells_xml = cells
-                .iter()
-                .enumerate()
-                .map(|(cell_index, cell)| {
-                    let text = cell.as_str().unwrap_or_default();
-                    let width = column_widths
-                        .get(cell_index)
-                        .copied()
-                        .unwrap_or(DOCX_DEFAULT_TABLE_COLUMN_WIDTH);
-                    format!(
-                        r#"<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr><w:p><w:r>{}</w:r></w:p></w:tc>"#,
-                        docx_text_with_breaks(text)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            format!(
-                r#"<w:tr><w:trPr><w:trHeight w:val="{row_height}" w:hRule="atLeast"/></w:trPr>{cells_xml}</w:tr>"#
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    format!(
-        r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr>{rows_xml}</w:tbl>"#
-    )
 }
 
 fn ensure_docx_relationship_namespace(document: &str) -> String {
@@ -11409,7 +11321,7 @@ mod tests {
 
     #[test]
     fn docx_table_rows_parse_and_save_basic_cells() {
-        let table = r#"<w:tbl><w:tr><w:trPr><w:trHeight w:val="420" w:hRule="atLeast"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="1800" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="600" w:hRule="atLeast"/></w:trPr><w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+        let table = r##"<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblBorders><w:top w:val="single" w:sz="6" w:space="0" w:color="1F2937"/></w:tblBorders></w:tblPr><w:tr><w:trPr><w:trHeight w:val="420" w:hRule="atLeast"/><w:tblHeader/></w:trPr><w:tc><w:tcPr><w:tcW w:w="1800" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="DBEAFE"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="DBEAFE"/></w:tcPr><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="600" w:hRule="atLeast"/></w:trPr><w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/></w:tcPr><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"##;
 
         let rows = parse_docx_table_rows(table);
         assert_eq!(
@@ -11421,18 +11333,47 @@ mod tests {
         );
         assert_eq!(parse_docx_table_column_widths(table), vec![1800, 3000]);
         assert_eq!(parse_docx_table_row_heights(table), vec![420, 600]);
+        assert_eq!(parse_docx_table_style(table), Some("TableGrid".to_string()));
+        assert_eq!(
+            parse_docx_table_border_color(table),
+            Some("#1F2937".to_string())
+        );
+        assert_eq!(parse_docx_table_border_size(table), Some(6));
+        assert_eq!(
+            parse_docx_table_cell_background(table),
+            Some("#FFFFFF".to_string())
+        );
+        assert!(parse_docx_table_header_row(table));
+        assert_eq!(
+            parse_docx_table_header_background(table),
+            Some("#DBEAFE".to_string())
+        );
+        assert_eq!(parse_docx_table_cell_vertical_align(table), Some("center"));
 
         let xml = build_docx_table(&json!({
             "type": "table",
             "rows": [["C1", "D1"], ["C2", "D2\nD3"]],
             "tableColumnWidths": [1800, 3000],
-            "tableRowHeights": [420, 600]
+            "tableRowHeights": [420, 600],
+            "tableStyle": "TableGrid",
+            "tableBorderColor": "#1F2937",
+            "tableBorderSize": 6,
+            "tableCellBackground": "#FFFFFF",
+            "tableHeaderRow": true,
+            "tableHeaderBackground": "#DBEAFE",
+            "tableCellVerticalAlign": "center"
         }));
         assert!(xml.contains("<w:tbl>"));
+        assert!(xml.contains(r#"<w:tblStyle w:val="TableGrid"/>"#));
+        assert!(xml.contains(r#"<w:top w:val="single" w:sz="6" w:space="0" w:color="1F2937"/>"#));
         assert!(xml.contains(r#"<w:tcW w:w="1800" w:type="dxa"/>"#));
         assert!(xml.contains(r#"<w:tcW w:w="3000" w:type="dxa"/>"#));
         assert!(xml.contains(r#"<w:trHeight w:val="420" w:hRule="atLeast"/>"#));
         assert!(xml.contains(r#"<w:trHeight w:val="600" w:hRule="atLeast"/>"#));
+        assert!(xml.contains("<w:tblHeader/>"));
+        assert!(xml.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="DBEAFE"/>"#));
+        assert!(xml.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/>"#));
+        assert!(xml.contains(r#"<w:vAlign w:val="center"/>"#));
         assert!(xml.contains("<w:t xml:space=\"preserve\">C1</w:t>"));
         assert!(xml.contains("<w:t xml:space=\"preserve\">D2</w:t>"));
         assert!(xml.contains("<w:br/><w:t xml:space=\"preserve\">D3</w:t>"));

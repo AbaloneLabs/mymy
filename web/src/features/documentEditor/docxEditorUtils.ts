@@ -31,6 +31,18 @@ export const DOCX_PAGE_PRESETS = [
   { label: "Legal", value: "legal", width: 12_240, height: 20_160 },
 ] as const;
 
+export const DOCX_TABLE_STYLES = [
+  { label: "Plain", value: "" },
+  { label: "Grid", value: "TableGrid" },
+  { label: "Light list", value: "LightList" },
+  { label: "Medium grid", value: "MediumGrid1" },
+] as const;
+
+export const DEFAULT_DOCX_TABLE_BORDER_COLOR = "#A3A3A3";
+export const DEFAULT_DOCX_TABLE_BACKGROUND = "#FFFFFF";
+export const DEFAULT_DOCX_TABLE_HEADER_BACKGROUND = "#F5F5F5";
+export const DEFAULT_DOCX_TABLE_BORDER_SIZE = 4;
+
 const DOCX_FORMAT_KEYS = [
   "type",
   "headingLevel",

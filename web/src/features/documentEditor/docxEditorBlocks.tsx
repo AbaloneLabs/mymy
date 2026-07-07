@@ -14,6 +14,7 @@ import {
   Copy,
   Eraser,
   Image as ImageIcon,
+  Palette,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -28,6 +29,11 @@ import type {
   DocxTextPart,
 } from "./models";
 import {
+  DEFAULT_DOCX_TABLE_BACKGROUND,
+  DEFAULT_DOCX_TABLE_BORDER_COLOR,
+  DEFAULT_DOCX_TABLE_BORDER_SIZE,
+  DEFAULT_DOCX_TABLE_HEADER_BACKGROUND,
+  DOCX_TABLE_STYLES,
   DOCX_PAGE_PRESETS,
   TWIPS_PER_INCH,
   clampImageDimension,
@@ -488,6 +494,7 @@ export function DocxTableBlock({
   onMoveColumn,
   onColumnWidthChange,
   onRowHeightChange,
+  onStyleChange,
   onDeleteRow,
   onDeleteColumn,
   onClearCell,
@@ -507,6 +514,7 @@ export function DocxTableBlock({
   onMoveColumn: (column: number, direction: -1 | 1) => void;
   onColumnWidthChange: (column: number, width: number) => void;
   onRowHeightChange: (row: number, height: number) => void;
+  onStyleChange: (patch: Partial<DocxBlock>) => void;
   onDeleteRow: (row: number) => void;
   onDeleteColumn: (column: number) => void;
   onClearCell: (row: number, column: number) => void;
@@ -529,6 +537,15 @@ export function DocxTableBlock({
   );
   const tableWidth = columnWidths.reduce((total, width) => total + width, 0);
   const selectedCell = clampTableCell(activeCell, normalizedRows.length, columns);
+  const tableBorderColor =
+    block.tableBorderColor ?? DEFAULT_DOCX_TABLE_BORDER_COLOR;
+  const tableBorderSize =
+    block.tableBorderSize ?? DEFAULT_DOCX_TABLE_BORDER_SIZE;
+  const tableCellBackground =
+    block.tableCellBackground ?? DEFAULT_DOCX_TABLE_BACKGROUND;
+  const tableHeaderBackground =
+    block.tableHeaderBackground ?? DEFAULT_DOCX_TABLE_HEADER_BACKGROUND;
+  const tableCellVerticalAlign = block.tableCellVerticalAlign ?? "top";
 
   function selectCell(row: number, column: number) {
     setActiveCell({ row, column });
@@ -693,6 +710,92 @@ export function DocxTableBlock({
         <DocxTableActionButton icon={Trash2} label="Delete column" onClick={() => selectedCell && onDeleteColumn(selectedCell.column)} disabled={!selectedCell || columns <= 1} danger />
         <div className="mx-1 h-5 w-px bg-neutral-200" />
         <DocxTableActionButton icon={Eraser} label="Clear cell" onClick={() => selectedCell && onClearCell(selectedCell.row, selectedCell.column)} disabled={!selectedCell} />
+        <div className="mx-1 h-5 w-px bg-neutral-200" />
+        <Palette className="h-3.5 w-3.5 text-neutral-500" strokeWidth={1.75} />
+        <label className="inline-flex h-7 items-center gap-1 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-600">
+          Header
+          <input
+            type="checkbox"
+            checked={block.tableHeaderRow === true}
+            onChange={(event) =>
+              onStyleChange({ tableHeaderRow: event.target.checked })
+            }
+            className="h-3.5 w-3.5"
+          />
+        </label>
+        <select
+          value={block.tableStyle ?? ""}
+          onChange={(event) =>
+            onStyleChange({ tableStyle: event.target.value || undefined })
+          }
+          className="h-7 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-700 outline-none focus:border-[var(--accent)]"
+          title="Table style"
+        >
+          {DOCX_TABLE_STYLES.map((style) => (
+            <option key={style.label} value={style.value}>
+              {style.label}
+            </option>
+          ))}
+        </select>
+        <label className="inline-flex h-7 items-center gap-1 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-600">
+          Border
+          <input
+            type="color"
+            value={tableBorderColor}
+            onChange={(event) =>
+              onStyleChange({ tableBorderColor: event.target.value })
+            }
+            className="h-4 w-5 border-0 bg-transparent p-0"
+          />
+          <input
+            type="number"
+            min={0}
+            max={24}
+            value={tableBorderSize}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              onStyleChange({ tableBorderSize: Number.isFinite(next) ? next : 0 });
+            }}
+            className="w-10 bg-transparent text-right text-[11px] text-neutral-900 outline-none"
+          />
+        </label>
+        <label className="inline-flex h-7 items-center gap-1 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-600">
+          Fill
+          <input
+            type="color"
+            value={tableCellBackground}
+            onChange={(event) =>
+              onStyleChange({ tableCellBackground: event.target.value })
+            }
+            className="h-4 w-5 border-0 bg-transparent p-0"
+          />
+        </label>
+        <label className="inline-flex h-7 items-center gap-1 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-600">
+          Head fill
+          <input
+            type="color"
+            value={tableHeaderBackground}
+            onChange={(event) =>
+              onStyleChange({ tableHeaderBackground: event.target.value })
+            }
+            className="h-4 w-5 border-0 bg-transparent p-0"
+          />
+        </label>
+        <select
+          value={tableCellVerticalAlign}
+          onChange={(event) =>
+            onStyleChange({
+              tableCellVerticalAlign: event.target
+                .value as NonNullable<DocxBlock["tableCellVerticalAlign"]>,
+            })
+          }
+          className="h-7 rounded border border-neutral-200 bg-white px-2 text-[11px] text-neutral-700 outline-none focus:border-[var(--accent)]"
+          title="Cell vertical alignment"
+        >
+          <option value="top">Top</option>
+          <option value="center">Middle</option>
+          <option value="bottom">Bottom</option>
+        </select>
       </div>
       <table
         className="border-collapse text-sm"
@@ -722,6 +825,7 @@ export function DocxTableBlock({
                 style={{
                   width: twipsToCssPixels(columnWidths[columnIndex]),
                   minWidth: twipsToCssPixels(columnWidths[columnIndex]),
+                  borderColor: tableBorderColor,
                 }}
               >
                 <button
@@ -758,6 +862,7 @@ export function DocxTableBlock({
                 style={{
                   height: twipsToCssPixels(rowHeights[rowIndex]),
                   minHeight: twipsToCssPixels(rowHeights[rowIndex]),
+                  borderColor: tableBorderColor,
                 }}
               >
                 <button
@@ -784,6 +889,18 @@ export function DocxTableBlock({
                       selectedCell.column === columnIndex &&
                       "bg-lime-50",
                   )}
+                  style={{
+                    backgroundColor:
+                      block.tableHeaderRow === true && rowIndex === 0
+                        ? tableHeaderBackground
+                        : tableCellBackground,
+                    borderColor: tableBorderColor,
+                    borderWidth: Math.max(0, Math.ceil(tableBorderSize / 2)),
+                    verticalAlign:
+                      tableCellVerticalAlign === "center"
+                        ? "middle"
+                        : tableCellVerticalAlign,
+                  }}
                 >
                   <textarea
                     value={cell}

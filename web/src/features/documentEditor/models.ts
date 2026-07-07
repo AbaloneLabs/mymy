@@ -20,6 +20,13 @@ export interface DocxBlock {
   rows?: string[][];
   tableColumnWidths?: number[];
   tableRowHeights?: number[];
+  tableStyle?: string;
+  tableBorderColor?: string;
+  tableBorderSize?: number;
+  tableCellBackground?: string;
+  tableHeaderRow?: boolean;
+  tableHeaderBackground?: string;
+  tableCellVerticalAlign?: "top" | "center" | "bottom";
   relationshipId?: string;
   target?: string;
   footnoteId?: string;
