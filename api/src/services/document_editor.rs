@@ -1153,6 +1153,21 @@ fn ensure_content_type_default(content_types: &str, extension: &str, content_typ
     )
 }
 
+fn ensure_content_type_override(
+    content_types: &str,
+    part_name: &str,
+    content_type: &str,
+) -> String {
+    if content_types.contains(&format!(r#"PartName="{part_name}""#)) {
+        return content_types.to_string();
+    }
+    append_before_or_end(
+        content_types,
+        "</Types>",
+        &format!(r#"<Override PartName="{part_name}" ContentType="{content_type}"/>"#),
+    )
+}
+
 fn add_docx_numbering_replacements(
     original: &[u8],
     relationships: &mut String,
@@ -2503,7 +2518,7 @@ fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
         let shape_specs = pptx_shape_specs(slide);
         let table_specs = pptx_table_specs(slide);
         let mut image_specs = pptx_image_specs(slide);
-        let chart_specs = pptx_chart_specs(slide);
+        let mut chart_specs = pptx_chart_specs(slide);
         let animation_specs = pptx_animation_specs(slide);
         let image_model_controls_slide = slide.get("images").is_some();
         let chart_model_controls_slide = slide.get("charts").is_some();
@@ -2524,19 +2539,25 @@ fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
                 content_types,
                 &mut replacements,
             )?;
+            add_pptx_chart_clone_replacements(
+                original,
+                &slide_write.path,
+                &mut chart_specs,
+                &mut existing_names,
+                content_types,
+                &mut replacements,
+            )?;
         }
         let Ok(original_xml) = read_zip_text(original, &slide_write.path) else {
-            replacements.push((
-                slide_write.path.clone(),
-                build_pptx_slide(
-                    &text_specs,
-                    &shape_specs,
-                    &table_specs,
-                    &image_specs,
-                    background_color.as_deref(),
-                )
-                .into_bytes(),
-            ));
+            let mut slide_xml = build_pptx_slide(
+                &text_specs,
+                &shape_specs,
+                &table_specs,
+                &image_specs,
+                background_color.as_deref(),
+            );
+            slide_xml = update_pptx_charts(&slide_xml, &chart_specs, chart_model_controls_slide);
+            replacements.push((slide_write.path.clone(), slide_xml.into_bytes()));
             add_pptx_notes_replacement(
                 original,
                 slide,
@@ -2671,6 +2692,76 @@ fn add_pptx_image_replacements(
     Ok(())
 }
 
+fn add_pptx_chart_clone_replacements(
+    original: &[u8],
+    slide_path: &str,
+    charts: &mut [PptxChartSpec],
+    existing_names: &mut Vec<String>,
+    content_types: &mut String,
+    replacements: &mut Vec<(String, Vec<u8>)>,
+) -> AppResult<()> {
+    if charts.iter().all(|chart| {
+        chart
+            .relationship_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+    }) {
+        return Ok(());
+    }
+    let rels_path = xlsx_part_rels_path(slide_path);
+    let mut rels = replacement_zip_text_or_default(
+        original,
+        replacements,
+        &rels_path,
+        xlsx_empty_relationships,
+    );
+    let mut next_relationship_id = next_rid(&rels);
+    let mut rels_changed = false;
+    for chart in charts.iter_mut() {
+        if chart
+            .relationship_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        {
+            continue;
+        }
+        let Some(source_path) = chart
+            .path
+            .as_deref()
+            .filter(|path| valid_pptx_chart_path(path))
+        else {
+            continue;
+        };
+        let chart_xml =
+            replacement_zip_text_or_default(original, replacements, source_path, String::new);
+        if chart_xml.trim().is_empty() {
+            continue;
+        }
+        let chart_path = next_pptx_chart_path(existing_names);
+        existing_names.push(chart_path.clone());
+        let relationship_id = format!("rId{next_relationship_id}");
+        next_relationship_id += 1;
+        let relationship = format!(
+            r#"<Relationship Id="{relationship_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="{}"/>"#,
+            escape_xml(&pptx_slide_relationship_target(&chart_path))
+        );
+        rels = append_before_or_end(&rels, "</Relationships>", &relationship);
+        *content_types = ensure_content_type_override(
+            content_types,
+            &format!("/{}", chart_path),
+            "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        );
+        chart.relationship_id = Some(relationship_id);
+        chart.path = Some(chart_path.clone());
+        replacements.push((chart_path, chart_xml.into_bytes()));
+        rels_changed = true;
+    }
+    if rels_changed {
+        upsert_zip_replacement(replacements, rels_path, rels.into_bytes());
+    }
+    Ok(())
+}
+
 fn add_pptx_notes_replacement(
     original: &[u8],
     slide: &Value,
@@ -2745,6 +2836,21 @@ fn next_pptx_notes_path(existing_names: &[String]) -> String {
         }
         index += 1;
     }
+}
+
+fn next_pptx_chart_path(existing_names: &[String]) -> String {
+    let mut index = 1usize;
+    loop {
+        let path = format!("ppt/charts/mymy-chart-{index}.xml");
+        if !existing_names.iter().any(|name| name == &path) {
+            return path;
+        }
+        index += 1;
+    }
+}
+
+fn valid_pptx_chart_path(path: &str) -> bool {
+    path.starts_with("ppt/charts/") && path.ends_with(".xml") && !path.contains("..")
 }
 
 fn pptx_slide_relationship_target(target_path: &str) -> String {
@@ -7859,7 +7965,7 @@ fn build_pptx_slide(
         .join("");
     let background = pptx_slide_background_xml(background_color);
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>{background}<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>{shape_xml}{text_xml}{table_xml}{image_xml}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>{background}<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>{shape_xml}{text_xml}{table_xml}{image_xml}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#
     )
 }
 
@@ -8208,7 +8314,7 @@ fn update_pptx_charts(xml: &str, specs: &[PptxChartSpec], remove_missing: bool) 
     }
     let mut output = String::new();
     let mut rest = xml;
-    let mut spec_index = 0usize;
+    let mut matched = vec![false; specs.len()];
     while let Some(start) = find_xml_start(rest, "<p:graphicFrame") {
         output.push_str(&rest[..start]);
         let after_start = &rest[start..];
@@ -8223,23 +8329,45 @@ fn update_pptx_charts(xml: &str, specs: &[PptxChartSpec], remove_missing: bool) 
             .next()
             .and_then(|chart| attr_value(&chart, "r:id"));
         if let Some(relationship_id) = relationship_id {
-            let spec = specs
+            let spec_index = specs
                 .iter()
-                .find(|spec| spec.relationship_id.as_deref() == Some(relationship_id.as_str()))
-                .or_else(|| specs.get(spec_index));
-            if let Some(spec) = spec {
+                .enumerate()
+                .find(|(index, spec)| {
+                    !matched[*index]
+                        && spec.relationship_id.as_deref() == Some(relationship_id.as_str())
+                })
+                .map(|(index, _)| index)
+                .or_else(|| {
+                    specs
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !matched[*index])
+                        .map(|(index, _)| index)
+                });
+            if let Some(spec_index) = spec_index {
+                matched[spec_index] = true;
+                let spec = &specs[spec_index];
                 output.push_str(&update_pptx_chart_frame(frame, spec));
             } else if !remove_missing {
                 output.push_str(frame);
             }
-            spec_index += 1;
         } else {
             output.push_str(frame);
         }
         rest = &after_start[end_index..];
     }
     output.push_str(rest);
-    output
+    let inserted = specs
+        .iter()
+        .enumerate()
+        .filter(|(index, spec)| !matched[*index] && spec.relationship_id.is_some())
+        .map(|(_, spec)| spec)
+        .collect::<Vec<_>>();
+    if inserted.is_empty() {
+        output
+    } else {
+        insert_pptx_charts(&output, &inserted)
+    }
 }
 
 fn update_pptx_chart_frame(frame: &str, spec: &PptxChartSpec) -> String {
@@ -8256,6 +8384,38 @@ fn update_pptx_chart_frame(frame: &str, spec: &PptxChartSpec) -> String {
         &[("cx", width.to_string()), ("cy", height.to_string())],
     );
     set_first_xml_tag_attrs(&output, "<p:xfrm", &[("rot", rotation.to_string())])
+}
+
+fn insert_pptx_charts(slide_xml: &str, charts: &[&PptxChartSpec]) -> String {
+    let first_shape_id = next_pptx_drawing_id(slide_xml);
+    let frames = charts
+        .iter()
+        .enumerate()
+        .map(|(index, chart)| build_pptx_chart_frame(first_shape_id + index, chart))
+        .collect::<Vec<_>>()
+        .join("");
+    if frames.is_empty() {
+        return slide_xml.to_string();
+    }
+    if let Some(index) = slide_xml.find("</p:spTree>") {
+        let mut output = String::new();
+        output.push_str(&slide_xml[..index]);
+        output.push_str(&frames);
+        output.push_str(&slide_xml[index..]);
+        output
+    } else {
+        slide_xml.to_string()
+    }
+}
+
+fn build_pptx_chart_frame(shape_id: usize, spec: &PptxChartSpec) -> String {
+    let relationship_id = spec.relationship_id.as_deref().unwrap_or_default();
+    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let rotation = pptx_rotation_unit(spec.rotation);
+    format!(
+        r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{shape_id}" name="Chart {shape_id}"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm rot="{rotation}"><a:off x="{x}" y="{y}"/><a:ext cx="{width}" cy="{height}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="{}"/></a:graphicData></a:graphic></p:graphicFrame>"#,
+        escape_xml(relationship_id)
+    )
 }
 
 fn add_pptx_chart_replacements(
@@ -8280,9 +8440,11 @@ fn add_pptx_chart_replacements(
         let Some(chart_path) = chart_path else {
             continue;
         };
-        let Ok(chart_xml) = read_zip_text(original, &chart_path) else {
+        let chart_xml =
+            replacement_zip_text_or_default(original, replacements, &chart_path, String::new);
+        if chart_xml.is_empty() {
             continue;
-        };
+        }
         let mut updated = chart_xml;
         if let Some(title) = spec.title.as_deref() {
             updated = update_pptx_chart_title(&updated, title);
@@ -11867,6 +12029,60 @@ mod tests {
         assert!(chart.contains(">Q2<"));
         assert!(chart.contains(">240<"));
         assert!(!chart.contains(">120<"));
+    }
+
+    #[test]
+    fn pptx_update_inserts_duplicate_chart_frame_with_cloned_chart_part() {
+        let slide_xml = pptx_test_slide_with_chart_xml("rIdChart");
+        let chart_xml = pptx_test_chart_xml("Revenue", "Q1", "120");
+        let package = test_ooxml_package(&[
+            ("[Content_Types].xml", pptx_test_content_types(false)),
+            ("ppt/presentation.xml", pptx_test_presentation_xml()),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                pptx_test_presentation_rels(),
+            ),
+            ("ppt/slides/slide1.xml", slide_xml.as_str()),
+            (
+                "ppt/slides/_rels/slide1.xml.rels",
+                r#"<Relationships><Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>"#,
+            ),
+            ("ppt/charts/chart1.xml", chart_xml.as_str()),
+        ]);
+        let mut model = pptx_model(&package).unwrap();
+        let duplicate = json!({
+            "id": "chart2",
+            "path": "ppt/charts/chart1.xml",
+            "title": "Revenue copy",
+            "x": 52.0,
+            "y": 20.0,
+            "width": 32.0,
+            "height": 24.0
+        });
+        model["slides"][0]["charts"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+
+        let updated = update_pptx(&package, &model).unwrap();
+        let slide = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+        let rels = read_zip_text(&updated, "ppt/slides/_rels/slide1.xml.rels").unwrap();
+        let content_types = read_zip_text(&updated, "[Content_Types].xml").unwrap();
+        let cloned_chart = read_zip_text(&updated, "ppt/charts/mymy-chart-1.xml").unwrap();
+
+        assert_eq!(slide.matches("<p:graphicFrame>").count(), 2);
+        assert_eq!(slide.matches(r#"<c:chart r:id="rIdChart"/>"#).count(), 1);
+        assert_eq!(slide.matches(r#"<c:chart r:id="rId1"/>"#).count(), 1);
+        assert!(slide.contains(r#"x="4754880""#));
+        assert!(slide.contains(r#"y="1028700""#));
+        assert!(slide.contains(r#"cx="2926080""#));
+        assert!(slide.contains(r#"cy="1234440""#));
+        assert!(rels.contains(r#"Id="rId1""#));
+        assert!(rels.contains(r#"Target="../charts/mymy-chart-1.xml""#));
+        assert!(content_types.contains(r#"PartName="/ppt/charts/mymy-chart-1.xml""#));
+        assert!(cloned_chart.contains(">Revenue copy<"));
+        assert!(cloned_chart.contains(">Q1<"));
+        assert!(cloned_chart.contains(">120<"));
     }
 
     #[test]

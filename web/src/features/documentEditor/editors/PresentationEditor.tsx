@@ -149,10 +149,11 @@ export function PptxEditor({
     if (commandId === "newSlide") {
       addSlide();
     } else if (commandId === "duplicate") {
-      if (activeText || activeShape || activeImage || activeTable) {
+      if (activeObject) {
         duplicateActiveObject();
-      } else if (activeChart) return false;
-      else duplicateSlide();
+      } else {
+        duplicateSlide();
+      }
     } else if (commandId === "delete") {
       deleteActiveObject();
     } else if (commandId === "sendBackward") {
@@ -713,6 +714,25 @@ export function PptxEditor({
     selectTable(next.id);
   }
 
+  function duplicateActiveChart() {
+    if (!slide || !activeChart) return;
+    const next = {
+      ...activeChart,
+      id: nextPptxChartId(slide.charts ?? []),
+      relationshipId: undefined,
+      x: Math.min((activeChart.x ?? 18) + 2, 100),
+      y: Math.min((activeChart.y ?? 18) + 2, 100),
+      series: (activeChart.series ?? []).map((series) => ({
+        ...series,
+        categories: series.categories ? [...series.categories] : undefined,
+        values: series.values ? [...series.values] : undefined,
+      })),
+      categories: activeChart.categories ? [...activeChart.categories] : undefined,
+    };
+    updateSlideCharts(slide.id, (charts) => [...charts, next]);
+    selectChart(next.id);
+  }
+
   function duplicateActiveObject() {
     if (activeText) {
       duplicateActiveText();
@@ -722,6 +742,8 @@ export function PptxEditor({
       duplicateActiveImage();
     } else if (activeTable) {
       duplicateActiveTable();
+    } else if (activeChart) {
+      duplicateActiveChart();
     }
   }
 
@@ -1004,7 +1026,7 @@ export function PptxEditor({
     const primary = event.ctrlKey || event.metaKey;
     if (primary && event.key.toLowerCase() === "d") {
       event.preventDefault();
-      if (!activeChart) duplicateActiveObject();
+      duplicateActiveObject();
       return;
     }
     const updateActiveObject = activeText
@@ -1187,7 +1209,7 @@ export function PptxEditor({
         <button
           type="button"
           onClick={duplicateActiveObject}
-          disabled={!activeObject || Boolean(activeChart)}
+          disabled={!activeObject}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           title="Duplicate selected object"
         >
