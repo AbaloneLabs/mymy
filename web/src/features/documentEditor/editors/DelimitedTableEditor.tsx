@@ -43,7 +43,7 @@ import {
   spreadsheetTimeStamp,
   summarizeSelection,
 } from "../spreadsheetPresentation";
-import { SpreadsheetToolbar } from "./SpreadsheetEditor";
+import { SpreadsheetToolbar } from "../spreadsheetToolbar";
 
 export function DelimitedTableEditor({
   model,
