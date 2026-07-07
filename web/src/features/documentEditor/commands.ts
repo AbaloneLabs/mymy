@@ -60,6 +60,7 @@ export type EditorCommandId =
   | "copyFormatting"
   | "pasteFormatting"
   | "footnote"
+  | "endnote"
   | "newSlide"
   | "duplicate"
   | "delete"
@@ -219,6 +220,11 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
   }),
   command("footnote", "Footnote", "Ctrl/Cmd+Alt+F", {
     key: "f",
+    primary: true,
+    alt: true,
+  }),
+  command("endnote", "Endnote", "Ctrl/Cmd+Alt+E", {
+    key: "e",
     primary: true,
     alt: true,
   }),

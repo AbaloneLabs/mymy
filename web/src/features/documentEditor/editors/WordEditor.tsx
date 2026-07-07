@@ -202,25 +202,23 @@ export function DocxEditor({
     updateActive(formatClipboard);
   }
 
-  function insertFootnoteReference(blockIndex?: number) {
+  function insertNoteReference(kind: "footnote" | "endnote", blockIndex?: number) {
     const targetIndex =
       blockIndex ??
       model.blocks.findIndex((block) => block.id === activeBlock?.id);
     const block = model.blocks[targetIndex];
     if (!isDocxTextBlock(block)) return;
-    const footnotes = model.footnotes ?? [];
-    const footnoteId =
-      block.footnoteId ??
-      nextDocxNoteId(footnotes, model.blocks, "footnoteId");
-    const noteExists = footnotes.some((note) => note.id === footnoteId);
+    const noteKey = kind === "footnote" ? "footnotes" : "endnotes";
+    const blockKey = kind === "footnote" ? "footnoteId" : "endnoteId";
+    const notes = model[noteKey] ?? [];
+    const noteId = block[blockKey] ?? nextDocxNoteId(notes, model.blocks, blockKey);
+    const noteExists = notes.some((note) => note.id === noteId);
     onChange({
       ...model,
       blocks: model.blocks.map((item, index) =>
-        index === targetIndex ? { ...item, footnoteId } : item,
+        index === targetIndex ? { ...item, [blockKey]: noteId } : item,
       ),
-      footnotes: noteExists
-        ? footnotes
-        : [...footnotes, { id: footnoteId, kind: "footnote", text: "" }],
+      [noteKey]: noteExists ? notes : [...notes, { id: noteId, kind, text: "" }],
     });
     setActiveBlockId(block.id);
     setTextPartsOpen(true);
@@ -381,7 +379,10 @@ export function DocxEditor({
       }
     } else if (event.altKey && key === "f") {
       event.preventDefault();
-      insertFootnoteReference(index);
+      insertNoteReference("footnote", index);
+    } else if (event.altKey && key === "e") {
+      event.preventDefault();
+      insertNoteReference("endnote", index);
     } else if (key === "l") {
       event.preventDefault();
       updateBlock(index, { align: "left" });
@@ -549,7 +550,9 @@ export function DocxEditor({
     } else if (commandId === "pasteFormatting") {
       pasteActiveFormatting();
     } else if (commandId === "footnote") {
-      insertFootnoteReference();
+      insertNoteReference("footnote");
+    } else if (commandId === "endnote") {
+      insertNoteReference("endnote");
     } else {
       return false;
     }
@@ -1146,8 +1149,15 @@ export function DocxEditor({
         <ToolbarButton
           icon={FileText}
           label="Footnote"
-          onClick={() => insertFootnoteReference()}
+          onClick={() => insertNoteReference("footnote")}
           active={Boolean(activeBlock?.footnoteId)}
+          disabled={!isDocxTextBlock(activeBlock)}
+        />
+        <ToolbarButton
+          icon={FileText}
+          label="Endnote"
+          onClick={() => insertNoteReference("endnote")}
+          active={Boolean(activeBlock?.endnoteId)}
           disabled={!isDocxTextBlock(activeBlock)}
         />
         <div className="mx-1 h-5 w-px bg-[var(--border)]" />
@@ -1511,6 +1521,19 @@ export function DocxEditor({
                     title="Footnote"
                   >
                     {block.footnoteId}
+                  </button>
+                )}
+                {block.endnoteId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveBlockId(block.id);
+                      setTextPartsOpen(true);
+                    }}
+                    className="absolute right-6 top-0 -translate-y-1/3 rounded-sm px-1 align-super text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50"
+                    title="Endnote"
+                  >
+                    {block.endnoteId}
                   </button>
                 )}
               </div>
