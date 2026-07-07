@@ -92,6 +92,13 @@ type PptxObjectRecord = {
 type PptxGeometryPatch = Partial<
   Pick<PptxObject, "x" | "y" | "width" | "height" | "rotation">
 >;
+type PptxSelectionBox = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  additive: boolean;
+};
 
 function pptxSelectionKey(
   objectKind: PptxObjectKind,
@@ -188,6 +195,37 @@ function pptxSelectionBounds(records: PptxObjectRecord[]) {
   };
 }
 
+function pptxSelectionBoxBounds(box: PptxSelectionBox) {
+  const left = Math.min(box.startX, box.currentX);
+  const top = Math.min(box.startY, box.currentY);
+  const right = Math.max(box.startX, box.currentX);
+  const bottom = Math.max(box.startY, box.currentY);
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+function pptxObjectIntersectsSelectionBox(
+  record: PptxObjectRecord,
+  box: ReturnType<typeof pptxSelectionBoxBounds>,
+) {
+  const x = record.object.x ?? 0;
+  const y = record.object.y ?? 0;
+  const width = Math.max(record.object.width ?? 1, 1);
+  const height = Math.max(record.object.height ?? 1, 1);
+  return (
+    x <= box.right &&
+    x + width >= box.left &&
+    y <= box.bottom &&
+    y + height >= box.top
+  );
+}
+
 export function PptxEditor({
   model,
   onChange,
@@ -210,6 +248,7 @@ export function PptxEditor({
     [],
   );
   const [dragState, setDragState] = useState<SlideDragState | null>(null);
+  const [selectionBox, setSelectionBox] = useState<PptxSelectionBox | null>(null);
   const [presentingIndex, setPresentingIndex] = useState<number | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -280,6 +319,9 @@ export function PptxEditor({
             : null;
   const hasObjectSelection = selectedObjects.length > 0;
   const hasMultiSelection = selectedObjects.length > 1;
+  const selectionBoxBounds = selectionBox
+    ? pptxSelectionBoxBounds(selectionBox)
+    : null;
 
   useEffect(() => {
     function handlePresentationShortcut(event: KeyboardEvent) {
@@ -405,6 +447,15 @@ export function PptxEditor({
   function selectChart(chartId: string | null, additive = false) {
     if (chartId) selectObject("chart", chartId, additive);
     else if (!additive) clearObjectSelection();
+  }
+
+  function selectAllSlideObjects() {
+    if (!slide) return;
+    const keys = pptxSlideObjectRecords(slide).map((record) =>
+      pptxSelectionKey(record.objectKind, record.objectId),
+    );
+    setSelectedObjectKeys(keys);
+    activateObjectKey(keys.at(-1) ?? null);
   }
 
   function updateSlide(patch: Partial<PptxSlide>) {
@@ -1449,7 +1500,43 @@ export function PptxEditor({
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
+  function slidePointFromPointer(
+    event: ReactPointerEvent<HTMLDivElement>,
+    rect: DOMRect,
+  ) {
+    return {
+      x: clampPercent(((event.clientX - rect.left) / rect.width) * 100),
+      y: clampPercent(((event.clientY - rect.top) / rect.height) * 100),
+    };
+  }
+
+  function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!slide || event.button !== 0) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const point = slidePointFromPointer(event, rect);
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    if (!additive) clearObjectSelection();
+    setSelectionBox({
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      additive,
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
   function handleCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (selectionBox) {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const point = slidePointFromPointer(event, rect);
+      setSelectionBox((current) =>
+        current ? { ...current, currentX: point.x, currentY: point.y } : current,
+      );
+      return;
+    }
     if (!dragState) return;
     const deltaX = ((event.clientX - dragState.startClientX) / dragState.rect.width) * 100;
     const deltaY = ((event.clientY - dragState.startClientY) / dragState.rect.height) * 100;
@@ -1490,6 +1577,22 @@ export function PptxEditor({
   }
 
   function handleCanvasPointerUp() {
+    if (selectionBox && slide) {
+      const bounds = pptxSelectionBoxBounds(selectionBox);
+      if (bounds.width < 0.5 && bounds.height < 0.5) {
+        if (!selectionBox.additive) clearObjectSelection();
+      } else {
+        const matchedKeys = pptxSlideObjectRecords(slide)
+          .filter((record) => pptxObjectIntersectsSelectionBox(record, bounds))
+          .map((record) => pptxSelectionKey(record.objectKind, record.objectId));
+        const nextKeys = selectionBox.additive
+          ? Array.from(new Set([...selectedObjectKeys, ...matchedKeys]))
+          : matchedKeys;
+        setSelectedObjectKeys(nextKeys);
+        activateObjectKey(nextKeys.at(-1) ?? null);
+      }
+      setSelectionBox(null);
+    }
     setDragState(null);
   }
 
@@ -1568,6 +1671,20 @@ export function PptxEditor({
         return;
       }
       updateActiveObject({ y: Math.min((activeObject.y ?? 12) + step, 100) });
+    } else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      deleteSelectedObjects();
+    }
+  }
+
+  function handleCanvasKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const primary = event.ctrlKey || event.metaKey;
+    if (primary && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      selectAllSlideObjects();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      clearObjectSelection();
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       deleteSelectedObjects();
@@ -2121,12 +2238,25 @@ export function PptxEditor({
             >
               <div
                 ref={canvasRef}
-                className="relative h-full w-full overflow-hidden"
+                tabIndex={0}
+                className="relative h-full w-full overflow-hidden outline-none"
+                onKeyDown={handleCanvasKeyDown}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerLeave={handleCanvasPointerUp}
-                onPointerDown={clearObjectSelection}
+                onPointerDown={handleCanvasPointerDown}
               >
+                {selectionBoxBounds && (
+                  <div
+                    className="pointer-events-none absolute z-[9999] border border-[var(--accent)] bg-[var(--accent)]/10"
+                    style={{
+                      left: `${selectionBoxBounds.left}%`,
+                      top: `${selectionBoxBounds.top}%`,
+                      width: `${selectionBoxBounds.width}%`,
+                      height: `${selectionBoxBounds.height}%`,
+                    }}
+                  />
+                )}
                 {(slide?.shapes ?? []).map((shape, index) => {
                   const selected =
                     activeShapeId === shape.id ||
