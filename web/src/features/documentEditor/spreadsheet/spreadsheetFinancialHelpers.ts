@@ -4,6 +4,108 @@ import {
   spreadsheetFormulaValueNumber,
 } from "./spreadsheetFormulaValues";
 
+// --- Rate conversions ---
+
+export function spreadsheetFormulaEffectiveRate(nominalRate: number, periodsPerYear: number) {
+  const periods = Math.trunc(periodsPerYear);
+  if (nominalRate <= 0 || periods < 1) return "#NUM!";
+  return ((1 + nominalRate / periods) ** periods) - 1;
+}
+
+export function spreadsheetFormulaNominalRate(effectRate: number, periodsPerYear: number) {
+  const periods = Math.trunc(periodsPerYear);
+  if (effectRate <= 0 || periods < 1) return "#NUM!";
+  return periods * (((1 + effectRate) ** (1 / periods)) - 1);
+}
+
+export function spreadsheetFormulaEquivalentRate(
+  periods: number,
+  presentValue: number,
+  futureValue: number,
+) {
+  if (periods <= 0 || presentValue === 0 || futureValue / presentValue < 0) {
+    return "#NUM!";
+  }
+  return ((futureValue / presentValue) ** (1 / periods)) - 1;
+}
+
+// --- Depreciation ---
+
+export function spreadsheetFormulaStraightLineDepreciation(
+  cost: number,
+  salvage: number,
+  life: number,
+) {
+  if (life <= 0) return "#NUM!";
+  return (cost - salvage) / life;
+}
+
+export function spreadsheetFormulaSumOfYearsDepreciation(
+  cost: number,
+  salvage: number,
+  life: number,
+  period: number,
+) {
+  if (life <= 0 || period <= 0 || period > life) return "#NUM!";
+  return ((cost - salvage) * (life - period + 1) * 2) / (life * (life + 1));
+}
+
+export function spreadsheetFormulaFixedDecliningDepreciation(
+  cost: number,
+  salvage: number,
+  life: number,
+  period: number,
+  month: number,
+) {
+  const currentPeriod = Math.trunc(period);
+  const firstYearMonths = Math.trunc(month);
+  if (
+    cost <= 0 ||
+    salvage < 0 ||
+    life <= 0 ||
+    currentPeriod < 1 ||
+    firstYearMonths < 1 ||
+    firstYearMonths > 12
+  ) {
+    return "#NUM!";
+  }
+  const rate = Math.round((1 - ((salvage / cost) ** (1 / life))) * 1000) / 1000;
+  let bookValue = cost;
+  for (let index = 1; index <= currentPeriod; index += 1) {
+    const periodFraction =
+      index === 1 ? firstYearMonths / 12 : index > life ? (12 - firstYearMonths) / 12 : 1;
+    const depreciation = Math.min(
+      bookValue - salvage,
+      bookValue * rate * periodFraction,
+    );
+    if (index === currentPeriod) return Math.max(0, depreciation);
+    bookValue -= depreciation;
+  }
+  return 0;
+}
+
+export function spreadsheetFormulaDoubleDecliningDepreciation(
+  cost: number,
+  salvage: number,
+  life: number,
+  period: number,
+  factor: number,
+) {
+  const currentPeriod = Math.trunc(period);
+  if (cost < 0 || salvage < 0 || life <= 0 || currentPeriod < 1 || factor <= 0) {
+    return "#NUM!";
+  }
+  let bookValue = cost;
+  for (let index = 1; index <= currentPeriod; index += 1) {
+    const depreciation = Math.min(bookValue * (factor / life), bookValue - salvage);
+    if (index === currentPeriod) return Math.max(0, depreciation);
+    bookValue -= depreciation;
+  }
+  return 0;
+}
+
+// --- Cash flow (NPV / IRR / MIRR) ---
+
 export function spreadsheetFormulaNpv(rate: number, values: number[]) {
   if (rate <= -1) return "#NUM!";
   return values.reduce(

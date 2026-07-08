@@ -11,13 +11,47 @@ import {
   Underline,
   WrapText,
 } from "lucide-react";
+import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { FontFamilySelect } from "../shared/shared";
 import type { XlsxCellStylePatch } from "./spreadsheetPresentation";
-import { SpreadsheetIconButton } from "./spreadsheetToolbarButton";
 
 const XLSX_FONT_SIZES = ["8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "32"];
+
+/**
+ * Shared icon button for the spreadsheet toolbar. Lives here because it is only
+ * used by the format controls strip; if another toolbar section needs it later,
+ * promote it to a shared module at that point.
+ */
+function SpreadsheetIconButton({
+  icon: Icon,
+  label,
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      className={cn(
+        "inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40",
+        active && "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--accent)]",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
+    </button>
+  );
+}
 const XLSX_NUMBER_FORMATS = [
   { label: "General", value: "" },
   { label: "Number", value: "0.00" },

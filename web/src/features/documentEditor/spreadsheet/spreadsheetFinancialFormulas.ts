@@ -1,10 +1,17 @@
 import type { SpreadsheetFormulaEvaluator } from "./spreadsheetFormulaTypes";
 import {
   spreadsheetFormulaCashFlowSeries,
+  spreadsheetFormulaDoubleDecliningDepreciation,
+  spreadsheetFormulaEffectiveRate,
+  spreadsheetFormulaEquivalentRate,
+  spreadsheetFormulaFixedDecliningDepreciation,
   spreadsheetFormulaIrr,
   spreadsheetFormulaMirr,
+  spreadsheetFormulaNominalRate,
   spreadsheetFormulaNpv,
-} from "./spreadsheetFinancialCashFlowHelpers";
+  spreadsheetFormulaStraightLineDepreciation,
+  spreadsheetFormulaSumOfYearsDepreciation,
+} from "./spreadsheetFinancialHelpers";
 import {
   spreadsheetFormulaCumulativePayment,
   spreadsheetFormulaFv,
@@ -15,17 +22,6 @@ import {
   spreadsheetFormulaPv,
   spreadsheetFormulaRate,
 } from "./spreadsheetFinancialLoanHelpers";
-import {
-  spreadsheetFormulaDoubleDecliningDepreciation,
-  spreadsheetFormulaFixedDecliningDepreciation,
-  spreadsheetFormulaStraightLineDepreciation,
-  spreadsheetFormulaSumOfYearsDepreciation,
-} from "./spreadsheetFinancialDepreciationHelpers";
-import {
-  spreadsheetFormulaEffectiveRate,
-  spreadsheetFormulaEquivalentRate,
-  spreadsheetFormulaNominalRate,
-} from "./spreadsheetFinancialRateHelpers";
 import { spreadsheetFormulaValueNumber } from "./spreadsheetFormulaValues";
 
 export const SPREADSHEET_FINANCIAL_FORMULA_EVALUATORS: Record<
