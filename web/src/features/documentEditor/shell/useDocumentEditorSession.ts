@@ -15,6 +15,15 @@ import {
   replaceAllInModel,
   replaceFirstInModel,
 } from "@/features/documentEditor/shared/search";
+import {
+  applyEditorOperations,
+  createEditorOperationEntry,
+  type EditorOperationEntry,
+} from "@/features/documentEditor/shared/operationHistory";
+import {
+  captureEditorSelection,
+  type EditorSelectionSnapshot,
+} from "@/features/documentEditor/shared/selectionStore";
 import { useWriteDocumentEditorModel } from "@/features/documentEditor/shared/api";
 import { drivePackageUrl } from "@/features/drive/api";
 import { ApiError } from "@/lib/api";
@@ -23,15 +32,9 @@ import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 const MAX_HISTORY_ENTRIES = 100;
 const MAX_HISTORY_BYTES = 5_000_000;
 
-interface HistoryEntry {
-  model: unknown;
-  key: string;
-  size: number;
-}
-
 interface EditorHistory {
-  past: HistoryEntry[];
-  future: HistoryEntry[];
+  past: EditorOperationEntry[];
+  future: EditorOperationEntry[];
 }
 
 export function useDocumentEditorSession({
@@ -65,6 +68,8 @@ export function useDocumentEditorSession({
   const [regexSearch, setRegexSearch] = useState(false);
   const [editorCommandRequest, setEditorCommandRequest] =
     useState<EditorCommandRequest | null>(null);
+  const [selectionSnapshot, setSelectionSnapshot] =
+    useState<EditorSelectionSnapshot>(() => ({ kind: "none", label: "No selection" }));
   const [history, setHistory] = useState<EditorHistory>({
     past: [],
     future: [],
@@ -91,10 +96,26 @@ export function useDocumentEditorSession({
     setSaveQueued(false);
     void save();
   });
+  const updateSelectionSnapshot = useEffectEvent(() => {
+    setSelectionSnapshot(captureEditorSelection(rootRef.current, data.editorKind));
+  });
 
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const handleSelectionChange = () => updateSelectionSnapshot();
+    const handleFocusIn = () => updateSelectionSnapshot();
+    document.addEventListener("selectionchange", handleSelectionChange);
+    root.addEventListener("focusin", handleFocusIn);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      root.removeEventListener("focusin", handleFocusIn);
+    };
+  }, []);
 
   useEffect(() => {
     if (!autosaveEnabled || !dirty || writeModel.isPending || saveConflict) return;
@@ -122,34 +143,47 @@ export function useDocumentEditorSession({
     setSaveConflict(false);
     writeModel.reset();
     if (writeModel.isPending) queueSave();
-    setHistory((current) => ({
-      past: trimHistoryEntries([...current.past, historyEntry(draft, draftKey)]),
-      future: [],
-    }));
+    const operation = createEditorOperationEntry({
+      before: draft,
+      beforeKey: draftKey,
+      after: next,
+      afterKey: nextKey,
+      label: "Edit document model",
+    });
+    if (operation) {
+      setHistory((current) => ({
+        past: trimHistoryEntries([...current.past, operation]),
+        future: [],
+      }));
+    }
     setDraft(next);
   }
 
   function undo() {
     const previous = history.past.at(-1);
     if (previous === undefined) return;
+    const restored = applyEditorOperations(draft, previous.inverse);
     setHistory({
       past: history.past.slice(0, -1),
       future: trimHistoryEntries(
-        [historyEntry(draft, draftKey), ...history.future],
+        [previous, ...history.future],
         "start",
       ),
     });
-    setDraft(previous.model);
+    setSaveConflict(false);
+    setDraft(restored);
   }
 
   function redo() {
     const next = history.future[0];
     if (next === undefined) return;
+    const restored = applyEditorOperations(draft, next.forward);
     setHistory({
-      past: trimHistoryEntries([...history.past, historyEntry(draft, draftKey)]),
+      past: trimHistoryEntries([...history.past, next]),
       future: history.future.slice(1),
     });
-    setDraft(next.model);
+    setSaveConflict(false);
+    setDraft(restored);
   }
 
   function replaceFirst() {
@@ -174,7 +208,7 @@ export function useDocumentEditorSession({
     if (result.replacements > 0) commitDraft(result.model);
   }
 
-  async function save() {
+  async function save(options: { force?: boolean } = {}) {
     if (writeModel.isPending) {
       if (dirty) queueSave();
       return false;
@@ -189,7 +223,7 @@ export function useDocumentEditorSession({
         path: data.path,
         editorKind: data.editorKind,
         model: savingDraft,
-        expectedFingerprint: fingerprint,
+        expectedFingerprint: options.force ? undefined : fingerprint,
         syncQuery: false,
       });
       const savedKey = stableJson(saved.model);
@@ -214,6 +248,11 @@ export function useDocumentEditorSession({
       setSaveQueued(false);
       return false;
     }
+  }
+
+  async function overwriteConflict() {
+    if (!saveConflict) return false;
+    return save({ force: true });
   }
 
   function queueSave() {
@@ -299,6 +338,8 @@ export function useDocumentEditorSession({
     draft,
     fingerprint,
     dirty,
+    operationCount: history.past.length,
+    selectionSnapshot,
     lastSavedAt,
     isSaving: writeModel.isPending,
     isSaveQueued: saveQueued,
@@ -322,6 +363,7 @@ export function useDocumentEditorSession({
     undo,
     redo,
     save,
+    overwriteConflict,
     downloadPackage,
     openCommandPalette,
     runShellCommand,
@@ -340,12 +382,8 @@ export function useDocumentEditorSession({
   };
 }
 
-function historyEntry(model: unknown, key = stableJson(model)): HistoryEntry {
-  return { model, key, size: key.length };
-}
-
 function trimHistoryEntries(
-  entries: HistoryEntry[],
+  entries: EditorOperationEntry[],
   keep: "end" | "start" = "end",
 ) {
   const next =

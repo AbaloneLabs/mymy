@@ -96,6 +96,8 @@ function DocumentEditorContent({
     draft,
     fingerprint,
     dirty,
+    operationCount,
+    selectionSnapshot,
     lastSavedAt,
     isSaving,
     isSaveQueued,
@@ -119,6 +121,7 @@ function DocumentEditorContent({
     undo,
     redo,
     save,
+    overwriteConflict,
     downloadPackage,
     openCommandPalette,
     runShellCommand,
@@ -163,13 +166,25 @@ function DocumentEditorContent({
       {saveConflict && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-4 py-2 text-xs text-[var(--status-warning)]">
           <span>{t("documentEditor.conflictMessage")}</span>
-          <button
-            type="button"
-            onClick={onReload}
-            className="shrink-0 rounded-md border border-[var(--status-warning)]/40 px-2 py-1 hover:bg-[var(--status-warning)]/10"
-          >
-            {t("documentEditor.reload")}
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void overwriteConflict()}
+              disabled={isSaving}
+              className="rounded-md border border-[var(--status-warning)]/40 px-2 py-1 hover:bg-[var(--status-warning)]/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("documentEditor.overwriteConflict", {
+                defaultValue: "Overwrite",
+              })}
+            </button>
+            <button
+              type="button"
+              onClick={onReload}
+              className="rounded-md border border-[var(--status-warning)]/40 px-2 py-1 hover:bg-[var(--status-warning)]/10"
+            >
+              {t("documentEditor.reload")}
+            </button>
+          </div>
         </div>
       )}
       {commandPaletteOpen && (
@@ -219,6 +234,8 @@ function DocumentEditorContent({
         model={draft}
         fingerprint={fingerprint}
         dirty={dirty}
+        operationCount={operationCount}
+        selectionLabel={selectionSnapshot.label}
         isSaving={isSaving}
         isSaveQueued={isSaveQueued}
         warningCount={data.compatibilityWarnings?.length ?? 0}

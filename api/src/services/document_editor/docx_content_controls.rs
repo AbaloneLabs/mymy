@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    attr_value, docx_tag_attr, extract_text_tags, find_xml_start, set_xml_attr,
-    xml_named_empty_elements, xml_named_segments,
+    attr_value, docx_tag_attr, escape_xml, extract_text_tags, find_xml_start, replace_tag_texts,
+    set_xml_attr, xml_named_empty_elements, xml_named_segments,
 };
 
 /// DOCX content controls wrap user-editable form-like regions inside regular
@@ -38,19 +38,27 @@ pub(super) fn replace_docx_content_control_states(paragraph: &str, block: &Value
         };
         let end_index = end + "</w:sdt>".len();
         let segment = &after_start[..end_index];
-        let updated = controls
-            .get(control_index)
-            .and_then(|control| control.get("checked").and_then(Value::as_bool))
-            .map_or_else(
-                || segment.to_string(),
-                |checked| replace_docx_checkbox_checked(segment, checked),
-            );
+        let updated = controls.get(control_index).map_or_else(
+            || segment.to_string(),
+            |control| replace_docx_content_control_segment(segment, control),
+        );
         output.push_str(&updated);
         rest = &after_start[end_index..];
         control_index += 1;
     }
     output.push_str(rest);
     output
+}
+
+fn replace_docx_content_control_segment(segment: &str, control: &Value) -> String {
+    let mut updated = segment.to_string();
+    if let Some(checked) = control.get("checked").and_then(Value::as_bool) {
+        updated = replace_docx_checkbox_checked(&updated, checked);
+    }
+    if let Some(text) = control.get("text").and_then(Value::as_str) {
+        updated = replace_docx_content_control_text(&updated, text);
+    }
+    updated
 }
 
 fn docx_content_control_model(segment: &str, index: usize) -> Value {
@@ -122,6 +130,36 @@ fn replace_docx_checkbox_checked(segment: &str, checked: bool) -> String {
         return replace_first_tag_attr(segment, "<w:checked", "w:val", checked);
     }
     segment.to_string()
+}
+
+fn replace_docx_content_control_text(segment: &str, text: &str) -> String {
+    let Some(start) = find_xml_start(segment, "<w:sdtContent") else {
+        return replace_tag_texts(segment, "w:t", &[text.to_string()]);
+    };
+    let after_start = &segment[start..];
+    let Some(end) = after_start.find("</w:sdtContent>") else {
+        return replace_tag_texts(segment, "w:t", &[text.to_string()]);
+    };
+    let end_index = end + "</w:sdtContent>".len();
+    let content = &after_start[..end_index];
+    let updated_content = if content.contains("<w:t") {
+        replace_tag_texts(content, "w:t", &[text.to_string()])
+    } else if let Some(insert_at) = content.rfind("</w:sdtContent>") {
+        format!(
+            "{}<w:r><w:t>{}</w:t></w:r>{}",
+            &content[..insert_at],
+            escape_xml(text),
+            &content[insert_at..]
+        )
+    } else {
+        content.to_string()
+    };
+    format!(
+        "{}{}{}",
+        &segment[..start],
+        updated_content,
+        &after_start[end_index..]
+    )
 }
 
 fn replace_first_tag_attr(segment: &str, marker: &str, attr: &str, checked: bool) -> String {

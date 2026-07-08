@@ -10,9 +10,7 @@ use crate::models::llm_provider::{
 };
 use crate::state::AppState;
 
-use super::repository::{
-    ensure_provider_exists, require_encryption_key, row_to_credential, AgentCredentialRow,
-};
+use super::repository::{ensure_provider_exists, require_encryption_key, row_to_credential};
 
 pub async fn list_credentials(
     state: &AppState,
@@ -20,7 +18,7 @@ pub async fn list_credentials(
 ) -> AppResult<AgentCredentialsResponse> {
     ensure_provider_exists(&state.db, provider_id).await?;
     let rows = sqlx::query_as!(
-        AgentCredentialRow,
+        super::repository::AgentCredentialRow,
         r#"SELECT id, provider_id, label, status, reset_at, request_count,
                   created_at, updated_at
            FROM agent_credentials

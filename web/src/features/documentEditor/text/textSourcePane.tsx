@@ -175,14 +175,16 @@ export function TextSourcePane({
                     style={{ left: `${fragment.column}ch` }}
                   />
                 ))}
-                {lineDiagnostics.length > 0 && (
+                {diagnosticFragments(lineDiagnostics, line.text).map((fragment, index) => (
                   <span
-                    className="inline-block h-6 rounded-sm border-b border-dotted border-[var(--status-warning)] bg-[var(--status-warning)]/10"
+                    key={`diagnostic-fragment:${fragment.startColumn}:${fragment.endColumn}:${index}`}
+                    className="absolute top-0 h-6 rounded-sm border-b border-dotted border-[var(--status-warning)] bg-[var(--status-warning)]/10"
                     style={{
-                      width: `${Math.max(6, line.text.length)}ch`,
+                      left: `${fragment.startColumn}ch`,
+                      width: `${Math.max(0.5, fragment.endColumn - fragment.startColumn)}ch`,
                     }}
                   />
-                )}
+                ))}
               </div>
             );
           })}
@@ -248,4 +250,21 @@ function bracketPairClass(level: number, matched: boolean) {
     "border-fuchsia-500/70 bg-fuchsia-500/15",
   ];
   return colors[level % colors.length];
+}
+
+function diagnosticFragments(diagnostics: SourceDiagnostic[], text: string) {
+  return diagnostics.map((diagnostic) => {
+    const startColumn =
+      typeof diagnostic.column === "number" && Number.isFinite(diagnostic.column)
+        ? Math.max(0, diagnostic.column - 1)
+        : 0;
+    const length =
+      typeof diagnostic.length === "number" && Number.isFinite(diagnostic.length)
+        ? Math.max(1, diagnostic.length)
+        : Math.max(6, text.length);
+    return {
+      startColumn,
+      endColumn: Math.max(startColumn + 1, startColumn + length),
+    };
+  });
 }

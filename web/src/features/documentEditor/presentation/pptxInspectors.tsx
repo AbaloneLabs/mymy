@@ -1,31 +1,82 @@
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Pause, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { PptxAnimation, PptxMedia } from "../shared/models";
 import { PptxAnimationTimeline } from "./pptxAnimationTimeline";
+import {
+  pptxAnimationTimelineDuration,
+  pptxFormatMilliseconds,
+} from "./pptxAnimationTimingUtils";
 import { animationLabel } from "./pptxEditorUtils";
+
+export type PptxAnimationPresetClass = "entr" | "emph" | "exit";
 
 export function PptxAnimationInspector({
   animations,
   disabled,
+  onAdd,
+  onDelete,
   onTimingChange,
   onMove,
 }: {
   animations: PptxAnimation[];
   disabled: boolean;
+  onAdd: (presetClass: PptxAnimationPresetClass) => void;
+  onDelete: (animationId: string) => void;
   onTimingChange: (
     animationId: string,
     patch: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">,
   ) => void;
   onMove: (animationId: string, direction: -1 | 1) => void;
 }) {
+  const [presetClass, setPresetClass] = useState<PptxAnimationPresetClass>("entr");
+  const [playheadMs, setPlayheadMs] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const durationMs = pptxAnimationTimelineDuration(animations);
+  const effectivePlayheadMs = Math.min(playheadMs, durationMs);
+
+  useEffect(() => {
+    if (!playing || disabled || animations.length === 0) return;
+    const interval = window.setInterval(() => {
+      setPlayheadMs((current) => {
+        const next = Math.min(durationMs, current + 50);
+        if (next >= durationMs) {
+          setPlaying(false);
+        }
+        return next;
+      });
+    }, 50);
+    return () => window.clearInterval(interval);
+  }, [animations.length, disabled, durationMs, playing]);
+
   return (
     <div className="shrink-0 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
           Animations
         </span>
-        <span className="text-[11px] text-[var(--text-faint)]">
-          {animations.length} timing nodes
-        </span>
+        <div className="flex items-center gap-1">
+          <select
+            value={presetClass}
+            onChange={(event) =>
+              setPresetClass(event.currentTarget.value as PptxAnimationPresetClass)
+            }
+            disabled={disabled}
+            className="h-7 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option value="entr">Entrance</option>
+            <option value="emph">Emphasis</option>
+            <option value="exit">Exit</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => onAdd(presetClass)}
+            disabled={disabled}
+            className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Add animation"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
       {animations.length === 0 ? (
         <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-2 text-xs text-[var(--text-faint)]">
@@ -105,17 +156,69 @@ export function PptxAnimationInspector({
                 >
                   <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(animation.id)}
+                  disabled={disabled}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--status-danger)] disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Delete animation"
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
       {animations.length > 0 && (
-        <PptxAnimationTimeline
-          animations={animations}
-          disabled={disabled}
-          onTimingChange={onTimingChange}
-        />
+        <>
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[11px] text-[var(--text-muted)]">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (effectivePlayheadMs >= durationMs) setPlayheadMs(0);
+                  setPlaying((current) => !current);
+                }}
+                disabled={disabled}
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={playing ? "Pause animation preview" : "Play animation preview"}
+              >
+                {playing ? (
+                  <Pause className="h-3.5 w-3.5" strokeWidth={1.75} />
+                ) : (
+                  <Play className="h-3.5 w-3.5" strokeWidth={1.75} />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlaying(false);
+                  setPlayheadMs(0);
+                }}
+                disabled={disabled}
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+                title="Reset animation preview"
+              >
+                <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
+            <span className="font-mono">
+              {pptxFormatMilliseconds(effectivePlayheadMs)} /{" "}
+              {pptxFormatMilliseconds(durationMs)}
+            </span>
+          </div>
+          <PptxAnimationTimeline
+            animations={animations}
+            disabled={disabled}
+            playheadMs={effectivePlayheadMs}
+            onPlayheadChange={(milliseconds) => {
+              setPlaying(false);
+              setPlayheadMs(milliseconds);
+            }}
+            onTimingChange={onTimingChange}
+          />
+        </>
       )}
     </div>
   );

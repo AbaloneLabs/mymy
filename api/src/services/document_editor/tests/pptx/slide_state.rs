@@ -234,3 +234,79 @@ fn pptx_update_reorders_animation_timing_segments() {
 
     assert!(slide.find(r#"id="2""#).unwrap() < slide.find(r#"id="1""#).unwrap());
 }
+
+#[test]
+fn pptx_update_adds_and_removes_animation_timing_segments() {
+    let slide_xml = r#"<p:sld><p:cSld><p:spTree/></p:cSld><p:timing><p:tnLst><p:cTn id="1" delay="0" dur="100"/></p:tnLst></p:timing></p:sld>"#;
+    let package = test_ooxml_package(&[
+        ("[Content_Types].xml", pptx_test_content_types(false)),
+        ("ppt/presentation.xml", pptx_test_presentation_xml()),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            pptx_test_presentation_rels(),
+        ),
+        ("ppt/slides/slide1.xml", slide_xml),
+    ]);
+
+    let mut model = pptx_model(&package).unwrap();
+    model["slides"][0]["animations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "2",
+            "nodeType": "clickEffect",
+            "presetClass": "exit",
+            "presetId": "1",
+            "delayMs": 200,
+            "durationMs": 700
+        }));
+
+    let updated = update_pptx(&package, &model).unwrap();
+    let slide = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+
+    assert!(slide.contains(r#"<p:cTn id="1" delay="0" dur="100"/>"#));
+    assert!(slide.contains(
+        r#"<p:cTn id="2" nodeType="clickEffect" presetClass="exit" presetID="1" delay="200" dur="700"/>"#
+    ));
+
+    model["slides"][0]["animations"] = json!([]);
+    let updated = update_pptx(&package, &model).unwrap();
+    let slide = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+
+    assert!(!slide.contains("<p:cTn"));
+    assert!(slide.contains("<p:timing><p:tnLst></p:tnLst></p:timing>"));
+}
+
+#[test]
+fn pptx_update_creates_timing_for_new_animation() {
+    let package = test_ooxml_package(&[
+        ("[Content_Types].xml", pptx_test_content_types(false)),
+        ("ppt/presentation.xml", pptx_test_presentation_xml()),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            pptx_test_presentation_rels(),
+        ),
+        (
+            "ppt/slides/slide1.xml",
+            r#"<p:sld><p:cSld><p:spTree/></p:cSld></p:sld>"#,
+        ),
+    ]);
+    let mut model = pptx_model(&package).unwrap();
+    model["slides"][0]["animations"] = json!([{
+        "id": "3",
+        "nodeType": "clickEffect",
+        "presetClass": "entr",
+        "presetId": "1",
+        "targetShapeId": "4",
+        "delayMs": 0,
+        "durationMs": 500
+    }]);
+
+    let updated = update_pptx(&package, &model).unwrap();
+    let slide = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+
+    assert!(slide.contains("<p:timing><p:tnLst>"));
+    assert!(slide.contains(
+        r#"<p:cTn id="3" nodeType="clickEffect" presetClass="entr" presetID="1" delay="0" dur="500"><p:tgtEl><p:spTgt spid="4"/></p:tgtEl></p:cTn>"#
+    ));
+}

@@ -285,6 +285,11 @@ pub(in crate::services::document_editor) struct PptxTransitionSpec {
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxAnimationSpec {
+    pub(in crate::services::document_editor) id: Option<String>,
+    pub(in crate::services::document_editor) node_type: Option<String>,
+    pub(in crate::services::document_editor) preset_class: Option<String>,
+    pub(in crate::services::document_editor) preset_id: Option<String>,
+    pub(in crate::services::document_editor) target_shape_id: Option<String>,
     pub(in crate::services::document_editor) source_xml: Option<String>,
     pub(in crate::services::document_editor) delay_ms: Option<u32>,
     pub(in crate::services::document_editor) duration_ms: Option<u32>,

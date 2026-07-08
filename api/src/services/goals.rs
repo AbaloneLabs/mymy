@@ -21,7 +21,7 @@ use crate::state::AppState;
 mod model;
 mod validation;
 
-use model::{average_progress, row_to_goal, row_to_key_result, GoalRow, KeyResultRow};
+use model::{average_progress, row_to_goal, row_to_key_result, KeyResultRow};
 use validation::{
     validate_current_value, validate_goal_status, validate_goal_type, validate_kpi_type,
     validate_target_value,
@@ -57,7 +57,7 @@ pub async fn list_goals(state: &AppState, q: GoalQuery) -> AppResult<GoalsRespon
     // Single query with optional predicate filters. Avoids the combinatorial
     // explosion of enumerating every filter combination.
     let rows = sqlx::query_as!(
-        GoalRow,
+        model::GoalRow,
         r#"SELECT id, title, description, type, period, status,
                   created_at, updated_at
            FROM goals
@@ -357,7 +357,7 @@ pub async fn delete_key_result(state: &AppState, id: Uuid, kr_id: Uuid) -> AppRe
 /// Fetch a single goal with its key results and computed progress.
 async fn fetch_goal(state: &AppState, id: Uuid) -> AppResult<Goal> {
     let row = sqlx::query_as!(
-        GoalRow,
+        model::GoalRow,
         r#"SELECT id, title, description, type, period, status,
                   created_at, updated_at
            FROM goals WHERE id = $1"#,

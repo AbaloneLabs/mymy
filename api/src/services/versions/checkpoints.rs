@@ -44,8 +44,9 @@ pub async fn maybe_create_version(
     .await?;
 
     if let Some(row) = last {
-        let age = chrono::Utc::now() - row.created_at;
-        if age < chrono::Duration::from_std(COALESCE_WINDOW).unwrap_or_default() {
+        let cutoff =
+            chrono::Utc::now() - chrono::Duration::from_std(COALESCE_WINDOW).unwrap_or_default();
+        if row.created_at > cutoff {
             return Ok(None);
         }
     }

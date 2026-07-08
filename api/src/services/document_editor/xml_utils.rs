@@ -179,6 +179,17 @@ pub(super) fn set_xml_attr(tag_xml: &str, name: &str, value: &str) -> String {
             return output;
         }
     }
+    if let Some(end) = tag_xml.rfind("/>") {
+        let mut output = String::new();
+        output.push_str(&tag_xml[..end]);
+        output.push(' ');
+        output.push_str(name);
+        output.push_str(r#"=""#);
+        output.push_str(&escape_xml(value));
+        output.push('"');
+        output.push_str(&tag_xml[end..]);
+        return output;
+    }
     if let Some(end) = tag_xml.rfind('>') {
         let mut output = String::new();
         output.push_str(&tag_xml[..end]);

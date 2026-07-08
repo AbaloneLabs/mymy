@@ -102,6 +102,36 @@ fn docx_update_rewrites_content_control_checkbox_state() {
 }
 
 #[test]
+fn docx_update_rewrites_content_control_text() {
+    let original = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:sdt><w:sdtPr><w:dropDownList><w:listItem w:displayText="One" w:value="1"/><w:listItem w:displayText="Two" w:value="2"/></w:dropDownList></w:sdtPr><w:sdtContent><w:r><w:t>One</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#,
+    )]);
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "Two",
+                "contentControls": [{
+                    "id": "control1",
+                    "kind": "dropdown",
+                    "text": "Two"
+                }]
+            }]
+        }),
+    )
+    .expect("DOCX content control text should update");
+
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+
+    assert!(document.contains(r#"<w:dropDownList>"#));
+    assert!(document.contains("<w:sdtContent>"));
+    assert!(document.contains("<w:t>Two</w:t>"));
+    assert!(!document.contains("<w:t>One</w:t>"));
+}
+
+#[test]
 fn docx_model_exposes_tracked_revisions() {
     let bytes = test_ooxml_package(&[(
         "word/document.xml",

@@ -128,6 +128,136 @@ fn docx_paragraph_builder_writes_custom_paragraph_style() {
 }
 
 #[test]
+fn docx_update_writes_edited_and_new_paragraph_styles() {
+    let original = test_ooxml_package(&[
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:pPr><w:pStyle w:val="QuoteStyle"/></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "word/styles.xml",
+            r#"<w:styles><w:style w:type="paragraph" w:styleId="QuoteStyle"><w:name w:val="Quote Style"/></w:style></w:styles>"#,
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#,
+        ),
+        (
+            "[Content_Types].xml",
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>"#,
+        ),
+    ]);
+
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "Styled",
+                "paragraphStyleId": "NewStyle"
+            }],
+            "styles": [
+                {
+                    "id": "QuoteStyle",
+                    "name": "Quote Style",
+                    "type": "paragraph",
+                    "custom": true,
+                    "fontFamily": "Noto Serif",
+                    "fontSize": "15",
+                    "bold": true,
+                    "color": "#1f2937",
+                    "align": "center"
+                },
+                {
+                    "id": "NewStyle",
+                    "name": "New Style",
+                    "type": "paragraph",
+                    "custom": true,
+                    "basedOn": "QuoteStyle",
+                    "next": "Normal",
+                    "quickFormat": true,
+                    "italic": true
+                }
+            ]
+        }),
+    )
+    .expect("DOCX paragraph styles should save");
+
+    let styles = read_zip_text(&updated, "word/styles.xml").unwrap();
+    let rels = read_zip_text(&updated, "word/_rels/document.xml.rels").unwrap();
+    let content_types = read_zip_text(&updated, "[Content_Types].xml").unwrap();
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+
+    assert!(styles.contains(r#"w:styleId="QuoteStyle""#));
+    assert!(styles.contains(r#"w:customStyle="1""#));
+    assert!(styles.contains(r#"<w:rFonts w:ascii="Noto Serif""#));
+    assert!(styles.contains(r#"<w:sz w:val="30"/>"#));
+    assert!(styles.contains(r#"<w:color w:val="1F2937"/>"#));
+    assert!(styles.contains(r#"<w:style w:type="paragraph" w:styleId="NewStyle""#));
+    assert!(styles.contains(r#"<w:basedOn w:val="QuoteStyle"/>"#));
+    assert!(styles.contains("<w:qFormat/>"));
+    assert!(document.contains(r#"<w:pStyle w:val="NewStyle"/>"#));
+    assert!(rels.contains("relationships/styles"));
+    assert!(content_types.contains(r#"PartName="/word/styles.xml""#));
+}
+
+#[test]
+fn docx_update_writes_used_fonts_to_font_table() {
+    let original = test_ooxml_package(&[
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:r><w:t>Styled Run</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "word/fontTable.xml",
+            r#"<w:fonts><w:font w:name="Existing Font"/></w:fonts>"#,
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#,
+        ),
+        (
+            "[Content_Types].xml",
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>"#,
+        ),
+    ]);
+
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "Styled Run",
+                "fontFamily": "Noto Sans",
+                "runs": [
+                    { "text": "Styled ", "fontFamily": "Noto Serif" },
+                    { "text": "Run", "fontFamily": "Noto Sans Mono" }
+                ]
+            }],
+            "styles": [{
+                "id": "CodeStyle",
+                "name": "Code Style",
+                "type": "paragraph",
+                "fontFamily": "Liberation Mono"
+            }]
+        }),
+    )
+    .expect("DOCX font table should save");
+
+    let font_table = read_zip_text(&updated, "word/fontTable.xml").unwrap();
+    let rels = read_zip_text(&updated, "word/_rels/document.xml.rels").unwrap();
+    let content_types = read_zip_text(&updated, "[Content_Types].xml").unwrap();
+
+    assert!(font_table.contains(r#"w:name="Existing Font""#));
+    assert!(font_table.contains(r#"w:name="Noto Sans""#));
+    assert!(font_table.contains(r#"w:name="Noto Serif""#));
+    assert!(font_table.contains(r#"w:name="Noto Sans Mono""#));
+    assert!(font_table.contains(r#"w:name="Liberation Mono""#));
+    assert!(rels.contains("relationships/fontTable"));
+    assert!(content_types.contains(r#"PartName="/word/fontTable.xml""#));
+}
+
+#[test]
 fn docx_update_assigns_new_bookmark_ids() {
     let original = test_ooxml_package(&[(
         "word/document.xml",

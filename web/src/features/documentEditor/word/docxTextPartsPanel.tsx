@@ -294,18 +294,37 @@ function DocxContentControlGroup({
               </label>
             )}
             {control.items && control.items.length > 0 && (
-              <div className="mb-2 space-y-1">
+              <select
+                value={control.text ?? ""}
+                onChange={(event) =>
+                  onChange(blockIndex, controlIndex, {
+                    text: event.currentTarget.value,
+                  })
+                }
+                className="mb-2 h-7 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              >
                 {control.items.map((item) => (
-                  <div
+                  <option
                     key={`${item.value}-${item.displayText ?? ""}`}
-                    className="truncate rounded border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-muted)]"
+                    value={item.displayText ?? item.value}
                   >
                     {item.displayText ?? item.value}
-                  </div>
+                  </option>
                 ))}
-              </div>
+              </select>
             )}
-            {control.text && (
+            {control.kind !== "checkbox" && !control.items?.length && (
+              <input
+                value={control.text ?? ""}
+                onChange={(event) =>
+                  onChange(blockIndex, controlIndex, {
+                    text: event.currentTarget.value,
+                  })
+                }
+                className="h-7 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              />
+            )}
+            {control.kind === "checkbox" && control.text && (
               <div className="truncate text-[10px] text-[var(--text-faint)]">
                 {control.text}
               </div>

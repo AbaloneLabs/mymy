@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   Plus,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,12 @@ import {
   configTreePathKey,
   type ConfigTreeNode,
 } from "./textConfigTree";
+import {
+  parseConfigInlineArray,
+  parseConfigInlineObject,
+  serializeConfigInlineArray,
+  serializeConfigInlineObject,
+} from "./textConfigValueUtils";
 import {
   appendFlatConfigEntry,
   configEntryLineRange,
@@ -63,6 +70,81 @@ export function FlatConfigEditor({
       ...flatConfigLines(entry, cleanKey, value, kind),
     );
     onChangeContent(joinStructuredTextLines(lines, content));
+  }
+
+  function updateInlineArrayItem(
+    entry: ConfigEntry,
+    itemIndex: number,
+    value: string,
+  ) {
+    const array = parseConfigInlineArray(entry.value);
+    if (!array) return;
+    const items = array.items.map((item, index) => (index === itemIndex ? value : item));
+    updateLine(entry, entry.key, serializeConfigInlineArray(items, array.quote));
+  }
+
+  function addInlineArrayItem(entry: ConfigEntry) {
+    const array = parseConfigInlineArray(entry.value);
+    if (!array) return;
+    updateLine(entry, entry.key, serializeConfigInlineArray([...array.items, ""], array.quote));
+  }
+
+  function deleteInlineArrayItem(entry: ConfigEntry, itemIndex: number) {
+    const array = parseConfigInlineArray(entry.value);
+    if (!array) return;
+    updateLine(
+      entry,
+      entry.key,
+      serializeConfigInlineArray(
+        array.items.filter((_, index) => index !== itemIndex),
+        array.quote,
+      ),
+    );
+  }
+
+  function updateInlineObjectEntry(
+    entry: ConfigEntry,
+    entryIndex: number,
+    patch: Partial<{ key: string; value: string }>,
+  ) {
+    const object = parseConfigInlineObject(entry.value, kind);
+    if (!object) return;
+    updateLine(
+      entry,
+      entry.key,
+      serializeConfigInlineObject({
+        ...object,
+        entries: object.entries.map((item, index) =>
+          index === entryIndex ? { ...item, ...patch } : item,
+        ),
+      }),
+    );
+  }
+
+  function addInlineObjectEntry(entry: ConfigEntry, key: string, value: string) {
+    const object = parseConfigInlineObject(entry.value, kind);
+    if (!object || !key.trim()) return;
+    updateLine(
+      entry,
+      entry.key,
+      serializeConfigInlineObject({
+        ...object,
+        entries: [...object.entries, { key, value }],
+      }),
+    );
+  }
+
+  function deleteInlineObjectEntry(entry: ConfigEntry, entryIndex: number) {
+    const object = parseConfigInlineObject(entry.value, kind);
+    if (!object) return;
+    updateLine(
+      entry,
+      entry.key,
+      serializeConfigInlineObject({
+        ...object,
+        entries: object.entries.filter((_, index) => index !== entryIndex),
+      }),
+    );
   }
 
   function deleteEntry(entry: ConfigEntry) {
@@ -130,28 +212,50 @@ export function FlatConfigEditor({
           disabled={!entry.keyEditable}
           className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs font-medium text-[var(--accent)] outline-none focus:border-[var(--accent)] disabled:text-[var(--text-faint)]"
         />
-        <span
-          className={cn(
-            "min-w-0 truncate rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs",
-            jsonPreviewTypeClass(configScalarType(entry.value)),
+        <div className="min-w-0 space-y-1">
+          <span
+            className={cn(
+              "block min-w-0 truncate rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs",
+              jsonPreviewTypeClass(configScalarType(entry.value)),
+            )}
+          >
+            {configScalarType(entry.value)}
+          </span>
+          <ConfigEntryMetadata entry={entry} documentCount={parsed.documentCount} />
+        </div>
+        <div className="grid min-w-0 gap-1">
+          {entry.valueStyle ? (
+            <textarea
+              value={entry.value}
+              onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+              rows={Math.min(8, Math.max(3, entry.value.split("\n").length))}
+              className="min-w-0 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            />
+          ) : (
+            <input
+              value={entry.value}
+              onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+              className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            />
           )}
-        >
-          {configScalarType(entry.value)}
-        </span>
-        {entry.valueStyle ? (
-          <textarea
-            value={entry.value}
-            onChange={(event) => updateLine(entry, entry.key, event.target.value)}
-            rows={Math.min(8, Math.max(3, entry.value.split("\n").length))}
-            className="min-w-0 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          <InlineArrayEditor
+            entry={entry}
+            onAdd={() => addInlineArrayItem(entry)}
+            onDelete={(itemIndex) => deleteInlineArrayItem(entry, itemIndex)}
+            onUpdate={(itemIndex, value) =>
+              updateInlineArrayItem(entry, itemIndex, value)
+            }
           />
-        ) : (
-          <input
-            value={entry.value}
-            onChange={(event) => updateLine(entry, entry.key, event.target.value)}
-            className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          <InlineObjectEditor
+            entry={entry}
+            kind={kind}
+            onAdd={(key, value) => addInlineObjectEntry(entry, key, value)}
+            onDelete={(entryIndex) => deleteInlineObjectEntry(entry, entryIndex)}
+            onUpdate={(entryIndex, patch) =>
+              updateInlineObjectEntry(entry, entryIndex, patch)
+            }
           />
-        )}
+        </div>
         <div className="flex items-center gap-1">
           <JsonIconButton
             disabled={!flatConfigEntryCanMove(parsed.entries, entry, -1)}
@@ -278,6 +382,165 @@ export function FlatConfigEditor({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ConfigEntryMetadata({
+  entry,
+  documentCount,
+}: {
+  entry: ConfigEntry;
+  documentCount: number;
+}) {
+  const items = [
+    documentCount > 1 && entry.documentIndex !== undefined
+      ? `doc ${entry.documentIndex + 1}`
+      : null,
+    ...(entry.yamlDecorators ?? []),
+  ].filter((item): item is string => Boolean(item));
+  if (items.length === 0) return null;
+  return (
+    <div className="flex min-w-0 flex-wrap gap-1">
+      {items.map((item) => (
+        <span
+          key={item}
+          className="max-w-full truncate rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-faint)]"
+        >
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function InlineArrayEditor({
+  entry,
+  onAdd,
+  onDelete,
+  onUpdate,
+}: {
+  entry: ConfigEntry;
+  onAdd: () => void;
+  onDelete: (itemIndex: number) => void;
+  onUpdate: (itemIndex: number, value: string) => void;
+}) {
+  const array = parseConfigInlineArray(entry.value);
+  if (!array) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] p-1">
+      {array.items.map((item, itemIndex) => (
+        <span
+          key={`${entry.lineIndex}:${itemIndex}`}
+          className="inline-flex min-w-0 items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5"
+        >
+          <input
+            value={item}
+            onChange={(event) => onUpdate(itemIndex, event.target.value)}
+            className="h-6 w-24 bg-transparent font-mono text-[11px] text-[var(--text)] outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => onDelete(itemIndex)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]"
+            title="Delete item"
+          >
+            <X className="h-3 w-3" strokeWidth={1.75} />
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        title="Add item"
+      >
+        <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+      </button>
+    </div>
+  );
+}
+
+function InlineObjectEditor({
+  entry,
+  kind,
+  onAdd,
+  onDelete,
+  onUpdate,
+}: {
+  entry: ConfigEntry;
+  kind: "yaml" | "toml";
+  onAdd: (key: string, value: string) => void;
+  onDelete: (entryIndex: number) => void;
+  onUpdate: (
+    entryIndex: number,
+    patch: Partial<{ key: string; value: string }>,
+  ) => void;
+}) {
+  const [draftKey, setDraftKey] = useState("");
+  const [draftValue, setDraftValue] = useState("");
+  const object = parseConfigInlineObject(entry.value, kind);
+  if (!object) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] p-1">
+      {object.entries.map((item, itemIndex) => (
+        <span
+          key={`${entry.lineIndex}:object:${itemIndex}`}
+          className="inline-flex min-w-0 items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5"
+        >
+          <input
+            value={item.key}
+            onChange={(event) => onUpdate(itemIndex, { key: event.target.value })}
+            className="h-6 w-20 bg-transparent font-mono text-[11px] font-medium text-[var(--accent)] outline-none"
+          />
+          <span className="font-mono text-[10px] text-[var(--text-faint)]">
+            {object.separator}
+          </span>
+          <input
+            value={item.value}
+            onChange={(event) => onUpdate(itemIndex, { value: event.target.value })}
+            className="h-6 w-24 bg-transparent font-mono text-[11px] text-[var(--text)] outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => onDelete(itemIndex)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]"
+            title="Delete field"
+          >
+            <X className="h-3 w-3" strokeWidth={1.75} />
+          </button>
+        </span>
+      ))}
+      <span className="inline-flex min-w-0 items-center gap-1 rounded border border-dashed border-[var(--border)] bg-[var(--bg)] px-1 py-0.5">
+        <input
+          value={draftKey}
+          onChange={(event) => setDraftKey(event.target.value)}
+          placeholder="key"
+          className="h-6 w-16 bg-transparent font-mono text-[11px] font-medium text-[var(--accent)] outline-none placeholder:text-[var(--text-faint)]"
+        />
+        <span className="font-mono text-[10px] text-[var(--text-faint)]">
+          {object.separator}
+        </span>
+        <input
+          value={draftValue}
+          onChange={(event) => setDraftValue(event.target.value)}
+          placeholder="value"
+          className="h-6 w-20 bg-transparent font-mono text-[11px] text-[var(--text)] outline-none placeholder:text-[var(--text-faint)]"
+        />
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          onAdd(draftKey, draftValue);
+          setDraftKey("");
+          setDraftValue("");
+        }}
+        disabled={!draftKey.trim()}
+        className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        title="Add field"
+      >
+        <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
+      </button>
     </div>
   );
 }

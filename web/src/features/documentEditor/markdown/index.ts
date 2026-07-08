@@ -1,4 +1,5 @@
 export * from "./markdownActiveReferenceBar";
+export * from "./markdownAst";
 export * from "./markdownEditorCommands";
 export * from "./markdownEditorSourceHandlers";
 export * from "./markdownEditorStatusBar";

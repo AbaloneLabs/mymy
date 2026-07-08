@@ -1,4 +1,8 @@
 export {
+  replaceTextLineRange,
+  textLineOffsetRanges,
+} from "./textBuffer";
+export {
   startChunkedSearchCount,
   startChunkedSearchRange,
   startChunkedSourcePaste,

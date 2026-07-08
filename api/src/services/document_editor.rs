@@ -83,7 +83,10 @@ use self::docx_relationships::{
 };
 use self::docx_revisions::docx_paragraph_revisions;
 use self::docx_runs::{docx_run_models, docx_runs_text};
-use self::docx_styles::{docx_paragraph_style_id, docx_paragraph_styles, docx_style_names};
+use self::docx_styles::{
+    add_docx_font_table_replacements, add_docx_style_replacements, docx_paragraph_style_id,
+    docx_paragraph_styles, docx_style_names,
+};
 #[cfg(test)]
 use self::docx_tables::build_docx_table;
 use self::docx_tables::{
@@ -514,6 +517,9 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
     let document = update_docx_page_settings(&document, model.get("page"));
     let document = ensure_docx_relationship_namespace(&document);
     replacements.push(("word/document.xml".to_string(), document.into_bytes()));
+    let styles_changed =
+        add_docx_style_replacements(original, model.get("styles"), &mut replacements);
+    let font_table_changed = add_docx_font_table_replacements(original, model, &mut replacements);
     add_docx_text_part_replacements(original, model.get("headers"), "header", &mut replacements);
     add_docx_text_part_replacements(original, model.get("footers"), "footer", &mut replacements);
     let comments_changed = add_docx_comment_replacements(
@@ -545,7 +551,33 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
         || comments_changed
         || footnotes_changed
         || endnotes_changed
+        || styles_changed
+        || font_table_changed
     {
+        if styles_changed {
+            relationships = ensure_docx_part_relationship(
+                &relationships,
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
+                "styles.xml",
+            );
+            content_types = ensure_content_type_override(
+                &content_types,
+                "/word/styles.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml",
+            );
+        }
+        if font_table_changed {
+            relationships = ensure_docx_part_relationship(
+                &relationships,
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable",
+                "fontTable.xml",
+            );
+            content_types = ensure_content_type_override(
+                &content_types,
+                "/word/fontTable.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml",
+            );
+        }
         replacements.push((
             "word/_rels/document.xml.rels".to_string(),
             relationships.into_bytes(),

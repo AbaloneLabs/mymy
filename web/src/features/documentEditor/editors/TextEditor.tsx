@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { HighlightedCodeBlock } from "@/components/chat/shared/codeHighlight";
 import type { EditorCommandRequest } from "../shared/commands";
 import type { TextModel } from "../shared/models";
@@ -15,6 +15,9 @@ import {
   indentTextLine,
   JsonPreview,
   JsonTableEditor,
+  languageServiceCompletionRange,
+  languageServiceCompletions,
+  languageServiceHover,
   languageForPath,
   LargeTextSourceViewer,
   lineCommentToken,
@@ -29,6 +32,7 @@ import {
   TextEditorDiagnosticsBar,
   TextEditorGoToLineBar,
   TextEditorLargeFileWarning,
+  TextEditorLanguageAssistPanel,
   TextEditorOutlinePanel,
   TextEditorSchemaPanel,
   TextEditorSearchBar,
@@ -78,6 +82,7 @@ export function PlainTextEditor({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [regexSearch, setRegexSearch] = useState(false);
+  const [languageAssistOpen, setLanguageAssistOpen] = useState(false);
   const [cursor, setCursor] = useState({
     line: 1,
     column: 1,
@@ -146,6 +151,21 @@ export function PlainTextEditor({
     sourceSelectionRanges,
     structured,
   });
+  const languageAssistEnabled = !largeTextMode && activeMode === "source";
+  const languageCompletions = useMemo(
+    () =>
+      languageAssistEnabled
+        ? languageServiceCompletions(model.content, language, cursor.offset)
+        : [],
+    [cursor.offset, language, languageAssistEnabled, model.content],
+  );
+  const languageHover = useMemo(
+    () =>
+      languageAssistEnabled
+        ? languageServiceHover(model.content, language, cursor.offset)
+        : null,
+    [cursor.offset, language, languageAssistEnabled, model.content],
+  );
 
   function togglePreviewMode() {
     setMode((current) => (current === "preview" ? "source" : "preview"));
@@ -175,11 +195,22 @@ export function PlainTextEditor({
     }
   }
 
+  function applyLanguageCompletion(label: string) {
+    const range = languageServiceCompletionRange(model.content, cursor.offset);
+    const nextContent = `${model.content.slice(0, range.start)}${label}${model.content.slice(range.end)}`;
+    const nextOffset = range.start + label.length;
+    applySourceEdit({
+      content: nextContent,
+      selectionStart: nextOffset,
+      selectionEnd: nextOffset,
+    });
+    setLanguageAssistOpen(false);
+  }
+
   function updateContent(
     content: string,
     options: { preserveSourceSelections?: boolean } = {},
   ) {
-    if (largeTextMode) return;
     if (!options.preserveSourceSelections) clearSourceSelections();
     onChange({ ...model, content, trailingNewline: hasTrailingTextNewline(content) });
   }
@@ -348,6 +379,8 @@ export function PlainTextEditor({
     } else if (commandId === "goToLine") {
       setGoToLineDraft(String(cursor.line));
       setGoToLineOpen(true);
+    } else if (commandId === "outline") {
+      setOutlineOpen((current) => !current);
     } else if (commandId === "togglePreview") {
       togglePreviewMode();
     } else if (commandId === "duplicateLine") {
@@ -523,6 +556,7 @@ export function PlainTextEditor({
               content={model.content}
               lineCount={lineCount}
               searchRange={largeSearchRange}
+              onChangeContent={updateContent}
             />
           ) : (
             <TextSourcePane
@@ -539,7 +573,25 @@ export function PlainTextEditor({
               selectionFragments={sourceSelectionFragments}
               bracketFragments={bracketPairFragments}
               onContentChange={updateContent}
-              onKeyDown={(event) =>
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === " ") {
+                  event.preventDefault();
+                  setLanguageAssistOpen(true);
+                  return;
+                }
+                if (languageAssistOpen && event.key === "Escape") {
+                  setLanguageAssistOpen(false);
+                  return;
+                }
+                if (
+                  languageAssistOpen &&
+                  event.key === "Enter" &&
+                  languageCompletions[0]
+                ) {
+                  event.preventDefault();
+                  applyLanguageCompletion(languageCompletions[0].label);
+                  return;
+                }
                 handleTextSourceKeyDown(event, {
                   activateRectangularSourceSelection,
                   addNextSourceSelection,
@@ -559,6 +611,7 @@ export function PlainTextEditor({
                     setGoToLineDraft(String(line));
                     setGoToLineOpen(true);
                   },
+                  openOutline: () => setOutlineOpen(true),
                   openSearch: () => setSearchOpen(true),
                   outdentSelection,
                   selectCurrentLine,
@@ -571,8 +624,8 @@ export function PlainTextEditor({
                   togglePreviewMode,
                   toggleSchema: () => setSchemaOpen((current) => !current),
                   unfoldAll: () => setFoldedSourceIds(new Set()),
-                })
-              }
+                });
+              }}
               onPaste={handleSourcePaste}
               onCursorUpdate={updateCursor}
               onScroll={syncLineNumberScroll}
@@ -589,6 +642,14 @@ export function PlainTextEditor({
           />
         )}
       </div>
+      {languageAssistOpen && languageAssistEnabled && (
+        <TextEditorLanguageAssistPanel
+          completions={languageCompletions}
+          hoverInfo={languageHover}
+          onApplyCompletion={(completion) => applyLanguageCompletion(completion.label)}
+          onClose={() => setLanguageAssistOpen(false)}
+        />
+      )}
       <TextEditorStatusBar
         bracketMatch={bracketMatch}
         cursor={cursor}

@@ -5,7 +5,10 @@ import {
   yamlBlockScalarHeader,
   yamlBlockScalarValue,
 } from "./textConfigValueUtils";
-import { splitStructuredTextLines } from "./textFlatConfigStructure";
+import {
+  splitStructuredTextLines,
+  tomlSectionHeader,
+} from "./textFlatConfigStructure";
 import type { ConfigEntry } from "./textStructuredTypes";
 
 export function parseFlatConfig(content: string, kind: "yaml" | "toml") {
@@ -17,11 +20,29 @@ function parseYamlConfig(content: string) {
   const stack: Array<{ indent: number; key: string }> = [];
   const sequenceCounters = new Map<string, number>();
   let unsupportedCount = 0;
+  let documentIndex = 0;
+  let documentCount = 1;
+  let sawExplicitDocumentStart = false;
   const lines = splitStructuredTextLines(content);
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed === "---" || trimmed === "...") {
+    if (trimmed === "---") {
+      if (sawExplicitDocumentStart || entries.length > 0) {
+        documentIndex += 1;
+        documentCount = Math.max(documentCount, documentIndex + 1);
+      }
+      sawExplicitDocumentStart = true;
+      stack.length = 0;
+      sequenceCounters.clear();
+      continue;
+    }
+    if (trimmed === "...") {
+      stack.length = 0;
+      sequenceCounters.clear();
+      continue;
+    }
+    if (!trimmed || trimmed.startsWith("#")) {
       continue;
     }
     const indent = leadingWhitespace(line);
@@ -33,15 +54,17 @@ function parseYamlConfig(content: string) {
     if (mapping) {
       const key = mapping[2];
       const parsed = splitInlineComment(mapping[3]);
+      const decorated = yamlValueDecorators(parsed.value);
       const path = [...stack.map((item) => item.key), key];
-      if (!parsed.value) {
+      if (!decorated.value) {
         stack.push({ indent: indentSize, key });
         continue;
       }
-      const blockHeader = yamlBlockScalarHeader(parsed.value);
+      const blockHeader = yamlBlockScalarHeader(decorated.value);
       if (blockHeader) {
         const block = yamlBlockScalarValue(lines, lineIndex, indentSize);
         entries.push({
+          documentIndex,
           lineIndex,
           lineEndIndex: block.endLineIndex,
           key,
@@ -49,6 +72,8 @@ function parseYamlConfig(content: string) {
           path,
           indent,
           suffix: parsed.suffix,
+          valuePrefix: decorated.prefix,
+          yamlDecorators: decorated.decorators,
           keyEditable: true,
           entryKind: "mapping",
           valueHeader: blockHeader,
@@ -59,12 +84,15 @@ function parseYamlConfig(content: string) {
         continue;
       }
       entries.push({
+        documentIndex,
         lineIndex,
         key,
-        value: parsed.value,
+        value: decorated.value,
         path,
         indent,
         suffix: parsed.suffix,
+        valuePrefix: decorated.prefix,
+        yamlDecorators: decorated.decorators,
         keyEditable: true,
         entryKind: "mapping",
       });
@@ -77,17 +105,52 @@ function parseYamlConfig(content: string) {
       const index = sequenceCounters.get(parentKey) ?? 0;
       sequenceCounters.set(parentKey, index + 1);
       const parsed = splitInlineComment(sequence[2]);
-      if (!parsed.value || /^[A-Za-z0-9_.-]+\s*:\s*/.test(parsed.value)) {
+      const decorated = yamlValueDecorators(parsed.value);
+      const inlineMapping = /^([A-Za-z0-9_.-]+)\s*:\s*(.*?)\s*$/.exec(
+        decorated.value,
+      );
+      if (inlineMapping) {
+        const itemPath = [...parentPath, `[${index}]`];
+        const key = inlineMapping[1];
+        const valueDecorated = yamlValueDecorators(inlineMapping[2]);
+        stack.push({ indent: indentSize, key: `[${index}]` });
+        if (!valueDecorated.value) {
+          stack.push({ indent: indentSize + 1, key });
+          continue;
+        }
+        entries.push({
+          documentIndex,
+          lineIndex,
+          key,
+          value: valueDecorated.value,
+          path: [...itemPath, key],
+          indent,
+          suffix: parsed.suffix,
+          valuePrefix: `${decorated.prefix}${valueDecorated.prefix}`,
+          yamlDecorators: [
+            ...decorated.decorators,
+            ...valueDecorated.decorators,
+          ],
+          sequencePrefix: "- ",
+          keyEditable: true,
+          entryKind: "mapping",
+        });
+        continue;
+      }
+      if (!decorated.value) {
         unsupportedCount += 1;
         continue;
       }
       entries.push({
+        documentIndex,
         lineIndex,
         key: `[${index}]`,
-        value: parsed.value,
+        value: decorated.value,
         path: [...parentPath, `[${index}]`],
         indent,
         suffix: parsed.suffix,
+        valuePrefix: decorated.prefix,
+        yamlDecorators: decorated.decorators,
         keyEditable: false,
         entryKind: "sequence",
       });
@@ -95,22 +158,32 @@ function parseYamlConfig(content: string) {
     }
     unsupportedCount += 1;
   }
-  return { entries, unsupportedCount };
+  return { entries, unsupportedCount, documentCount };
 }
 
 function parseTomlConfig(content: string) {
   const entries: ConfigEntry[] = [];
   let unsupportedCount = 0;
-  let currentSection = "";
+  let currentSectionPath: string[] = [];
+  let currentSectionScope = "";
+  const arrayTableCounts = new Map<string, number>();
   const lines = splitStructuredTextLines(content);
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const table = /^\[\s*([^\]]+?)\s*\]$/.exec(trimmed);
-    const arrayTable = /^\[\[\s*([^\]]+?)\s*\]\]$/.exec(trimmed);
-    if (arrayTable || table) {
-      currentSection = (arrayTable?.[1] ?? table?.[1] ?? "").trim();
+    const header = tomlSectionHeader(trimmed);
+    if (header) {
+      const sectionPath = header.name.split(".").filter(Boolean);
+      if (header.arrayTable) {
+        const index = arrayTableCounts.get(header.name) ?? 0;
+        arrayTableCounts.set(header.name, index + 1);
+        currentSectionPath = [...sectionPath, `[${index}]`];
+        currentSectionScope = `${header.name}.[${index}]`;
+      } else {
+        currentSectionPath = sectionPath;
+        currentSectionScope = header.name;
+      }
       continue;
     }
     const match = /^(\s*)([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*$/.exec(line);
@@ -119,7 +192,7 @@ function parseTomlConfig(content: string) {
       continue;
     }
     const key = match[2];
-    const sectionPath = currentSection ? currentSection.split(".").filter(Boolean) : [];
+    const sectionPath = currentSectionPath;
     const multiline = tomlMultilineValue(lines, lineIndex, match[3]);
     if (multiline) {
       entries.push({
@@ -128,7 +201,7 @@ function parseTomlConfig(content: string) {
         key,
         value: multiline.value,
         path: [...sectionPath, ...key.split(".").filter(Boolean)],
-        section: currentSection,
+        section: currentSectionScope,
         indent: match[1],
         suffix: multiline.suffix,
         keyEditable: true,
@@ -145,12 +218,30 @@ function parseTomlConfig(content: string) {
       key,
       value: parsed.value,
       path: [...sectionPath, ...key.split(".").filter(Boolean)],
-      section: currentSection,
+      section: currentSectionScope,
       indent: match[1],
       suffix: parsed.suffix,
       keyEditable: true,
       entryKind: "toml",
     });
   }
-  return { entries, unsupportedCount };
+  return { entries, unsupportedCount, documentCount: 1 };
+}
+
+function yamlValueDecorators(value: string) {
+  let rest = value.trimStart();
+  const leading = value.slice(0, value.length - rest.length);
+  const decorators: string[] = [];
+  while (rest.startsWith("!") || rest.startsWith("&")) {
+    const match = /^(![^\s[\]{},]+|&[A-Za-z0-9_.-]+)(?:\s+|$)/.exec(rest);
+    if (!match) break;
+    decorators.push(match[1]);
+    rest = rest.slice(match[0].length).trimStart();
+  }
+  const prefix = decorators.length > 0 ? `${leading}${decorators.join(" ")} ` : "";
+  return {
+    decorators,
+    prefix,
+    value: rest,
+  };
 }

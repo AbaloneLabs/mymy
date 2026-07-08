@@ -47,8 +47,10 @@ export function DocxEditorToolbar(props: DocxEditorToolbarProps) {
         onInsertSectionBreak={props.onInsertSectionBreak}
         onMoveActiveBlock={props.onMoveActiveBlock}
         onToggleOutlineOpen={props.onToggleOutlineOpen}
+        onToggleStylesOpen={props.onToggleStylesOpen}
         onToggleTextPartsOpen={props.onToggleTextPartsOpen}
         outlineOpen={props.outlineOpen}
+        stylesOpen={props.stylesOpen}
         textPartsOpen={props.textPartsOpen}
       />
     </div>

@@ -44,7 +44,11 @@ pub(in crate::services::document_editor) fn update_pptx_animations(
         .map(str::to_string)
         .or_else(|| pptx_slide_timing(xml));
     let Some(timing) = timing else {
-        return xml.to_string();
+        if specs.is_empty() {
+            return xml.to_string();
+        }
+        let timing = build_pptx_timing(specs);
+        return append_before_or_end(xml, "</p:sld>", &timing);
     };
     let timing = update_pptx_timing_ctn_attrs(&timing, specs);
     if let Some(replaced) = replace_xml_element(xml, "p:timing", &timing) {
@@ -148,7 +152,7 @@ pub(in crate::services::document_editor) fn update_pptx_timing_ctn_attrs(
     specs: &[PptxAnimationSpec],
 ) -> String {
     if specs.is_empty() {
-        return timing.to_string();
+        return remove_xml_named_elements(timing, "p:cTn");
     }
     let mut output = String::new();
     let mut rest = timing;
@@ -172,23 +176,43 @@ pub(in crate::services::document_editor) fn update_pptx_timing_ctn_attrs(
             (&after_start[..end], &after_start[end..])
         };
         let updated_segment = if let Some(spec) = specs.get(index) {
-            update_pptx_animation_segment(segment, spec)
+            update_pptx_animation_segment(segment, spec, index + 1)
         } else {
-            segment.to_string()
+            String::new()
         };
         output.push_str(&updated_segment);
         rest = next_rest;
         index += 1;
     }
     output.push_str(rest);
+    if specs.len() > index {
+        let inserted = specs[index..]
+            .iter()
+            .enumerate()
+            .map(|(offset, spec)| update_pptx_animation_segment("", spec, index + offset + 1))
+            .collect::<Vec<_>>()
+            .join("");
+        if output.contains("</p:tnLst>") {
+            return append_before_or_end(&output, "</p:tnLst>", &inserted);
+        }
+        return append_before_or_end(&output, "</p:timing>", &inserted);
+    }
     output
 }
 
 pub(in crate::services::document_editor) fn update_pptx_animation_segment(
     segment: &str,
     spec: &PptxAnimationSpec,
+    fallback_id: usize,
 ) -> String {
-    let source = spec.source_xml.as_deref().unwrap_or(segment);
+    let source = spec
+        .source_xml
+        .as_deref()
+        .filter(|source| !source.trim().is_empty())
+        .unwrap_or(segment);
+    if source.is_empty() {
+        return build_pptx_animation_segment(spec, fallback_id);
+    }
     let Some(open_end) = source.find('>') else {
         return source.to_string();
     };
@@ -204,6 +228,85 @@ pub(in crate::services::document_editor) fn update_pptx_animation_segment(
     output.push_str(&updated_tag);
     output.push_str(&source[open_end + 1..]);
     output
+}
+
+pub(in crate::services::document_editor) fn build_pptx_timing(
+    specs: &[PptxAnimationSpec],
+) -> String {
+    let segments = specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| build_pptx_animation_segment(spec, index + 1))
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<p:timing><p:tnLst>{segments}</p:tnLst></p:timing>")
+}
+
+pub(in crate::services::document_editor) fn build_pptx_animation_segment(
+    spec: &PptxAnimationSpec,
+    fallback_id: usize,
+) -> String {
+    let id = spec
+        .id
+        .as_deref()
+        .filter(|value| value.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or_else(|| if fallback_id == 0 { "1" } else { "" });
+    let fallback_id_string;
+    let id = if id.is_empty() {
+        fallback_id_string = fallback_id.max(1).to_string();
+        fallback_id_string.as_str()
+    } else {
+        id
+    };
+    let node_type = spec
+        .node_type
+        .as_deref()
+        .filter(|value| valid_pptx_animation_token(value))
+        .unwrap_or("clickEffect");
+    let mut attrs = vec![
+        format!(r#"id="{}""#, escape_xml(id)),
+        format!(r#"nodeType="{}""#, escape_xml(node_type)),
+    ];
+    if let Some(preset_class) = spec
+        .preset_class
+        .as_deref()
+        .filter(|value| valid_pptx_animation_token(value))
+    {
+        attrs.push(format!(r#"presetClass="{}""#, escape_xml(preset_class)));
+    }
+    if let Some(preset_id) = spec
+        .preset_id
+        .as_deref()
+        .filter(|value| valid_pptx_animation_token(value))
+    {
+        attrs.push(format!(r#"presetID="{}""#, escape_xml(preset_id)));
+    }
+    attrs.push(format!(r#"delay="{}""#, spec.delay_ms.unwrap_or(0)));
+    attrs.push(format!(r#"dur="{}""#, spec.duration_ms.unwrap_or(500)));
+    let attrs = attrs.join(" ");
+    let target = spec
+        .target_shape_id
+        .as_deref()
+        .filter(|value| value.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|shape_id| {
+            format!(
+                r#"<p:tgtEl><p:spTgt spid="{}"/></p:tgtEl>"#,
+                escape_xml(shape_id)
+            )
+        });
+    if let Some(target) = target {
+        format!("<p:cTn {attrs}>{target}</p:cTn>")
+    } else {
+        format!("<p:cTn {attrs}/>")
+    }
+}
+
+fn valid_pptx_animation_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 pub(in crate::services::document_editor) fn remove_pptx_transition(xml: &str) -> String {

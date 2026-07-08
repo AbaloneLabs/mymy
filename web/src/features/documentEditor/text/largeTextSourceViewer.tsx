@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SourceSelectionRange } from "./textSourceTypes";
+import { replaceTextLineRange } from "./textBuffer";
 
 const LARGE_TEXT_LINE_HEIGHT = 24;
 const LARGE_TEXT_OVERSCAN_LINES = 24;
@@ -8,10 +9,12 @@ export function LargeTextSourceViewer({
   content,
   lineCount,
   searchRange,
+  onChangeContent,
 }: {
   content: string;
   lineCount: number;
   searchRange?: SourceSelectionRange | null;
+  onChangeContent?: (content: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ height: 0, scrollTop: 0 });
@@ -27,6 +30,8 @@ export function LargeTextSourceViewer({
     start + visibleLineCount + LARGE_TEXT_OVERSCAN_LINES * 2,
   );
   const top = start * LARGE_TEXT_LINE_HEIGHT;
+  const editableWindow = Boolean(onChangeContent);
+  const windowText = lines.slice(start, end).join("\n");
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -92,6 +97,34 @@ export function LargeTextSourceViewer({
               </div>
             );
           })}
+          {editableWindow && (
+            <textarea
+              value={windowText}
+              onChange={(event) => {
+                const nextWindowText =
+                  end < lines.length && !event.currentTarget.value.endsWith("\n")
+                    ? `${event.currentTarget.value}\n`
+                    : event.currentTarget.value;
+                onChangeContent?.(
+                  replaceTextLineRange(
+                    content,
+                    {
+                      startLineIndex: start,
+                      endLineIndex: end,
+                    },
+                    nextWindowText,
+                  ),
+                );
+              }}
+              spellCheck={false}
+              className="absolute left-16 right-0 top-0 min-h-full resize-none bg-[var(--bg)]/95 px-4 font-mono text-sm leading-6 text-[var(--text)] outline-none focus:bg-[var(--bg)]"
+              style={{
+                height: Math.max(1, end - start) * LARGE_TEXT_LINE_HEIGHT,
+                tabSize: 2,
+              }}
+              aria-label="Large file editable viewport"
+            />
+          )}
         </div>
       </div>
     </div>

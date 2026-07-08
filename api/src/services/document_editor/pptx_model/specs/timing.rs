@@ -114,6 +114,11 @@ pub(in crate::services::document_editor) fn pptx_animation_specs(
         .into_iter()
         .flatten()
         .map(|animation| PptxAnimationSpec {
+            id: pptx_animation_token(animation.get("id")),
+            node_type: pptx_animation_token(animation.get("nodeType")),
+            preset_class: pptx_animation_token(animation.get("presetClass")),
+            preset_id: pptx_animation_token(animation.get("presetId")),
+            target_shape_id: pptx_animation_token(animation.get("targetShapeId")),
             source_xml: animation
                 .get("sourceXml")
                 .and_then(Value::as_str)
@@ -129,6 +134,16 @@ pub(in crate::services::document_editor) fn pptx_animation_specs(
                 .map(|value| value.min(600_000) as u32),
         })
         .collect()
+}
+
+fn pptx_animation_token(value: Option<&Value>) -> Option<String> {
+    let value = value?.as_str()?.trim();
+    (!value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')))
+    .then(|| value.to_string())
 }
 
 pub(in crate::services::document_editor) fn valid_pptx_transition_kind(value: &str) -> bool {

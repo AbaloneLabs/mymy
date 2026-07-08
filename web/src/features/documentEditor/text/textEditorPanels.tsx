@@ -1,6 +1,8 @@
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TextModel } from "../shared/models";
+import type { SourceCompletionItem, SourceHoverInfo } from "./textLanguageService";
 import type {
   SourceBracketMatch,
   SourceOutlineItem,
@@ -11,7 +13,7 @@ import type { SourceDiagnostic } from "./textStructuredUtils";
 export function TextEditorLargeFileWarning() {
   return (
     <div className="shrink-0 border-b border-[var(--status-warning)]/30 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
-      Large file mode: source is read-only and rendered with a virtualized line window.
+      Large file mode: only the visible line window is editable to keep rendering bounded.
     </div>
   );
 }
@@ -102,6 +104,60 @@ export function TextEditorOutlinePanel({
   );
 }
 
+type TextEditorLanguageAssistPanelProps = {
+  completions: SourceCompletionItem[];
+  hoverInfo: SourceHoverInfo | null;
+  onApplyCompletion: (completion: SourceCompletionItem) => void;
+  onClose: () => void;
+};
+
+export function TextEditorLanguageAssistPanel({
+  completions,
+  hoverInfo,
+  onApplyCompletion,
+  onClose,
+}: TextEditorLanguageAssistPanelProps) {
+  return (
+    <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          {hoverInfo && (
+            <div className="mb-2 truncate font-mono text-xs text-[var(--text-muted)]">
+              {hoverInfo.label}: {hoverInfo.detail}
+            </div>
+          )}
+          {completions.length > 0 && (
+            <div className="flex min-w-0 flex-wrap gap-1">
+              {completions.map((completion) => (
+                <button
+                  key={`${completion.kind}:${completion.label}`}
+                  type="button"
+                  onClick={() => onApplyCompletion(completion)}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-[11px] text-[var(--text)] hover:bg-[var(--surface-hover)]"
+                  title={completion.detail ?? completion.kind}
+                >
+                  <span className="text-[var(--accent)]">{completion.label}</span>
+                  <span className="text-[10px] text-[var(--text-faint)]">
+                    {completion.kind}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          title="Close"
+        >
+          <X className="h-4 w-4" strokeWidth={1.75} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type TextEditorStatusBarProps = {
   bracketMatch: SourceBracketMatch | null;
   cursor: {
@@ -137,7 +193,7 @@ export function TextEditorStatusBar({
         L{cursor.line}:C{cursor.column}
         {cursor.selection > 0 ? ` · ${cursor.selection} selected` : ""}
         {sourceSelectionCount > 1 ? ` · ${sourceSelectionCount} cursors` : ""}
-        {largeTextMode ? " · read-only" : ""}
+        {largeTextMode ? " · virtual edit" : ""}
         {pasteProgress
           ? ` · pasting ${Math.round((pasteProgress.processed / Math.max(1, pasteProgress.total)) * 100)}%`
           : ""}

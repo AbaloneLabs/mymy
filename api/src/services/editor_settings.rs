@@ -76,6 +76,34 @@ mod tests {
     }
 
     #[test]
+    fn ttf_name_table_reads_font_license_and_identity_metadata() {
+        let bytes = minimal_ttf_with_name_records(&[
+            (1, "Real Font"),
+            (2, "Regular"),
+            (4, "Real Font Regular"),
+            (5, "Version 1.000"),
+            (6, "RealFont-Regular"),
+            (13, "Open Font License"),
+            (14, "https://example.test/ofl"),
+        ]);
+        let metadata = parse_opentype_metadata(&bytes).expect("valid name table should parse");
+
+        assert_eq!(metadata.family_name.as_deref(), Some("Real Font"));
+        assert_eq!(metadata.subfamily_name.as_deref(), Some("Regular"));
+        assert_eq!(metadata.full_name.as_deref(), Some("Real Font Regular"));
+        assert_eq!(metadata.version.as_deref(), Some("Version 1.000"));
+        assert_eq!(
+            metadata.postscript_name.as_deref(),
+            Some("RealFont-Regular")
+        );
+        assert_eq!(metadata.license.as_deref(), Some("Open Font License"));
+        assert_eq!(
+            metadata.license_url.as_deref(),
+            Some("https://example.test/ofl")
+        );
+    }
+
+    #[test]
     fn ttf_name_table_display_name_ignores_invalid_bytes() {
         assert!(parse_opentype_metadata(b"font-bytes").is_none());
     }
@@ -165,13 +193,26 @@ mod tests {
     }
 
     fn minimal_ttf_with_family_name(name: &str) -> Vec<u8> {
-        let mut encoded_name = Vec::new();
-        for unit in name.encode_utf16() {
-            encoded_name.extend_from_slice(&unit.to_be_bytes());
+        minimal_ttf_with_name_records(&[(1, name)])
+    }
+
+    fn minimal_ttf_with_name_records(records: &[(u16, &str)]) -> Vec<u8> {
+        let mut encoded_values = Vec::new();
+        let mut encoded_records = Vec::new();
+        for (name_id, value) in records {
+            let offset = encoded_values.len();
+            let mut encoded_name = Vec::new();
+            for unit in value.encode_utf16() {
+                encoded_name.extend_from_slice(&unit.to_be_bytes());
+            }
+            encoded_records.push((*name_id, offset, encoded_name.len()));
+            encoded_values.extend_from_slice(&encoded_name);
         }
 
+        let name_record_bytes = encoded_records.len() * 12;
         let name_table_offset = 28u32;
-        let name_table_length = 18 + encoded_name.len();
+        let storage_offset = 6 + name_record_bytes;
+        let name_table_length = storage_offset + encoded_values.len();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&0x0001_0000u32.to_be_bytes());
         bytes.extend_from_slice(&1u16.to_be_bytes());
@@ -184,15 +225,17 @@ mod tests {
         bytes.extend_from_slice(&(name_table_length as u32).to_be_bytes());
 
         bytes.extend_from_slice(&0u16.to_be_bytes());
-        bytes.extend_from_slice(&1u16.to_be_bytes());
-        bytes.extend_from_slice(&18u16.to_be_bytes());
-        bytes.extend_from_slice(&3u16.to_be_bytes());
-        bytes.extend_from_slice(&1u16.to_be_bytes());
-        bytes.extend_from_slice(&0x0409u16.to_be_bytes());
-        bytes.extend_from_slice(&1u16.to_be_bytes());
-        bytes.extend_from_slice(&(encoded_name.len() as u16).to_be_bytes());
-        bytes.extend_from_slice(&0u16.to_be_bytes());
-        bytes.extend_from_slice(&encoded_name);
+        bytes.extend_from_slice(&(encoded_records.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&(storage_offset as u16).to_be_bytes());
+        for (name_id, offset, length) in encoded_records {
+            bytes.extend_from_slice(&3u16.to_be_bytes());
+            bytes.extend_from_slice(&1u16.to_be_bytes());
+            bytes.extend_from_slice(&0x0409u16.to_be_bytes());
+            bytes.extend_from_slice(&name_id.to_be_bytes());
+            bytes.extend_from_slice(&(length as u16).to_be_bytes());
+            bytes.extend_from_slice(&(offset as u16).to_be_bytes());
+        }
+        bytes.extend_from_slice(&encoded_values);
         bytes
     }
 }

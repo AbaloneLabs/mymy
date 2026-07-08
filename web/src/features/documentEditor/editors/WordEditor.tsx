@@ -27,9 +27,11 @@ import type {
   DocxBlock,
   DocxModel,
   DocxPageSettings,
+  DocxStyle,
 } from "../shared/models";
 import { DocxTextPartsPanel } from "../word/docxTextPartsPanel";
 import { DocxEditorToolbar } from "../word/docxEditorToolbar";
+import { DocxStylePanel } from "../word/docxStylePanel";
 import { createDocxTableActions } from "../word/docxTableActions";
 import { DocxOutlinePanel } from "../word/docxOutline";
 import { buildDocxOutlineItems } from "../word/docxOutlineModel";
@@ -54,6 +56,7 @@ export function DocxEditor({
   );
   const [textPartsOpen, setTextPartsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [stylesOpen, setStylesOpen] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
   const [formatClipboard, setFormatClipboard] =
@@ -112,6 +115,82 @@ export function DocxEditor({
       ...model,
       blocks: model.blocks.map((block, blockIndex) =>
         blockIndex === index ? { ...block, ...patch } : block,
+      ),
+    });
+  }
+
+  function updateParagraphStyle(styleId: string, patch: Partial<DocxStyle>) {
+    const styles = model.styles ?? [];
+    onChange({
+      ...model,
+      styles: styles.map((style) =>
+        style.id === styleId ? { ...style, ...patch } : style,
+      ),
+      blocks:
+        patch.name === undefined
+          ? model.blocks
+          : model.blocks.map((block) =>
+              block.paragraphStyleId === styleId
+                ? { ...block, paragraphStyleName: patch.name }
+                : block,
+            ),
+    });
+  }
+
+  function deleteParagraphStyle(styleId: string) {
+    const styles = model.styles ?? [];
+    const style = styles.find((item) => item.id === styleId);
+    if (!style?.custom) return;
+    onChange({
+      ...model,
+      styles: styles.filter((item) => item.id !== styleId),
+      blocks: model.blocks.map((block) =>
+        block.paragraphStyleId === styleId
+          ? {
+              ...block,
+              paragraphStyleId: undefined,
+              paragraphStyleName: undefined,
+            }
+          : block,
+      ),
+    });
+  }
+
+  function createParagraphStyleFromActive(name: string) {
+    if (!isDocxTextBlock(activeBlock)) return;
+    const cleanName = name.trim();
+    if (!cleanName) return;
+    const styleId = nextParagraphStyleId(model.styles ?? [], cleanName);
+    const style: DocxStyle = {
+      id: styleId,
+      name: cleanName,
+      type: "paragraph",
+      custom: true,
+      quickFormat: true,
+      basedOn: activeBlock.paragraphStyleId,
+      next: activeBlock.paragraphStyleId,
+      bold: activeBlock.bold,
+      italic: activeBlock.italic,
+      underline: activeBlock.underline,
+      strikethrough: activeBlock.strikethrough,
+      verticalAlign: activeBlock.verticalAlign,
+      fontFamily: activeBlock.fontFamily,
+      fontSize: activeBlock.fontSize,
+      color: activeBlock.color,
+      highlight: activeBlock.highlight,
+      align: activeBlock.align,
+    };
+    onChange({
+      ...model,
+      styles: [...(model.styles ?? []), style],
+      blocks: model.blocks.map((block) =>
+        block.id === activeBlock.id
+          ? {
+              ...block,
+              paragraphStyleId: styleId,
+              paragraphStyleName: cleanName,
+            }
+          : block,
       ),
     });
   }
@@ -569,6 +648,7 @@ export function DocxEditor({
         hasDocumentParts={hasDocumentParts}
         textPartsOpen={textPartsOpen}
         outlineOpen={outlineOpen}
+        stylesOpen={stylesOpen}
         imageInputRef={imageInputRef}
         paragraphStyles={model.styles ?? []}
         onUpdateActive={updateActive}
@@ -589,6 +669,7 @@ export function DocxEditor({
         onUpdatePage={updatePage}
         onToggleTextPartsOpen={() => setTextPartsOpen((current) => !current)}
         onToggleOutlineOpen={() => setOutlineOpen((current) => !current)}
+        onToggleStylesOpen={() => setStylesOpen((current) => !current)}
         onMoveActiveBlock={moveActiveBlock}
         onDeleteActiveBlock={deleteActiveBlock}
         onInsertImageFile={insertImageFile}
@@ -596,6 +677,15 @@ export function DocxEditor({
         onInsertPageBreak={insertPageBreak}
         onInsertSectionBreak={insertSectionBreak}
       />
+      {stylesOpen && (
+        <DocxStylePanel
+          activeBlock={activeBlock}
+          styles={model.styles ?? []}
+          onCreateFromActive={createParagraphStyleFromActive}
+          onDeleteStyle={deleteParagraphStyle}
+          onStyleChange={updateParagraphStyle}
+        />
+      )}
       {hasDocumentParts && textPartsOpen && (
         <DocxTextPartsPanel
           headers={model.headers ?? []}
@@ -679,4 +769,22 @@ export function DocxEditor({
       </div>
     </div>
   );
+}
+
+function nextParagraphStyleId(styles: DocxStyle[], name: string) {
+  const existing = new Set(styles.map((style) => style.id));
+  const base =
+    name
+      .replace(/[^A-Za-z0-9_-]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join("") || "CustomStyle";
+  let candidate = base;
+  let index = 2;
+  while (existing.has(candidate)) {
+    candidate = `${base}${index}`;
+    index += 1;
+  }
+  return candidate;
 }

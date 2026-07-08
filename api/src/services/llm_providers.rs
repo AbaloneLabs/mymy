@@ -30,9 +30,7 @@ pub use credentials::{
 };
 pub use key_rotation::reencrypt_all_keys;
 use model_catalog::curated_models;
-use repository::{
-    ensure_default_exists, fetch_row, require_encryption_key, row_to_provider, LlmProviderRow,
-};
+use repository::{ensure_default_exists, fetch_row, require_encryption_key, row_to_provider};
 pub use runtime_config::{
     resolve_default_provider_id, resolve_runtime_config, resolve_runtime_config_with_credential,
 };
@@ -40,7 +38,7 @@ pub use runtime_config::{
 /// GET /api/llm-providers
 pub async fn list_providers(state: &AppState) -> AppResult<LlmProvidersResponse> {
     let rows = sqlx::query_as!(
-        LlmProviderRow,
+        repository::LlmProviderRow,
         r#"SELECT
              id, label, api_format, base_url,
              encrypted_key, key_nonce,

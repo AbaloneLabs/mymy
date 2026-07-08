@@ -23,10 +23,16 @@ export function configPathStartsWith(path: string[], prefix: string[]) {
 }
 
 export function tomlSectionName(line: string) {
+  return tomlSectionHeader(line)?.name ?? null;
+}
+
+export function tomlSectionHeader(line: string) {
   const trimmed = line.trim();
   const table = /^\[\s*([^\]]+?)\s*\]$/.exec(trimmed);
   const arrayTable = /^\[\[\s*([^\]]+?)\s*\]\]$/.exec(trimmed);
-  return (arrayTable?.[1] ?? table?.[1] ?? null)?.trim() ?? null;
+  const name = (arrayTable?.[1] ?? table?.[1] ?? null)?.trim() ?? null;
+  if (!name) return null;
+  return { name, arrayTable: Boolean(arrayTable) };
 }
 
 export function splitStructuredTextLines(content: string) {

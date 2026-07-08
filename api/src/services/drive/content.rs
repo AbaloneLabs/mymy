@@ -59,10 +59,21 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
         .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
 
     let mut packaged_fonts = Vec::new();
-    for (index, item) in font_files.iter().enumerate() {
+    let mut skipped_fonts = Vec::new();
+    for item in &font_files {
+        if item.font.embedding.as_deref() == Some("restricted") {
+            skipped_fonts.push(json!({
+                "fileName": item.font.file_name,
+                "displayName": item.font.display_name,
+                "familyName": item.font.family_name,
+                "embedding": item.font.embedding,
+                "reason": "Font declares restricted embedding rights.",
+            }));
+            continue;
+        }
         let font_name = &item.font.file_name;
         let font_path = &item.path;
-        let package_path = format!("fonts/{:02}-{}", index + 1, font_name);
+        let package_path = format!("fonts/{:02}-{}", packaged_fonts.len() + 1, font_name);
         let bytes = fs::read(font_path)?;
         writer
             .start_file(&package_path, options)
@@ -94,7 +105,8 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
             "drivePath": resolved.logical_path,
         },
         "fonts": packaged_fonts,
-        "note": "Fonts are included for compatibility when opening this document outside mymy. Respect each font license before sharing the package.",
+        "skippedFonts": skipped_fonts,
+        "note": "Fonts are included for compatibility when opening this document outside mymy. Fonts that declare restricted embedding rights are excluded. Respect each font license before sharing the package.",
     });
     writer
         .start_file("mymy-font-package.json", options)
@@ -111,7 +123,7 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
         .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
     writer
         .write_all(
-            b"mymy includes uploaded custom font files in this package for document compatibility. Review and respect each font license before redistribution.\n",
+            b"mymy includes uploaded custom font files in this package for document compatibility. Fonts that declare restricted embedding rights are excluded. Review and respect each font license before redistribution.\n",
         )
         .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
 

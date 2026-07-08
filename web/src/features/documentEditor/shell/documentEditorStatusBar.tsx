@@ -10,6 +10,8 @@ export function DocumentEditorStatusBar({
   model,
   fingerprint,
   dirty,
+  operationCount,
+  selectionLabel,
   isSaving,
   isSaveQueued,
   warningCount,
@@ -18,6 +20,8 @@ export function DocumentEditorStatusBar({
   model: unknown;
   fingerprint: string;
   dirty: boolean;
+  operationCount: number;
+  selectionLabel: string;
   isSaving: boolean;
   isSaveQueued: boolean;
   warningCount: number;
@@ -41,6 +45,18 @@ export function DocumentEditorStatusBar({
       <span className="font-mono text-[var(--text-faint)]">
         {t("documentEditor.revision", { defaultValue: "rev" })}{" "}
         {fingerprint.slice(0, 10)}
+      </span>
+      <span>
+        {t("documentEditor.operations", {
+          defaultValue: "{{count}} operations",
+          count: operationCount,
+        })}
+      </span>
+      <span className="truncate">
+        {t("documentEditor.selection", {
+          defaultValue: "Selection: {{selection}}",
+          selection: selectionLabel,
+        })}
       </span>
       {warningCount > 0 && (
         <span className="text-[var(--status-warning)]">

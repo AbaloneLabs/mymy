@@ -17,6 +17,7 @@ import type {
   PptxTheme,
   PptxTransition,
 } from "../shared/models";
+import type { PptxAnimationPresetClass } from "./pptxInspectors";
 
 type PptxSlideActionParams = {
   clearObjectSelection: () => void;
@@ -191,6 +192,20 @@ export function createPptxSlideActions({
     });
   }
 
+  function addAnimation(presetClass: PptxAnimationPresetClass) {
+    updateSlideAnimations((animations) => {
+      const id = nextPptxAnimationId(animations);
+      const animation = createPptxAnimation(id, presetClass);
+      return [...animations, animation];
+    });
+  }
+
+  function deleteAnimation(animationId: string) {
+    updateSlideAnimations((animations) =>
+      animations.filter((animation) => animation.id !== animationId),
+    );
+  }
+
   function addSlide() {
     const slideNumber = model.slides.length + 1;
     const path = nextPptxSlidePath(model);
@@ -284,7 +299,9 @@ export function createPptxSlideActions({
   }
 
   return {
+    addAnimation,
     addSlide,
+    deleteAnimation,
     deleteSlide,
     duplicateSlide,
     moveAnimation,
@@ -301,5 +318,33 @@ export function createPptxSlideActions({
     updateSlideTransition,
     updateTheme,
     updateThemeColor,
+  };
+}
+
+function nextPptxAnimationId(animations: PptxAnimation[]) {
+  const used = new Set(animations.map((animation) => animation.id));
+  const maxNumericId = animations
+    .map((animation) => Number(animation.id))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .reduce((max, value) => Math.max(max, value), 0);
+  let index = Math.max(1, maxNumericId + 1);
+  while (used.has(String(index))) index += 1;
+  return String(index);
+}
+
+function createPptxAnimation(
+  id: string,
+  presetClass: PptxAnimationPresetClass,
+): PptxAnimation {
+  const durationMs = presetClass === "emph" ? 700 : 500;
+  const sourceXml = `<p:cTn id="${id}" nodeType="clickEffect" presetClass="${presetClass}" presetID="1" delay="0" dur="${durationMs}"/>`;
+  return {
+    id,
+    nodeType: "clickEffect",
+    presetClass,
+    presetId: "1",
+    delayMs: 0,
+    durationMs,
+    sourceXml,
   };
 }

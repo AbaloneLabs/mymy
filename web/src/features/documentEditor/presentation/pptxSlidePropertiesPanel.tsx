@@ -2,6 +2,7 @@ import { PptxChartDataEditor } from "./pptxChartDataEditor";
 import {
   PptxAnimationInspector,
   PptxMediaInspector,
+  type PptxAnimationPresetClass,
 } from "./pptxInspectors";
 import { PptxMasterEditor } from "./pptxMasterEditor";
 import { PptxThemeEditor } from "./pptxThemeEditor";
@@ -49,6 +50,8 @@ type PptxSlidePropertiesPanelProps = {
     animationId: string,
     patch: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">,
   ) => void;
+  onAddAnimation: (presetClass: PptxAnimationPresetClass) => void;
+  onDeleteAnimation: (animationId: string) => void;
   onMoveAnimation: (animationId: string, direction: -1 | 1) => void;
   onMediaChange: (mediaId: string, patch: Partial<PptxMedia>) => void;
   onSlideNotesChange: (notes: string) => void;
@@ -74,6 +77,8 @@ export function PptxSlidePropertiesPanel({
   onMasterChange,
   onMasterPlaceholderChange,
   onAnimationTimingChange,
+  onAddAnimation,
+  onDeleteAnimation,
   onMoveAnimation,
   onMediaChange,
   onSlideNotesChange,
@@ -269,6 +274,8 @@ export function PptxSlidePropertiesPanel({
       <PptxAnimationInspector
         animations={slide?.animations ?? []}
         disabled={!slide}
+        onAdd={onAddAnimation}
+        onDelete={onDeleteAnimation}
         onTimingChange={onAnimationTimingChange}
         onMove={onMoveAnimation}
       />

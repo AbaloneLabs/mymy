@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import {
   countMarkdownSearchMatches,
   markdownHeadingAnchors,
-  markdownOutline,
+  markdownOutlineFromAst,
   markdownReferences,
   markdownStats,
   markdownTableAtLine,
@@ -10,6 +10,7 @@ import {
   parseFrontmatter,
   parseFrontmatterFields,
 } from "./markdownEditorUtils";
+import { parseMarkdownAst } from "./markdownAst";
 import {
   sourceBracketPairFragments,
   sourceDisplayText,
@@ -50,7 +51,8 @@ export function useMarkdownEditorDerivedState({
     () => Math.max(1, content.split("\n").length),
     [content],
   );
-  const outline = useMemo(() => markdownOutline(content), [content]);
+  const astBlocks = useMemo(() => parseMarkdownAst(content), [content]);
+  const outline = useMemo(() => markdownOutlineFromAst(astBlocks), [astBlocks]);
   const headingAnchors = useMemo(() => markdownHeadingAnchors(outline), [outline]);
   const references = useMemo(() => markdownReferences(content), [content]);
   const activeReference = useMemo(
@@ -121,6 +123,7 @@ export function useMarkdownEditorDerivedState({
   return {
     activeReference,
     activeTable,
+    astBlocks,
     bracketPairFragments,
     foldRangeByStart,
     frontmatter,

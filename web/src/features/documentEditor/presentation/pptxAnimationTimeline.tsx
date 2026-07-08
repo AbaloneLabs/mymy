@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { PptxAnimation } from "../shared/models";
+import { pptxAnimationTimelineDuration, pptxFormatMilliseconds } from "./pptxAnimationTimingUtils";
 import { animationLabel } from "./pptxEditorUtils";
 
 type PptxTimelineDragMode = "move" | "resize-start" | "resize-end";
@@ -18,10 +19,14 @@ type PptxTimelineDragState = {
 export function PptxAnimationTimeline({
   animations,
   disabled,
+  playheadMs,
+  onPlayheadChange,
   onTimingChange,
 }: {
   animations: PptxAnimation[];
   disabled: boolean;
+  playheadMs?: number;
+  onPlayheadChange?: (milliseconds: number) => void;
   onTimingChange: (
     animationId: string,
     patch: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">,
@@ -29,6 +34,19 @@ export function PptxAnimationTimeline({
 }) {
   const [dragState, setDragState] = useState<PptxTimelineDragState | null>(null);
   const durationMs = pptxAnimationTimelineDuration(animations);
+  const playheadPercent =
+    playheadMs === undefined
+      ? null
+      : Math.min(100, Math.max(0, (playheadMs / durationMs) * 100));
+
+  function seekTimeline(event: ReactPointerEvent<HTMLElement>) {
+    if (!onPlayheadChange || disabled || dragState) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = (event.clientX - rect.left) / Math.max(1, rect.width);
+    onPlayheadChange(
+      clampTimelineMilliseconds(snapTimelineMilliseconds(ratio * durationMs)),
+    );
+  }
 
   function startTimelineDrag(
     event: ReactPointerEvent<HTMLElement>,
@@ -118,6 +136,7 @@ export function PptxAnimationTimeline({
               </span>
               <div
                 data-pptx-animation-track
+                onPointerDown={seekTimeline}
                 onPointerMove={updateTimelineDrag}
                 onPointerUp={endTimelineDrag}
                 onPointerCancel={endTimelineDrag}
@@ -152,6 +171,12 @@ export function PptxAnimationTimeline({
                     className="absolute right-0 top-0 h-full w-2 cursor-ew-resize rounded-r bg-white/40 opacity-0 transition-opacity hover:opacity-100 disabled:pointer-events-none"
                   />
                 </div>
+                {playheadPercent !== null && (
+                  <div
+                    className="pointer-events-none absolute bottom-0 top-0 w-px bg-[var(--status-warning)]"
+                    style={{ left: `${playheadPercent}%` }}
+                  />
+                )}
               </div>
               <span className="text-right font-mono text-[var(--text-faint)]">
                 {pptxFormatMilliseconds(start)}
@@ -162,21 +187,6 @@ export function PptxAnimationTimeline({
       </div>
     </div>
   );
-}
-
-function pptxAnimationTimelineDuration(animations: PptxAnimation[]) {
-  return Math.max(
-    1000,
-    ...animations.map(
-      (animation) =>
-        (animation.delayMs ?? 0) + Math.max(100, animation.durationMs ?? 500),
-    ),
-  );
-}
-
-function pptxFormatMilliseconds(milliseconds: number) {
-  const seconds = Math.max(0, Math.round(milliseconds / 100) / 10);
-  return `${seconds.toFixed(seconds % 1 === 0 ? 0 : 1)}s`;
 }
 
 function snapTimelineMilliseconds(milliseconds: number) {

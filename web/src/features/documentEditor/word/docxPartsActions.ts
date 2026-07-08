@@ -41,6 +41,10 @@ export function createDocxPartsActions({
     const control = block?.contentControls?.[controlIndex];
     if (!block || !control) return;
     updateBlock(blockIndex, {
+      text:
+        typeof patch.text === "string"
+          ? docxTextAfterContentControlChange(block.text, control.text, patch.text)
+          : block.text,
       contentControls: block.contentControls?.map((item, index) =>
         index === controlIndex ? { ...item, ...patch } : item,
       ),
@@ -138,4 +142,16 @@ export function createDocxPartsActions({
     updateRevisionAction,
     updateTextPart,
   };
+}
+
+function docxTextAfterContentControlChange(
+  blockText: string,
+  previousText: string | undefined,
+  nextText: string,
+) {
+  if (!previousText) return nextText;
+  if (blockText === previousText) return nextText;
+  const index = blockText.indexOf(previousText);
+  if (index < 0) return blockText;
+  return `${blockText.slice(0, index)}${nextText}${blockText.slice(index + previousText.length)}`;
 }

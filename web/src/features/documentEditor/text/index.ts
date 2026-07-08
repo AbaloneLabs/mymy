@@ -8,6 +8,7 @@ export * from "./textEditorToolbar";
 export * from "./textFlatConfigEditor";
 export * from "./textJsonEditors";
 export * from "./textJsonUtils";
+export * from "./textLanguageService";
 export * from "./textSchemaRegistry";
 export * from "./textSourcePane";
 export * from "./textSourceUtils";

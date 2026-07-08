@@ -18,7 +18,12 @@ export function sourceDiagnostics(content: string, kind: TextEditorKind): Source
       .split("\n")
       .map((line, index): SourceDiagnostic | null =>
         /^\t+/.test(line)
-          ? { line: index + 1, message: "YAML indentation should use spaces." }
+          ? {
+              line: index + 1,
+              column: 1,
+              length: leadingTabLength(line),
+              message: "YAML indentation should use spaces.",
+            }
           : null,
       )
       .filter((diagnostic): diagnostic is SourceDiagnostic => Boolean(diagnostic));
@@ -40,6 +45,8 @@ function jsonParseDiagnostic(content: string, error: unknown): SourceDiagnostic 
   const cursor = cursorPosition(content, offset, offset);
   return {
     line: cursor.line,
+    column: cursor.column,
+    length: 1,
     message: `${message} at column ${cursor.column}`,
   };
 }
@@ -52,16 +59,30 @@ function duplicateConfigPathDiagnostics(
   const diagnostics: SourceDiagnostic[] = [];
   for (const entry of parseFlatConfig(content, kind).entries) {
     const path = configEntryPathLabel(entry);
-    const existingLine = seen.get(path);
+    const scope = `${entry.documentIndex ?? 0}:${path}`;
+    const existingLine = seen.get(scope);
     if (existingLine !== undefined) {
+      const column = duplicateConfigEntryColumn(content, entry.lineIndex, entry.key);
       diagnostics.push({
         line: entry.lineIndex + 1,
+        column,
+        length: entry.key.length,
         path,
         message: `Duplicate key; first defined on line ${existingLine}.`,
       });
       continue;
     }
-    seen.set(path, entry.lineIndex + 1);
+    seen.set(scope, entry.lineIndex + 1);
   }
   return diagnostics;
+}
+
+function leadingTabLength(line: string) {
+  return /^\t+/.exec(line)?.[0].length ?? 1;
+}
+
+function duplicateConfigEntryColumn(content: string, lineIndex: number, key: string) {
+  const line = content.split("\n")[lineIndex] ?? "";
+  const index = line.indexOf(key);
+  return index >= 0 ? index + 1 : 1;
 }

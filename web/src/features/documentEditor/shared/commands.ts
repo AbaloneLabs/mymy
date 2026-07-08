@@ -336,10 +336,10 @@ const MARKDOWN_COMMANDS: EditorCommandDefinition[] = [
     primary: true,
     alt: true,
   }),
-  command("outline", "Outline", "Ctrl/Cmd+Alt+O", {
+  command("outline", "Outline", "Ctrl/Cmd+Shift+O", {
     key: "o",
     primary: true,
-    alt: true,
+    shift: true,
   }),
 ];
 

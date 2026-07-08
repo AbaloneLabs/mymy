@@ -131,7 +131,9 @@ export function PptxEditor({
     slide,
   });
   const {
+    addAnimation,
     addSlide,
+    deleteAnimation,
     deleteSlide,
     duplicateSlide,
     moveAnimation,
@@ -477,6 +479,8 @@ export function PptxEditor({
             onMasterChange={updateMaster}
             onMasterPlaceholderChange={updateMasterPlaceholder}
             onAnimationTimingChange={updateAnimationTiming}
+            onAddAnimation={addAnimation}
+            onDeleteAnimation={deleteAnimation}
             onMoveAnimation={moveAnimation}
             onMediaChange={updateMediaById}
             onSlideNotesChange={updateSlideNotes}

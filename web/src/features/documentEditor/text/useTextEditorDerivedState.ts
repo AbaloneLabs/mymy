@@ -7,7 +7,6 @@ import {
   sourceMinimapLines,
   sourceSelectionLineFragments,
   sourceVisibleLines,
-  textSourceOutline,
   textStats,
 } from "./textSourceUtils";
 import type {
@@ -17,6 +16,7 @@ import type {
 } from "./textSourceUtils";
 import { jsonSchemaDiagnostics, sourceDiagnostics } from "./textStructuredUtils";
 import { isTabularJson, parseJsonContent } from "./textJsonUtils";
+import { sourceLanguageServiceState } from "./textLanguageService";
 import type { TextEditorMode } from "./textSourceTypes";
 
 export function useTextEditorDerivedState({
@@ -61,6 +61,13 @@ export function useTextEditorDerivedState({
       largeTextMode ? [] : jsonSchemaDiagnostics(parsedJson, schemaDraft, json),
     [json, largeTextMode, parsedJson, schemaDraft],
   );
+  const languageService = useMemo(
+    () =>
+      largeTextMode
+        ? { diagnostics: [], outline: [] }
+        : sourceLanguageServiceState(content, language),
+    [content, language, largeTextMode],
+  );
   const diagnostics = useMemo(
     () =>
       largeTextMode
@@ -68,8 +75,9 @@ export function useTextEditorDerivedState({
         : [
             ...sourceDiagnostics(content, kind),
             ...schemaDiagnostics,
+            ...languageService.diagnostics,
           ],
-    [content, kind, largeTextMode, schemaDiagnostics],
+    [content, kind, languageService.diagnostics, largeTextMode, schemaDiagnostics],
   );
   const diagnosticsByLine = useMemo(() => {
     const byLine = new Map<number, typeof diagnostics>();
@@ -82,10 +90,7 @@ export function useTextEditorDerivedState({
     });
     return byLine;
   }, [diagnostics]);
-  const outline = useMemo(
-    () => (largeTextMode ? [] : textSourceOutline(content, language)),
-    [content, language, largeTextMode],
-  );
+  const outline = languageService.outline;
   const stats = useMemo(() => textStats(content), [content]);
   const foldRangeByStart = useMemo(
     () => new Map(foldRanges.map((range) => [range.startLine, range])),

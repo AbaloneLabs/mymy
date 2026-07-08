@@ -23,6 +23,7 @@ interface TextSourceKeyDownOptions {
   minifyJson: () => void;
   moveSelection: (direction: -1 | 1) => void;
   openGoToLine: (line: number) => void;
+  openOutline: () => void;
   openSearch: () => void;
   outdentSelection: () => void;
   selectCurrentLine: () => void;
@@ -86,6 +87,9 @@ export function handleTextSourceKeyDown(
   } else if (primary && key === "g") {
     event.preventDefault();
     options.openGoToLine(options.cursorLine);
+  } else if (primary && event.shiftKey && key === "o") {
+    event.preventDefault();
+    options.openOutline();
   } else if (event.altKey && event.shiftKey && event.key === "ArrowUp") {
     event.preventDefault();
     options.duplicateSelection();

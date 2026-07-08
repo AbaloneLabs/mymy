@@ -22,6 +22,7 @@ export {
   insertOrUpdateMarkdownToc,
   markdownHeadingAnchors,
   markdownOutline,
+  markdownOutlineFromAst,
 } from "./markdownOutlineUtils";
 export { markdownReferences } from "./markdownReferenceUtils";
 export {

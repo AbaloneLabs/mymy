@@ -8,7 +8,7 @@ use crate::models::knowledge::{
 };
 use crate::state::AppState;
 
-use super::repository::{fetch_article, row_to_article, KnowledgeArticleRow};
+use super::repository::{fetch_article, row_to_article};
 use super::tree::{build_tree, parse_project_filter};
 
 /// GET /api/knowledge
@@ -17,7 +17,7 @@ pub async fn list_tree(
     q: KnowledgeTreeQuery,
 ) -> AppResult<KnowledgeTreeResponse> {
     let rows = sqlx::query_as!(
-        KnowledgeArticleRow,
+        super::repository::KnowledgeArticleRow,
         r#"SELECT id, parent_id, project_id, node_type, title, slug, content, excerpt,
                   tags, status, sort_order, created_at, updated_at
            FROM knowledge_articles
@@ -48,7 +48,7 @@ pub async fn list_flat(
     let project_filter = parse_project_filter(q.project_id.as_deref())?;
 
     let rows = sqlx::query_as!(
-        KnowledgeArticleRow,
+        super::repository::KnowledgeArticleRow,
         r#"SELECT id, parent_id, project_id, node_type, title, slug, content, excerpt,
                   tags, status, sort_order, created_at, updated_at
            FROM knowledge_articles
@@ -77,7 +77,7 @@ pub async fn search(state: &AppState, q: KnowledgeSearchQuery) -> AppResult<Know
     }
 
     let rows = sqlx::query_as!(
-        KnowledgeArticleRow,
+        super::repository::KnowledgeArticleRow,
         r#"SELECT id, parent_id, project_id, node_type, title, slug, content, excerpt,
                   tags, status, sort_order, created_at, updated_at
            FROM knowledge_articles
@@ -102,7 +102,7 @@ pub async fn get_by_id(state: &AppState, id: Uuid) -> AppResult<KnowledgeArticle
 /// GET /api/knowledge/{id}/children
 pub async fn get_children(state: &AppState, id: Uuid) -> AppResult<KnowledgeListResponse> {
     let rows = sqlx::query_as!(
-        KnowledgeArticleRow,
+        super::repository::KnowledgeArticleRow,
         r#"SELECT id, parent_id, project_id, node_type, title, slug, content, excerpt,
                   tags, status, sort_order, created_at, updated_at
            FROM knowledge_articles

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ChevronDown, ChevronUp, Layers } from "lucide-react";
+import { ChevronDown, ChevronUp, Layers, Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   PptxChart,
@@ -32,6 +32,7 @@ export function PptxPresentationOverlay({
 }) {
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
+  const [blankScreen, setBlankScreen] = useState<"black" | "white" | null>(null);
   const nextSlideIndex = useMemo(
     () => adjacentVisibleSlideIndex(slides, presentingIndex, 1),
     [slides, presentingIndex],
@@ -55,12 +56,32 @@ export function PptxPresentationOverlay({
     return () => window.clearInterval(interval);
   }, []);
 
+  function handleOverlayKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const key = event.key.toLowerCase();
+    if (key === "b") {
+      event.preventDefault();
+      setBlankScreen((current) => (current === "black" ? null : "black"));
+      return;
+    }
+    if (key === "w") {
+      event.preventDefault();
+      setBlankScreen((current) => (current === "white" ? null : "white"));
+      return;
+    }
+    if (event.key === "Escape" && blankScreen) {
+      event.preventDefault();
+      setBlankScreen(null);
+      return;
+    }
+    onKeyDown(event);
+  }
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       tabIndex={-1}
-      onKeyDown={onKeyDown}
+      onKeyDown={handleOverlayKeyDown}
       className="fixed inset-0 z-50 flex flex-col bg-black text-white"
       autoFocus
     >
@@ -75,6 +96,32 @@ export function PptxPresentationOverlay({
           <span>{formatPresenterElapsed(now - startedAt)}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setBlankScreen((current) => (current === "black" ? null : "black"))
+            }
+            title="Black screen"
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/20 hover:bg-white/10",
+              blankScreen === "black" && "border-white/60 bg-white/15",
+            )}
+          >
+            <Moon className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setBlankScreen((current) => (current === "white" ? null : "white"))
+            }
+            title="White screen"
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/20 hover:bg-white/10",
+              blankScreen === "white" && "border-white/60 bg-white/15",
+            )}
+          >
+            <Sun className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </button>
           <button
             type="button"
             onClick={() => onMove(-1)}
@@ -108,10 +155,20 @@ export function PptxPresentationOverlay({
       </div>
       <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="flex min-h-0 items-center justify-center">
-          <PptxReadOnlySlide
-            slide={presentingSlide}
-            slideAspectRatio={slideAspectRatio}
-          />
+          {blankScreen ? (
+            <div
+              className={cn(
+                "w-full max-w-6xl shadow-2xl",
+                blankScreen === "black" ? "bg-black" : "bg-white",
+              )}
+              style={{ aspectRatio: slideAspectRatio }}
+            />
+          ) : (
+            <PptxReadOnlySlide
+              slide={presentingSlide}
+              slideAspectRatio={slideAspectRatio}
+            />
+          )}
         </div>
         <aside className="grid min-h-0 gap-3 overflow-hidden rounded-md border border-white/15 bg-white/[0.06] p-3 text-sm text-white/80">
           <section className="min-h-0 overflow-auto">

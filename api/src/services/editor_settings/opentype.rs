@@ -66,7 +66,7 @@ fn parse_ttf_name_table_records(table: &[u8]) -> Option<BTreeMap<u16, String>> {
         let platform_id = read_u16(table, record)?;
         let language_id = read_u16(table, record + 4)?;
         let name_id = read_u16(table, record + 6)?;
-        if name_id != 1 && name_id != 4 {
+        if !wanted_name_id(name_id) {
             continue;
         }
         let length = read_u16(table, record + 8)? as usize;
@@ -91,6 +91,10 @@ fn parse_ttf_name_table_records(table: &[u8]) -> Option<BTreeMap<u16, String>> {
             })
             .collect(),
     )
+}
+
+fn wanted_name_id(name_id: u16) -> bool {
+    matches!(name_id, 1 | 2 | 4 | 5 | 6 | 13 | 14)
 }
 
 fn font_name_priority(platform_id: u16, language_id: u16) -> u8 {

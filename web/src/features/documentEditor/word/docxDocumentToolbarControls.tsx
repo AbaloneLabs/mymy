@@ -5,6 +5,7 @@ import {
   Heading1,
   Image as ImageIcon,
   ListTree,
+  Paintbrush,
   Plus,
   Table,
   Trash2,
@@ -25,8 +26,10 @@ type DocxDocumentToolbarControlsProps = Pick<
   | "onInsertSectionBreak"
   | "onMoveActiveBlock"
   | "onToggleOutlineOpen"
+  | "onToggleStylesOpen"
   | "onToggleTextPartsOpen"
   | "outlineOpen"
+  | "stylesOpen"
   | "textPartsOpen"
 >;
 
@@ -40,8 +43,10 @@ export function DocxDocumentToolbarControls({
   onInsertSectionBreak,
   onMoveActiveBlock,
   onToggleOutlineOpen,
+  onToggleStylesOpen,
   onToggleTextPartsOpen,
   outlineOpen,
+  stylesOpen,
   textPartsOpen,
 }: DocxDocumentToolbarControlsProps) {
   const { t } = useTranslation();
@@ -54,6 +59,12 @@ export function DocxDocumentToolbarControls({
         label="Outline"
         onClick={onToggleOutlineOpen}
         active={outlineOpen}
+      />
+      <ToolbarButton
+        icon={Paintbrush}
+        label="Styles"
+        onClick={onToggleStylesOpen}
+        active={stylesOpen}
       />
       {hasDocumentParts && (
         <>

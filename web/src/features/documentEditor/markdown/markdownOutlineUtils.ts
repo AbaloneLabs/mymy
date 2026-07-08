@@ -1,4 +1,5 @@
 import type { MarkdownHeading, MarkdownHeadingAnchor } from "./markdownTypes";
+import { parseMarkdownAst, type MarkdownAstBlock } from "./markdownAst";
 import {
   escapeMarkdownLinkLabel,
   lineForOffset,
@@ -10,23 +11,17 @@ const MARKDOWN_TOC_START = "<!-- mymy-toc:start -->";
 const MARKDOWN_TOC_END = "<!-- mymy-toc:end -->";
 
 export function markdownOutline(content: string): MarkdownHeading[] {
-  const headings: MarkdownHeading[] = [];
-  let inFence = false;
-  content.split("\n").forEach((line, index) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      return;
-    }
-    if (inFence) return;
-    const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-    if (!match) return;
-    headings.push({
-      line: index + 1,
-      level: match[1].length,
-      text: stripInlineMarkdown(match[2]),
-    });
-  });
-  return headings;
+  return markdownOutlineFromAst(parseMarkdownAst(content));
+}
+
+export function markdownOutlineFromAst(blocks: MarkdownAstBlock[]): MarkdownHeading[] {
+  return blocks
+    .filter((block) => block.type === "heading" && block.headingLevel && block.headingText)
+    .map((block) => ({
+      line: block.startLine,
+      level: block.headingLevel ?? 1,
+      text: stripInlineMarkdown(block.headingText ?? ""),
+    }));
 }
 
 export function markdownHeadingAnchors(headings: MarkdownHeading[]) {

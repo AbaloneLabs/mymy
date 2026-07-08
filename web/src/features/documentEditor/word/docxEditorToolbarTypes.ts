@@ -15,6 +15,7 @@ export interface DocxEditorToolbarProps {
   hasDocumentParts: boolean;
   textPartsOpen: boolean;
   outlineOpen: boolean;
+  stylesOpen: boolean;
   imageInputRef: RefObject<HTMLInputElement | null>;
   paragraphStyles: DocxStyle[];
   onUpdateActive: (patch: Partial<DocxBlock>) => void;
@@ -37,6 +38,7 @@ export interface DocxEditorToolbarProps {
   onUpdatePage: (patch: Partial<DocxPageSettings>) => void;
   onToggleTextPartsOpen: () => void;
   onToggleOutlineOpen: () => void;
+  onToggleStylesOpen: () => void;
   onMoveActiveBlock: (direction: -1 | 1) => void;
   onDeleteActiveBlock: () => void;
   onInsertImageFile: (file: File) => void;
