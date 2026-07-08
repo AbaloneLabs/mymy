@@ -1,20 +1,20 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
-import type { EditorCommandRequest } from "../commands";
-import { columnName, normalizeRow } from "../models";
-import type { DelimitedTableModel } from "../models";
-import { DelimitedTableProfilePanel } from "../delimitedProfilePanel";
+import type { EditorCommandRequest } from "../shared/commands";
+import { columnName, normalizeRow } from "../shared/models";
+import type { DelimitedTableModel } from "../shared/models";
+import { DelimitedTableGrid } from "../delimitedTable/delimitedTableGrid";
+import { DelimitedTableMetadataBar } from "../delimitedTable/delimitedTableMetadataBar";
+import { DelimitedTableProfilePanel } from "../delimitedTable/delimitedProfilePanel";
+import { delimitedLooksLikeHeader } from "../delimitedTable/delimitedTableUtils";
 import {
-  clipboardDataToMatrix,
   ensureDelimitedDisplayRows,
   ensureDelimitedRows,
   filteredDelimitedRows,
   rangeToClipboardText,
   sortDelimitedRows,
   valuesFromDelimitedRange,
-} from "../spreadsheetData";
+} from "../spreadsheet";
 import {
   MIN_DELIMITED_VISIBLE_COLUMNS,
   MIN_DELIMITED_VISIBLE_ROWS,
@@ -24,31 +24,20 @@ import {
   SPREADSHEET_ROW_HEIGHT,
   clampCellRange,
   emptyViewport,
-  indexRange,
   normalizeCellRange,
-  rangeCoversColumn,
-  rangeCoversRow,
-  rangeCoversSheet,
   rangeToA1,
   scrollCellIntoView,
-  spacerColumnCount,
-  viewportFromElement,
   virtualWindow,
   xlsxRangeFromRef,
-} from "../spreadsheetGeometry";
-import type { CellPosition, SpreadsheetViewport } from "../spreadsheetGeometry";
+} from "../spreadsheet";
+import type { CellPosition, SpreadsheetViewport } from "../spreadsheet";
+import { SpreadsheetStatusBar } from "../spreadsheet";
 import {
-  SpreadsheetColumnSpacer,
-  SpreadsheetSpacerRow,
-  SpreadsheetStatusBar,
-} from "../spreadsheetPanels";
-import {
-  spreadsheetCellClass,
   spreadsheetDateStamp,
   spreadsheetTimeStamp,
   summarizeSelection,
-} from "../spreadsheetPresentation";
-import { SpreadsheetToolbar } from "../spreadsheetToolbar";
+} from "../spreadsheet";
+import { SpreadsheetToolbar } from "../spreadsheet";
 
 export function DelimitedTableEditor({
   model,
@@ -61,7 +50,6 @@ export function DelimitedTableEditor({
   commandRequest?: EditorCommandRequest | null;
   onCommandHandled?: (request: EditorCommandRequest) => void;
 }) {
-  const { t } = useTranslation();
   const [activeCell, setActiveCell] = useState<CellPosition | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
@@ -90,7 +78,6 @@ export function DelimitedTableEditor({
     SPREADSHEET_COLUMN_WIDTH,
     4,
   );
-  const visibleColumnIndexes = indexRange(columnWindow.start, columnWindow.end);
   const selectionRange = normalizeCellRange(selectionAnchor, selectionEnd);
   const activeCellValue =
     activeCell && rows[activeCell.row]?.[activeCell.column]
@@ -442,244 +429,35 @@ export function DelimitedTableEditor({
         canFillRight={Boolean(selectionRange && selectionRange.right > selectionRange.left)}
         canSort={Boolean(activeCell)}
       />
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
-        <span className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-[11px] text-[var(--text-faint)]">
-          {model.encoding ?? "utf-8"}
-        </span>
-        <label className="inline-flex items-center gap-1.5">
-          Line ending
-          <select
-            value={delimitedLineEndingValue(model.lineEnding)}
-            onChange={(event) => onChange({ ...model, lineEnding: event.target.value })}
-            className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          >
-            <option value={"\n"}>LF</option>
-            <option value={"\r\n"}>CRLF</option>
-            <option value={"\r"}>CR</option>
-          </select>
-        </label>
-        <label className="inline-flex items-center gap-1.5">
-          Quote
-          <select
-            value={model.quoteStyle ?? "minimal"}
-            onChange={(event) =>
-              onChange({
-                ...model,
-                quoteStyle:
-                  event.target.value === "always" ? "always" : "minimal",
-              })
-            }
-            className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          >
-            <option value="minimal">minimal</option>
-            <option value="always">always</option>
-          </select>
-        </label>
-        <label className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1">
-          <input
-            type="checkbox"
-            checked={model.bom === true}
-            onChange={(event) => onChange({ ...model, bom: event.target.checked })}
-          />
-          BOM
-        </label>
-        <label className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1">
-          <input
-            type="checkbox"
-            checked={model.trailingNewline === true}
-            onChange={(event) =>
-              onChange({ ...model, trailingNewline: event.target.checked })
-            }
-          />
-          Final newline
-        </label>
-      </div>
+      <DelimitedTableMetadataBar model={model} onChange={onChange} />
       <DelimitedTableProfilePanel
         rows={sourceRows}
         headerRow={headerRow}
         model={model}
         onModelChange={onChange}
       />
-      <div
-        ref={gridRef}
-        onScroll={(event) => setViewport(viewportFromElement(event.currentTarget))}
-        className="min-h-0 flex-1 overflow-auto p-4"
-      >
-        <table className="border-collapse text-xs shadow-sm">
-          <thead>
-            <tr>
-              <th
-                onClick={selectAllCells}
-                className={cn(
-                  "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
-                  rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
-                    "bg-[var(--accent)]/10 text-[var(--accent)]",
-                )}
-                title="Select all cells"
-              />
-              {columnWindow.start > 0 && (
-                <th
-                  aria-hidden="true"
-                  className="sticky top-0 z-10 h-8 border border-transparent bg-[var(--surface)]"
-                  style={{ minWidth: columnWindow.start * SPREADSHEET_COLUMN_WIDTH }}
-                />
-              )}
-              {visibleColumnIndexes.map((columnIndex) => (
-                <th
-                  key={columnIndex}
-                  onClick={() => selectColumn(columnIndex)}
-                  className={cn(
-                    "sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
-                    rangeCoversColumn(selectionRange, columnIndex, displayRowLimit) &&
-                      "bg-[var(--accent)]/10 text-[var(--accent)]",
-                  )}
-                >
-                  <span className="block truncate">
-                    {delimitedColumnHeader(columnIndex, sourceRows, headerRow)}
-                  </span>
-                </th>
-              ))}
-              {columnWindow.end < columnCount && (
-                <th
-                  aria-hidden="true"
-                  className="sticky top-0 z-10 h-8 border border-transparent bg-[var(--surface)]"
-                  style={{ minWidth: (columnCount - columnWindow.end) * SPREADSHEET_COLUMN_WIDTH }}
-                />
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {rowWindow.start > 0 && (
-              <SpreadsheetSpacerRow
-                height={rowWindow.start * SPREADSHEET_ROW_HEIGHT}
-                columnSpan={visibleColumnIndexes.length + spacerColumnCount(columnWindow, columnCount)}
-              />
-            )}
-            {visibleRows.slice(rowWindow.start, rowWindow.end).map(({ row, rowIndex }) => {
-              const normalized = normalizeRow(row, columnCount);
-              return (
-                <tr key={rowIndex}>
-                  <th
-                    onClick={() => selectRow(rowIndex)}
-                    className={cn(
-                      "sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
-                      rangeCoversRow(selectionRange, rowIndex, columnCount) &&
-                        "bg-[var(--accent)]/10 text-[var(--accent)]",
-                    )}
-                  >
-                    {rowIndex + 1}
-                  </th>
-                  {columnWindow.start > 0 && (
-                    <SpreadsheetColumnSpacer width={columnWindow.start * SPREADSHEET_COLUMN_WIDTH} />
-                  )}
-                  {normalized.slice(columnWindow.start, columnWindow.end).map((cell, offset) => {
-                    const columnIndex = columnWindow.start + offset;
-                    return (
-                    <td
-                      key={columnIndex}
-                    className={spreadsheetCellClass(
-                      activeCell,
-                      selectionRange,
-                      rowIndex,
-                      columnIndex,
-                    )}
-                  >
-                      <input
-                        data-delimited-cell={`${rowIndex}:${columnIndex}`}
-                        value={cell}
-                        onChange={(event) =>
-                          updateCell(rowIndex, columnIndex, event.target.value)
-                        }
-                        onFocus={() =>
-                          setActiveCell({ row: rowIndex, column: columnIndex })
-                        }
-                        onMouseDown={(event) =>
-                          selectCell(
-                            { row: rowIndex, column: columnIndex },
-                            event.shiftKey,
-                          )
-                        }
-                        onMouseEnter={(event) => {
-                          if (event.buttons === 1) {
-                            selectCell({ row: rowIndex, column: columnIndex }, true);
-                          }
-                        }}
-                        onKeyDown={(event) => handleCellKeyDown(event, rowIndex, columnIndex)}
-                        onPaste={(event) => {
-                          const matrix = clipboardDataToMatrix(event.clipboardData);
-                          if (matrix) {
-                            event.preventDefault();
-                            updateCellsFromMatrix(rowIndex, columnIndex, matrix);
-                          }
-                        }}
-                        className="h-8 min-w-32 bg-[var(--bg)] px-2 text-[var(--text)] outline-none focus:bg-[var(--surface)]"
-                        aria-label={t("documentEditor.cellLabel", {
-                          row: rowIndex + 1,
-                          column: columnIndex + 1,
-                        })}
-                        />
-                      </td>
-                    );
-                  })}
-                  {columnWindow.end < columnCount && (
-                    <SpreadsheetColumnSpacer width={(columnCount - columnWindow.end) * SPREADSHEET_COLUMN_WIDTH} />
-                  )}
-                </tr>
-              );
-            })}
-            {rowWindow.end < visibleRows.length && (
-              <SpreadsheetSpacerRow
-                height={(visibleRows.length - rowWindow.end) * SPREADSHEET_ROW_HEIGHT}
-                columnSpan={visibleColumnIndexes.length + spacerColumnCount(columnWindow, columnCount)}
-              />
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DelimitedTableGrid
+        gridRef={gridRef}
+        activeCell={activeCell}
+        selectionRange={selectionRange}
+        sourceRows={sourceRows}
+        headerRow={headerRow}
+        columnCount={columnCount}
+        displayRowLimit={displayRowLimit}
+        rowWindow={rowWindow}
+        columnWindow={columnWindow}
+        visibleRows={visibleRows}
+        onViewportChange={setViewport}
+        onSelectAllCells={selectAllCells}
+        onSelectColumn={selectColumn}
+        onSelectRow={selectRow}
+        onSelectCell={selectCell}
+        onSetActiveCell={setActiveCell}
+        onUpdateCell={updateCell}
+        onUpdateCellsFromMatrix={updateCellsFromMatrix}
+        onCellKeyDown={handleCellKeyDown}
+      />
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
   );
-}
-
-function delimitedLineEndingValue(value: string | undefined) {
-  if (value === "\r\n" || value === "\r") return value;
-  return "\n";
-}
-
-function delimitedColumnHeader(
-  columnIndex: number,
-  rows: string[][],
-  headerRow: boolean,
-) {
-  const column = columnName(columnIndex);
-  const label = headerRow ? rows[0]?.[columnIndex]?.trim() : "";
-  return label ? `${column} · ${label}` : column;
-}
-
-function delimitedLooksLikeHeader(rows: string[][]) {
-  if (rows.length < 2) return false;
-  const first = rows[0] ?? [];
-  const second = rows[1] ?? [];
-  const columnCount = Math.max(first.length, second.length);
-  if (columnCount === 0) return false;
-  let labelLike = 0;
-  let typeShift = 0;
-  for (let index = 0; index < columnCount; index += 1) {
-    const header = (first[index] ?? "").trim();
-    const value = (second[index] ?? "").trim();
-    if (/^[^\d\s].*/.test(header)) labelLike += 1;
-    if (header && value && delimitedHeaderCellType(header) !== delimitedHeaderCellType(value)) {
-      typeShift += 1;
-    }
-  }
-  return labelLike >= Math.ceil(columnCount / 2) && typeShift > 0;
-}
-
-function delimitedHeaderCellType(value: string) {
-  const normalized = value.trim();
-  if (!normalized) return "empty";
-  if (/^(true|false)$/i.test(normalized)) return "boolean";
-  if (Number.isFinite(Number(normalized.replace(/,/g, "")))) return "number";
-  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(normalized)) return "date";
-  return "text";
 }

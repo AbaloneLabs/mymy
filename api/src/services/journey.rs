@@ -4,18 +4,23 @@
 //! consistent with the runtime without introducing a denormalized database
 //! table that could drift from `SKILL.md`, `.usage.json`, or memory files.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::memory::{ENTRY_DELIMITER, MEMORY_CHAR_LIMIT, USER_CHAR_LIMIT};
 use crate::agent::skills::SkillRegistry;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+
+mod graph;
+mod memory;
+
+use graph::{neighborhood, related_edges, sort_nodes};
+use memory::{memory_nodes, remove_memory_entry, replace_memory_entry};
 
 #[derive(Debug, Deserialize)]
 pub struct JourneyQuery {
@@ -289,66 +294,6 @@ fn parse_node_id(node_id: &str) -> AppResult<JourneyTarget<'_>> {
     Err(AppError::BadRequest("invalid journey node id".to_string()))
 }
 
-fn remove_memory_entry(memory_root: &Path, source: &str, index: usize) -> AppResult<()> {
-    let path = memory_path(memory_root, source)?;
-    let mut entries = read_memory_entries(&path)?;
-    if index >= entries.len() {
-        return Err(AppError::NotFound("memory node not found".to_string()));
-    }
-    entries.remove(index);
-    write_memory_entries(&path, source, &entries)
-}
-
-fn replace_memory_entry(
-    memory_root: &Path,
-    source: &str,
-    index: usize,
-    content: &str,
-) -> AppResult<()> {
-    let entry = content.trim().replace("\r\n", "\n");
-    if entry.is_empty() {
-        return Err(AppError::BadRequest(
-            "memory content cannot be empty".to_string(),
-        ));
-    }
-    let path = memory_path(memory_root, source)?;
-    let mut entries = read_memory_entries(&path)?;
-    if index >= entries.len() {
-        return Err(AppError::NotFound("memory node not found".to_string()));
-    }
-    entries[index] = entry;
-    write_memory_entries(&path, source, &entries)
-}
-
-fn memory_path(memory_root: &Path, source: &str) -> AppResult<PathBuf> {
-    match source {
-        "memory" => Ok(memory_root.join("MEMORY.md")),
-        "user" => Ok(memory_root.join("USER.md")),
-        _ => Err(AppError::BadRequest("invalid memory source".to_string())),
-    }
-}
-
-fn write_memory_entries(path: &Path, source: &str, entries: &[String]) -> AppResult<()> {
-    let serialized = entries.join(ENTRY_DELIMITER);
-    let limit = match source {
-        "memory" => MEMORY_CHAR_LIMIT,
-        "user" => USER_CHAR_LIMIT,
-        _ => return Err(AppError::BadRequest("invalid memory source".to_string())),
-    };
-    if serialized.chars().count() > limit {
-        return Err(AppError::BadRequest(
-            "memory content exceeds limit".to_string(),
-        ));
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| map_io("memory mkdir failed", err))?;
-    }
-    let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
-    fs::write(&tmp, serialized).map_err(|err| map_io("memory write failed", err))?;
-    fs::rename(&tmp, path).map_err(|err| map_io("memory move failed", err))?;
-    Ok(())
-}
-
 fn archived_skill_nodes(
     root: &Path,
     usage: &BTreeMap<String, SkillUsageRecord>,
@@ -394,99 +339,6 @@ fn archived_skill_nodes(
     Ok(nodes)
 }
 
-fn memory_nodes(memory_root: &Path) -> AppResult<Vec<JourneyNode>> {
-    let mut nodes = Vec::new();
-    for (source, file_name) in [("memory", "MEMORY.md"), ("user", "USER.md")] {
-        let path = memory_root.join(file_name);
-        let entries = read_memory_entries(&path)?;
-        let timestamp = modified_at(&path);
-        for (index, entry) in entries.into_iter().enumerate() {
-            nodes.push(JourneyNode {
-                id: format!("memory:{source}:{index}"),
-                node_type: JourneyNodeType::Memory,
-                title: memory_title(&entry),
-                description: String::new(),
-                content: entry,
-                category: Some(source.to_string()),
-                source: source.to_string(),
-                path: Some(file_name.to_string()),
-                timestamp: timestamp.clone(),
-                use_count: 0,
-                state: "active".to_string(),
-                pinned: false,
-                related: Vec::new(),
-            });
-        }
-    }
-    Ok(nodes)
-}
-
-fn related_edges(nodes: &[JourneyNode]) -> Vec<JourneyEdge> {
-    let active_skill_ids = nodes
-        .iter()
-        .filter(|node| node.node_type == JourneyNodeType::Skill && node.state == "active")
-        .map(|node| (slugify(&node.title), node.id.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut edges = Vec::new();
-    for node in nodes
-        .iter()
-        .filter(|node| node.node_type == JourneyNodeType::Skill && node.state == "active")
-    {
-        for related in &node.related {
-            if let Some(target) = active_skill_ids.get(&slugify(related)) {
-                edges.push(JourneyEdge {
-                    source: node.id.clone(),
-                    target: target.clone(),
-                });
-            }
-        }
-    }
-    edges.sort_by(|a, b| (&a.source, &a.target).cmp(&(&b.source, &b.target)));
-    edges.dedup_by(|a, b| a.source == b.source && a.target == b.target);
-    edges
-}
-
-fn neighborhood(node_id: &str, edges: &[JourneyEdge]) -> BTreeSet<String> {
-    let mut graph = BTreeMap::<String, Vec<String>>::new();
-    for edge in edges {
-        graph
-            .entry(edge.source.clone())
-            .or_default()
-            .push(edge.target.clone());
-        graph
-            .entry(edge.target.clone())
-            .or_default()
-            .push(edge.source.clone());
-    }
-    let mut keep = BTreeSet::new();
-    let mut queue = VecDeque::from([node_id.to_string()]);
-    while let Some(current) = queue.pop_front() {
-        if !keep.insert(current.clone()) {
-            continue;
-        }
-        if let Some(next) = graph.get(&current) {
-            queue.extend(next.iter().cloned());
-        }
-    }
-    keep
-}
-
-fn sort_nodes(nodes: &mut [JourneyNode], sort: Option<&str>) {
-    match sort.unwrap_or("recent") {
-        "usage" => nodes.sort_by(|a, b| {
-            b.use_count
-                .cmp(&a.use_count)
-                .then_with(|| a.title.cmp(&b.title))
-        }),
-        "name" => nodes.sort_by(|a, b| a.title.cmp(&b.title)),
-        _ => nodes.sort_by(|a, b| {
-            parse_timestamp(&b.timestamp)
-                .cmp(&parse_timestamp(&a.timestamp))
-                .then_with(|| a.title.cmp(&b.title))
-        }),
-    }
-}
-
 fn load_usage(root: &Path) -> AppResult<BTreeMap<String, SkillUsageRecord>> {
     let path = root.join(".usage.json");
     if !path.exists() {
@@ -525,18 +377,6 @@ fn parse_skill_frontmatter(path: &Path) -> AppResult<Option<SkillFrontmatter>> {
         .map_err(|err| AppError::BadRequest(format!("invalid skill frontmatter: {err}")))
 }
 
-fn read_memory_entries(path: &Path) -> AppResult<Vec<String>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = fs::read_to_string(path).map_err(|err| map_io("memory read failed", err))?;
-    Ok(raw
-        .split(ENTRY_DELIMITER)
-        .map(|entry| entry.trim().replace("\r\n", "\n"))
-        .filter(|entry| !entry.is_empty())
-        .collect())
-}
-
 fn latest_usage_timestamp(record: &SkillUsageRecord) -> Option<String> {
     [
         record.last_patched_at.as_deref(),
@@ -560,49 +400,12 @@ fn modified_at(path: &Path) -> Option<String> {
         .map(|value| value.to_rfc3339())
 }
 
-fn parse_timestamp(value: &Option<String>) -> Option<DateTime<Utc>> {
-    value
-        .as_deref()
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
-}
-
-fn memory_title(content: &str) -> String {
-    let first_line = content.lines().next().unwrap_or_default().trim();
-    let title = if first_line.is_empty() {
-        content.trim()
-    } else {
-        first_line
-    };
-    let truncated = title.chars().take(80).collect::<String>();
-    if title.chars().count() > 80 {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
-}
-
 fn relative_display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
         .trim_start_matches('/')
         .to_string()
-}
-
-fn slugify(value: &str) -> String {
-    let mut slug = String::new();
-    let mut previous_dash = false;
-    for ch in value.chars().flat_map(char::to_lowercase) {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch);
-            previous_dash = false;
-        } else if matches!(ch, '-' | '_' | ' ' | '/') && !previous_dash && !slug.is_empty() {
-            slug.push('-');
-            previous_dash = true;
-        }
-    }
-    slug.trim_matches('-').to_string()
 }
 
 fn map_io(context: &str, err: io::Error) -> AppError {

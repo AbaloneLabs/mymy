@@ -3,7 +3,7 @@ import { Check, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { GitSystemType } from "@/types/settings";
 import { useCreateProject } from "@/features/projects/api";
-import { TextField } from "@/components/settings/TextField";
+import { TextField } from "@/components/settings/shared/TextField";
 import { cn } from "@/lib/utils";
 
 

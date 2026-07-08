@@ -1,0 +1,310 @@
+import type { CSSProperties } from "react";
+import { builtInFontFamilies } from "../shared/fonts";
+import type { DocxBlock, DocxRun, DocxStyle } from "../shared/models";
+import { headingFontSize, isDocxTextBlock, twipsToCssPixels } from "./docxEditorUtils";
+
+type DocxInlineStyleKey = Exclude<keyof DocxRun, "text">;
+type DocxInlineStylePatch = Partial<Pick<DocxRun, DocxInlineStyleKey>>;
+
+const DOCX_INLINE_STYLE_KEYS: DocxInlineStyleKey[] = [
+  "bold",
+  "italic",
+  "underline",
+  "strikethrough",
+  "verticalAlign",
+  "fontFamily",
+  "fontSize",
+  "color",
+  "highlight",
+];
+
+/**
+ * DOCX run metadata is preserved only while the visible text still matches the
+ * original run sequence. Once a contenteditable edit changes the text, the
+ * editor intentionally falls back to block-level formatting so later saves do
+ * not apply stale character ranges to new user content.
+ */
+export function docxRunsText(runs: DocxRun[] | undefined) {
+  return runs?.map((run) => run.text).join("") ?? "";
+}
+
+export function docxMergeRuns(runs: DocxRun[]) {
+  return mergeAdjacentDocxRuns(runs.filter((run) => run.text.length > 0));
+}
+
+export function docxRenderableRuns(block: DocxBlock) {
+  if (!isDocxTextBlock(block) || !block.runs?.length) return null;
+  return docxRunsText(block.runs) === block.text ? block.runs : null;
+}
+
+export function docxTextEditPatch(
+  block: DocxBlock,
+  text: string,
+): Partial<DocxBlock> {
+  return block.runs ? { text, runs: undefined } : { text };
+}
+
+export function isDocxInlineStylePatch(patch: Partial<DocxBlock>) {
+  const keys = Object.keys(patch);
+  return (
+    keys.length > 0 &&
+    keys.every((key) =>
+      DOCX_INLINE_STYLE_KEYS.includes(key as DocxInlineStyleKey),
+    )
+  );
+}
+
+export function applyDocxInlineStyleRange(
+  block: DocxBlock,
+  start: number,
+  end: number,
+  patch: DocxInlineStylePatch,
+) {
+  if (!isDocxTextBlock(block) || start === end) return null;
+  const rangeStart = Math.max(0, Math.min(block.text.length, start));
+  const rangeEnd = Math.max(rangeStart, Math.min(block.text.length, end));
+  if (rangeStart === rangeEnd) return null;
+  return {
+    ...block,
+    runs: docxMergeRuns(
+      splitDocxRuns(block).flatMap((run, index, runs) => {
+        const runStart = runs
+          .slice(0, index)
+          .reduce((offset, item) => offset + item.text.length, 0);
+        const runEnd = runStart + run.text.length;
+        if (runEnd <= rangeStart || runStart >= rangeEnd) return [run];
+        const beforeLength = Math.max(0, rangeStart - runStart);
+        const afterStart = Math.max(beforeLength, rangeEnd - runStart);
+        const nextRuns: DocxRun[] = [];
+        if (beforeLength > 0) {
+          nextRuns.push({ ...run, text: run.text.slice(0, beforeLength) });
+        }
+        nextRuns.push({
+          ...run,
+          ...patch,
+          text: run.text.slice(beforeLength, afterStart),
+        });
+        if (afterStart < run.text.length) {
+          nextRuns.push({ ...run, text: run.text.slice(afterStart) });
+        }
+        return nextRuns.filter((item) => item.text.length > 0);
+      }),
+    ),
+  };
+}
+
+export function replaceDocxRunRange(
+  block: DocxBlock,
+  start: number,
+  end: number,
+  replacementRuns: DocxRun[],
+) {
+  if (!isDocxTextBlock(block)) return null;
+  const rangeStart = Math.max(0, Math.min(block.text.length, start));
+  const rangeEnd = Math.max(rangeStart, Math.min(block.text.length, end));
+  const { before, after } = splitDocxRunsAroundRange(block, rangeStart, rangeEnd);
+  const runs = docxMergeRuns([...before, ...replacementRuns, ...after]);
+  const text = docxRunsText(runs);
+  return {
+    ...block,
+    text,
+    runs: runs.length > 0 ? runs : undefined,
+  };
+}
+
+export function splitDocxRunsAroundRange(
+  block: DocxBlock,
+  start: number,
+  end: number,
+) {
+  const rangeStart = Math.max(0, Math.min(block.text.length, start));
+  const rangeEnd = Math.max(rangeStart, Math.min(block.text.length, end));
+  const before: DocxRun[] = [];
+  const after: DocxRun[] = [];
+  let offset = 0;
+  for (const run of splitDocxRuns(block)) {
+    const runStart = offset;
+    const runEnd = runStart + run.text.length;
+    offset = runEnd;
+    if (runEnd <= rangeStart) {
+      before.push({ ...run });
+      continue;
+    }
+    if (runStart >= rangeEnd) {
+      after.push({ ...run });
+      continue;
+    }
+    if (runStart < rangeStart) {
+      before.push({
+        ...run,
+        text: run.text.slice(0, rangeStart - runStart),
+      });
+    }
+    if (runEnd > rangeEnd) {
+      after.push({
+        ...run,
+        text: run.text.slice(rangeEnd - runStart),
+      });
+    }
+  }
+  return {
+    before: docxMergeRuns(before),
+    after: docxMergeRuns(after),
+  };
+}
+
+export function toggleDocxInlineBooleanRange(
+  block: DocxBlock,
+  start: number,
+  end: number,
+  key: Extract<
+    DocxInlineStyleKey,
+    "bold" | "italic" | "underline" | "strikethrough"
+  >,
+) {
+  const runs = runsIntersectingRange(block, start, end);
+  if (runs.length === 0) return null;
+  const nextValue = !runs.every((run) => run[key] === true);
+  return applyDocxInlineStyleRange(block, start, end, { [key]: nextValue });
+}
+
+export function docxStyleForBlock(
+  styles: DocxStyle[] | undefined,
+  block: DocxBlock,
+) {
+  const styleId =
+    block.paragraphStyleId ??
+    (block.type === "heading" ? `Heading${block.headingLevel ?? 1}` : undefined);
+  if (!styleId) return undefined;
+  return styles?.find((style) => style.id === styleId);
+}
+
+export function docxTextBlockStyle(
+  block: DocxBlock,
+  paragraphStyle?: DocxStyle,
+): CSSProperties {
+  const effectiveBold =
+    block.bold ?? paragraphStyle?.bold ?? block.type === "heading";
+  const effectiveItalic = block.italic ?? paragraphStyle?.italic ?? false;
+  const effectiveUnderline =
+    block.underline ?? paragraphStyle?.underline ?? Boolean(block.target);
+  const effectiveStrikethrough =
+    block.strikethrough ?? paragraphStyle?.strikethrough ?? false;
+  return {
+    fontFamily: block.fontFamily || paragraphStyle?.fontFamily || builtInFontFamilies[0],
+    fontSize: `${
+      block.fontSize ??
+      paragraphStyle?.fontSize ??
+      (block.type === "heading" ? headingFontSize(block.headingLevel ?? 1) : "14")
+    }px`,
+    fontWeight: effectiveBold ? 700 : 400,
+    fontStyle: effectiveItalic ? "italic" : undefined,
+    verticalAlign:
+      block.verticalAlign === "superscript"
+        ? "super"
+        : block.verticalAlign === "subscript"
+          ? "sub"
+          : undefined,
+    textDecorationLine: [
+      effectiveUnderline ? "underline" : "",
+      effectiveStrikethrough ? "line-through" : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    color: block.target
+      ? (block.color ?? paragraphStyle?.color ?? "#2563eb")
+      : block.color ?? paragraphStyle?.color,
+    textAlign: block.align ?? paragraphStyle?.align ?? "left",
+    display: block.listKind ? "list-item" : undefined,
+    listStyleType: docxCssListStyleType(block),
+    listStylePosition: block.listKind ? "outside" : undefined,
+    marginLeft: block.listKind ? "1.5rem" : undefined,
+    paddingLeft: block.indentLeft ? `${twipsToCssPixels(block.indentLeft)}px` : undefined,
+    lineHeight: block.lineSpacing ? String(block.lineSpacing / 240) : undefined,
+    marginTop: block.spacingBefore ? `${twipsToCssPixels(block.spacingBefore)}px` : undefined,
+    marginBottom: block.spacingAfter ? `${twipsToCssPixels(block.spacingAfter)}px` : undefined,
+    backgroundColor: block.highlight ?? paragraphStyle?.highlight,
+  };
+}
+
+function docxCssListStyleType(block: DocxBlock) {
+  if (block.listKind === "bullet") {
+    return ["disc", "circle", "square"][Math.min(block.listLevel ?? 0, 2)] ?? "disc";
+  }
+  if (block.listKind === "number") {
+    return ["decimal", "lower-alpha", "lower-roman"][
+      Math.min(block.listLevel ?? 0, 2)
+    ] ?? "decimal";
+  }
+  return undefined;
+}
+
+export function docxRunStyle(run: DocxRun): CSSProperties {
+  const textDecorationLine =
+    [
+      run.underline ? "underline" : "",
+      run.strikethrough ? "line-through" : "",
+    ]
+      .filter(Boolean)
+      .join(" ") ||
+    (run.underline === false || run.strikethrough === false ? "none" : undefined);
+  return {
+    fontFamily: run.fontFamily,
+    fontSize: run.fontSize ? `${run.fontSize}px` : undefined,
+    fontWeight: run.bold === false ? 400 : run.bold ? 700 : undefined,
+    fontStyle: run.italic === false ? "normal" : run.italic ? "italic" : undefined,
+    verticalAlign:
+      run.verticalAlign === "superscript"
+        ? "super"
+        : run.verticalAlign === "subscript"
+          ? "sub"
+          : undefined,
+    textDecorationLine,
+    color: run.color,
+    backgroundColor: run.highlight,
+  };
+}
+
+export function splitDocxRuns(block: DocxBlock) {
+  const existingRuns = docxRenderableRuns(block);
+  if (existingRuns) return existingRuns.map((run) => ({ ...run }));
+  return [baseDocxRun(block, block.text)];
+}
+
+function baseDocxRun(block: DocxBlock, text: string): DocxRun {
+  const run: DocxRun = { text };
+  for (const key of DOCX_INLINE_STYLE_KEYS) {
+    const value = block[key];
+    if (value !== undefined) {
+      (run as Record<DocxInlineStyleKey, DocxRun[DocxInlineStyleKey]>)[key] =
+        value;
+    }
+  }
+  return run;
+}
+
+function runsIntersectingRange(block: DocxBlock, start: number, end: number) {
+  let offset = 0;
+  return splitDocxRuns(block).filter((run) => {
+    const runStart = offset;
+    const runEnd = offset + run.text.length;
+    offset = runEnd;
+    return runEnd > start && runStart < end;
+  });
+}
+
+function mergeAdjacentDocxRuns(runs: DocxRun[]) {
+  return runs.reduce<DocxRun[]>((merged, run) => {
+    const previous = merged.at(-1);
+    if (previous && sameDocxRunStyle(previous, run)) {
+      previous.text += run.text;
+    } else {
+      merged.push({ ...run });
+    }
+    return merged;
+  }, []);
+}
+
+function sameDocxRunStyle(left: DocxRun, right: DocxRun) {
+  return DOCX_INLINE_STYLE_KEYS.every((key) => left[key] === right[key]);
+}

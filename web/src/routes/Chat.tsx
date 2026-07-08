@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
-import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
+import { DocumentEditorPane } from "@/features/documentEditor/shell/DocumentEditorPane";
 import {
   LightweightBrowserPane,
   type LightweightBrowserSource,

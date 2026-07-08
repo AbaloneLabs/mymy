@@ -19,6 +19,7 @@ use axum::Router;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
@@ -26,7 +27,13 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+    init_tracing();
+
+    let cfg = Config::from_env();
+    run(cfg).await
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .event_format(agent::security::RedactingFormatter)
         .with_env_filter(
@@ -34,39 +41,54 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| EnvFilter::new("mymy_api=info,tower_http=info")),
         )
         .init();
+}
 
-    let cfg = Config::from_env();
+async fn run(cfg: Config) -> anyhow::Result<()> {
     agent::security::verify_ca_bundle()?;
     tracing::info!(port = cfg.port, "starting mymy-api");
 
-    // Connect to database
-    let pool = PgPoolOptions::new()
+    let pool = connect_database(&cfg).await?;
+    apply_migrations(&pool).await?;
+    let port = cfg.port;
+    let state = Arc::new(AppState::new(pool, cfg));
+    let _background_workers = start_background_workers(state.clone());
+    let app = build_router(state.clone(), &state.config);
+
+    serve_http(app, port).await
+}
+
+async fn connect_database(cfg: &Config) -> anyhow::Result<PgPool> {
+    PgPoolOptions::new()
         .max_connections(10)
         .connect(&cfg.database_url)
-        .await?;
+        .await
+        .map_err(Into::into)
+}
 
+async fn apply_migrations(pool: &PgPool) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!("./migrations");
-    reconcile_rewritten_migration_checksums(&pool, &migrator).await?;
+    reconcile_rewritten_migration_checksums(pool, &migrator).await?;
 
-    // Run migrations
-    migrator.run(&pool).await.map_err(|e| {
+    migrator.run(pool).await.map_err(|e| {
         tracing::error!(error = ?e, "migration failed");
         e
     })?;
     tracing::info!("database migrations applied");
 
-    let state = Arc::new(AppState::new(pool, cfg.clone()));
-    let _cron_ticker = services::cron::start_cron_ticker(state.clone());
-    let _drive_sync_worker = services::drive_sync::start_drive_sync_worker(state.clone());
+    Ok(())
+}
 
-    // Build router
-    let app = build_router(state.clone(), &cfg);
+fn start_background_workers(state: Arc<AppState>) -> (JoinHandle<()>, Option<JoinHandle<()>>) {
+    (
+        services::cron::start_cron_ticker(state.clone()),
+        services::drive_sync::start_drive_sync_worker(state),
+    )
+}
 
-    // Start server
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+async fn serve_http(app: Router, port: u16) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 

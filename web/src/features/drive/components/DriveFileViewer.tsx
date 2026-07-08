@@ -1,7 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { driveBlobUrl } from "@/features/drive/api";
-import { DocumentEditorPane } from "@/features/documentEditor/DocumentEditorPane";
+import { DocumentEditorPane } from "@/features/documentEditor/shell/DocumentEditorPane";
 import { LightweightBrowserPane } from "./LightweightBrowserPane";
 import type { DriveFileResponse } from "@/types/drive";
 

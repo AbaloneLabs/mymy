@@ -9,7 +9,7 @@ import type {
   DocxRun,
   DocxStyle,
   DocxTextPart,
-} from "../models";
+} from "../shared/models";
 import { hexColorField, isRecord, numericField } from "./shared";
 
 export function normalizeDocxModel(model: unknown): DocxModel {

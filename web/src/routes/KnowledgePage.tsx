@@ -1,7 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Search, Plus, Folder, BookOpen } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
-import { VersionHistoryPanel } from "@/components/VersionHistoryPanel";
 import { useTranslation } from "react-i18next";
 import {
   useKnowledgeTree,
@@ -14,11 +12,11 @@ import {
 } from "@/features/knowledge/api";
 import {
   Editor,
-  SearchResultList,
   TableOfContents,
-  TreeView,
   Viewer,
 } from "@/features/knowledge/components/KnowledgeViews";
+import { KnowledgeHistoryPanel } from "@/features/knowledge/components/KnowledgeHistoryPanel";
+import { KnowledgeSidebar } from "@/features/knowledge/components/KnowledgeSidebar";
 import {
   flattenTree,
   parseTags,
@@ -29,7 +27,6 @@ import type {
   KnowledgeNodeType,
   KnowledgeStatus,
 } from "@/types/knowledge";
-import type { KnowledgeArticleSnapshot } from "@/types/versions";
 
 /**
  * Knowledge Base page — a 3-panel workspace:
@@ -269,83 +266,24 @@ export default function KnowledgePage() {
   return (
     <AppLayout>
       <div className="flex h-full overflow-hidden">
-        {/* Left: document tree + search */}
-        <div className="flex w-[280px] shrink-0 flex-col border-r border-[var(--border)]">
-          <div className="flex items-center gap-2 px-4 pb-3 pt-4">
-            <BookOpen size={16} className="text-[var(--text-dim)]" />
-            <h2 className="text-sm font-semibold text-[var(--text)]">
-              {t("knowledge.title")}
-            </h2>
-            <div className="ml-auto flex items-center gap-1">
-              <button
-                onClick={() => handleCreate("category", selected?.parentId ?? selected?.id)}
-                disabled={createArticle.isPending}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
-                title={t("knowledge.newCategory")}
-              >
-                <Folder size={15} />
-              </button>
-              <button
-                onClick={() => handleCreate("article", selected?.parentId ?? selected?.id)}
-                disabled={createArticle.isPending}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
-                title={t("knowledge.newArticle")}
-              >
-                <Plus size={16} />
-              </button>
-            </div>
-          </div>
-          {createError && (
-            <div className="px-4 pb-2 text-xs text-[var(--status-error)]">
-              {t("knowledge.createError")}
-            </div>
-          )}
-          {moveError && (
-            <div className="mx-4 mb-2 flex items-center justify-between gap-2 rounded-md border border-[var(--status-error)]/30 bg-[var(--status-error)]/10 px-3 py-1.5 text-xs text-[var(--status-error)]">
-              <span>{t("knowledge.moveError")}</span>
-              <button
-                onClick={() => setMoveError(false)}
-                className="shrink-0 text-[var(--text-dim)] hover:text-[var(--text)]"
-              >
-                ×
-              </button>
-            </div>
-          )}
-          <div className="px-4 pb-3">
-            <div className="relative">
-              <Search
-                size={14}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-dim)]"
-              />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("knowledge.searchPlaceholder")}
-                className="w-full rounded-md border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-8 pr-3 text-sm text-[var(--text)] placeholder:text-[var(--text-dim)] focus:border-[var(--accent)] focus:outline-none"
-              />
-            </div>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-4">
-            {isSearching ? (
-              <SearchResultList
-                results={searchResults}
-                selectedId={selectedId}
-                onSelect={handleSelect}
-                emptyText={t("knowledge.noResults")}
-              />
-            ) : (
-              <TreeView
-                nodes={treeData?.tree ?? []}
-                selectedId={selectedId}
-                expanded={expanded}
-                onSelect={handleSelect}
-                onToggle={handleToggleExpand}
-                onMove={handleMove}
-                emptyText={t("knowledge.empty")}
-              />
-            )}
-          </div>
-        </div>
+        <KnowledgeSidebar
+          search={search}
+          isSearching={isSearching}
+          treeNodes={treeData?.tree ?? []}
+          searchResults={searchResults}
+          selected={selected}
+          selectedId={selectedId}
+          expanded={expanded}
+          createPending={createArticle.isPending}
+          createError={createError}
+          moveError={moveError}
+          onSearch={setSearch}
+          onCreate={handleCreate}
+          onSelect={handleSelect}
+          onToggleExpand={handleToggleExpand}
+          onMove={handleMove}
+          onDismissMoveError={() => setMoveError(false)}
+        />
 
         {/* Center: viewer / editor */}
         <div className="flex min-w-0 flex-1 flex-col">
@@ -411,45 +349,31 @@ export default function KnowledgePage() {
         )}
       </div>
 
-      {/* Version history panel (slide-over) */}
-      {showHistory && selectedId && selected && (
-        <VersionHistoryPanel
-          entityType="knowledge_article"
-          entityId={selectedId}
-          current={{
-            title: selected.title,
-            slug: selected.slug,
-            content: selected.content,
-            excerpt: selected.excerpt,
-            tags: selected.tags,
-            status: selected.status,
-            nodeType: selected.nodeType,
-            parentId: selected.parentId,
-            projectId: selected.projectId,
-            sortOrder: selected.sortOrder,
-          } as KnowledgeArticleSnapshot}
-          onClose={() => setShowHistory(false)}
-          onRestored={(restored) => {
-            const a = restored as KnowledgeArticleSnapshot;
-            updateArticle.mutate(
-              {
-                id: selectedId,
-                body: {
-                  title: a.title,
-                  content: a.content,
-                  slug: a.slug,
-                  excerpt: a.excerpt,
-                  tags: a.tags,
-                  status: a.status as KnowledgeStatus,
-                  nodeType: a.nodeType as KnowledgeNodeType,
-                  parentId: a.parentId ?? null,
-                },
+      <KnowledgeHistoryPanel
+        open={showHistory}
+        selectedId={selectedId}
+        selected={selected}
+        onClose={() => setShowHistory(false)}
+        onRestore={(snapshot) => {
+          if (!selectedId) return;
+          updateArticle.mutate(
+            {
+              id: selectedId,
+              body: {
+                title: snapshot.title,
+                content: snapshot.content,
+                slug: snapshot.slug,
+                excerpt: snapshot.excerpt,
+                tags: snapshot.tags,
+                status: snapshot.status as KnowledgeStatus,
+                nodeType: snapshot.nodeType as KnowledgeNodeType,
+                parentId: snapshot.parentId ?? null,
               },
-              { onSuccess: () => setShowHistory(false) },
-            );
-          }}
-        />
-      )}
+            },
+            { onSuccess: () => setShowHistory(false) },
+          );
+        }}
+      />
     </AppLayout>
   );
 }

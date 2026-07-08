@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, API_BASE, ApiError } from "@/lib/api";
+import { api, API_BASE } from "@/lib/api";
 import type {
   CreatePreviewEndpointInput,
   DriveFileResponse,
@@ -100,21 +100,7 @@ export async function uploadDriveFiles(path: string, files: File[]) {
   for (const file of files) {
     form.append("file", file, file.name);
   }
-  const res = await fetch(`${API_BASE}/drive/upload`, {
-    method: "POST",
-    credentials: "include",
-    body: form,
-  });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) {
-    if (res.status === 401 && typeof window !== "undefined") {
-      window.dispatchEvent(new Event("mymy:unauthorized"));
-    }
-    const message = (data && (data.error || data.message)) || res.statusText;
-    throw new ApiError(res.status, message, data);
-  }
-  return data as DriveUploadResponse;
+  return api.form<DriveUploadResponse>("/drive/upload", form);
 }
 
 export function useDriveTrash() {

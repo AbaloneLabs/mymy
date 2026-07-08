@@ -7,9 +7,7 @@
 //!
 //! Goal progress = average of its key results' progress (0 if none).
 
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -20,32 +18,14 @@ use crate::models::goal::{
 use crate::services::audit::log_audit_safe;
 use crate::state::AppState;
 
-/// A goal / OKR objective row.
-#[derive(Debug, FromRow)]
-struct GoalRow {
-    id: Uuid,
-    title: String,
-    description: String,
-    r#type: String,
-    period: String,
-    status: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
+mod model;
+mod validation;
 
-/// A key result row belonging to a goal.
-#[derive(Debug, FromRow)]
-struct KeyResultRow {
-    id: Uuid,
-    goal_id: Uuid,
-    title: String,
-    kpi_type: String,
-    target_value: f64,
-    current_value: f64,
-    unit: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
+use model::{average_progress, row_to_goal, row_to_key_result, GoalRow, KeyResultRow};
+use validation::{
+    validate_current_value, validate_goal_status, validate_goal_type, validate_kpi_type,
+    validate_target_value,
+};
 
 /// Query params for GET /api/goals.
 #[derive(Debug, Deserialize)]
@@ -468,96 +448,10 @@ async fn resolve_current_value(state: &AppState, kr: &KeyResultRow) -> f64 {
     }
 }
 
-/// Average progress across key results (0 if empty).
-fn average_progress(krs: &[KeyResult]) -> f64 {
-    if krs.is_empty() {
-        return 0.0;
-    }
-    krs.iter().map(|kr| kr.progress).sum::<f64>() / krs.len() as f64
-}
-
-fn row_to_goal(row: GoalRow, progress: f64, key_results: Option<Vec<KeyResult>>) -> Goal {
-    Goal {
-        id: row.id.to_string(),
-        title: row.title,
-        description: row.description,
-        r#type: row.r#type,
-        period: row.period,
-        status: row.status,
-        progress,
-        key_results,
-        created_at: row.created_at.to_rfc3339(),
-        updated_at: row.updated_at.to_rfc3339(),
-    }
-}
-
-fn row_to_key_result(row: KeyResultRow, current_value: f64) -> KeyResult {
-    let progress = if row.target_value > 0.0 {
-        (current_value / row.target_value * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
-    KeyResult {
-        id: row.id.to_string(),
-        goal_id: row.goal_id.to_string(),
-        title: row.title,
-        kpi_type: row.kpi_type,
-        target_value: row.target_value,
-        current_value,
-        unit: row.unit,
-        progress,
-        created_at: row.created_at.to_rfc3339(),
-        updated_at: row.updated_at.to_rfc3339(),
-    }
-}
-
-fn validate_goal_type(t: &str) -> AppResult<()> {
-    if matches!(t, "quarterly" | "annual" | "monthly") {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(format!("invalid goal type: {t}")))
-    }
-}
-
-fn validate_goal_status(s: &str) -> AppResult<()> {
-    if matches!(s, "active" | "completed" | "archived") {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(format!("invalid goal status: {s}")))
-    }
-}
-
-fn validate_kpi_type(k: &str) -> AppResult<()> {
-    if matches!(k, "manual" | "task_completion" | "finance") {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(format!("invalid kpiType: {k}")))
-    }
-}
-
-fn validate_target_value(v: f64) -> AppResult<()> {
-    if v > 0.0 {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(
-            "targetValue must be positive".to_string(),
-        ))
-    }
-}
-
-fn validate_current_value(v: f64) -> AppResult<()> {
-    if v >= 0.0 {
-        Ok(())
-    } else {
-        Err(AppError::BadRequest(
-            "currentValue must be non-negative".to_string(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     fn key_result_row(target_value: f64, current_value: f64) -> KeyResultRow {
         let now = Utc::now();

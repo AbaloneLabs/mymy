@@ -6,7 +6,7 @@ use crate::agent::providers::ToolSchema;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-use super::ChatSessionRow;
+use super::repository::ChatSessionRow;
 
 pub(super) async fn resolve_prompt_snapshot(
     state: &AppState,

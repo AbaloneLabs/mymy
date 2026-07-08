@@ -3,6 +3,15 @@
 use std::env;
 use std::path::PathBuf;
 
+const DEFAULT_DATABASE_URL: &str = "postgres://mymy:mymy@db:5432/mymy";
+const DEFAULT_PORT: u16 = 33697;
+const DEFAULT_CORS_ORIGIN: &str = "http://localhost:33696";
+const DEFAULT_AGENT_DATA_DIR: &str = "data/agent";
+const DEFAULT_CRON_TICK_INTERVAL_SECS: u64 = 60;
+const DEFAULT_CRON_TIMEZONE: &str = "UTC";
+const DEFAULT_CRON_OUTPUT_KEEP: usize = 50;
+const DEFAULT_SANDBOX_PREVIEW_HOST: &str = "127.0.0.1";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
@@ -38,16 +47,11 @@ impl Config {
     pub fn from_env() -> Self {
         let _ = dotenvy::dotenv();
 
-        let database_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://mymy:mymy@db:5432/mymy".to_string());
-
-        let port = env::var("PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(33697);
+        let database_url = env_string("DATABASE_URL", DEFAULT_DATABASE_URL);
+        let port = env_parse("PORT", DEFAULT_PORT);
 
         let cors_origins = env::var("CORS_ORIGIN")
-            .unwrap_or_else(|_| "http://localhost:33696".to_string())
+            .unwrap_or_else(|_| DEFAULT_CORS_ORIGIN.to_string())
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -55,22 +59,15 @@ impl Config {
 
         let agent_data_dir = env::var("MYMY_AGENT_DATA_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("data/agent"));
-        let auth_cookie_secure = env::var("AUTH_COOKIE_SECURE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(false);
-        let cron_tick_interval_secs = env::var("MYMY_CRON_TICK_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(60);
-        let cron_timezone = env::var("MYMY_CRON_TIMEZONE").unwrap_or_else(|_| "UTC".to_string());
-        let cron_output_keep = env::var("MYMY_CRON_OUTPUT_KEEP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(50);
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_AGENT_DATA_DIR));
+        let auth_cookie_secure = env_parse("AUTH_COOKIE_SECURE", false);
+        let cron_tick_interval_secs = env_parse_positive(
+            "MYMY_CRON_TICK_INTERVAL_SECS",
+            DEFAULT_CRON_TICK_INTERVAL_SECS,
+        );
+        let cron_timezone = env_string("MYMY_CRON_TIMEZONE", DEFAULT_CRON_TIMEZONE);
+        let cron_output_keep =
+            env_parse_positive("MYMY_CRON_OUTPUT_KEEP", DEFAULT_CRON_OUTPUT_KEEP);
         let drive_s3_bucket = env_optional("MYMY_DRIVE_S3_BUCKET");
         let drive_s3_region = env_optional("MYMY_DRIVE_S3_REGION");
         let drive_s3_endpoint = env_optional("MYMY_DRIVE_S3_ENDPOINT");
@@ -79,7 +76,7 @@ impl Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "127.0.0.1".to_string());
+            .unwrap_or_else(|| DEFAULT_SANDBOX_PREVIEW_HOST.to_string());
 
         Self {
             database_url,
@@ -97,6 +94,31 @@ impl Config {
             sandbox_preview_host,
         }
     }
+}
+
+fn env_string(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_parse<T>(key: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+{
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_parse_positive<T>(key: &str, default: T) -> T
+where
+    T: std::str::FromStr + PartialOrd + From<u8> + Copy,
+{
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > T::from(0))
+        .unwrap_or(default)
 }
 
 fn env_optional(key: &str) -> Option<String> {

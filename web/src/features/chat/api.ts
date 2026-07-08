@@ -2,7 +2,7 @@
  * TanStack Query hooks for this domain.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { API_BASE, ApiError, api } from "@/lib/api";
+import { API_BASE, api, apiErrorFromResponse } from "@/lib/api";
 import type { ChatMessage, ChatSession } from "@/types/chat";
 
 /* -------------------------------------------------- Chat */
@@ -114,21 +114,10 @@ export async function streamChatMessage(
   });
 
   if (!response.ok) {
-    if (response.status === 401) {
-      window.dispatchEvent(new Event("mymy:unauthorized"));
-    }
-    const body = await response.text();
-    let parsed: unknown;
-    try {
-      parsed = body ? JSON.parse(body) : null;
-    } catch {
-      parsed = body;
-    }
-    const message =
-      parsed && typeof parsed === "object" && "error" in parsed
-        ? String((parsed as { error: unknown }).error)
-        : response.statusText;
-    throw new ApiError(response.status, message, parsed);
+    throw await apiErrorFromResponse(
+      response,
+      `/chat/sessions/${sessionId}/messages`,
+    );
   }
 
   const reader = response.body?.getReader();

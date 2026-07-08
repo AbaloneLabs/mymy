@@ -21,6 +21,25 @@ const ProcessesPage = lazy(() => import("@/routes/ProcessesPage"));
 const GoalsPage = lazy(() => import("@/routes/GoalsPage"));
 const ShortcutsPage = lazy(() => import("@/routes/ShortcutsPage"));
 
+const protectedRoutes = [
+  { path: "/", element: <Dashboard /> },
+  { path: "/chat", element: <Chat /> },
+  { path: "/calendar", element: <CalendarPage /> },
+  { path: "/notes", element: <NotesPage /> },
+  { path: "/knowledge", element: <KnowledgePage /> },
+  { path: "/journey", element: <JourneyPage /> },
+  { path: "/tasks", element: <TasksPage /> },
+  { path: "/agents", element: <AgentsPage /> },
+  { path: "/finance", element: <FinancePage /> },
+  { path: "/drive", element: <DrivePage /> },
+  { path: "/investments", element: <InvestmentsPage /> },
+  { path: "/processes", element: <ProcessesPage /> },
+  { path: "/goals", element: <GoalsPage /> },
+  { path: "/settings", element: <Settings /> },
+  { path: "/shortcuts", element: <ShortcutsPage /> },
+  { path: "/projects/:id", element: <ProjectDetail /> },
+] as const;
+
 function RouteFallback() {
   return (
     <div className="flex h-screen items-center justify-center bg-[var(--bg)]" aria-busy="true">
@@ -47,134 +66,13 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/pin" element={<PinScreen />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/chat"
-            element={
-              <ProtectedRoute>
-                <Chat />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/calendar"
-            element={
-              <ProtectedRoute>
-                <CalendarPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/notes"
-            element={
-              <ProtectedRoute>
-                <NotesPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/knowledge"
-            element={
-              <ProtectedRoute>
-                <KnowledgePage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/journey"
-            element={
-              <ProtectedRoute>
-                <JourneyPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/tasks"
-            element={
-              <ProtectedRoute>
-                <TasksPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/agents"
-            element={
-              <ProtectedRoute>
-                <AgentsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/finance"
-            element={
-              <ProtectedRoute>
-                <FinancePage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/drive"
-            element={
-              <ProtectedRoute>
-                <DrivePage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/investments"
-            element={
-              <ProtectedRoute>
-                <InvestmentsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/processes"
-            element={
-              <ProtectedRoute>
-                <ProcessesPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/goals"
-            element={
-              <ProtectedRoute>
-                <GoalsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <Settings />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/shortcuts"
-            element={
-              <ProtectedRoute>
-                <ShortcutsPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/projects/:id"
-            element={
-              <ProtectedRoute>
-                <ProjectDetail />
-              </ProtectedRoute>
-            }
-          />
+          {protectedRoutes.map(({ path, element }) => (
+            <Route
+              key={path}
+              path={path}
+              element={<ProtectedRoute>{element}</ProtectedRoute>}
+            />
+          ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

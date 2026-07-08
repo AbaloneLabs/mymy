@@ -24,30 +24,60 @@ async function request<T>(
   options: RequestInit = {},
 ): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
     ...options,
+    credentials: "include",
+    headers: requestHeaders(options),
   });
 
-  // 204 No Content
+  if (!res.ok) {
+    throw await apiErrorFromResponse(res, path);
+  }
+
   if (res.status === 204) return undefined as T;
 
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-
-  if (!res.ok) {
-    if (res.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") {
-      window.dispatchEvent(new Event("mymy:unauthorized"));
-    }
-
-    const message =
-      (data && (data.error || data.message)) || res.statusText;
-    throw new ApiError(res.status, message, data);
-  }
+  const data = await responseData(res);
   return data as T;
+}
+
+function requestHeaders(options: RequestInit) {
+  const headers = new Headers(options.headers);
+  if (!isFormDataBody(options.body) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return headers;
+}
+
+function isFormDataBody(body: RequestInit["body"]) {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
+async function responseData(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function responseErrorMessage(data: unknown, fallback: string) {
+  if (data && typeof data === "object") {
+    const body = data as { error?: unknown; message?: unknown };
+    const message = body.error ?? body.message;
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+  return fallback;
+}
+
+export async function apiErrorFromResponse(res: Response, path: string) {
+  const data = await responseData(res);
+  if (res.status === 401 && !path.startsWith("/auth/") && typeof window !== "undefined") {
+    window.dispatchEvent(new Event("mymy:unauthorized"));
+  }
+  return new ApiError(res.status, responseErrorMessage(data, res.statusText), data);
 }
 
 export const api = {
@@ -59,4 +89,6 @@ export const api = {
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  form: <T>(path: string, body: FormData) =>
+    request<T>(path, { method: "POST", body }),
 };

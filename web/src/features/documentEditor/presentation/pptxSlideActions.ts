@@ -1,0 +1,305 @@
+import type { Dispatch, SetStateAction } from "react";
+import { builtInFontFamilies } from "../shared/fonts";
+import {
+  nextPptxChartId,
+  nextPptxImageId,
+  nextPptxShapeId,
+  nextPptxSlidePath,
+  nextPptxTableId,
+  nextPptxTextId,
+} from "./pptxEditorUtils";
+import type {
+  PptxAnimation,
+  PptxMaster,
+  PptxModel,
+  PptxSlide,
+  PptxText,
+  PptxTheme,
+  PptxTransition,
+} from "../shared/models";
+
+type PptxSlideActionParams = {
+  clearObjectSelection: () => void;
+  model: PptxModel;
+  onChange: (model: PptxModel) => void;
+  selectText: (textId: string | null, additive?: boolean) => void;
+  setPreferredSlideId: Dispatch<SetStateAction<string | null>>;
+  slide: PptxSlide | undefined;
+};
+
+export function createPptxSlideActions({
+  clearObjectSelection,
+  model,
+  onChange,
+  selectText,
+  setPreferredSlideId,
+  slide,
+}: PptxSlideActionParams) {
+  function updateSlide(patch: Partial<PptxSlide>) {
+    if (!slide) return;
+    onChange({
+      ...model,
+      slides: model.slides.map((item) =>
+        item.id === slide.id ? { ...item, ...patch } : item,
+      ),
+    });
+  }
+
+  function updatePresentation(patch: Partial<PptxModel>) {
+    onChange({
+      ...model,
+      ...patch,
+    });
+  }
+
+  function updateTheme(themePath: string, patch: Partial<PptxTheme>) {
+    onChange({
+      ...model,
+      themes: (model.themes ?? []).map((theme) =>
+        theme.path === themePath ? { ...theme, ...patch } : theme,
+      ),
+    });
+  }
+
+  function updateThemeColor(themePath: string, key: string, color: string) {
+    onChange({
+      ...model,
+      themes: (model.themes ?? []).map((theme) =>
+        theme.path === themePath
+          ? {
+              ...theme,
+              colors: {
+                ...(theme.colors ?? {}),
+                [key]: color,
+              },
+            }
+          : theme,
+      ),
+    });
+  }
+
+  function updateMaster(masterPath: string, patch: Partial<PptxMaster>) {
+    onChange({
+      ...model,
+      masters: (model.masters ?? []).map((master) =>
+        master.path === masterPath ? { ...master, ...patch } : master,
+      ),
+    });
+  }
+
+  function updateMasterPlaceholder(
+    masterPath: string,
+    placeholderIndex: number,
+    patch: Partial<PptxText>,
+  ) {
+    onChange({
+      ...model,
+      masters: (model.masters ?? []).map((master) =>
+        master.path === masterPath
+          ? {
+              ...master,
+              placeholderTexts: (master.placeholderTexts ?? []).map((placeholder, index) =>
+                index === placeholderIndex ? { ...placeholder, ...patch } : placeholder,
+              ),
+            }
+          : master,
+      ),
+    });
+  }
+
+  function updateSlideNotes(notes: string) {
+    updateSlide({ notes });
+  }
+
+  function toggleSlideHidden() {
+    if (!slide) return;
+    updateSlide({ hidden: !slide.hidden });
+  }
+
+  function updateSlideTransition(patch: Partial<PptxTransition>) {
+    const current = slide?.transition ?? { type: "none" as const };
+    updateSlide({ transition: { ...current, ...patch } });
+  }
+
+  function updateSlideLayout(layoutPath: string) {
+    const layout = model.layouts?.find((item) => item.path === layoutPath);
+    if (!layout) {
+      updateSlide({
+        layoutPath: undefined,
+        layoutName: undefined,
+        layoutType: undefined,
+        layoutMasterPath: undefined,
+        layoutMasterName: undefined,
+        layoutThemePath: undefined,
+        layoutThemeName: undefined,
+      });
+      return;
+    }
+    updateSlide({
+      layoutPath: layout.path,
+      layoutName: layout.name,
+      layoutType: layout.type,
+      layoutMasterPath: layout.masterPath,
+      layoutMasterName: layout.masterName,
+      layoutThemePath: layout.themePath,
+      layoutThemeName: layout.themeName,
+    });
+  }
+
+  function resetSlideLayout() {
+    if (!slide?.layoutPath) return;
+    const layout = model.layouts?.find((item) => item.path === slide.layoutPath);
+    const placeholders = layout?.placeholderTexts ?? [];
+    if (placeholders.length === 0) return;
+    updateSlide({
+      texts: placeholders.map((text, index) => ({
+        ...text,
+        id: `t${index + 1}`,
+        textIndex: undefined,
+      })),
+    });
+    clearObjectSelection();
+  }
+
+  function updateSlideAnimations(updater: (animations: PptxAnimation[]) => PptxAnimation[]) {
+    if (!slide) return;
+    updateSlide({ animations: updater(slide.animations ?? []) });
+  }
+
+  function updateAnimationTiming(
+    animationId: string,
+    patch: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">,
+  ) {
+    updateSlideAnimations((animations) =>
+      animations.map((animation) =>
+        animation.id === animationId ? { ...animation, ...patch } : animation,
+      ),
+    );
+  }
+
+  function moveAnimation(animationId: string, direction: -1 | 1) {
+    updateSlideAnimations((animations) => {
+      const index = animations.findIndex((animation) => animation.id === animationId);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= animations.length) {
+        return animations;
+      }
+      const next = [...animations];
+      const [moved] = next.splice(index, 1);
+      next.splice(nextIndex, 0, moved);
+      return next;
+    });
+  }
+
+  function addSlide() {
+    const slideNumber = model.slides.length + 1;
+    const path = nextPptxSlidePath(model);
+    const next = {
+      id: path,
+      name: path.split("/").at(-1) ?? `slide${slideNumber}.xml`,
+      notes: "",
+      layoutPath: slide?.layoutPath,
+      layoutName: slide?.layoutName,
+      layoutType: slide?.layoutType,
+      layoutMasterPath: slide?.layoutMasterPath,
+      layoutMasterName: slide?.layoutMasterName,
+      layoutThemePath: slide?.layoutThemePath,
+      layoutThemeName: slide?.layoutThemeName,
+      backgroundKind: "solid" as const,
+      backgroundColor: "#ffffff",
+      tables: [],
+      images: [],
+      charts: [],
+      texts: [
+        {
+          id: "t1",
+          text: "",
+          x: 12,
+          y: 14,
+          width: 76,
+          height: 18,
+          fontSize: "28",
+          fontFamily: builtInFontFamilies[0],
+          bold: true,
+        },
+      ],
+    };
+    onChange({ ...model, slides: [...model.slides, next] });
+    setPreferredSlideId(next.id);
+    selectText("t1");
+  }
+
+  function duplicateSlide() {
+    if (!slide) return;
+    const path = nextPptxSlidePath(model);
+    const next = {
+      ...slide,
+      id: path,
+      name: path.split("/").at(-1) ?? "slide.xml",
+      texts: slide.texts.map((text, index) => ({
+        ...text,
+        id: nextPptxTextId(slide.texts, index + 1),
+      })),
+      shapes: (slide.shapes ?? []).map((shape, index) => ({
+        ...shape,
+        id: nextPptxShapeId(slide.shapes ?? [], index + 1),
+      })),
+      tables: (slide.tables ?? []).map((table, index) => ({
+        ...table,
+        id: nextPptxTableId(slide.tables ?? [], index + 1),
+      })),
+      images: (slide.images ?? []).map((image, index) => ({
+        ...image,
+        id: nextPptxImageId(slide.images ?? [], index + 1),
+        relationshipId: undefined,
+        mediaPath: undefined,
+      })),
+      charts: (slide.charts ?? []).map((chart, index) => ({
+        ...chart,
+        id: nextPptxChartId(slide.charts ?? [], index + 1),
+      })),
+    };
+    onChange({ ...model, slides: [...model.slides, next] });
+    setPreferredSlideId(next.id);
+    selectText(next.texts[0]?.id ?? null);
+  }
+
+  function deleteSlide() {
+    if (!slide || model.slides.length <= 1) return;
+    const nextSlides = model.slides.filter((item) => item.id !== slide.id);
+    onChange({ ...model, slides: nextSlides });
+    setPreferredSlideId(nextSlides[0]?.id ?? null);
+    clearObjectSelection();
+  }
+
+  function moveSlide(direction: -1 | 1) {
+    if (!slide) return;
+    const index = model.slides.findIndex((item) => item.id === slide.id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= model.slides.length) return;
+    const slides = [...model.slides];
+    const [moved] = slides.splice(index, 1);
+    slides.splice(nextIndex, 0, moved);
+    onChange({ ...model, slides });
+  }
+
+  return {
+    addSlide,
+    deleteSlide,
+    duplicateSlide,
+    moveAnimation,
+    moveSlide,
+    resetSlideLayout,
+    toggleSlideHidden,
+    updateAnimationTiming,
+    updateMaster,
+    updateMasterPlaceholder,
+    updatePresentation,
+    updateSlide,
+    updateSlideLayout,
+    updateSlideNotes,
+    updateSlideTransition,
+    updateTheme,
+    updateThemeColor,
+  };
+}

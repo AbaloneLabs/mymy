@@ -1,0 +1,28 @@
+export {
+  displayXlsxCellValue,
+  ensureXlsxDisplayRows,
+  ensureXlsxRows,
+  filteredXlsxRows,
+  formulaBarXlsxCellValue,
+  insertXlsxCell,
+  nextXlsxSheetPath,
+  reindexXlsxRows,
+  shiftXlsxColumnsForDelete,
+  shiftXlsxColumnsForInsert,
+  sortXlsxRows,
+  sumXlsxColumnWidths,
+  upsertXlsxColumn,
+  valuesFromXlsxRange,
+  visibleXlsxColumns,
+  xlsxCellFromInput,
+  xlsxColumn,
+  xlsxColumnCount,
+  xlsxColumnWidthPx,
+  xlsxDisplayRowCount,
+  xlsxFillInputFromCell,
+  xlsxRowHeightPx,
+} from "./spreadsheetXlsxGridModel";
+export {
+  recalculateXlsxModel,
+  recalculateXlsxSheet,
+} from "./spreadsheetXlsxCalculation";

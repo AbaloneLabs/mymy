@@ -1,0 +1,24 @@
+import type { SpreadsheetFormulaFunction } from "./spreadsheetFormulaTypes";
+import { SPREADSHEET_DATE_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogDate";
+import {
+  SPREADSHEET_ENGINEERING_FORMULA_FUNCTIONS,
+  SPREADSHEET_FINANCIAL_FORMULA_FUNCTIONS,
+} from "./spreadsheetFormulaCatalogExtensions";
+import { SPREADSHEET_INFORMATION_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogInformation";
+import { SPREADSHEET_LOGICAL_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogLogical";
+import { SPREADSHEET_LOOKUP_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogLookup";
+import { SPREADSHEET_MATH_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogMath";
+import { SPREADSHEET_STATISTICAL_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogStatistical";
+import { SPREADSHEET_TEXT_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalogText";
+
+export const SPREADSHEET_FORMULA_FUNCTIONS: SpreadsheetFormulaFunction[] = [
+  ...SPREADSHEET_MATH_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_STATISTICAL_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_LOGICAL_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_TEXT_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_DATE_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_LOOKUP_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_INFORMATION_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_FINANCIAL_FORMULA_FUNCTIONS,
+  ...SPREADSHEET_ENGINEERING_FORMULA_FUNCTIONS,
+];
