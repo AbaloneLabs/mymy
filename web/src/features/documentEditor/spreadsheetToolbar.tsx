@@ -98,6 +98,7 @@ export function SpreadsheetToolbar({
   onFrozenColumnsChange,
   onMergeCells,
   onUnmergeCells,
+  onCreateTable,
   activeDataValidation,
   onApplyDataValidation,
   activeConditionalRule,
@@ -122,6 +123,7 @@ export function SpreadsheetToolbar({
   canSetAutoFilter = false,
   canMerge = false,
   canUnmerge = false,
+  canCreateTable = false,
   canValidate = false,
   canApplyConditionalFormatting = false,
   canApplyHyperlink = false,
@@ -165,6 +167,7 @@ export function SpreadsheetToolbar({
   onFrozenColumnsChange?: (value: number) => void;
   onMergeCells?: () => void;
   onUnmergeCells?: () => void;
+  onCreateTable?: () => void;
   activeDataValidation?: XlsxDataValidation;
   onApplyDataValidation?: (validation: XlsxDataValidation | null) => void;
   activeConditionalRule?: XlsxConditionalRule;
@@ -193,6 +196,7 @@ export function SpreadsheetToolbar({
   canSetAutoFilter?: boolean;
   canMerge?: boolean;
   canUnmerge?: boolean;
+  canCreateTable?: boolean;
   canValidate?: boolean;
   canApplyConditionalFormatting?: boolean;
   canApplyHyperlink?: boolean;
@@ -560,6 +564,17 @@ export function SpreadsheetToolbar({
         >
           <Eraser className="h-3.5 w-3.5" strokeWidth={1.75} />
           {t("documentEditor.unmergeCells")}
+        </button>
+      )}
+      {onCreateTable && (
+        <button
+          type="button"
+          onClick={onCreateTable}
+          disabled={!canCreateTable}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Table className="h-3.5 w-3.5" strokeWidth={1.75} />
+          {t("documentEditor.createTable", { defaultValue: "Create table" })}
         </button>
       )}
       {onApplyDataValidation && (

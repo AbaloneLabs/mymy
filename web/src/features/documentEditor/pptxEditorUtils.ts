@@ -5,6 +5,7 @@ import type {
   PptxImage,
   PptxModel,
   PptxShape,
+  PptxShapeKind,
   PptxSlide,
   PptxTable,
   PptxText,
@@ -31,10 +32,54 @@ export interface SlideDragState {
     objectId: string;
     startX: number;
     startY: number;
+    startWidth: number;
+    startHeight: number;
   }>;
 }
 
+export type PptxSnapGuide = {
+  orientation: "vertical" | "horizontal";
+  position: number;
+};
+
 export const SLIDE_ASPECT_RATIO = 16 / 9;
+export const PPTX_SNAP_GRID_PERCENT = 1;
+export const PPTX_SNAP_THRESHOLD_PERCENT = 1;
+
+export function isPptxLineShapeKind(kind?: PptxShapeKind) {
+  return kind === "line" || kind === "straightConnector1";
+}
+
+export function isPptxLineShape(shape?: Pick<PptxShape, "kind">) {
+  return isPptxLineShapeKind(shape?.kind);
+}
+
+export function pptxSlideBackgroundStyle(slide?: PptxSlide): CSSProperties {
+  if (!slide) return { backgroundColor: "#ffffff" };
+  if (
+    slide.backgroundKind === "gradient" &&
+    slide.backgroundGradientStart &&
+    slide.backgroundGradientEnd
+  ) {
+    const angle = Number.isFinite(slide.backgroundGradientAngle)
+      ? slide.backgroundGradientAngle
+      : 90;
+    return {
+      backgroundColor: slide.backgroundGradientStart,
+      backgroundImage: `linear-gradient(${angle}deg, ${slide.backgroundGradientStart}, ${slide.backgroundGradientEnd})`,
+    };
+  }
+  if (slide.backgroundKind === "image" && slide.backgroundImageDataUrl) {
+    return {
+      backgroundColor: slide.backgroundColor ?? "#ffffff",
+      backgroundImage: `url("${slide.backgroundImageDataUrl}")`,
+      backgroundPosition: "center",
+      backgroundRepeat: "no-repeat",
+      backgroundSize: "cover",
+    };
+  }
+  return { backgroundColor: slide.backgroundColor ?? "#ffffff" };
+}
 
 export function animationLabel(animation: PptxAnimation) {
   if (animation.presetClass || animation.presetId) {
@@ -194,6 +239,11 @@ export function lockedAspectResize(
 export function clampPercent(value: number, min = 0, max = 100) {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+export function snapPptxPercent(value: number, step = PPTX_SNAP_GRID_PERCENT) {
+  if (!Number.isFinite(value) || step <= 0) return value;
+  return Math.round(value / step) * step;
 }
 
 export function normalizeRotation(value: number) {

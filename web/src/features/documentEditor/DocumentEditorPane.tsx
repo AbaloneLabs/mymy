@@ -6,6 +6,7 @@ import {
   CommandPalette,
   CompatibilityWarnings,
   DocumentEditorSideHeader,
+  DocumentEditorStatusBar,
   DocumentEditorToolbar,
   FindReplacePanel,
 } from "@/features/documentEditor/DocumentEditorShell";
@@ -21,6 +22,7 @@ interface DocumentEditorPaneProps {
   path: string | null;
   onClose: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onOpenDocument?: (path: string) => void;
   variant?: "side" | "embedded";
 }
 
@@ -28,6 +30,7 @@ export function DocumentEditorPane({
   path,
   onClose,
   onDirtyChange,
+  onOpenDocument,
   variant = "side",
 }: DocumentEditorPaneProps) {
   const { t } = useTranslation();
@@ -68,6 +71,7 @@ export function DocumentEditorPane({
           data={data}
           onDirtyChange={onDirtyChange}
           onReload={() => void query.refetch()}
+          onOpenDocument={onOpenDocument}
         />
       )}
     </aside>
@@ -78,19 +82,23 @@ function DocumentEditorContent({
   data,
   onDirtyChange,
   onReload,
+  onOpenDocument,
 }: {
   data: DocumentEditorModelResponse;
   onDirtyChange?: (dirty: boolean) => void;
   onReload: () => void;
+  onOpenDocument?: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const session = useDocumentEditorSession({ data, onDirtyChange });
   const {
     rootRef,
     draft,
+    fingerprint,
     dirty,
     lastSavedAt,
     isSaving,
+    isSaveQueued,
     saveError,
     saveConflict,
     canUndo,
@@ -103,6 +111,8 @@ function DocumentEditorContent({
     findQuery,
     replaceValue,
     matchCase,
+    wholeWord,
+    regexSearch,
     matchCount,
     editorCommandRequest,
     commitDraft,
@@ -120,6 +130,8 @@ function DocumentEditorContent({
     setFindQuery,
     setReplaceValue,
     setMatchCase,
+    setWholeWord,
+    setRegexSearch,
     replaceFirst,
     replaceAll,
   } = session;
@@ -130,6 +142,7 @@ function DocumentEditorContent({
         dirty={dirty}
         lastSavedAt={lastSavedAt}
         isSaving={isSaving}
+        isSaveQueued={isSaveQueued}
         canUndo={canUndo}
         canRedo={canRedo}
         findPanelOpen={findPanelOpen}
@@ -176,10 +189,14 @@ function DocumentEditorContent({
           query={findQuery}
           replacement={replaceValue}
           matchCase={matchCase}
+          wholeWord={wholeWord}
+          regexSearch={regexSearch}
           matchCount={matchCount}
           onQueryChange={setFindQuery}
           onReplacementChange={setReplaceValue}
           onMatchCaseChange={setMatchCase}
+          onWholeWordChange={setWholeWord}
+          onRegexSearchChange={setRegexSearch}
           onReplaceFirst={replaceFirst}
           onReplaceAll={replaceAll}
           onClose={() => setFindPanelOpen(false)}
@@ -194,8 +211,18 @@ function DocumentEditorContent({
           onChange={commitDraft}
           commandRequest={editorCommandRequest}
           onCommandHandled={clearEditorCommandRequest}
+          onOpenDocument={onOpenDocument}
         />
       </div>
+      <DocumentEditorStatusBar
+        kind={data.editorKind}
+        model={draft}
+        fingerprint={fingerprint}
+        dirty={dirty}
+        isSaving={isSaving}
+        isSaveQueued={isSaveQueued}
+        warningCount={data.compatibilityWarnings?.length ?? 0}
+      />
     </div>
   );
 }

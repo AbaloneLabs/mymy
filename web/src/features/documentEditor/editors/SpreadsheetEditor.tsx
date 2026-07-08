@@ -12,50 +12,55 @@ import {
   shiftXlsxDefinedNamesForRowDelete,
   shiftXlsxDefinedNamesForRowInsert,
   xlsxDefinedNameTarget,
-  xlsxDefinedNameValueForSheet,
 } from "../spreadsheetDefinedNames";
 import { SpreadsheetDefinedNamesPanel } from "../spreadsheetDefinedNamesPanel";
 import { rangeToClipboardText } from "../spreadsheetData";
+import { buildXlsxChartSeriesFromSelection } from "../spreadsheetChartSeries";
 import { SpreadsheetGrid } from "../spreadsheetGrid";
 import {
   normalizeXlsxStylePatch,
   spreadsheetDateStamp,
   spreadsheetTimeStamp,
   stripXlsxCellStyle,
-  summarizeSelection,
-  xlsxCellStyleFromCell,
 } from "../spreadsheetPresentation";
 import type { XlsxCellStylePatch } from "../spreadsheetPresentation";
 import { SpreadsheetFormulaDependencyPanel } from "../spreadsheetFormulaPanel";
+import { runSpreadsheetEditorCommand } from "../spreadsheetEditorCommands";
 import { SpreadsheetToolbar } from "../spreadsheetToolbar";
 import {
+  buildXlsxTableFromRange,
+  inferXlsxTableHeaders,
   nextDefinedName,
-  positiveModulo,
+  resizeXlsxTableToRange,
   shiftXlsxTables,
   spreadsheetFillTargetRange,
+  spreadsheetTableResizeTargetRange,
 } from "../spreadsheetEditorUtils";
+import { deriveSpreadsheetEditorState } from "../spreadsheetEditorState";
+import type {
+  SpreadsheetFillDrag,
+  SpreadsheetTableResizeDrag,
+} from "../spreadsheetEditorState";
+import { buildXlsxAutofillMatrix } from "../spreadsheetSeriesFill";
+import {
+  nextDuplicateSheetName,
+  nextGeneratedSheetName,
+  renameXlsxSheetName,
+} from "../spreadsheetSheetNames";
+import { addSpreadsheetSelectionRange } from "../spreadsheetSelection";
 import {
   SpreadsheetObjectStrip,
   SpreadsheetStatusBar,
 } from "../spreadsheetPanels";
 import { SpreadsheetSheetTabs } from "../spreadsheetSheetTabs";
 import {
-  DEFAULT_XLSX_COLUMN_WIDTH,
-  DEFAULT_XLSX_ROW_HEIGHT,
-  MIN_XLSX_VISIBLE_COLUMNS,
-  SPREADSHEET_COLUMN_WIDTH,
-  SPREADSHEET_HEADER_HEIGHT,
-  SPREADSHEET_ROW_HEADER_WIDTH,
-  SPREADSHEET_ROW_HEIGHT,
   clampCellRange,
   clampNumber,
   emptyViewport,
-  normalizeCellRange,
   rangeIndexes,
   rangeToA1,
   scrollCellIntoView,
   singleCellRange,
-  virtualWindow,
   xlsxRangeFromRef,
 } from "../spreadsheetGeometry";
 import type {
@@ -89,30 +94,19 @@ import {
   shiftXlsxRangeForColumnInsert,
   shiftXlsxRangeForRowDelete,
   shiftXlsxRangeForRowInsert,
-  xlsxCommentForRange,
-  xlsxConditionalRuleForRange,
-  xlsxDataValidationForRange,
-  xlsxHyperlinkForRange,
 } from "../spreadsheetXlsxMetadata";
 import {
-  ensureXlsxDisplayRows,
   ensureXlsxRows,
-  filteredXlsxRows,
-  formulaBarXlsxCellValue,
   insertXlsxCell,
   nextXlsxSheetPath,
   recalculateXlsxModel,
-  recalculateXlsxSheet,
   reindexXlsxRows,
   shiftXlsxColumnsForDelete,
   shiftXlsxColumnsForInsert,
   sortXlsxRows,
-  sumXlsxColumnWidths,
   upsertXlsxColumn,
   valuesFromXlsxRange,
-  visibleXlsxColumns,
   xlsxCellFromInput,
-  xlsxColumn,
   xlsxColumnCount,
   xlsxColumnWidthPx,
   xlsxDisplayRowCount,
@@ -125,7 +119,6 @@ import {
 } from "../models";
 import type {
   XlsxCell,
-  XlsxChart,
   XlsxConditionalRule,
   XlsxComment,
   XlsxDataValidation,
@@ -134,12 +127,10 @@ import type {
   XlsxPageMargins,
   XlsxPageSetup,
   XlsxModel,
-  XlsxPivot,
   XlsxSheet,
   XlsxSheetProtection,
-  XlsxTable,
-  XlsxTableColumn,
 } from "../models";
+import { createSpreadsheetObjectEditors } from "../spreadsheetObjectEditors";
 
 export function XlsxEditor({
   model,
@@ -159,130 +150,59 @@ export function XlsxEditor({
   const [extraSelectionRanges, setExtraSelectionRanges] = useState<
     NormalizedCellRange[]
   >([]);
-  const [fillDrag, setFillDrag] = useState<{
-    source: NormalizedCellRange;
-    end: CellPosition;
-  } | null>(null);
+  const [fillDrag, setFillDrag] = useState<SpreadsheetFillDrag | null>(null);
+  const [tableResizeDrag, setTableResizeDrag] =
+    useState<SpreadsheetTableResizeDrag | null>(null);
   const [filterText, setFilterText] = useState("");
   const [showFormulas, setShowFormulas] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
-  const sheet =
-    model.sheets.find((item) => item.id === preferredSheetId) ?? model.sheets[0];
-  const columnCount = sheet ? xlsxColumnCount(sheet) : MIN_XLSX_VISIBLE_COLUMNS;
-  const visibleColumns = visibleXlsxColumns(sheet, columnCount);
-  const displaySheet = sheet ? recalculateXlsxSheet(sheet, columnCount) : undefined;
-  const displayRows = displaySheet
-    ? ensureXlsxDisplayRows(displaySheet, xlsxDisplayRowCount(displaySheet))
-    : [];
-  const displayGridSheet = displaySheet ? { ...displaySheet, rows: displayRows } : undefined;
-  const visibleRows = displayGridSheet
-    ? filteredXlsxRows(displayGridSheet.rows, columnCount, filterText)
-    : [];
-  const displayRowLimit = displayGridSheet?.rows.length ?? 1;
-  const rowWindow = virtualWindow(
-    visibleRows.length,
-    Math.max(0, viewport.scrollTop - SPREADSHEET_HEADER_HEIGHT),
-    viewport.height,
-    SPREADSHEET_ROW_HEIGHT,
-    12,
-  );
-  const columnWindow = virtualWindow(
-    visibleColumns.length,
-    Math.max(0, viewport.scrollLeft - SPREADSHEET_ROW_HEADER_WIDTH),
-    viewport.width,
-    SPREADSHEET_COLUMN_WIDTH,
-    4,
-  );
-  const visibleColumnIndexes = visibleColumns.slice(columnWindow.start, columnWindow.end);
-  const leftColumnSpacerWidth = sumXlsxColumnWidths(
+  const {
+    activeCellReference,
+    activeCellStyle,
+    activeCellValue,
+    activeColumnWidth,
+    activeComment,
+    activeConditionalRule,
+    activeDataValidation,
+    activeDefinedNameValue,
+    activeHyperlink,
+    activeRowHeight,
+    activeSingleCellRange,
+    columnCount,
+    columnWindow,
+    displayGridSheet,
+    displayRowLimit,
+    displaySheet,
+    fillPreviewRange,
+    frozenColumns,
+    frozenRows,
+    leftColumnSpacerWidth,
+    rightColumnSpacerWidth,
+    rowWindow,
+    selectedRanges,
+    selectionRange,
+    selectionSummary,
     sheet,
-    visibleColumns.slice(0, columnWindow.start),
-  );
-  const rightColumnSpacerWidth = sumXlsxColumnWidths(
-    sheet,
-    visibleColumns.slice(columnWindow.end),
-  );
-  const selectionRange = normalizeCellRange(selectionAnchor, selectionEnd);
-  const activeSingleCellRange = activeCell
-    ? {
-        top: activeCell.row,
-        right: activeCell.column,
-        bottom: activeCell.row,
-        left: activeCell.column,
-      }
-    : null;
-  const selectedRanges = [
-    ...extraSelectionRanges,
-    ...(selectionRange ? [selectionRange] : activeSingleCellRange ? [activeSingleCellRange] : []),
-  ];
-  const activeDefinedNameValue =
-    sheet && selectionRange
-      ? xlsxDefinedNameValueForSheet(sheet.name, selectionRange)
-      : undefined;
-  const fillPreviewRange = fillDrag
-    ? spreadsheetFillTargetRange(fillDrag.source, fillDrag.end)
-    : null;
-  const validationRange =
-    selectionRange ??
-    (activeCell
-      ? {
-          top: activeCell.row,
-          right: activeCell.column,
-          bottom: activeCell.row,
-          left: activeCell.column,
-        }
-      : null);
-  const activeDataValidation =
-    sheet && validationRange
-      ? xlsxDataValidationForRange(sheet.dataValidations, validationRange)
-      : undefined;
-  const activeConditionalRule =
-    sheet && validationRange
-      ? xlsxConditionalRuleForRange(sheet.conditionalFormattings, validationRange)
-      : undefined;
-  const activeHyperlink =
-    sheet && validationRange
-      ? xlsxHyperlinkForRange(sheet.hyperlinks, validationRange)
-      : undefined;
-  const activeComment =
-    sheet && validationRange
-      ? xlsxCommentForRange(sheet.comments, validationRange)
-      : undefined;
-  const activeCellValue =
-    activeCell && sheet?.rows[activeCell.row]?.cells[activeCell.column]
-      ? formulaBarXlsxCellValue(sheet.rows[activeCell.row].cells[activeCell.column])
-      : "";
-  const activeCellReference = activeCell
-    ? `${columnName(activeCell.column)}${activeCell.row + 1}`
-    : undefined;
-  const activeCellObject =
-    activeCell && sheet?.rows[activeCell.row]?.cells[activeCell.column]
-      ? sheet.rows[activeCell.row].cells[activeCell.column]
-      : undefined;
-  const activeCellStyle = activeCellObject
-    ? xlsxCellStyleFromCell(activeCellObject)
-    : undefined;
-  const activeColumnWidth =
-    activeCell && sheet
-      ? xlsxColumn(sheet, activeCell.column)?.width ?? DEFAULT_XLSX_COLUMN_WIDTH
-      : DEFAULT_XLSX_COLUMN_WIDTH;
-  const activeRowHeight =
-    activeCell && sheet?.rows[activeCell.row]
-      ? sheet.rows[activeCell.row].height ?? DEFAULT_XLSX_ROW_HEIGHT
-      : DEFAULT_XLSX_ROW_HEIGHT;
-  const frozenRows = sheet?.frozenRows ?? 0;
-  const frozenColumns = sheet?.frozenColumns ?? 0;
-  const selectedValues =
-    displayGridSheet && selectedRanges.length > 0
-      ? selectedRanges.flatMap((range) =>
-          valuesFromXlsxRange(displayGridSheet, columnCount, range, showFormulas),
-        )
-      : activeCellValue
-        ? [[activeCellValue]]
-        : [];
-  const selectionSummary = summarizeSelection(selectedValues);
+    tableResizePreviewRange,
+    validationRange,
+    visibleColumnIndexes,
+    visibleColumns,
+    visibleRows,
+  } = deriveSpreadsheetEditorState({
+    model,
+    preferredSheetId,
+    activeCell,
+    selectionAnchor,
+    selectionEnd,
+    extraSelectionRanges,
+    fillDrag,
+    tableResizeDrag,
+    filterText,
+    showFormulas,
+    viewport,
+  });
 
   function commitXlsxModel(next: XlsxModel) {
     onChange(
@@ -293,6 +213,12 @@ export function XlsxEditor({
       }),
     );
   }
+
+  const objectEditors = createSpreadsheetObjectEditors({
+    sheet,
+    model,
+    commitXlsxModel,
+  });
 
   function updateCell(rowIndex: number, cellIndex: number, value: string) {
     if (!sheet) return;
@@ -362,121 +288,6 @@ export function XlsxEditor({
     });
   }
 
-  function updateSheetTables(updater: (tables: XlsxTable[]) => XlsxTable[]) {
-    if (!sheet) return;
-    commitXlsxModel({
-      sheets: model.sheets.map((item) =>
-        item.id === sheet.id
-          ? { ...item, tables: updater(item.tables ?? []) }
-          : item,
-      ),
-    });
-  }
-
-  function updateTable(tableId: string, patch: Partial<XlsxTable>) {
-    updateSheetTables((tables) =>
-      tables.map((table) => (table.id === tableId ? { ...table, ...patch } : table)),
-    );
-  }
-
-  function updateTableColumn(
-    tableId: string,
-    columnIndex: number,
-    patch: Partial<XlsxTableColumn>,
-  ) {
-    updateSheetTables((tables) =>
-      tables.map((table) =>
-        table.id === tableId
-          ? {
-              ...table,
-              columns: (table.columns ?? []).map((column, currentIndex) =>
-                currentIndex === columnIndex ? { ...column, ...patch } : column,
-              ),
-            }
-          : table,
-      ),
-    );
-  }
-
-  function updateSheetCharts(updater: (charts: XlsxChart[]) => XlsxChart[]) {
-    if (!sheet) return;
-    commitXlsxModel({
-      sheets: model.sheets.map((item) =>
-        item.id === sheet.id
-          ? { ...item, charts: updater(item.charts ?? []) }
-          : item,
-      ),
-    });
-  }
-
-  function updateChartTitle(chartId: string, title: string) {
-    updateSheetCharts((charts) =>
-      charts.map((chart) => (chart.id === chartId ? { ...chart, title } : chart)),
-    );
-  }
-
-  function updateChartSeriesName(
-    chartId: string,
-    seriesIndex: number,
-    value: string,
-  ) {
-    updateSheetCharts((charts) =>
-      charts.map((chart) =>
-        chart.id === chartId
-          ? {
-              ...chart,
-              series: (chart.series ?? []).map((series, currentIndex) =>
-                currentIndex === seriesIndex ? { ...series, name: value } : series,
-              ),
-            }
-          : chart,
-      ),
-    );
-  }
-
-  function updateChartSeriesPoint(
-    chartId: string,
-    seriesIndex: number,
-    pointIndex: number,
-    key: "categories" | "values",
-    value: string,
-  ) {
-    updateSheetCharts((charts) =>
-      charts.map((chart) =>
-        chart.id === chartId
-          ? {
-              ...chart,
-              series: (chart.series ?? []).map((series, currentIndex) => {
-                if (currentIndex !== seriesIndex) return series;
-                const nextValues = [...(series[key] ?? [])];
-                nextValues[pointIndex] = value;
-                return { ...series, [key]: nextValues };
-              }),
-            }
-          : chart,
-      ),
-    );
-  }
-
-  function updateSheetPivots(updater: (pivots: XlsxPivot[]) => XlsxPivot[]) {
-    if (!sheet) return;
-    commitXlsxModel({
-      sheets: model.sheets.map((item) =>
-        item.id === sheet.id
-          ? { ...item, pivots: updater(item.pivots ?? []) }
-          : item,
-      ),
-    });
-  }
-
-  function updatePivotName(pivotId: string, name: string) {
-    updateSheetPivots((pivots) =>
-      pivots.map((pivot) =>
-        pivot.id === pivotId ? { ...pivot, name } : pivot,
-      ),
-    );
-  }
-
   function selectCell(position: CellPosition, extend = false, additive = false) {
     setActiveCell(position);
     if (additive) {
@@ -498,8 +309,17 @@ export function XlsxEditor({
     }
   }
 
-  function selectAllCells() {
-    setExtraSelectionRanges([]);
+  function rememberSelectionBeforeAdditive(additive: boolean) {
+    const previousRange = selectionRange ?? activeSingleCellRange;
+    if (!additive || !previousRange) return;
+    setExtraSelectionRanges((current) =>
+      addSpreadsheetSelectionRange(current, previousRange),
+    );
+  }
+
+  function selectAllCells(additive = false) {
+    rememberSelectionBeforeAdditive(additive);
+    if (!additive) setExtraSelectionRanges([]);
     setActiveCell({ row: 0, column: 0 });
     setSelectionAnchor({ row: 0, column: 0 });
     setSelectionEnd({
@@ -509,10 +329,12 @@ export function XlsxEditor({
     scrollCellIntoView(gridRef.current, 0, 0);
   }
 
-  function selectColumn(column: number) {
-    setExtraSelectionRanges([]);
+  function selectColumn(column: number, extend = false, additive = false) {
+    rememberSelectionBeforeAdditive(additive);
+    if (!additive) setExtraSelectionRanges([]);
+    const anchorColumn = extend && selectionAnchor ? selectionAnchor.column : column;
     setActiveCell({ row: 0, column });
-    setSelectionAnchor({ row: 0, column });
+    setSelectionAnchor({ row: 0, column: anchorColumn });
     setSelectionEnd({
       row: Math.max(0, displayRowLimit - 1),
       column,
@@ -520,10 +342,12 @@ export function XlsxEditor({
     scrollCellIntoView(gridRef.current, 0, column);
   }
 
-  function selectRow(row: number) {
-    setExtraSelectionRanges([]);
+  function selectRow(row: number, extend = false, additive = false) {
+    rememberSelectionBeforeAdditive(additive);
+    if (!additive) setExtraSelectionRanges([]);
+    const anchorRow = extend && selectionAnchor ? selectionAnchor.row : row;
     setActiveCell({ row, column: 0 });
-    setSelectionAnchor({ row, column: 0 });
+    setSelectionAnchor({ row: anchorRow, column: 0 });
     setSelectionEnd({
       row,
       column: Math.max(0, columnCount - 1),
@@ -591,31 +415,12 @@ export function XlsxEditor({
     ) {
       return;
     }
-    const sourceHeight = drag.source.bottom - drag.source.top + 1;
-    const sourceWidth = drag.source.right - drag.source.left + 1;
-    const sourceRows = ensureXlsxRows(
+    const matrix = buildXlsxAutofillMatrix({
       sheet,
-      drag.source.bottom + 1,
-      Math.max(columnCount, drag.source.right + 1),
-    );
-    const matrix = rangeIndexes(target.top, target.bottom).map((rowIndex) =>
-      rangeIndexes(target.left, target.right).map((columnIndex) => {
-        const sourceRowIndex =
-          drag.source.top + positiveModulo(rowIndex - drag.source.top, sourceHeight);
-        const sourceColumnIndex =
-          drag.source.left + positiveModulo(columnIndex - drag.source.left, sourceWidth);
-        const sourceCell = normalizeXlsxCells(
-          sourceRows[sourceRowIndex]?.cells ?? [],
-          Math.max(columnCount, drag.source.right + 1),
-          sourceRows[sourceRowIndex]?.index ?? String(sourceRowIndex + 1),
-        )[sourceColumnIndex];
-        return xlsxFillInputFromCell(
-          sourceCell,
-          rowIndex - sourceRowIndex,
-          columnIndex - sourceColumnIndex,
-        );
-      }),
-    );
+      columnCount,
+      source: drag.source,
+      target,
+    });
     updateCellsFromMatrix(target.top, target.left, matrix);
     setActiveCell({ row: target.bottom, column: target.right });
     setSelectionAnchor({ row: target.top, column: target.left });
@@ -751,11 +556,10 @@ export function XlsxEditor({
   }
 
   function addSheet() {
-    const sheetNumber = model.sheets.length + 1;
     const path = nextXlsxSheetPath(model);
     const next = {
       id: path,
-      name: `Sheet ${sheetNumber}`,
+      name: nextGeneratedSheetName(model),
       rows: [
         {
           index: "1",
@@ -778,7 +582,7 @@ export function XlsxEditor({
     const path = nextXlsxSheetPath(model);
     const next = {
       id: path,
-      name: `${sheet.name} Copy`,
+      name: nextDuplicateSheetName(model, sheet.name),
       state: "visible" as const,
       tabColor: sheet.tabColor,
       tabColorSourceXml: sheet.tabColorSourceXml,
@@ -830,15 +634,17 @@ export function XlsxEditor({
 
   function renameSheet(name: string) {
     if (!sheet) return;
+    const nextName = renameXlsxSheetName(model, sheet.id, name);
+    if (nextName === sheet.name) return;
     const nextSheets = model.sheets.map((item) =>
-      item.id === sheet.id ? { ...item, name } : item,
+      item.id === sheet.id ? { ...item, name: nextName } : item,
     );
     commitXlsxModel({
       sheets: nextSheets,
       definedNames: renameXlsxDefinedNameSheetReferences(
         model.definedNames,
         sheet.name,
-        name,
+        nextName,
       ),
     });
   }
@@ -1302,29 +1108,116 @@ export function XlsxEditor({
     });
   }
 
+  function createTableFromSelection() {
+    if (!sheet || !selectionRange) return;
+    const ref = rangeToA1(selectionRange);
+    const table = buildXlsxTableFromRange(sheet, selectionRange, ref);
+    commitXlsxModel({
+      sheets: model.sheets.map((item) =>
+        item.id === sheet.id
+          ? { ...item, tables: [...(item.tables ?? []), table] }
+          : item,
+      ),
+    });
+  }
+
+  function resizeTableToRange(tableId: string, range: NormalizedCellRange) {
+    if (!sheet) return;
+    commitXlsxModel({
+      sheets: model.sheets.map((item) =>
+        item.id === sheet.id
+          ? {
+              ...item,
+              tables: (item.tables ?? []).map((table) =>
+                table.id === tableId
+                  ? resizeXlsxTableToRange(table, item, range)
+                  : table,
+              ),
+            }
+          : item,
+      ),
+    });
+  }
+
+  function resizeTableToSelection(tableId: string) {
+    if (!selectionRange) return;
+    resizeTableToRange(tableId, selectionRange);
+  }
+
+  function inferTableHeaders(tableId: string) {
+    if (!sheet) return;
+    commitXlsxModel({
+      sheets: model.sheets.map((item) =>
+        item.id === sheet.id
+          ? {
+              ...item,
+              tables: (item.tables ?? []).map((table) => {
+                const range = xlsxRangeFromRef(table.ref ?? "");
+                return table.id === tableId && range
+                  ? inferXlsxTableHeaders(table, item, range)
+                  : table;
+              }),
+            }
+          : item,
+      ),
+    });
+  }
+
+  function addChartSeriesFromSelection(chartId: string) {
+    if (!sheet || !displayGridSheet || !selectionRange) return;
+    const series = buildXlsxChartSeriesFromSelection({
+      sheet,
+      displaySheet: displayGridSheet,
+      columnCount,
+      selectionRange,
+    });
+    if (!series) return;
+    objectEditors.addChartSeries(chartId, series);
+  }
+
+  function startTableResizeDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    tableId: string,
+    source: NormalizedCellRange,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setTableResizeDrag({
+      tableId,
+      source,
+      end: { row: source.bottom, column: source.right },
+    });
+  }
+
   const handleCommandRequest = useEffectEvent(
     (commandId: EditorCommandRequest["id"]) => {
-    if (commandId === "fillDown") {
-      fillDown();
-    } else if (commandId === "fillRight") {
-      fillRight();
-    } else if (commandId === "sortAscending") {
-      sortRowsByActiveColumn("asc");
-    } else if (commandId === "sortDescending") {
-      sortRowsByActiveColumn("desc");
-    } else if (commandId === "filter") {
-      if (sheet?.autoFilter) clearAutoFilter();
-      else setAutoFilterFromSelection();
-    } else {
-      return false;
-    }
-    return true;
+      return runSpreadsheetEditorCommand(commandId, {
+        fillDown,
+        fillRight,
+        sortRowsByActiveColumn,
+        clearAutoFilter,
+        setAutoFilterFromSelection,
+        hasAutoFilter: Boolean(sheet?.autoFilter),
+      });
     },
   );
 
   const finishFillDrag = useEffectEvent(
     (drag: { source: NormalizedCellRange; end: CellPosition }) => {
       applyFillDrag(drag);
+    },
+  );
+
+  const finishTableResizeDrag = useEffectEvent(
+    (drag: {
+      tableId: string;
+      source: NormalizedCellRange;
+      end: CellPosition;
+    }) => {
+      resizeTableToRange(
+        drag.tableId,
+        spreadsheetTableResizeTargetRange(drag.source, drag.end),
+      );
     },
   );
 
@@ -1348,6 +1241,17 @@ export function XlsxEditor({
     window.addEventListener("pointerup", handlePointerUp);
     return () => window.removeEventListener("pointerup", handlePointerUp);
   }, [fillDrag]);
+
+  useEffect(() => {
+    if (!tableResizeDrag) return;
+    function handlePointerUp() {
+      const drag = tableResizeDrag;
+      setTableResizeDrag(null);
+      if (drag) finishTableResizeDrag(drag);
+    }
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => window.removeEventListener("pointerup", handlePointerUp);
+  }, [tableResizeDrag]);
 
   function applyDataValidation(validation: XlsxDataValidation | null) {
     if (!sheet || !validationRange) return;
@@ -1493,6 +1397,29 @@ export function XlsxEditor({
 
   function selectReference(reference: string) {
     if (!sheet) return;
+    const target = xlsxDefinedNameTarget(reference.trim());
+    if (target) {
+      const targetSheet =
+        target.sheetName !== undefined
+          ? model.sheets.find((item) => item.name === target.sheetName)
+          : sheet;
+      if (!targetSheet) return;
+      const targetColumnCount = xlsxColumnCount(targetSheet);
+      const targetRowCount = xlsxDisplayRowCount(targetSheet);
+      const clamped = clampCellRange(
+        target.range,
+        targetRowCount,
+        targetColumnCount,
+      );
+      setPreferredSheetId(targetSheet.id);
+      setActiveCell({ row: clamped.top, column: clamped.left });
+      setSelectionAnchor({ row: clamped.top, column: clamped.left });
+      setSelectionEnd({ row: clamped.bottom, column: clamped.right });
+      requestAnimationFrame(() => {
+        scrollCellIntoView(gridRef.current, clamped.top, clamped.left);
+      });
+      return;
+    }
     const range = xlsxRangeFromRef(reference.trim());
     if (!range) return;
     const clamped = clampCellRange(range, displayRowLimit, columnCount);
@@ -1714,6 +1641,7 @@ export function XlsxEditor({
         onFrozenColumnsChange={updateFrozenColumns}
         onMergeCells={mergeSelection}
         onUnmergeCells={unmergeSelection}
+        onCreateTable={createTableFromSelection}
         activeDataValidation={activeDataValidation}
         onApplyDataValidation={applyDataValidation}
         activeConditionalRule={activeConditionalRule}
@@ -1743,6 +1671,7 @@ export function XlsxEditor({
         canSetAutoFilter={Boolean(selectionRange)}
         canMerge={Boolean(selectionRange && !singleCellRange(selectionRange))}
         canUnmerge={Boolean(selectionRange && sheet?.mergedRanges?.length)}
+        canCreateTable={Boolean(selectionRange)}
         canValidate={Boolean(validationRange)}
         canApplyConditionalFormatting={Boolean(validationRange)}
         canApplyHyperlink={Boolean(validationRange)}
@@ -1771,12 +1700,20 @@ export function XlsxEditor({
       />
       <SpreadsheetObjectStrip
         sheet={sheet}
-        onTableChange={updateTable}
-        onTableColumnChange={updateTableColumn}
-        onChartTitleChange={updateChartTitle}
-        onChartSeriesNameChange={updateChartSeriesName}
-        onChartPointChange={updateChartSeriesPoint}
-        onPivotNameChange={updatePivotName}
+        selectionRange={selectionRange}
+        onTableChange={objectEditors.updateTable}
+        onTableColumnChange={objectEditors.updateTableColumn}
+        onTableResizeToSelection={resizeTableToSelection}
+        onTableInferHeaders={inferTableHeaders}
+        onChartChange={objectEditors.updateChart}
+        canAddChartSeriesFromSelection={Boolean(selectionRange)}
+        onChartAddSeriesFromSelection={addChartSeriesFromSelection}
+        onChartSeriesChange={objectEditors.updateChartSeries}
+        onChartSeriesNameChange={objectEditors.updateChartSeriesName}
+        onChartPointChange={objectEditors.updateChartSeriesPoint}
+        onPivotNameChange={objectEditors.updatePivotName}
+        onPivotFieldChange={objectEditors.updatePivotField}
+        onPivotDataFieldChange={objectEditors.updatePivotDataField}
       />
       <SpreadsheetDefinedNamesPanel
         definedNames={model.definedNames ?? []}
@@ -1789,6 +1726,9 @@ export function XlsxEditor({
       />
       <SpreadsheetFormulaDependencyPanel
         sheet={sheet}
+        recalculatedSheet={displaySheet}
+        sheets={model.sheets}
+        definedNames={model.definedNames ?? []}
         activeReference={activeCellReference}
         onSelectReference={selectReference}
       />
@@ -1810,6 +1750,8 @@ export function XlsxEditor({
         extraSelectionRanges={extraSelectionRanges}
         fillDrag={fillDrag}
         fillPreviewRange={fillPreviewRange}
+        tableResizeDrag={tableResizeDrag}
+        tableResizePreviewRange={tableResizePreviewRange}
         showFormulas={showFormulas}
         onViewportChange={setViewport}
         onSelectAllCells={selectAllCells}
@@ -1823,25 +1765,10 @@ export function XlsxEditor({
         onUpdateCellsFromMatrix={updateCellsFromMatrix}
         onSetFillDrag={setFillDrag}
         onStartFillDrag={startFillDrag}
+        onSetTableResizeDrag={setTableResizeDrag}
+        onStartTableResizeDrag={startTableResizeDrag}
       />
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
-  );
-}
-
-function addSpreadsheetSelectionRange(
-  ranges: NormalizedCellRange[],
-  range: NormalizedCellRange,
-) {
-  if (ranges.some((item) => sameSpreadsheetRange(item, range))) return ranges;
-  return [...ranges, range];
-}
-
-function sameSpreadsheetRange(left: NormalizedCellRange, right: NormalizedCellRange) {
-  return (
-    left.top === right.top &&
-    left.right === right.right &&
-    left.bottom === right.bottom &&
-    left.left === right.left
   );
 }

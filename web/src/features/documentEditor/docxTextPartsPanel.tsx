@@ -1,5 +1,7 @@
-import { Trash2 } from "lucide-react";
+import { Hash, Trash2 } from "lucide-react";
 import type { DocxComment, DocxNote, DocxTextPart } from "./models";
+
+const DOCX_PAGE_FIELD_TOKEN = "{PAGE}";
 
 export function DocxTextPartsPanel({
   headers,
@@ -84,8 +86,26 @@ function DocxTextPartGroup({
       <div className="space-y-2">
         {parts.map((part, index) => (
           <label key={part.path} className="block">
-            <span className="mb-1 block truncate font-mono text-[10px] text-[var(--text-faint)]">
-              {part.path}
+            <span className="mb-1 flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-[var(--text-faint)]">
+                {part.path}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange(
+                    index,
+                    part.text
+                      ? `${part.text} ${DOCX_PAGE_FIELD_TOKEN}`
+                      : DOCX_PAGE_FIELD_TOKEN,
+                  )
+                }
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-[var(--border)] px-1.5 text-[10px] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                title="Insert page number"
+              >
+                <Hash className="h-3 w-3" strokeWidth={1.75} />
+                Page
+              </button>
             </span>
             <textarea
               value={part.text}

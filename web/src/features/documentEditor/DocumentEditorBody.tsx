@@ -1,10 +1,7 @@
+import { lazy, Suspense } from "react";
+import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import type { EditorCommandRequest } from "@/features/documentEditor/commands";
-import { MarkdownRichEditor } from "@/features/documentEditor/editors/MarkdownEditor";
-import { PlainTextEditor } from "@/features/documentEditor/editors/TextEditor";
-import { DocxEditor } from "@/features/documentEditor/editors/WordEditor";
-import { DelimitedTableEditor } from "@/features/documentEditor/editors/DelimitedTableEditor";
-import { XlsxEditor } from "@/features/documentEditor/editors/SpreadsheetEditor";
-import { PptxEditor } from "@/features/documentEditor/editors/PresentationEditor";
 import {
   normalizeDelimitedTableModel,
   normalizeDocxModel,
@@ -14,6 +11,37 @@ import {
 } from "@/features/documentEditor/models";
 import type { DocumentEditorKind } from "@/types/documentEditor";
 
+const MarkdownRichEditor = lazy(() =>
+  import("@/features/documentEditor/editors/MarkdownEditor").then((module) => ({
+    default: module.MarkdownRichEditor,
+  })),
+);
+const PlainTextEditor = lazy(() =>
+  import("@/features/documentEditor/editors/TextEditor").then((module) => ({
+    default: module.PlainTextEditor,
+  })),
+);
+const DocxEditor = lazy(() =>
+  import("@/features/documentEditor/editors/WordEditor").then((module) => ({
+    default: module.DocxEditor,
+  })),
+);
+const DelimitedTableEditor = lazy(() =>
+  import("@/features/documentEditor/editors/DelimitedTableEditor").then((module) => ({
+    default: module.DelimitedTableEditor,
+  })),
+);
+const XlsxEditor = lazy(() =>
+  import("@/features/documentEditor/editors/SpreadsheetEditor").then((module) => ({
+    default: module.XlsxEditor,
+  })),
+);
+const PptxEditor = lazy(() =>
+  import("@/features/documentEditor/editors/PresentationEditor").then((module) => ({
+    default: module.PptxEditor,
+  })),
+);
+
 export function DocumentEditorBody({
   path,
   kind,
@@ -21,6 +49,7 @@ export function DocumentEditorBody({
   onChange,
   commandRequest,
   onCommandHandled,
+  onOpenDocument,
 }: {
   path: string;
   kind: DocumentEditorKind;
@@ -28,20 +57,22 @@ export function DocumentEditorBody({
   onChange: (model: unknown) => void;
   commandRequest: EditorCommandRequest | null;
   onCommandHandled: (request: EditorCommandRequest) => void;
+  onOpenDocument?: (path: string) => void;
 }) {
+  let editor: ReactNode = null;
   if (kind === "markdown") {
-    return (
+    editor = (
       <MarkdownRichEditor
         filePath={path}
         model={normalizeTextModel(model)}
         onChange={onChange}
         commandRequest={commandRequest}
         onCommandHandled={onCommandHandled}
+        onOpenDocument={onOpenDocument}
       />
     );
-  }
-  if (kind === "text") {
-    return (
+  } else if (kind === "text") {
+    editor = (
       <PlainTextEditor
         filePath={path}
         model={normalizeTextModel(model)}
@@ -50,9 +81,8 @@ export function DocumentEditorBody({
         onCommandHandled={onCommandHandled}
       />
     );
-  }
-  if (kind === "csv" || kind === "tsv") {
-    return (
+  } else if (kind === "csv" || kind === "tsv") {
+    editor = (
       <DelimitedTableEditor
         model={normalizeDelimitedTableModel(model)}
         onChange={onChange}
@@ -60,9 +90,8 @@ export function DocumentEditorBody({
         onCommandHandled={onCommandHandled}
       />
     );
-  }
-  if (kind === "docx") {
-    return (
+  } else if (kind === "docx") {
+    editor = (
       <DocxEditor
         model={normalizeDocxModel(model)}
         onChange={onChange}
@@ -70,9 +99,8 @@ export function DocumentEditorBody({
         onCommandHandled={onCommandHandled}
       />
     );
-  }
-  if (kind === "xlsx") {
-    return (
+  } else if (kind === "xlsx") {
+    editor = (
       <XlsxEditor
         model={normalizeXlsxModel(model)}
         onChange={onChange}
@@ -80,9 +108,8 @@ export function DocumentEditorBody({
         onCommandHandled={onCommandHandled}
       />
     );
-  }
-  if (kind === "pptx") {
-    return (
+  } else if (kind === "pptx") {
+    editor = (
       <PptxEditor
         model={normalizePptxModel(model)}
         onChange={onChange}
@@ -91,6 +118,19 @@ export function DocumentEditorBody({
       />
     );
   }
-  return null;
+  if (!editor) return null;
+  return (
+    <Suspense fallback={<DocumentEditorBodyFallback />}>
+      {editor}
+    </Suspense>
+  );
 }
 
+function DocumentEditorBodyFallback() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-1 items-center justify-center text-sm text-[var(--text-muted)]">
+      {t("common.loading")}
+    </div>
+  );
+}

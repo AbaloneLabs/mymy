@@ -1,12 +1,17 @@
 use serde_json::Value;
 
+use super::docx_comments::{
+    docx_comment_range_end_and_reference, docx_comment_range_start,
+    docx_paragraph_needs_comment_reference_rebuild,
+};
 use super::docx_notes::{docx_note_reference_run, docx_paragraph_needs_note_reference_rebuild};
 use super::docx_numbering::{DOCX_BULLET_NUM_ID, DOCX_NUMBER_NUM_ID};
 use super::docx_tables::build_docx_table;
 use super::ooxml_images::{build_docx_image_paragraph, docx_image_relationship_id};
 use super::{
-    docx_hex_color, docx_tag_attr, docx_text_with_breaks, docx_u32_model_attr, escape_xml,
-    extract_text_tags, replace_tag_texts,
+    docx_bookmark_id, docx_bookmark_id_from_model, docx_bookmark_name,
+    docx_bookmark_name_from_model, docx_hex_color, docx_tag_attr, docx_text_with_breaks,
+    docx_u32_model_attr, escape_xml, extract_text_tags, replace_tag_texts,
 };
 
 pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
@@ -54,6 +59,8 @@ pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
                     output.push_str(&build_docx_block(block));
                 } else if docx_paragraph_has_complex_content(segment)
                     && !docx_paragraph_needs_note_reference_rebuild(segment, block)
+                    && !docx_paragraph_needs_comment_reference_rebuild(segment, block)
+                    && docx_paragraph_bookmark_matches_model(segment, block)
                 {
                     let replacement = block
                         .get("text")
@@ -181,6 +188,19 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
         ),
         docx_note_reference_run(block, "endnoteId", "w:endnoteReference", "EndnoteReference")
     );
+    let bookmark_name = docx_bookmark_name_from_model(block);
+    let bookmark_id = docx_bookmark_id_from_model(block).unwrap_or(0);
+    let bookmark_start = bookmark_name.as_ref().map_or_else(String::new, |name| {
+        format!(
+            r#"<w:bookmarkStart w:id="{bookmark_id}" w:name="{}"/>"#,
+            escape_xml(name)
+        )
+    });
+    let bookmark_end = bookmark_name.as_ref().map_or_else(String::new, |_| {
+        format!(r#"<w:bookmarkEnd w:id="{bookmark_id}"/>"#)
+    });
+    let comment_start = docx_comment_range_start(block);
+    let comment_end_and_reference = docx_comment_range_end_and_reference(block);
     if let Some(relationship_id) = block
         .get("relationshipId")
         .and_then(Value::as_str)
@@ -188,12 +208,17 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
         .filter(|value| !value.is_empty())
     {
         format!(
-            r#"<w:p>{style}<w:hyperlink r:id="{}">{run}</w:hyperlink>{note_references}</w:p>"#,
+            r#"<w:p>{style}{bookmark_start}{comment_start}<w:hyperlink r:id="{}">{run}</w:hyperlink>{comment_end_and_reference}{bookmark_end}{note_references}</w:p>"#,
             escape_xml(relationship_id)
         )
     } else {
-        format!("<w:p>{style}{run}{note_references}</w:p>")
+        format!("<w:p>{style}{bookmark_start}{comment_start}{run}{comment_end_and_reference}{bookmark_end}{note_references}</w:p>")
     }
+}
+
+fn docx_paragraph_bookmark_matches_model(paragraph: &str, block: &Value) -> bool {
+    docx_bookmark_name(paragraph) == docx_bookmark_name_from_model(block)
+        && docx_bookmark_id(paragraph) == docx_bookmark_id_from_model(block)
 }
 
 fn docx_paragraph_properties(block: &Value) -> String {

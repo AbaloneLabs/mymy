@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { DocxBlock, DocxNote, DocxPageSettings } from "./models";
+import type { DocxBlock, DocxComment, DocxNote, DocxPageSettings } from "./models";
 
 /**
  * DOCX editing stores document layout in Word-compatible units and keeps block
@@ -252,6 +252,25 @@ export function nextDocxNoteId(
   let index =
     Math.max(
       0,
+      ...Array.from(usedIds)
+        .map((id) => Number.parseInt(id, 10))
+        .filter(Number.isFinite),
+    ) + 1;
+  while (usedIds.has(String(index))) {
+    index += 1;
+  }
+  return String(index);
+}
+
+export function nextDocxCommentId(comments: DocxComment[], blocks: DocxBlock[]) {
+  const usedIds = new Set<string>();
+  comments.forEach((comment) => usedIds.add(comment.id));
+  blocks.forEach((block) => {
+    if (block.commentId) usedIds.add(block.commentId);
+  });
+  let index =
+    Math.max(
+      -1,
       ...Array.from(usedIds)
         .map((id) => Number.parseInt(id, 10))
         .filter(Number.isFinite),

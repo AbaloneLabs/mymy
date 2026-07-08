@@ -216,13 +216,6 @@ fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         DocumentCompatibilityWarningSeverity::Info,
         "Animation timing nodes are preserved in the presentation package.",
     );
-    push_warning_if(
-        &mut warnings,
-        slide_xml.contains("<p:grpSp"),
-        "pptx-groups",
-        DocumentCompatibilityWarningSeverity::Info,
-        "Grouped shapes are preserved in the presentation package.",
-    );
     warnings
 }
 

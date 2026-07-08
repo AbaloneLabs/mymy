@@ -77,6 +77,12 @@ export function normalizeDocxModel(model: unknown): DocxModel {
         relationshipId:
           typeof item.relationshipId === "string" ? item.relationshipId : undefined,
         target: typeof item.target === "string" ? item.target : undefined,
+        bookmarkId:
+          typeof item.bookmarkId === "string" ? item.bookmarkId : undefined,
+        bookmarkName:
+          typeof item.bookmarkName === "string" ? item.bookmarkName : undefined,
+        commentId:
+          typeof item.commentId === "string" ? item.commentId : undefined,
         footnoteId:
           typeof item.footnoteId === "string" ? item.footnoteId : undefined,
         endnoteId:
@@ -92,6 +98,13 @@ export function normalizeDocxModel(model: unknown): DocxModel {
         imageCropTop: numericField(item.imageCropTop),
         imageCropRight: numericField(item.imageCropRight),
         imageCropBottom: numericField(item.imageCropBottom),
+        imageWrap:
+          item.imageWrap === "behind" ||
+          item.imageWrap === "inFront" ||
+          item.imageWrap === "inline" ||
+          item.imageWrap === "square"
+            ? item.imageWrap
+            : undefined,
         altText: typeof item.altText === "string" ? item.altText : undefined,
         sourceXml:
           typeof item.sourceXml === "string" ? item.sourceXml : undefined,

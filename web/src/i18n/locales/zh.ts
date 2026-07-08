@@ -761,6 +761,7 @@ const zh = {
   documentEditor: {
     title: "文档编辑器",
     unsaved: "未保存",
+    saveQueued: "已排队保存",
     savedAt: "{time} 已保存",
     loadError: "无法加载文档。",
     saveError: "无法保存。如果文件已更改，请重新打开。",
@@ -787,6 +788,10 @@ const zh = {
     commandPalette: "命令面板",
     commandPalettePlaceholder: "搜索命令",
     noCommands: "没有命令",
+    matchCase: "区分大小写",
+    wholeWord: "全字匹配",
+    regex: "正则",
+    replaceAll: "全部替换",
     toggleFormulas: "切换公式显示",
     columnWidth: "列宽",
     rowHeight: "行高",

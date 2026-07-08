@@ -11,6 +11,8 @@ export interface TextSearchOptions {
   query: string;
   replacement?: string;
   matchCase?: boolean;
+  wholeWord?: boolean;
+  regexSearch?: boolean;
 }
 
 export interface TextReplacementResult {
@@ -149,11 +151,11 @@ function transformString(
   mode: "count" | "first" | "all",
 ) {
   if (!options.query) return { value, replacements: 0 };
+  const pattern = buildSearchRegex(options);
+  if (!pattern) return { value, replacements: 0 };
   if (mode === "count") {
-    return { value, replacements: countMatches(value, options.query, options.matchCase) };
+    return { value, replacements: countMatches(value, pattern) };
   }
-  const flags = options.matchCase ? "g" : "gi";
-  const pattern = new RegExp(escapeRegExp(options.query), flags);
   let replacements = 0;
   const replacement = options.replacement ?? "";
   const next = value.replace(pattern, (match) => {
@@ -164,14 +166,25 @@ function transformString(
   return { value: next, replacements };
 }
 
-function countMatches(value: string, query: string, matchCase = false) {
-  const haystack = matchCase ? value : value.toLocaleLowerCase();
-  const needle = matchCase ? query : query.toLocaleLowerCase();
+function buildSearchRegex(options: TextSearchOptions) {
+  const query = options.query;
+  if (!query) return null;
+  const source = options.regexSearch ? query : escapeRegExp(query);
+  const wrapped = options.wholeWord ? `\\b(?:${source})\\b` : source;
+  try {
+    return new RegExp(wrapped, options.matchCase ? "g" : "gi");
+  } catch {
+    return null;
+  }
+}
+
+function countMatches(value: string, pattern: RegExp) {
   let count = 0;
-  let index = haystack.indexOf(needle);
-  while (index >= 0) {
+  pattern.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
     count += 1;
-    index = haystack.indexOf(needle, index + needle.length);
+    if (match[0].length === 0) pattern.lastIndex += 1;
   }
   return count;
 }

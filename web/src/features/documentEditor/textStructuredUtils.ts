@@ -379,6 +379,111 @@ export function flatConfigLine(
   return `${entry.indent}${key}: ${value}${entry.suffix}`;
 }
 
+export function flatConfigEntryCanMove(
+  entries: ConfigEntry[],
+  entry: ConfigEntry,
+  direction: -1 | 1,
+) {
+  return flatConfigEntryMoveTarget(entries, entry, direction) !== null;
+}
+
+export function flatConfigEntryCanDuplicate(entry: ConfigEntry) {
+  return !entry.keyEditable;
+}
+
+export function moveFlatConfigEntry(
+  content: string,
+  entries: ConfigEntry[],
+  entry: ConfigEntry,
+  direction: -1 | 1,
+) {
+  const target = flatConfigEntryMoveTarget(entries, entry, direction);
+  if (!target) return content;
+  const lines = content.split("\n");
+  const entryRange = flatConfigEntryBlockRange(lines, entries, entry);
+  const targetRange = flatConfigEntryBlockRange(lines, entries, target);
+  const insertionIndex = direction < 0 ? targetRange.start : targetRange.end;
+  return moveLineBlock(lines, entryRange.start, entryRange.end, insertionIndex).join("\n");
+}
+
+export function duplicateFlatConfigEntry(
+  content: string,
+  entry: ConfigEntry,
+  kind: "yaml" | "toml",
+) {
+  if (!flatConfigEntryCanDuplicate(entry)) return content;
+  const lines = content.split("\n");
+  lines.splice(entry.lineIndex + 1, 0, flatConfigLine(entry, entry.key, entry.value, kind));
+  return lines.join("\n");
+}
+
+function flatConfigEntryMoveTarget(
+  entries: ConfigEntry[],
+  entry: ConfigEntry,
+  direction: -1 | 1,
+) {
+  const scope = flatConfigEntryScopeKey(entry);
+  const scoped = entries
+    .filter((candidate) => flatConfigEntryScopeKey(candidate) === scope)
+    .sort((left, right) => left.lineIndex - right.lineIndex);
+  const index = scoped.findIndex((candidate) => candidate.lineIndex === entry.lineIndex);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= scoped.length) return null;
+  return scoped[nextIndex];
+}
+
+function flatConfigEntryScopeKey(entry: ConfigEntry) {
+  if (entry.entryKind === "toml") return `toml:${entry.section ?? ""}`;
+  return `yaml:${entry.path.slice(0, -1).join("\u0000")}`;
+}
+
+function flatConfigEntryBlockRange(
+  lines: string[],
+  entries: ConfigEntry[],
+  entry: ConfigEntry,
+) {
+  const previousLine = previousFlatConfigEntryInScope(entries, entry)?.lineIndex;
+  let start = entry.lineIndex;
+  while (
+    previousLine !== undefined &&
+    start > previousLine + 1 &&
+    isFlatConfigLeadingTrivia(lines[start - 1])
+  ) {
+    start -= 1;
+  }
+  return { start, end: entry.lineIndex + 1 };
+}
+
+function previousFlatConfigEntryInScope(entries: ConfigEntry[], entry: ConfigEntry) {
+  const scope = flatConfigEntryScopeKey(entry);
+  return entries
+    .filter(
+      (candidate) =>
+        candidate.lineIndex < entry.lineIndex &&
+        flatConfigEntryScopeKey(candidate) === scope,
+    )
+    .sort((left, right) => right.lineIndex - left.lineIndex)[0];
+}
+
+function isFlatConfigLeadingTrivia(line: string | undefined) {
+  const trimmed = line?.trim() ?? "";
+  return trimmed === "" || trimmed.startsWith("#");
+}
+
+function moveLineBlock(
+  lines: string[],
+  start: number,
+  end: number,
+  insertionIndex: number,
+) {
+  const block = lines.slice(start, end);
+  const next = [...lines.slice(0, start), ...lines.slice(end)];
+  const adjustedInsertionIndex =
+    insertionIndex > start ? insertionIndex - block.length : insertionIndex;
+  next.splice(adjustedInsertionIndex, 0, ...block);
+  return next;
+}
+
 export function appendFlatConfigEntry(
   content: string,
   entry: {
@@ -408,6 +513,17 @@ export function appendFlatConfigEntry(
   }
   lines.splice(insertAt, 0, `${entry.key} = ${entry.value}`);
   return lines.join("\n");
+}
+
+export function deleteFlatConfigGroup(
+  content: string,
+  kind: "yaml" | "toml",
+  path: string[],
+) {
+  if (path.length === 0) return content;
+  return kind === "yaml"
+    ? deleteYamlConfigGroup(content, path)
+    : deleteTomlConfigGroup(content, path);
 }
 
 function appendYamlConfigEntry(content: string, parentPath: string, key: string, value: string) {
@@ -452,6 +568,58 @@ function findYamlParentLine(
     if (!match[3].trim()) stack.push({ indent, key: match[2] });
   }
   return null;
+}
+
+function deleteYamlConfigGroup(content: string, path: string[]) {
+  const lines = content.split("\n");
+  const parent = findYamlParentLine(lines, path);
+  if (!parent) return content;
+  let end = parent.lineIndex + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (!line.trim()) {
+      end += 1;
+      continue;
+    }
+    if (leadingWhitespace(line).length <= parent.indent) break;
+    end += 1;
+  }
+  lines.splice(parent.lineIndex, end - parent.lineIndex);
+  return lines.join("\n");
+}
+
+function deleteTomlConfigGroup(content: string, path: string[]) {
+  const target = path.join(".");
+  const removableLines = new Set<number>();
+  parseTomlConfig(content).entries.forEach((entry) => {
+    if (configPathStartsWith(entry.path, path)) removableLines.add(entry.lineIndex);
+  });
+
+  let removingSection = false;
+  const lines = content.split("\n");
+  lines.forEach((line, lineIndex) => {
+    const section = tomlSectionName(line);
+    if (section !== null) {
+      removingSection = section === target || section.startsWith(`${target}.`);
+      if (removingSection) removableLines.add(lineIndex);
+      return;
+    }
+    if (removingSection) removableLines.add(lineIndex);
+  });
+
+  if (removableLines.size === 0) return content;
+  return lines.filter((_, lineIndex) => !removableLines.has(lineIndex)).join("\n");
+}
+
+function configPathStartsWith(path: string[], prefix: string[]) {
+  return prefix.every((segment, index) => path[index] === segment);
+}
+
+function tomlSectionName(line: string) {
+  const trimmed = line.trim();
+  const table = /^\[\s*([^\]]+?)\s*\]$/.exec(trimmed);
+  const arrayTable = /^\[\[\s*([^\]]+?)\s*\]\]$/.exec(trimmed);
+  return (arrayTable?.[1] ?? table?.[1] ?? null)?.trim() ?? null;
 }
 
 export function configEntryParentLabel(entry: ConfigEntry) {

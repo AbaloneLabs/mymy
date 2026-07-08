@@ -4,7 +4,9 @@ import {
   AlignJustify,
   AlignLeft,
   AlignRight,
+  Bookmark,
   Bold,
+  MessageSquare,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -18,6 +20,7 @@ import {
   Italic,
   Link,
   List,
+  ListTree,
   ListOrdered,
   Palette,
   Plus,
@@ -58,6 +61,7 @@ export function DocxEditorToolbar({
   canPasteFormatting,
   hasDocumentParts,
   textPartsOpen,
+  outlineOpen,
   imageInputRef,
   onUpdateActive,
   onOpenLinkEditor,
@@ -69,11 +73,13 @@ export function DocxEditorToolbar({
   onToggleActiveVerticalAlign,
   onAdjustActiveIndent,
   onToggleActiveList,
+  onInsertCommentReference,
   onInsertNoteReference,
   onUpdatePagePreset,
   onUpdatePageOrientation,
   onUpdatePage,
   onToggleTextPartsOpen,
+  onToggleOutlineOpen,
   onMoveActiveBlock,
   onDeleteActiveBlock,
   onInsertImageFile,
@@ -88,6 +94,7 @@ export function DocxEditorToolbar({
   canPasteFormatting: boolean;
   hasDocumentParts: boolean;
   textPartsOpen: boolean;
+  outlineOpen: boolean;
   imageInputRef: RefObject<HTMLInputElement | null>;
   onUpdateActive: (patch: Partial<DocxBlock>) => void;
   onOpenLinkEditor: () => void;
@@ -101,11 +108,13 @@ export function DocxEditorToolbar({
   ) => void;
   onAdjustActiveIndent: (delta: number) => void;
   onToggleActiveList: (listKind: "bullet" | "number") => void;
+  onInsertCommentReference: () => void;
   onInsertNoteReference: (kind: "footnote" | "endnote") => void;
   onUpdatePagePreset: (value: string) => void;
   onUpdatePageOrientation: (orientation: "portrait" | "landscape") => void;
   onUpdatePage: (patch: Partial<DocxPageSettings>) => void;
   onToggleTextPartsOpen: () => void;
+  onToggleOutlineOpen: () => void;
   onMoveActiveBlock: (direction: -1 | 1) => void;
   onDeleteActiveBlock: () => void;
   onInsertImageFile: (file: File) => void;
@@ -336,6 +345,29 @@ export function DocxEditorToolbar({
           </button>
         </form>
       )}
+      <label
+        className={cn(
+          "inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]",
+          activeBlock?.bookmarkName && "border-[var(--accent)] text-[var(--accent)]",
+          !isDocxTextBlock(activeBlock) && "opacity-40",
+        )}
+        title="Bookmark"
+      >
+        <Bookmark className="h-3.5 w-3.5" strokeWidth={1.75} />
+        <input
+          value={activeBlock?.bookmarkName ?? ""}
+          onChange={(event) => {
+            const bookmarkName = event.target.value.trim();
+            onUpdateActive({
+              bookmarkName: bookmarkName || undefined,
+              bookmarkId: bookmarkName ? activeBlock?.bookmarkId : undefined,
+            });
+          }}
+          placeholder="Bookmark"
+          disabled={!isDocxTextBlock(activeBlock)}
+          className="h-6 w-24 bg-transparent text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-faint)]"
+        />
+      </label>
       <ToolbarButton
         icon={Strikethrough}
         label="Strikethrough"
@@ -479,6 +511,13 @@ export function DocxEditorToolbar({
         disabled={!isDocxTextBlock(activeBlock)}
       />
       <ToolbarButton
+        icon={MessageSquare}
+        label="Comment"
+        onClick={onInsertCommentReference}
+        active={Boolean(activeBlock?.commentId)}
+        disabled={!isDocxTextBlock(activeBlock)}
+      />
+      <ToolbarButton
         icon={FileText}
         label="Footnote"
         onClick={() => onInsertNoteReference("footnote")}
@@ -544,6 +583,12 @@ export function DocxEditorToolbar({
         onChange={(marginLeft) => onUpdatePage({ marginLeft })}
       />
       <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+      <ToolbarButton
+        icon={ListTree}
+        label="Outline"
+        onClick={onToggleOutlineOpen}
+        active={outlineOpen}
+      />
       {hasDocumentParts && (
         <>
           <button

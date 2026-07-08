@@ -20,6 +20,20 @@ import { drivePackageUrl } from "@/features/drive/api";
 import { ApiError } from "@/lib/api";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 
+const MAX_HISTORY_ENTRIES = 100;
+const MAX_HISTORY_BYTES = 5_000_000;
+
+interface HistoryEntry {
+  model: unknown;
+  key: string;
+  size: number;
+}
+
+interface EditorHistory {
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+}
+
 export function useDocumentEditorSession({
   data,
   onDirtyChange,
@@ -39,6 +53,7 @@ export function useDocumentEditorSession({
   const [fingerprint, setFingerprint] = useState(() => data.fingerprint);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
+  const [saveQueued, setSaveQueued] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
@@ -46,21 +61,34 @@ export function useDocumentEditorSession({
   const [findQuery, setFindQuery] = useState("");
   const [replaceValue, setReplaceValue] = useState("");
   const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [regexSearch, setRegexSearch] = useState(false);
   const [editorCommandRequest, setEditorCommandRequest] =
     useState<EditorCommandRequest | null>(null);
-  const [history, setHistory] = useState<{ past: unknown[]; future: unknown[] }>({
+  const [history, setHistory] = useState<EditorHistory>({
     past: [],
     future: [],
   });
   const draftKey = stableJson(draft);
+  const latestDraftRef = useRef(draft);
   const latestDraftKeyRef = useRef(draftKey);
+  const saveQueuedRef = useRef(false);
+  latestDraftRef.current = draft;
   latestDraftKeyRef.current = draftKey;
   const dirty = draftKey !== baseKey;
   const matchCount = countModelMatches(draft, {
     query: findQuery,
     matchCase,
+    wholeWord,
+    regexSearch,
   });
   const runAutosave = useEffectEvent(() => {
+    void save();
+  });
+  const runQueuedSave = useEffectEvent(() => {
+    if (!saveQueuedRef.current || writeModel.isPending || saveConflict) return;
+    saveQueuedRef.current = false;
+    setSaveQueued(false);
     void save();
   });
 
@@ -83,12 +111,19 @@ export function useDocumentEditorSession({
     writeModel.isPending,
   ]);
 
+  useEffect(() => {
+    if (writeModel.isPending || !dirty || saveConflict) return;
+    runQueuedSave();
+  }, [dirty, draftKey, saveConflict, writeModel.isPending]);
+
   function commitDraft(next: unknown) {
-    if (stableJson(next) === stableJson(draft)) return;
+    const nextKey = stableJson(next);
+    if (nextKey === draftKey) return;
     setSaveConflict(false);
     writeModel.reset();
+    if (writeModel.isPending) queueSave();
     setHistory((current) => ({
-      past: [...current.past, draft].slice(-100),
+      past: trimHistoryEntries([...current.past, historyEntry(draft, draftKey)]),
       future: [],
     }));
     setDraft(next);
@@ -99,19 +134,22 @@ export function useDocumentEditorSession({
     if (previous === undefined) return;
     setHistory({
       past: history.past.slice(0, -1),
-      future: [draft, ...history.future].slice(0, 100),
+      future: trimHistoryEntries(
+        [historyEntry(draft, draftKey), ...history.future],
+        "start",
+      ),
     });
-    setDraft(previous);
+    setDraft(previous.model);
   }
 
   function redo() {
     const next = history.future[0];
     if (next === undefined) return;
     setHistory({
-      past: [...history.past, draft].slice(-100),
+      past: trimHistoryEntries([...history.past, historyEntry(draft, draftKey)]),
       future: history.future.slice(1),
     });
-    setDraft(next);
+    setDraft(next.model);
   }
 
   function replaceFirst() {
@@ -119,6 +157,8 @@ export function useDocumentEditorSession({
       query: findQuery,
       replacement: replaceValue,
       matchCase,
+      wholeWord,
+      regexSearch,
     });
     if (result.replacements > 0) commitDraft(result.model);
   }
@@ -128,26 +168,33 @@ export function useDocumentEditorSession({
       query: findQuery,
       replacement: replaceValue,
       matchCase,
+      wholeWord,
+      regexSearch,
     });
     if (result.replacements > 0) commitDraft(result.model);
   }
 
   async function save() {
-    if (writeModel.isPending) return false;
+    if (writeModel.isPending) {
+      if (dirty) queueSave();
+      return false;
+    }
     if (!dirty) return true;
     const savingDraftKey = draftKey;
+    const savingDraft = latestDraftRef.current;
     setSaveConflict(false);
     writeModel.reset();
     try {
       const saved = await writeModel.mutateAsync({
         path: data.path,
         editorKind: data.editorKind,
-        model: draft,
+        model: savingDraft,
         expectedFingerprint: fingerprint,
         syncQuery: false,
       });
       const savedKey = stableJson(saved.model);
       setSaveConflict(false);
+      setSaveQueued(false);
       setFingerprint(saved.fingerprint);
       setBaseKey(savedKey);
       setLastSavedAt(new Date().toLocaleTimeString());
@@ -155,15 +202,23 @@ export function useDocumentEditorSession({
         setDraft(saved.model);
         return true;
       }
+      queueSave();
       return false;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setSaveConflict(true);
+        setSaveQueued(false);
         return false;
       }
       setSaveConflict(false);
+      setSaveQueued(false);
       return false;
     }
+  }
+
+  function queueSave() {
+    saveQueuedRef.current = true;
+    setSaveQueued(true);
   }
 
   async function downloadPackage() {
@@ -242,9 +297,11 @@ export function useDocumentEditorSession({
   return {
     rootRef,
     draft,
+    fingerprint,
     dirty,
     lastSavedAt,
     isSaving: writeModel.isPending,
+    isSaveQueued: saveQueued,
     saveError: writeModel.isError && !saveConflict,
     saveConflict,
     canUndo: history.past.length > 0,
@@ -257,6 +314,8 @@ export function useDocumentEditorSession({
     findQuery,
     replaceValue,
     matchCase,
+    wholeWord,
+    regexSearch,
     matchCount,
     editorCommandRequest,
     commitDraft,
@@ -274,7 +333,29 @@ export function useDocumentEditorSession({
     setFindQuery,
     setReplaceValue,
     setMatchCase,
+    setWholeWord,
+    setRegexSearch,
     replaceFirst,
     replaceAll,
   };
+}
+
+function historyEntry(model: unknown, key = stableJson(model)): HistoryEntry {
+  return { model, key, size: key.length };
+}
+
+function trimHistoryEntries(
+  entries: HistoryEntry[],
+  keep: "end" | "start" = "end",
+) {
+  const next =
+    keep === "end"
+      ? entries.slice(-MAX_HISTORY_ENTRIES)
+      : entries.slice(0, MAX_HISTORY_ENTRIES);
+  let totalSize = next.reduce((sum, entry) => sum + entry.size, 0);
+  while (next.length > 1 && totalSize > MAX_HISTORY_BYTES) {
+    const removed = keep === "end" ? next.shift() : next.pop();
+    totalSize -= removed?.size ?? 0;
+  }
+  return next;
 }

@@ -12,6 +12,14 @@ export interface MarkdownHeading {
   text: string;
 }
 
+export interface MarkdownHeadingAnchor {
+  line: number;
+  id: string;
+  baseId: string;
+  duplicateIndex: number;
+  duplicateCount: number;
+}
+
 export interface MarkdownReference {
   kind: "link" | "image" | "footnote" | "definition" | "reference";
   line: number;
@@ -19,6 +27,10 @@ export interface MarkdownReference {
   end: number;
   label: string;
   target?: string;
+  labelStart?: number;
+  labelEnd?: number;
+  targetStart?: number;
+  targetEnd?: number;
 }
 
 export interface MarkdownFrontmatter {
@@ -37,6 +49,9 @@ export interface FrontmatterField {
 }
 
 export type MarkdownTableAlignment = "default" | "left" | "center" | "right";
+
+const MARKDOWN_TOC_START = "<!-- mymy-toc:start -->";
+const MARKDOWN_TOC_END = "<!-- mymy-toc:end -->";
 
 export interface MarkdownTableModel {
   startLine: number;
@@ -64,6 +79,87 @@ export function markdownOutline(content: string): MarkdownHeading[] {
     });
   });
   return headings;
+}
+
+export function markdownHeadingAnchors(headings: MarkdownHeading[]) {
+  const totals = new Map<string, number>();
+  headings.forEach((heading) => {
+    const base = markdownHeadingSlug(heading.text) || `heading-${heading.line}`;
+    totals.set(base, (totals.get(base) ?? 0) + 1);
+  });
+  const seen = new Map<string, number>();
+  return headings.map((heading): MarkdownHeadingAnchor => {
+    const base = markdownHeadingSlug(heading.text) || `heading-${heading.line}`;
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    return {
+      line: heading.line,
+      id: count === 0 ? base : `${base}-${count + 1}`,
+      baseId: base,
+      duplicateIndex: count + 1,
+      duplicateCount: totals.get(base) ?? 1,
+    };
+  });
+}
+
+export function insertOrUpdateMarkdownToc(content: string, insertOffset: number) {
+  const toc = buildMarkdownTableOfContents(content);
+  if (!toc) return null;
+  const existing = markdownTocRange(content);
+  if (existing) {
+    return {
+      content: `${content.slice(0, existing.start)}${toc}${content.slice(existing.end)}`,
+      selectionStart: existing.start,
+      selectionEnd: existing.start + toc.length,
+    };
+  }
+  const offset = Math.max(0, Math.min(content.length, insertOffset));
+  const prefix = offset > 0 && !content.slice(0, offset).endsWith("\n") ? "\n\n" : "";
+  const suffix = content.slice(offset).startsWith("\n") ? "\n" : "\n\n";
+  const inserted = `${prefix}${toc}${suffix}`;
+  return {
+    content: `${content.slice(0, offset)}${inserted}${content.slice(offset)}`,
+    selectionStart: offset + prefix.length,
+    selectionEnd: offset + prefix.length + toc.length,
+  };
+}
+
+function buildMarkdownTableOfContents(content: string) {
+  const existing = markdownTocRange(content);
+  const headings = markdownOutline(content).filter((heading) => {
+    if (existing && heading.line >= existing.startLine && heading.line <= existing.endLine) {
+      return false;
+    }
+    return heading.text.trim().toLowerCase() !== "table of contents";
+  });
+  if (headings.length === 0) return null;
+  const anchors = markdownHeadingAnchors(headings);
+  const anchorByLine = new Map(anchors.map((anchor) => [anchor.line, anchor.id]));
+  const minLevel = Math.min(...headings.map((heading) => heading.level));
+  const lines = headings.map((heading) => {
+    const depth = Math.max(0, heading.level - minLevel);
+    const indent = "  ".repeat(depth);
+    return `${indent}- [${escapeMarkdownLinkLabel(heading.text)}](#${anchorByLine.get(heading.line)})`;
+  });
+  return [
+    MARKDOWN_TOC_START,
+    ...lines,
+    MARKDOWN_TOC_END,
+  ].join("\n");
+}
+
+function markdownTocRange(content: string) {
+  const start = content.indexOf(MARKDOWN_TOC_START);
+  if (start === -1) return null;
+  const endMarkerStart = content.indexOf(MARKDOWN_TOC_END, start);
+  if (endMarkerStart === -1) return null;
+  const end = endMarkerStart + MARKDOWN_TOC_END.length;
+  return {
+    start,
+    end,
+    startLine: lineForOffset(content, start),
+    endLine: lineForOffset(content, end),
+  };
 }
 
 export function markdownTables(content: string): MarkdownTableModel[] {
@@ -251,48 +347,63 @@ function unescapeMarkdownTableCell(value: string) {
 export function markdownReferences(content: string): MarkdownReference[] {
   const references: MarkdownReference[] = [];
   const lines = content.split("\n");
-  let offset = 0;
+  const lineOffsets = lineStartOffsets(lines);
   let previousPlainLine = "";
   let previousPlainLineOffset = 0;
   let inFence = false;
 
-  lines.forEach((line, index) => {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const offset = lineOffsets[index] ?? 0;
     const lineNumber = index + 1;
     const fence = /^\s*(```|~~~)/.test(line);
     if (fence) {
       inFence = !inFence;
-      offset += line.length + 1;
-      return;
+      continue;
     }
     if (inFence) {
-      offset += line.length + 1;
-      return;
+      continue;
     }
 
-    const footnoteDefinition = /^\[\^([^\]]+)\]:\s*(.*)$/.exec(line);
+    const footnoteDefinition = /^(\[\^([^\]]+)\]:\s*)(.*)$/.exec(line);
     if (footnoteDefinition) {
+      const bodyStart = offset + footnoteDefinition[1].length;
+      const continuationEndLine = footnoteDefinitionContinuationEnd(lines, index);
+      const bodyEnd =
+        (lineOffsets[continuationEndLine] ?? offset) +
+        (lines[continuationEndLine]?.length ?? line.length);
       references.push({
         kind: "footnote",
         line: lineNumber,
         start: offset,
-        end: offset + line.length,
-        label: `[^${footnoteDefinition[1]}]`,
-        target: footnoteDefinition[2],
+        end: bodyEnd,
+        label: `[^${footnoteDefinition[2]}]`,
+        target: content.slice(bodyStart, bodyEnd),
+        labelStart: offset,
+        labelEnd: offset + `[^${footnoteDefinition[2]}]`.length,
+        targetStart: bodyStart,
+        targetEnd: bodyEnd,
       });
     } else {
       collectInlineMarkdownReferences(line, offset, lineNumber, references);
-      const referenceDefinition = /^\[([^\]]+)\]:\s*(\S+)(?:\s+(.+))?$/.exec(line);
+      const referenceDefinition = /^(\[([^\]]+)\]:\s*)(\S+)(?:\s+(.+))?$/.exec(line);
       if (referenceDefinition) {
+        const labelStart = offset + 1;
+        const targetStart = offset + referenceDefinition[1].length;
         references.push({
           kind: "reference",
           line: lineNumber,
           start: offset,
           end: offset + line.length,
-          label: referenceDefinition[1],
-          target: referenceDefinition[2],
+          label: referenceDefinition[2],
+          target: referenceDefinition[3],
+          labelStart,
+          labelEnd: labelStart + referenceDefinition[2].length,
+          targetStart,
+          targetEnd: targetStart + referenceDefinition[3].length,
         });
       }
-      const definition = /^\s*:\s+(.+)$/.exec(line);
+      const definition = /^(\s*:\s+)(.+)$/.exec(line);
       if (definition && previousPlainLine) {
         references.push({
           kind: "definition",
@@ -300,7 +411,9 @@ export function markdownReferences(content: string): MarkdownReference[] {
           start: previousPlainLineOffset,
           end: offset + line.length,
           label: previousPlainLine,
-          target: definition[1],
+          target: definition[2],
+          targetStart: offset + definition[1].length,
+          targetEnd: offset + line.length,
         });
       }
     }
@@ -319,10 +432,37 @@ export function markdownReferences(content: string): MarkdownReference[] {
       previousPlainLine = "";
       previousPlainLineOffset = offset;
     }
-    offset += line.length + 1;
-  });
+  }
 
   return references;
+}
+
+function lineStartOffsets(lines: string[]) {
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length + 1;
+  }
+  return offsets;
+}
+
+function footnoteDefinitionContinuationEnd(lines: string[], startIndex: number) {
+  let endIndex = startIndex;
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) {
+      const nextLine = lines[index + 1];
+      if (nextLine && /^(?: {2,}|\t)/.test(nextLine)) {
+        endIndex = index;
+        continue;
+      }
+      break;
+    }
+    if (!/^(?: {2,}|\t)/.test(line)) break;
+    endIndex = index;
+  }
+  return endIndex;
 }
 
 function collectInlineMarkdownReferences(
@@ -337,6 +477,8 @@ function collectInlineMarkdownReferences(
   let match: RegExpExecArray | null;
 
   while ((match = imagePattern.exec(line))) {
+    const labelStart = lineOffset + match.index + 2;
+    const targetStart = lineOffset + match.index + match[0].lastIndexOf("(") + 1;
     references.push({
       kind: "image",
       line: lineNumber,
@@ -344,9 +486,15 @@ function collectInlineMarkdownReferences(
       end: lineOffset + match.index + match[0].length,
       label: match[1] || match[2],
       target: match[2],
+      labelStart,
+      labelEnd: labelStart + match[1].length,
+      targetStart,
+      targetEnd: targetStart + match[2].length,
     });
   }
   while ((match = linkPattern.exec(line))) {
+    const labelStart = lineOffset + match.index + 1;
+    const targetStart = lineOffset + match.index + match[0].lastIndexOf("(") + 1;
     references.push({
       kind: "link",
       line: lineNumber,
@@ -354,6 +502,10 @@ function collectInlineMarkdownReferences(
       end: lineOffset + match.index + match[0].length,
       label: match[1],
       target: match[2],
+      labelStart,
+      labelEnd: labelStart + match[1].length,
+      targetStart,
+      targetEnd: targetStart + match[2].length,
     });
   }
   while ((match = footnotePattern.exec(line))) {
@@ -363,6 +515,8 @@ function collectInlineMarkdownReferences(
       start: lineOffset + match.index,
       end: lineOffset + match.index + match[0].length,
       label: `[^${match[1]}]`,
+      labelStart: lineOffset + match.index,
+      labelEnd: lineOffset + match.index + match[0].length,
     });
   }
 }
@@ -569,6 +723,21 @@ function stripInlineMarkdown(value: string) {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/[*_~>#-]/g, "")
     .trim();
+}
+
+function markdownHeadingSlug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[`*_~[\]()]/g, "")
+    .replace(/[^\p{Letter}\p{Number}\s-]/gu, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function escapeMarkdownLinkLabel(value: string) {
+  return value.replace(/([\\[\]])/g, "\\$1");
 }
 
 function escapeRegExp(value: string) {

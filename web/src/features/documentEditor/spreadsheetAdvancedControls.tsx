@@ -7,6 +7,7 @@ import {
   Printer,
   Unlink,
 } from "lucide-react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type {
   XlsxComment,
@@ -137,10 +138,7 @@ export function SpreadsheetValidationControls({
           }
           patchValidation({
             type: nextType,
-            formula1:
-              nextType === "list"
-                ? (validation?.formula1 ?? '"Option 1,Option 2"')
-                : validation?.formula1,
+            formula1: validation?.formula1,
           });
         }}
         className="h-7 w-32 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
@@ -179,9 +177,9 @@ export function SpreadsheetValidationControls({
           className="h-7 w-40 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
           placeholder={
             type === "list"
-              ? '"A,B,C" or =$A$1:$A$3'
+              ? "List values or range"
               : type === "custom"
-                ? "=A1>0"
+                ? "Formula"
                 : "Formula 1"
           }
           title="Validation formula 1"
@@ -273,7 +271,7 @@ export function SpreadsheetConditionalFormattingControls({
     const nextFormulas =
       patch.formulas ??
       rule?.formulas ??
-      (nextType === "expression" ? ["=A1>0"] : [""]);
+      [""];
     onChange({
       type: nextType,
       operator: nextOperator,
@@ -304,10 +302,7 @@ export function SpreadsheetConditionalFormattingControls({
           }
           patchRule({
             type: nextType,
-            formulas:
-              nextType === "expression"
-                ? (rule?.formulas ?? ["=A1>0"])
-                : rule?.formulas,
+            formulas: rule?.formulas,
           });
         }}
         className="h-7 w-36 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
@@ -353,7 +348,7 @@ export function SpreadsheetConditionalFormattingControls({
           className="h-7 w-32 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
           placeholder={
             type === "expression"
-              ? "=A1>0"
+              ? "Formula"
               : type === "containsText"
                 ? "Text"
                 : "Value"
@@ -407,7 +402,13 @@ export function SpreadsheetHyperlinkControls({
   disabled: boolean;
   onChange: (hyperlink: XlsxHyperlink | null) => void;
 }) {
-  const mode = hyperlink?.location ? "location" : hyperlink?.target ? "target" : "";
+  const persistedMode = hyperlink?.location
+    ? "location"
+    : hyperlink?.target
+      ? "target"
+      : "";
+  const [draftMode, setDraftMode] = useState<"" | "target" | "location">("");
+  const mode = persistedMode || draftMode;
 
   function patchHyperlink(
     patch: Partial<XlsxHyperlink>,
@@ -421,7 +422,7 @@ export function SpreadsheetHyperlinkControls({
     );
     if (nextMode === "location") {
       const location = optionalTrimmedString(
-        patch.location ?? hyperlink?.location ?? "Sheet1!A1",
+        patch.location ?? hyperlink?.location,
       );
       if (!location) {
         onChange(null);
@@ -436,7 +437,7 @@ export function SpreadsheetHyperlinkControls({
       return;
     }
     const target = optionalTrimmedString(
-      patch.target ?? hyperlink?.target ?? "https://",
+      patch.target ?? hyperlink?.target,
     );
     if (!target) {
       onChange(null);
@@ -458,11 +459,10 @@ export function SpreadsheetHyperlinkControls({
         disabled={disabled}
         onChange={(event) => {
           const nextMode = event.currentTarget.value as "" | "target" | "location";
+          setDraftMode(nextMode);
           if (!nextMode) {
             onChange(null);
-            return;
           }
-          patchHyperlink({}, nextMode);
         }}
         className="h-7 w-24 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
         title="Hyperlink"
@@ -477,7 +477,7 @@ export function SpreadsheetHyperlinkControls({
           disabled={disabled}
           onChange={(event) => patchHyperlink({ target: event.target.value }, "target")}
           className="h-7 w-48 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-          placeholder="https://example.com"
+          placeholder="URL"
           title="Hyperlink target URL"
         />
       )}
@@ -489,7 +489,7 @@ export function SpreadsheetHyperlinkControls({
             patchHyperlink({ location: event.target.value }, "location")
           }
           className="h-7 w-32 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-          placeholder="Sheet1!A1"
+          placeholder="Sheet reference"
           title="Hyperlink sheet location"
         />
       )}
@@ -517,7 +517,10 @@ export function SpreadsheetHyperlinkControls({
           />
           <button
             type="button"
-            onClick={() => onChange(null)}
+            onClick={() => {
+              setDraftMode("");
+              onChange(null);
+            }}
             disabled={disabled}
             className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
             title="Remove hyperlink"

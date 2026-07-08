@@ -10,6 +10,7 @@ import {
   focusDocxBlock,
   headingFontSize,
   isDocxTextBlock,
+  nextDocxCommentId,
   nextDocxBlockId,
   nextDocxNoteId,
   normalizeDocxTableColumnWidths,
@@ -71,6 +72,7 @@ export function DocxEditor({
     model.blocks[0]?.id ?? null,
   );
   const [textPartsOpen, setTextPartsOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
   const [formatClipboard, setFormatClipboard] =
@@ -87,6 +89,55 @@ export function DocxEditor({
       model.footnotes?.length ||
       model.endnotes?.length,
   );
+  const outlineItems = model.blocks
+    .map((block, index) => {
+      if (block.type === "heading") {
+        return {
+          id: block.id,
+          index,
+          label:
+            block.bookmarkName ??
+            (block.text.trim() || `Heading ${block.headingLevel ?? 1}`),
+          kind: `H${block.headingLevel ?? 1}`,
+          level: block.headingLevel ?? 1,
+        };
+      }
+      if (block.bookmarkName) {
+        return {
+          id: block.id,
+          index,
+          label: block.bookmarkName,
+          kind: "Bookmark",
+          level: 1,
+        };
+      }
+      if (block.type === "table") {
+        return { id: block.id, index, label: "Table", kind: "Table", level: 1 };
+      }
+      if (block.type === "image") {
+        return {
+          id: block.id,
+          index,
+          label: block.altText?.trim() || "Image",
+          kind: "Image",
+          level: 1,
+        };
+      }
+      if (block.type === "pageBreak" || block.type === "sectionBreak") {
+        return {
+          id: block.id,
+          index,
+          label:
+            block.type === "pageBreak"
+              ? "Page break"
+              : `Section break (${sectionBreakLabel(block.breakKind)})`,
+          kind: block.type === "pageBreak" ? "Page" : "Section",
+          level: 1,
+        };
+      }
+      return null;
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
   function updatePage(patch: Partial<DocxPageSettings>) {
     onChange({ ...model, page: { ...model.page, ...patch } });
@@ -186,12 +237,39 @@ export function DocxEditor({
     setTextPartsOpen(true);
   }
 
+  function insertCommentReference(blockIndex?: number) {
+    const targetIndex =
+      blockIndex ??
+      model.blocks.findIndex((block) => block.id === activeBlock?.id);
+    const block = model.blocks[targetIndex];
+    if (!isDocxTextBlock(block)) return;
+    const comments = model.comments ?? [];
+    const commentId = block.commentId ?? nextDocxCommentId(comments, model.blocks);
+    const commentExists = comments.some((comment) => comment.id === commentId);
+    onChange({
+      ...model,
+      blocks: model.blocks.map((item, index) =>
+        index === targetIndex ? { ...item, commentId } : item,
+      ),
+      comments: commentExists
+        ? comments
+        : [...comments, { id: commentId, text: "" }],
+    });
+    setActiveBlockId(block.id);
+    setTextPartsOpen(true);
+  }
+
   function replaceBlocks(blocks: DocxBlock[], nextActiveId?: string) {
     onChange({ ...model, blocks });
     if (nextActiveId !== undefined) {
       setActiveBlockId(nextActiveId);
       requestAnimationFrame(() => focusDocxBlock(nextActiveId));
     }
+  }
+
+  function focusBlockById(blockId: string) {
+    setActiveBlockId(blockId);
+    requestAnimationFrame(() => focusDocxBlock(blockId));
   }
 
   function insertBlockAfterActive(block: DocxBlock) {
@@ -266,6 +344,7 @@ export function DocxEditor({
           altText: file.name,
           width,
           height,
+          imageWrap: "inline",
         });
       });
     };
@@ -349,6 +428,9 @@ export function DocxEditor({
     } else if (event.altKey && key === "e") {
       event.preventDefault();
       insertNoteReference("endnote", index);
+    } else if (event.altKey && key === "m") {
+      event.preventDefault();
+      insertCommentReference(index);
     } else if (key === "l") {
       event.preventDefault();
       updateBlock(index, { align: "left" });
@@ -519,6 +601,8 @@ export function DocxEditor({
       insertNoteReference("footnote");
     } else if (commandId === "endnote") {
       insertNoteReference("endnote");
+    } else if (commandId === "comment") {
+      insertCommentReference();
     } else {
       return false;
     }
@@ -760,8 +844,14 @@ export function DocxEditor({
 
   function deleteComment(index: number) {
     const comments = model.comments ?? [];
+    const comment = comments[index];
     onChange({
       ...model,
+      blocks: comment
+        ? model.blocks.map((block) =>
+            block.commentId === comment.id ? { ...block, commentId: undefined } : block,
+          )
+        : model.blocks,
       comments: comments.filter((_, commentIndex) => commentIndex !== index),
     });
   }
@@ -804,6 +894,7 @@ export function DocxEditor({
         canPasteFormatting={Boolean(formatClipboard)}
         hasDocumentParts={hasDocumentParts}
         textPartsOpen={textPartsOpen}
+        outlineOpen={outlineOpen}
         imageInputRef={imageInputRef}
         onUpdateActive={updateActive}
         onOpenLinkEditor={openLinkEditor}
@@ -815,11 +906,13 @@ export function DocxEditor({
         onToggleActiveVerticalAlign={toggleActiveVerticalAlign}
         onAdjustActiveIndent={adjustActiveIndent}
         onToggleActiveList={toggleActiveList}
+        onInsertCommentReference={insertCommentReference}
         onInsertNoteReference={insertNoteReference}
         onUpdatePagePreset={updatePagePreset}
         onUpdatePageOrientation={updatePageOrientation}
         onUpdatePage={updatePage}
         onToggleTextPartsOpen={() => setTextPartsOpen((current) => !current)}
+        onToggleOutlineOpen={() => setOutlineOpen((current) => !current)}
         onMoveActiveBlock={moveActiveBlock}
         onDeleteActiveBlock={deleteActiveBlock}
         onInsertImageFile={insertImageFile}
@@ -844,12 +937,58 @@ export function DocxEditor({
           onEndnoteDelete={(index) => deleteNote("endnotes", index)}
         />
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] p-6">
-        <DocxRuler page={model.page} onChange={updatePage} />
-        <div
-          className="mx-auto min-h-[980px] max-w-full border border-[var(--border)] bg-white text-neutral-950 shadow-sm"
-          style={docxPageStyle(model.page)}
-        >
+      <div className="flex min-h-0 flex-1">
+        {outlineOpen && (
+          <aside className="flex w-72 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg)]">
+            <div className="flex h-10 shrink-0 items-center justify-between border-b border-[var(--border)] px-3">
+              <span className="text-xs font-semibold text-[var(--text)]">Outline</span>
+              <button
+                type="button"
+                onClick={() => setOutlineOpen(false)}
+                className="rounded-md px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              >
+                {t("common.close")}
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              {outlineItems.length === 0 ? (
+                <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-8 text-center text-sm text-[var(--text-faint)]">
+                  No outline entries.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {outlineItems.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => focusBlockById(item.id)}
+                      className={cn(
+                        "block w-full rounded-md px-2 py-1.5 text-left hover:bg-[var(--surface-hover)]",
+                        activeBlock?.id === item.id &&
+                          "bg-[var(--surface-hover)] text-[var(--accent)]",
+                      )}
+                      style={{ paddingLeft: `${8 + Math.max(0, item.level - 1) * 12}px` }}
+                    >
+                      <div className="truncate text-xs font-medium text-[var(--text)]">
+                        {item.label}
+                      </div>
+                      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-[var(--text-faint)]">
+                        <span>{item.kind}</span>
+                        <span>#{item.index + 1}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
+        <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] p-6">
+          <DocxRuler page={model.page} onChange={updatePage} />
+          <div
+            className="mx-auto min-h-[980px] max-w-full border border-[var(--border)] bg-white text-neutral-950 shadow-sm"
+            style={docxPageStyle(model.page)}
+          >
           {model.blocks.length === 0 && (
             <button
               type="button"
@@ -1080,6 +1219,7 @@ export function DocxEditor({
               </div>
             );
           })}
+          </div>
         </div>
       </div>
     </div>

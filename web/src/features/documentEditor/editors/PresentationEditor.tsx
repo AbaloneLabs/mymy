@@ -19,9 +19,17 @@ import {
   nextPptxTableId,
   nextPptxTextId,
   nextVisibleSlideIndex,
+  isPptxLineShapeKind,
   reorderPptxObjectsById,
 } from "../pptxEditorUtils";
-import type { SlideDragState } from "../pptxEditorUtils";
+import type { PptxSnapGuide, SlideDragState } from "../pptxEditorUtils";
+import {
+  pptxBoundsFromItems,
+  pptxMoveSnap,
+  pptxObjectContainsPoint,
+  pptxResizeSnap,
+  pptxSnapTargets,
+} from "../pptxEditorGeometry";
 import {
   parsePptxSelectionKey,
   patchPptxSlideObjects,
@@ -42,21 +50,31 @@ import type {
   PptxAnimation,
   PptxChart,
   PptxImage,
+  PptxMedia,
   PptxShape,
   PptxSlide,
   PptxTable,
   PptxText,
+  PptxTheme,
   PptxTransition,
 } from "../models";
 import {
   PptxAnimationInspector,
-  PptxChartDataEditor,
+  PptxMediaInspector,
+} from "../pptxInspectors";
+import { PptxChartDataEditor } from "../pptxEditorPanels";
+import { runPptxEditorCommand } from "../pptxEditorCommands";
+import {
   PptxObjectLayerPanel,
   PptxPresentationOverlay,
   PptxSlideNavigator,
-} from "../pptxEditorPanels";
+} from "../pptxPresentationPanels";
 import { PptxEditorToolbar } from "../pptxEditorToolbar";
+import { duplicatePptxSelectedObjects } from "../pptxObjectDuplication";
 import { PptxSlideCanvas } from "../pptxSlideCanvas";
+import { createPptxTableEditors } from "../pptxTableEditors";
+import { PptxThemeEditor } from "../pptxThemeEditor";
+import { derivePptxEditorState } from "../pptxEditorState";
 
 export function PptxEditor({
   model,
@@ -81,80 +99,43 @@ export function PptxEditor({
   );
   const [dragState, setDragState] = useState<SlideDragState | null>(null);
   const [selectionBox, setSelectionBox] = useState<PptxSelectionBox | null>(null);
+  const [snapGuides, setSnapGuides] = useState<PptxSnapGuide[]>([]);
   const [presentingIndex, setPresentingIndex] = useState<number | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
-  const slide =
-    model.slides.find((item) => item.id === preferredSlideId) ?? model.slides[0];
-  const slideIndex = slide
-    ? Math.max(0, model.slides.findIndex((item) => item.id === slide.id))
-    : 0;
-  const presentingSlide =
-    presentingIndex === null ? null : model.slides[presentingIndex] ?? null;
-  const activeText = slide?.texts.find((item) => item.id === activeTextId);
-  const activeShape = slide?.shapes?.find((item) => item.id === activeShapeId);
-  const activeImage = slide?.images?.find((item) => item.id === activeImageId);
-  const activeTable = slide?.tables?.find((item) => item.id === activeTableId);
-  const activeChart = slide?.charts?.find((item) => item.id === activeChartId);
-  const activeTextIndex = slide?.texts.findIndex((item) => item.id === activeTextId) ?? -1;
-  const activeShapeIndex =
-    slide?.shapes?.findIndex((item) => item.id === activeShapeId) ?? -1;
-  const activeImageIndex =
-    slide?.images?.findIndex((item) => item.id === activeImageId) ?? -1;
-  const activeTableIndex =
-    slide?.tables?.findIndex((item) => item.id === activeTableId) ?? -1;
-  const activeChartIndex =
-    slide?.charts?.findIndex((item) => item.id === activeChartId) ?? -1;
-  const activeObject =
-    activeText ?? activeShape ?? activeImage ?? activeTable ?? activeChart;
-  const activeLayerIndex = activeText
-    ? activeTextIndex
-    : activeShape
-      ? activeShapeIndex
-      : activeImage
-        ? activeImageIndex
-        : activeTable
-          ? activeTableIndex
-          : activeChart
-            ? activeChartIndex
-            : -1;
-  const activeLayerLength = activeText
-    ? (slide?.texts.length ?? 0)
-    : activeShape
-      ? (slide?.shapes?.length ?? 0)
-      : activeImage
-        ? (slide?.images?.length ?? 0)
-        : activeTable
-          ? (slide?.tables?.length ?? 0)
-          : activeChart
-            ? (slide?.charts?.length ?? 0)
-            : 0;
-  const selectedObjectKeySet = new Set(selectedObjectKeys);
-  const selectedObjects = slide
-    ? pptxSlideObjectRecords(slide).filter((record) =>
-        selectedObjectKeySet.has(
-          pptxSelectionKey(record.objectKind, record.objectId),
-        ),
-      )
-    : [];
-  const activeObjectKey = activeText
-    ? pptxSelectionKey("text", activeText.id)
-    : activeShape
-      ? pptxSelectionKey("shape", activeShape.id)
-      : activeImage
-        ? pptxSelectionKey("image", activeImage.id)
-        : activeTable
-          ? pptxSelectionKey("table", activeTable.id)
-          : activeChart
-            ? pptxSelectionKey("chart", activeChart.id)
-            : null;
-  const hasObjectSelection = selectedObjects.length > 0;
-  const hasMultiSelection = selectedObjects.length > 1;
-  const hasGroupedSelection = selectedObjects.some((record) => record.object.groupId);
-  const selectionBoxBounds = selectionBox
-    ? pptxSelectionBoxBounds(selectionBox)
-    : null;
+  const {
+    activeChart,
+    activeImage,
+    activeLayerIndex,
+    activeLayerLength,
+    activeObject,
+    activeObjectKey,
+    activeShape,
+    activeTable,
+    activeText,
+    hasGroupedSelection,
+    hasMultiSelection,
+    hasObjectSelection,
+    selectedObjectKeySet,
+    selectedObjects,
+    activeTheme,
+    presentingSlide,
+    selectionBoxBounds,
+    slide,
+    slideIndex,
+  } = derivePptxEditorState({
+    model,
+    preferredSlideId,
+    activeTextId,
+    activeShapeId,
+    activeImageId,
+    activeTableId,
+    activeChartId,
+    selectedObjectKeys,
+    presentingIndex,
+    selectionBox,
+  });
 
   useEffect(() => {
     function handlePresentationShortcut(event: KeyboardEvent) {
@@ -169,63 +150,6 @@ export function PptxEditor({
     window.addEventListener("keydown", handlePresentationShortcut);
     return () => window.removeEventListener("keydown", handlePresentationShortcut);
   }, [model.slides, slideIndex]);
-
-  const handleCommandRequest = useEffectEvent(
-    (commandId: EditorCommandRequest["id"]) => {
-    if (commandId === "newSlide") {
-      addSlide();
-    } else if (commandId === "duplicate") {
-      if (hasObjectSelection || activeObject) {
-        duplicateSelectedObjects();
-      } else {
-        duplicateSlide();
-      }
-    } else if (commandId === "delete") {
-      deleteSelectedObjects();
-    } else if (commandId === "sendBackward") {
-      moveActiveObjectLayer(-1);
-    } else if (commandId === "bringForward") {
-      moveActiveObjectLayer(1);
-    } else if (commandId === "group") {
-      groupSelectedObjects();
-    } else if (commandId === "ungroup") {
-      ungroupSelectedObjects();
-    } else if (commandId === "alignLeft") {
-      alignActiveObject("left");
-    } else if (commandId === "alignCenter") {
-      alignActiveObject("center");
-    } else if (commandId === "alignRight") {
-      alignActiveObject("right");
-    } else if (commandId === "alignTop") {
-      alignActiveObject("top");
-    } else if (commandId === "alignMiddle") {
-      alignActiveObject("middle");
-    } else if (commandId === "alignBottom") {
-      alignActiveObject("bottom");
-    } else if (commandId === "distributeHorizontal") {
-      distributeSelectedObjects("horizontal");
-    } else if (commandId === "distributeVertical") {
-      distributeSelectedObjects("vertical");
-    } else if (commandId === "present") {
-      setPresentingIndex(nextVisibleSlideIndex(model.slides, slideIndex, 1, true));
-    } else if (commandId === "insertTable") {
-      addTable();
-    } else {
-      return false;
-    }
-    return true;
-    },
-  );
-
-  useEffect(() => {
-    if (!commandRequest || handledCommandTokenRef.current === commandRequest.token) return;
-    handledCommandTokenRef.current = commandRequest.token;
-    window.setTimeout(() => {
-      if (handleCommandRequest(commandRequest.id)) {
-        onCommandHandled?.(commandRequest);
-      }
-    }, 0);
-  }, [commandRequest, onCommandHandled]);
 
   function activateObjectKey(key: PptxSelectionKey | null) {
     const parsed = key ? parsePptxSelectionKey(key) : null;
@@ -328,8 +252,35 @@ export function PptxEditor({
   function updateSlide(patch: Partial<PptxSlide>) {
     if (!slide) return;
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slide.id ? { ...item, ...patch } : item,
+      ),
+    });
+  }
+
+  function updateTheme(themePath: string, patch: Partial<PptxTheme>) {
+    onChange({
+      ...model,
+      themes: (model.themes ?? []).map((theme) =>
+        theme.path === themePath ? { ...theme, ...patch } : theme,
+      ),
+    });
+  }
+
+  function updateThemeColor(themePath: string, key: string, color: string) {
+    onChange({
+      ...model,
+      themes: (model.themes ?? []).map((theme) =>
+        theme.path === themePath
+          ? {
+              ...theme,
+              colors: {
+                ...(theme.colors ?? {}),
+                [key]: color,
+              },
+            }
+          : theme,
       ),
     });
   }
@@ -346,6 +297,42 @@ export function PptxEditor({
   function updateSlideTransition(patch: Partial<PptxTransition>) {
     const current = slide?.transition ?? { type: "none" as const };
     updateSlide({ transition: { ...current, ...patch } });
+  }
+
+  function updateSlideLayout(layoutPath: string) {
+    const layout = model.layouts?.find((item) => item.path === layoutPath);
+    if (!layout) {
+      updateSlide({
+        layoutPath: undefined,
+        layoutName: undefined,
+        layoutType: undefined,
+        layoutThemePath: undefined,
+        layoutThemeName: undefined,
+      });
+      return;
+    }
+    updateSlide({
+      layoutPath: layout.path,
+      layoutName: layout.name,
+      layoutType: layout.type,
+      layoutThemePath: layout.themePath,
+      layoutThemeName: layout.themeName,
+    });
+  }
+
+  function resetSlideLayout() {
+    if (!slide?.layoutPath) return;
+    const layout = model.layouts?.find((item) => item.path === slide.layoutPath);
+    const placeholders = layout?.placeholderTexts ?? [];
+    if (placeholders.length === 0) return;
+    updateSlide({
+      texts: placeholders.map((text, index) => ({
+        ...text,
+        id: `t${index + 1}`,
+        textIndex: undefined,
+      })),
+    });
+    clearObjectSelection();
   }
 
   function updateSlideAnimations(updater: (animations: PptxAnimation[]) => PptxAnimation[]) {
@@ -383,6 +370,7 @@ export function PptxEditor({
     updater: (texts: PptxText[]) => PptxText[],
   ) {
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slideId ? { ...item, texts: updater(item.texts) } : item,
       ),
@@ -394,6 +382,7 @@ export function PptxEditor({
     updater: (shapes: PptxShape[]) => PptxShape[],
   ) {
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slideId
           ? { ...item, shapes: updater(item.shapes ?? []) }
@@ -407,6 +396,7 @@ export function PptxEditor({
     updater: (tables: PptxTable[]) => PptxTable[],
   ) {
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slideId
           ? { ...item, tables: updater(item.tables ?? []) }
@@ -415,11 +405,27 @@ export function PptxEditor({
     });
   }
 
+  const {
+    addTableColumn,
+    addTableRow,
+    deleteTableColumn,
+    deleteTableRow,
+    updateTableById,
+    updateTableCell,
+    updateTableCellStyle,
+    updateTableColumnWidth,
+    updateTableRowHeight,
+  } = createPptxTableEditors({
+    slide,
+    updateSlideTables,
+  });
+
   function updateSlideImages(
     slideId: string,
     updater: (images: PptxImage[]) => PptxImage[],
   ) {
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slideId
           ? { ...item, images: updater(item.images ?? []) }
@@ -433,9 +439,24 @@ export function PptxEditor({
     updater: (charts: PptxChart[]) => PptxChart[],
   ) {
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slideId
           ? { ...item, charts: updater(item.charts ?? []) }
+          : item,
+      ),
+    });
+  }
+
+  function updateSlideMedia(
+    slideId: string,
+    updater: (media: PptxMedia[]) => PptxMedia[],
+  ) {
+    onChange({
+      ...model,
+      slides: model.slides.map((item) =>
+        item.id === slideId
+          ? { ...item, media: updater(item.media ?? []) }
           : item,
       ),
     });
@@ -477,103 +498,10 @@ export function PptxEditor({
     );
   }
 
-  function updateTableById(tableId: string, patch: Partial<PptxTable>) {
+  function updateMediaById(mediaId: string, patch: Partial<PptxMedia>) {
     if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) =>
-        table.id === tableId ? { ...table, ...patch } : table,
-      ),
-    );
-  }
-
-  function updateTableCell(
-    tableId: string,
-    rowIndex: number,
-    columnIndex: number,
-    value: string,
-  ) {
-    if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) => {
-        if (table.id !== tableId) return table;
-        return {
-          ...table,
-          rows: table.rows.map((row, currentRowIndex) =>
-            currentRowIndex === rowIndex
-              ? row.map((cell, currentColumnIndex) =>
-                  currentColumnIndex === columnIndex ? value : cell,
-                )
-              : row,
-          ),
-        };
-      }),
-    );
-  }
-
-  function addTableRow(tableId: string, afterRowIndex: number) {
-    if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) => {
-        if (table.id !== tableId) return table;
-        const columnCount = Math.max(
-          1,
-          ...table.rows.map((row) => row.length),
-        );
-        const nextRows = table.rows.map((row) => [...row]);
-        nextRows.splice(afterRowIndex + 1, 0, Array(columnCount).fill(""));
-        return { ...table, rows: nextRows };
-      }),
-    );
-  }
-
-  function addTableColumn(tableId: string, afterColumnIndex: number) {
-    if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) =>
-        table.id === tableId
-          ? {
-              ...table,
-              rows: table.rows.map((row) => {
-                const nextRow = [...row];
-                nextRow.splice(afterColumnIndex + 1, 0, "");
-                return nextRow;
-              }),
-            }
-          : table,
-      ),
-    );
-  }
-
-  function deleteTableRow(tableId: string, rowIndex: number) {
-    if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) =>
-        table.id === tableId && table.rows.length > 1
-          ? {
-              ...table,
-              rows: table.rows.filter(
-                (_row, currentRowIndex) => currentRowIndex !== rowIndex,
-              ),
-            }
-          : table,
-      ),
-    );
-  }
-
-  function deleteTableColumn(tableId: string, columnIndex: number) {
-    if (!slide) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.map((table) => {
-        if (table.id !== tableId) return table;
-        const columnCount = Math.max(0, ...table.rows.map((row) => row.length));
-        if (columnCount <= 1) return table;
-        return {
-          ...table,
-          rows: table.rows.map((row) =>
-            row.filter((_cell, currentColumnIndex) => currentColumnIndex !== columnIndex),
-          ),
-        };
-      }),
+    updateSlideMedia(slide.id, (media) =>
+      media.map((item) => (item.id === mediaId ? { ...item, ...patch } : item)),
     );
   }
 
@@ -605,22 +533,15 @@ export function PptxEditor({
 
   function addChartSeries() {
     if (!activeChart) return;
-    const rowCount = Math.max(
-      activeChart.categories?.length ?? 0,
-      ...(activeChart.series ?? []).map((series) =>
-        Math.max(series.categories?.length ?? 0, series.values?.length ?? 0),
-      ),
-      1,
-    );
+    const rowCount = activeChart.categories?.length ?? 0;
     updateActiveChart({
       series: [
         ...(activeChart.series ?? []),
         {
-          name: `Series ${(activeChart.series ?? []).length + 1}`,
           categories: Array.from({ length: rowCount }, (_, index) =>
-            activeChart.categories?.[index] ?? `Category ${index + 1}`,
+            activeChart.categories?.[index] ?? "",
           ),
-          values: Array.from({ length: rowCount }, () => "0"),
+          values: Array.from({ length: rowCount }, () => ""),
         },
       ],
     });
@@ -640,18 +561,13 @@ export function PptxEditor({
     updateActiveChart({
       series: (activeChart.series ?? []).map((series, currentIndex) => {
         if (currentIndex !== seriesIndex) return series;
-        const pointIndex = Math.max(
-          series.categories?.length ?? 0,
-          series.values?.length ?? 0,
-          activeChart.categories?.length ?? 0,
-        );
         return {
           ...series,
           categories: [
             ...(series.categories ?? activeChart.categories ?? []),
-            `Category ${pointIndex + 1}`,
+            "",
           ],
-          values: [...(series.values ?? []), "0"],
+          values: [...(series.values ?? []), ""],
         };
       }),
     });
@@ -716,6 +632,13 @@ export function PptxEditor({
       id: path,
       name: path.split("/").at(-1) ?? `slide${slideNumber}.xml`,
       notes: "",
+      layoutPath: slide?.layoutPath,
+      layoutName: slide?.layoutName,
+      layoutType: slide?.layoutType,
+      layoutThemePath: slide?.layoutThemePath,
+      layoutThemeName: slide?.layoutThemeName,
+      backgroundKind: "solid" as const,
+      backgroundColor: "#ffffff",
       tables: [],
       images: [],
       charts: [],
@@ -733,7 +656,7 @@ export function PptxEditor({
         },
       ],
     };
-    onChange({ slides: [...model.slides, next] });
+    onChange({ ...model, slides: [...model.slides, next] });
     setPreferredSlideId(next.id);
     selectText("t1");
   }
@@ -768,7 +691,7 @@ export function PptxEditor({
         id: nextPptxChartId(slide.charts ?? [], index + 1),
       })),
     };
-    onChange({ slides: [...model.slides, next] });
+    onChange({ ...model, slides: [...model.slides, next] });
     setPreferredSlideId(next.id);
     selectText(next.texts[0]?.id ?? null);
   }
@@ -776,7 +699,7 @@ export function PptxEditor({
   function deleteSlide() {
     if (!slide || model.slides.length <= 1) return;
     const nextSlides = model.slides.filter((item) => item.id !== slide.id);
-    onChange({ slides: nextSlides });
+    onChange({ ...model, slides: nextSlides });
     setPreferredSlideId(nextSlides[0]?.id ?? null);
     clearObjectSelection();
   }
@@ -789,7 +712,7 @@ export function PptxEditor({
     const slides = [...model.slides];
     const [moved] = slides.splice(index, 1);
     slides.splice(nextIndex, 0, moved);
-    onChange({ slides });
+    onChange({ ...model, slides });
   }
 
   function addTextBox() {
@@ -811,15 +734,16 @@ export function PptxEditor({
 
   function addShape(kind: PptxShape["kind"]) {
     if (!slide) return;
+    const lineLike = isPptxLineShapeKind(kind);
     const next: PptxShape = {
       id: nextPptxShapeId(slide.shapes ?? []),
       kind,
-      x: kind === "line" ? 22 : 24,
-      y: kind === "line" ? 50 : 34,
-      width: kind === "line" ? 52 : 26,
-      height: kind === "line" ? 0 : 20,
+      x: lineLike ? 22 : 24,
+      y: lineLike ? 50 : 34,
+      width: lineLike ? 52 : 26,
+      height: lineLike ? 0 : 20,
       rotation: 0,
-      fillColor: kind === "line" ? undefined : "#dbeafe",
+      fillColor: lineLike ? undefined : "#dbeafe",
       strokeColor: "#2563eb",
       strokeWidth: 2,
     };
@@ -836,8 +760,13 @@ export function PptxEditor({
       width: 58,
       height: 24,
       rotation: 0,
+      tableStyleId: "{5940675A-B579-460E-94D1-54222C63F5DA}",
+      firstRow: true,
+      bandedRows: true,
+      columnWidths: [33.333, 33.333, 33.334],
+      rowHeights: [33.333, 33.333, 33.334],
       rows: [
-        ["Header 1", "Header 2", "Header 3"],
+        ["", "", ""],
         ["", "", ""],
         ["", "", ""],
       ],
@@ -863,7 +792,7 @@ export function PptxEditor({
           width,
           height,
           rotation: 0,
-          altText: file.name.replace(/\.[^.]+$/, "") || "Image",
+          altText: file.name.replace(/\.[^.]+$/, ""),
         };
         updateSlideImages(slideId, (images) => [...images, next]);
         selectImage(next.id);
@@ -881,141 +810,80 @@ export function PptxEditor({
     reader.readAsDataURL(file);
   }
 
-  function duplicateActiveText() {
-    if (!slide || !activeText) return;
-    const next = {
-      ...activeText,
-      id: nextPptxTextId(slide.texts),
-      x: Math.min((activeText.x ?? 10) + 2, 100),
-      y: Math.min((activeText.y ?? 12) + 2, 100),
+  function setSlideBackgroundImage(file: File) {
+    if (!slide || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : null;
+      if (!dataUrl) return;
+      updateSlide({
+        backgroundKind: "image",
+        backgroundColor: undefined,
+        backgroundGradientStart: undefined,
+        backgroundGradientEnd: undefined,
+        backgroundGradientAngle: undefined,
+        backgroundImageRelationshipId: undefined,
+        backgroundImageMediaPath: undefined,
+        backgroundImageMimeType: file.type || undefined,
+        backgroundImageDataUrl: dataUrl,
+        backgroundSourceXml: undefined,
+      });
     };
-    updateSlideTexts(slide.id, (texts) => [...texts, next]);
-    selectText(next.id);
-  }
-
-  function duplicateActiveShape() {
-    if (!slide || !activeShape) return;
-    const next = {
-      ...activeShape,
-      id: nextPptxShapeId(slide.shapes ?? []),
-      x: Math.min((activeShape.x ?? 24) + 2, 100),
-      y: Math.min((activeShape.y ?? 34) + 2, 100),
-    };
-    updateSlideShapes(slide.id, (shapes) => [...shapes, next]);
-    selectShape(next.id);
-  }
-
-  function duplicateActiveImage() {
-    if (!slide || !activeImage) return;
-    const next = {
-      ...activeImage,
-      id: nextPptxImageId(slide.images ?? []),
-      relationshipId: undefined,
-      x: Math.min((activeImage.x ?? 24) + 2, 100),
-      y: Math.min((activeImage.y ?? 34) + 2, 100),
-    };
-    updateSlideImages(slide.id, (images) => [...images, next]);
-    selectImage(next.id);
-  }
-
-  function duplicateActiveTable() {
-    if (!slide || !activeTable) return;
-    const next = {
-      ...activeTable,
-      id: nextPptxTableId(slide.tables ?? []),
-      x: Math.min((activeTable.x ?? 18) + 2, 100),
-      y: Math.min((activeTable.y ?? 30) + 2, 100),
-      rows: activeTable.rows.map((row) => [...row]),
-    };
-    updateSlideTables(slide.id, (tables) => [...tables, next]);
-    selectTable(next.id);
-  }
-
-  function duplicateActiveChart() {
-    if (!slide || !activeChart) return;
-    const next = {
-      ...activeChart,
-      id: nextPptxChartId(slide.charts ?? []),
-      relationshipId: undefined,
-      x: Math.min((activeChart.x ?? 18) + 2, 100),
-      y: Math.min((activeChart.y ?? 18) + 2, 100),
-      series: (activeChart.series ?? []).map((series) => ({
-        ...series,
-        categories: series.categories ? [...series.categories] : undefined,
-        values: series.values ? [...series.values] : undefined,
-      })),
-      categories: activeChart.categories ? [...activeChart.categories] : undefined,
-    };
-    updateSlideCharts(slide.id, (charts) => [...charts, next]);
-    selectChart(next.id);
+    reader.readAsDataURL(file);
   }
 
   function duplicateActiveObject() {
-    if (activeText) {
-      duplicateActiveText();
-    } else if (activeShape) {
-      duplicateActiveShape();
-    } else if (activeImage) {
-      duplicateActiveImage();
-    } else if (activeTable) {
-      duplicateActiveTable();
-    } else if (activeChart) {
-      duplicateActiveChart();
-    }
+    if (!slide || !activeObjectKey) return;
+    const parsed = parsePptxSelectionKey(activeObjectKey);
+    const record = pptxSlideObjectRecords(slide).find(
+      (item) =>
+        item.objectKind === parsed.objectKind && item.objectId === parsed.objectId,
+    );
+    if (!record) return;
+    const duplicated = duplicatePptxSelectedObjects(slide, [record]);
+    onChange({
+      ...model,
+      slides: model.slides.map((item) =>
+        item.id === slide.id ? duplicated.slide : item,
+      ),
+    });
+    const nextKey = duplicated.selectedKeys[0] ?? null;
+    activateObjectKey(nextKey);
+    setSelectedObjectKeys(nextKey ? [nextKey] : []);
   }
 
-  function deleteActiveText() {
-    if (!slide || !activeText) return;
-    updateSlideTexts(slide.id, (texts) =>
-      texts.filter((textItem) => textItem.id !== activeText.id),
-    );
-    setActiveTextId(null);
-  }
-
-  function deleteActiveShape() {
-    if (!slide || !activeShape) return;
-    updateSlideShapes(slide.id, (shapes) =>
-      shapes.filter((shape) => shape.id !== activeShape.id),
-    );
-    setActiveShapeId(null);
-  }
-
-  function deleteActiveImage() {
-    if (!slide || !activeImage) return;
-    updateSlideImages(slide.id, (images) =>
-      images.filter((image) => image.id !== activeImage.id),
-    );
-    setActiveImageId(null);
-  }
-
-  function deleteActiveTable() {
-    if (!slide || !activeTable) return;
-    updateSlideTables(slide.id, (tables) =>
-      tables.filter((table) => table.id !== activeTable.id),
-    );
-    setActiveTableId(null);
-  }
-
-  function deleteActiveChart() {
-    if (!slide || !activeChart) return;
-    updateSlideCharts(slide.id, (charts) =>
-      charts.filter((chart) => chart.id !== activeChart.id),
-    );
-    setActiveChartId(null);
+  function deleteObjectKeys(keys: Set<PptxSelectionKey>) {
+    if (!slide || keys.size === 0) return;
+    onChange({
+      ...model,
+      slides: model.slides.map((item) =>
+        item.id === slide.id
+          ? {
+              ...item,
+              texts: item.texts.filter(
+                (object) => !keys.has(pptxSelectionKey("text", object.id)),
+              ),
+              shapes: (item.shapes ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("shape", object.id)),
+              ),
+              images: (item.images ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("image", object.id)),
+              ),
+              tables: (item.tables ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("table", object.id)),
+              ),
+              charts: (item.charts ?? []).filter(
+                (object) => !keys.has(pptxSelectionKey("chart", object.id)),
+              ),
+            }
+          : item,
+      ),
+    });
+    clearObjectSelection();
   }
 
   function deleteActiveObject() {
-    if (activeText) {
-      deleteActiveText();
-    } else if (activeShape) {
-      deleteActiveShape();
-    } else if (activeImage) {
-      deleteActiveImage();
-    } else if (activeTable) {
-      deleteActiveTable();
-    } else if (activeChart) {
-      deleteActiveChart();
-    }
+    if (activeObjectKey) deleteObjectKeys(new Set([activeObjectKey]));
   }
 
   function moveActiveObjectLayer(direction: -1 | 1) {
@@ -1069,6 +937,7 @@ export function PptxEditor({
   function updateObjectGeometries(patches: Map<PptxSelectionKey, PptxGeometryPatch>) {
     if (!slide || patches.size === 0) return;
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
         item.id === slide.id ? patchPptxSlideObjects(item, patches) : item,
       ),
@@ -1092,118 +961,15 @@ export function PptxEditor({
       duplicateActiveObject();
       return;
     }
-    const nextKeys: PptxSelectionKey[] = [];
-    const nextTexts = [...slide.texts];
-    const nextShapes = [...(slide.shapes ?? [])];
-    const nextImages = [...(slide.images ?? [])];
-    const nextTables = [...(slide.tables ?? [])];
-    const nextCharts = [...(slide.charts ?? [])];
-    const usedGroupIds = new Set(
-      pptxSlideObjectRecords(slide)
-        .map((record) => record.object.groupId)
-        .filter((groupId): groupId is string => Boolean(groupId)),
-    );
-    const duplicatedGroupIds = new Map<string, string>();
-
-    function allocateDuplicateGroupId(sourceGroupId?: string) {
-      if (!sourceGroupId) return undefined;
-      const existing = duplicatedGroupIds.get(sourceGroupId);
-      if (existing) return existing;
-      let index = usedGroupIds.size + 1;
-      let groupId = `group${index}`;
-      while (usedGroupIds.has(groupId)) {
-        index += 1;
-        groupId = `group${index}`;
-      }
-      usedGroupIds.add(groupId);
-      duplicatedGroupIds.set(sourceGroupId, groupId);
-      return groupId;
-    }
-
-    selectedObjects.forEach((record) => {
-      if (record.objectKind === "text") {
-        const source = record.object as PptxText;
-        const next = {
-          ...source,
-          id: nextPptxTextId(nextTexts),
-          groupId: allocateDuplicateGroupId(source.groupId),
-          x: Math.min((source.x ?? 10) + 2, 100),
-          y: Math.min((source.y ?? 12) + 2, 100),
-        };
-        nextTexts.push(next);
-        nextKeys.push(pptxSelectionKey("text", next.id));
-      } else if (record.objectKind === "shape") {
-        const source = record.object as PptxShape;
-        const next = {
-          ...source,
-          id: nextPptxShapeId(nextShapes),
-          groupId: allocateDuplicateGroupId(source.groupId),
-          x: Math.min((source.x ?? 24) + 2, 100),
-          y: Math.min((source.y ?? 34) + 2, 100),
-        };
-        nextShapes.push(next);
-        nextKeys.push(pptxSelectionKey("shape", next.id));
-      } else if (record.objectKind === "image") {
-        const source = record.object as PptxImage;
-        const next = {
-          ...source,
-          id: nextPptxImageId(nextImages),
-          groupId: allocateDuplicateGroupId(source.groupId),
-          relationshipId: undefined,
-          x: Math.min((source.x ?? 24) + 2, 100),
-          y: Math.min((source.y ?? 34) + 2, 100),
-        };
-        nextImages.push(next);
-        nextKeys.push(pptxSelectionKey("image", next.id));
-      } else if (record.objectKind === "table") {
-        const source = record.object as PptxTable;
-        const next = {
-          ...source,
-          id: nextPptxTableId(nextTables),
-          groupId: allocateDuplicateGroupId(source.groupId),
-          x: Math.min((source.x ?? 18) + 2, 100),
-          y: Math.min((source.y ?? 30) + 2, 100),
-          rows: source.rows.map((row) => [...row]),
-        };
-        nextTables.push(next);
-        nextKeys.push(pptxSelectionKey("table", next.id));
-      } else {
-        const source = record.object as PptxChart;
-        const next = {
-          ...source,
-          id: nextPptxChartId(nextCharts),
-          groupId: allocateDuplicateGroupId(source.groupId),
-          relationshipId: undefined,
-          x: Math.min((source.x ?? 18) + 2, 100),
-          y: Math.min((source.y ?? 18) + 2, 100),
-          series: (source.series ?? []).map((series) => ({
-            ...series,
-            categories: series.categories ? [...series.categories] : undefined,
-            values: series.values ? [...series.values] : undefined,
-          })),
-          categories: source.categories ? [...source.categories] : undefined,
-        };
-        nextCharts.push(next);
-        nextKeys.push(pptxSelectionKey("chart", next.id));
-      }
-    });
-
+    const duplicated = duplicatePptxSelectedObjects(slide, selectedObjects);
     onChange({
+      ...model,
       slides: model.slides.map((item) =>
-        item.id === slide.id
-          ? {
-              ...item,
-              texts: nextTexts,
-              shapes: nextShapes,
-              images: nextImages,
-              tables: nextTables,
-              charts: nextCharts,
-            }
-          : item,
+        item.id === slide.id ? duplicated.slide : item,
       ),
     });
-    setSelectedObjectKeys(nextKeys);
-    activateObjectKey(nextKeys.at(-1) ?? null);
+    setSelectedObjectKeys(duplicated.selectedKeys);
+    activateObjectKey(duplicated.selectedKeys.at(-1) ?? null);
   }
 
   function deleteSelectedObjects() {
@@ -1211,32 +977,7 @@ export function PptxEditor({
       deleteActiveObject();
       return;
     }
-    const keys = new Set(selectedObjectKeys);
-    onChange({
-      slides: model.slides.map((item) =>
-        item.id === slide.id
-          ? {
-              ...item,
-              texts: item.texts.filter(
-                (object) => !keys.has(pptxSelectionKey("text", object.id)),
-              ),
-              shapes: (item.shapes ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("shape", object.id)),
-              ),
-              images: (item.images ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("image", object.id)),
-              ),
-              tables: (item.tables ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("table", object.id)),
-              ),
-              charts: (item.charts ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("chart", object.id)),
-              ),
-            }
-          : item,
-      ),
-    });
-    clearObjectSelection();
+    deleteObjectKeys(new Set(selectedObjectKeys));
   }
 
   function groupSelectedObjects() {
@@ -1354,6 +1095,37 @@ export function PptxEditor({
     updateObjectGeometries(patches);
   }
 
+  const handleCommandRequest = useEffectEvent(
+    (commandId: EditorCommandRequest["id"]) => {
+      return runPptxEditorCommand(commandId, {
+        addSlide,
+        duplicateSlide,
+        duplicateSelectedObjects,
+        deleteSelectedObjects,
+        moveActiveObjectLayer,
+        groupSelectedObjects,
+        ungroupSelectedObjects,
+        alignActiveObject,
+        distributeSelectedObjects,
+        present: () =>
+          setPresentingIndex(nextVisibleSlideIndex(model.slides, slideIndex, 1, true)),
+        addTable,
+        hasObjectSelection,
+        hasActiveObject: Boolean(activeObject),
+      });
+    },
+  );
+
+  useEffect(() => {
+    if (!commandRequest || handledCommandTokenRef.current === commandRequest.token) return;
+    handledCommandTokenRef.current = commandRequest.token;
+    window.setTimeout(() => {
+      if (handleCommandRequest(commandRequest.id)) {
+        onCommandHandled?.(commandRequest);
+      }
+    }, 0);
+  }, [commandRequest, onCommandHandled]);
+
   function startObjectDrag(
     event: ReactPointerEvent<HTMLElement>,
     objectKind: SlideDragState["objectKind"],
@@ -1364,7 +1136,11 @@ export function PptxEditor({
     if (!rect) return;
     event.preventDefault();
     event.stopPropagation();
+    setSnapGuides([]);
     const clickedKey = pptxSelectionKey(objectKind, object.id);
+    if (event.altKey && mode === "move" && selectObjectBehindPointer(event, clickedKey, rect)) {
+      return;
+    }
     const clickedSelectionKeys = selectionKeysForObject(objectKind, object.id);
     const dragSelectionKeys = selectedObjectKeySet.has(clickedKey)
       ? selectedObjectKeys
@@ -1415,6 +1191,8 @@ export function PptxEditor({
             objectId: record.objectId,
             startX: record.object.x ?? 0,
             startY: record.object.y ?? 0,
+            startWidth: record.object.width ?? 1,
+            startHeight: record.object.height ?? 1,
           }))
         : undefined;
     setDragState({
@@ -1434,7 +1212,7 @@ export function PptxEditor({
   }
 
   function slidePointFromPointer(
-    event: ReactPointerEvent<HTMLDivElement>,
+    event: ReactPointerEvent<HTMLElement>,
     rect: DOMRect,
   ) {
     return {
@@ -1443,10 +1221,42 @@ export function PptxEditor({
     };
   }
 
+  function selectObjectBehindPointer(
+    event: ReactPointerEvent<HTMLElement>,
+    clickedKey: PptxSelectionKey,
+    rect: DOMRect,
+  ) {
+    if (!slide) return false;
+    const point = slidePointFromPointer(event, rect);
+    const stackedRecords = pptxSlideObjectRecords(slide)
+      .filter((record) => pptxObjectContainsPoint(record, point))
+      .reverse();
+    if (stackedRecords.length <= 1) return false;
+    const activeIndex = stackedRecords.findIndex(
+      (record) =>
+        pptxSelectionKey(record.objectKind, record.objectId) ===
+        (activeObjectKey ?? clickedKey),
+    );
+    const fallbackIndex = stackedRecords.findIndex(
+      (record) => pptxSelectionKey(record.objectKind, record.objectId) === clickedKey,
+    );
+    const currentIndex = activeIndex >= 0 ? activeIndex : fallbackIndex;
+    const nextRecord =
+      stackedRecords[(Math.max(currentIndex, 0) + 1) % stackedRecords.length];
+    if (!nextRecord) return false;
+    selectObject(
+      nextRecord.objectKind,
+      nextRecord.objectId,
+      event.shiftKey || event.metaKey || event.ctrlKey,
+    );
+    return true;
+  }
+
   function handleCanvasPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!slide || event.button !== 0) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
+    setSnapGuides([]);
     const point = slidePointFromPointer(event, rect);
     const additive = event.shiftKey || event.metaKey || event.ctrlKey;
     if (!additive) clearObjectSelection();
@@ -1473,6 +1283,18 @@ export function PptxEditor({
     if (!dragState) return;
     const deltaX = ((event.clientX - dragState.startClientX) / dragState.rect.width) * 100;
     const deltaY = ((event.clientY - dragState.startClientY) / dragState.rect.height) * 100;
+    const snappingEnabled = !event.altKey && Boolean(slide);
+    const ignoredSnapKeys = new Set<PptxSelectionKey>(
+      dragState.groupItems
+        ? dragState.groupItems.map((item) =>
+            pptxSelectionKey(item.objectKind, item.objectId),
+          )
+        : [pptxSelectionKey(dragState.objectKind, dragState.objectId)],
+    );
+    const snapTargets =
+      snappingEnabled && slide
+        ? pptxSnapTargets(pptxSlideObjectRecords(slide), ignoredSnapKeys)
+        : null;
     const updateObject =
       dragState.objectKind === "text"
         ? updateTextById
@@ -1484,18 +1306,43 @@ export function PptxEditor({
               ? updateTableById
               : updateChartById;
     if (dragState.groupItems && dragState.mode === "move") {
+      const movedBounds = pptxBoundsFromItems(
+        dragState.groupItems.map((item) => ({
+          x: item.startX + deltaX,
+          y: item.startY + deltaY,
+          width: item.startWidth,
+          height: item.startHeight,
+        })),
+      );
+      const snapDelta =
+        movedBounds && snapTargets
+          ? pptxMoveSnap(movedBounds, snapTargets)
+          : { deltaX: 0, deltaY: 0, guides: [] };
+      const snappedDeltaX = deltaX + snapDelta.deltaX;
+      const snappedDeltaY = deltaY + snapDelta.deltaY;
       const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
       dragState.groupItems.forEach((item) => {
         patches.set(pptxSelectionKey(item.objectKind, item.objectId), {
-          x: clampPercent(item.startX + deltaX),
-          y: clampPercent(item.startY + deltaY),
+          x: clampPercent(item.startX + snappedDeltaX),
+          y: clampPercent(item.startY + snappedDeltaY),
         });
       });
+      setSnapGuides(snapDelta.guides);
       updateObjectGeometries(patches);
     } else if (dragState.mode === "move") {
+      const movedBounds = {
+        x: dragState.startX + deltaX,
+        y: dragState.startY + deltaY,
+        width: dragState.startWidth,
+        height: dragState.startHeight,
+      };
+      const snapDelta = snapTargets
+        ? pptxMoveSnap(movedBounds, snapTargets)
+        : { deltaX: 0, deltaY: 0, guides: [] };
+      setSnapGuides(snapDelta.guides);
       updateObject(dragState.objectId, {
-        x: clampPercent(dragState.startX + deltaX),
-        y: clampPercent(dragState.startY + deltaY),
+        x: clampPercent(dragState.startX + deltaX + snapDelta.deltaX),
+        y: clampPercent(dragState.startY + deltaY + snapDelta.deltaY),
       });
     } else {
       const minHeight = dragState.objectKind === "shape" ? 0 : 4;
@@ -1505,7 +1352,28 @@ export function PptxEditor({
             width: clampPercent(dragState.startWidth + deltaX, 4, 100),
             height: clampPercent(dragState.startHeight + deltaY, minHeight, 100),
           };
-      updateObject(dragState.objectId, nextSize);
+      const ratio = event.shiftKey
+        ? dragState.startWidth / Math.max(dragState.startHeight, 1)
+        : undefined;
+      const snappedSize = snapTargets
+        ? pptxResizeSnap(
+            {
+              x: dragState.startX,
+              y: dragState.startY,
+              width: nextSize.width,
+              height: nextSize.height,
+            },
+            snapTargets,
+            minHeight,
+            ratio,
+            Math.abs(deltaX) >= Math.abs(deltaY),
+          )
+        : { ...nextSize, guides: [] };
+      setSnapGuides(snappedSize.guides);
+      updateObject(dragState.objectId, {
+        width: snappedSize.width,
+        height: snappedSize.height,
+      });
     }
   }
 
@@ -1527,6 +1395,7 @@ export function PptxEditor({
       }
       setSelectionBox(null);
     }
+    setSnapGuides([]);
     setDragState(null);
   }
 
@@ -1671,6 +1540,7 @@ export function PptxEditor({
         onAddTextBox={addTextBox}
         onAddShape={addShape}
         onAddImageFile={addImageFile}
+        onSetSlideBackgroundImage={setSlideBackgroundImage}
         onAddTable={addTable}
         onDuplicateSelectedObjects={duplicateSelectedObjects}
         onDeleteSelectedObjects={deleteSelectedObjects}
@@ -1713,6 +1583,8 @@ export function PptxEditor({
             canvasRef={canvasRef}
             slide={slide}
             selectionBoxBounds={selectionBoxBounds}
+            snapGuides={snapGuides}
+            showSnapGrid={Boolean(dragState)}
             activeTextId={activeTextId}
             activeShapeId={activeShapeId}
             activeImageId={activeImageId}
@@ -1736,11 +1608,15 @@ export function PptxEditor({
             onAddTableColumn={addTableColumn}
             onDeleteTableRow={deleteTableRow}
             onDeleteTableColumn={deleteTableColumn}
+            onTableColumnWidthChange={updateTableColumnWidth}
+            onTableRowHeightChange={updateTableRowHeight}
+            onTableCellStyleChange={updateTableCellStyle}
             onAddSlide={addSlide}
           />
           {activeChart && (
             <PptxChartDataEditor
               chart={activeChart}
+              onChartChange={updateActiveChart}
               onSeriesNameChange={updateChartSeriesName}
               onPointChange={updateChartSeriesPoint}
               onAddSeries={addChartSeries}
@@ -1749,7 +1625,50 @@ export function PptxEditor({
               onDeletePoint={deleteChartPoint}
             />
           )}
-          <div className="grid shrink-0 gap-2 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--text-muted)] md:grid-cols-[1fr_1fr_1fr_1fr_1fr]">
+          <div className="grid shrink-0 gap-2 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--text-muted)] md:grid-cols-[1fr_1fr_1fr_1fr_1fr_1fr]">
+            <label className="grid gap-1">
+              <span className="font-medium uppercase tracking-wide">Layout</span>
+              <div className="flex min-w-0 gap-1">
+                <select
+                  value={slide?.layoutPath ?? ""}
+                  onChange={(event) => updateSlideLayout(event.target.value)}
+                  disabled={!slide || (model.layouts?.length ?? 0) === 0}
+                  className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">
+                    {model.layouts?.length ? "No layout" : "No layout metadata"}
+                  </option>
+                  {slide?.layoutPath &&
+                    !(model.layouts ?? []).some((layout) => layout.path === slide.layoutPath) && (
+                      <option value={slide.layoutPath}>
+                        {slide.layoutName ?? slide.layoutPath}
+                      </option>
+                    )}
+                  {(model.layouts ?? []).map((layout) => (
+                    <option key={layout.path} value={layout.path}>
+                      {[layout.name ?? layout.path, layout.themeName]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={resetSlideLayout}
+                  disabled={
+                    !slide?.layoutPath ||
+                    !model.layouts?.some(
+                      (layout) =>
+                        layout.path === slide.layoutPath &&
+                        (layout.placeholderTexts?.length ?? 0) > 0,
+                    )
+                  }
+                  className="h-8 shrink-0 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Reset
+                </button>
+              </div>
+            </label>
             <label className="grid gap-1">
               <span className="font-medium uppercase tracking-wide">Transition</span>
               <select
@@ -1851,11 +1770,28 @@ export function PptxEditor({
               />
             </label>
           </div>
+          <PptxThemeEditor
+            theme={activeTheme}
+            disabled={!activeTheme}
+            onThemeChange={(patch) => {
+              if (!activeTheme) return;
+              updateTheme(activeTheme.path, patch);
+            }}
+            onThemeColorChange={(key, color) => {
+              if (!activeTheme) return;
+              updateThemeColor(activeTheme.path, key, color);
+            }}
+          />
           <PptxAnimationInspector
             animations={slide?.animations ?? []}
             disabled={!slide}
             onTimingChange={updateAnimationTiming}
             onMove={moveAnimation}
+          />
+          <PptxMediaInspector
+            media={slide?.media ?? []}
+            disabled={!slide}
+            onChange={updateMediaById}
           />
           <label className="block shrink-0 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2">
             <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">

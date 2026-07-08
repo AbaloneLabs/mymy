@@ -16,10 +16,12 @@ import {
   formatFrontmatterField,
   hasTrailingTextNewline,
   indentMarkdownLine,
+  insertOrUpdateMarkdownToc,
   insertFootnoteReference,
   isMarkdownHeadingKey,
   isMarkdownUrl,
   lineForOffset,
+  markdownHeadingAnchors,
   markdownTableAtLine,
   markdownTables,
   markdownOutline,
@@ -37,8 +39,23 @@ import {
 import { markdownPreviewComponents, markdownRelativeFileReference } from "../markdownPreview";
 import { MarkdownSidePanel } from "../markdownSidePanel";
 import type { MarkdownSidePanelKind } from "../markdownSidePanel";
+import {
+  activeSourceFoldIds,
+  autoPairSource,
+  isPotentialSourceEditKey,
+  sourceBracketPairFragments,
+  sourceDisplayText,
+  sourceFoldRanges,
+  sourceMinimapLines,
+  sourceSelectionLineFragments,
+  sourceVisibleLines,
+} from "../textSourceUtils";
+import type { SourceFoldRange } from "../textSourceUtils";
+import { TextSourcePane } from "../textSourcePane";
+import { useTextSourceEditing } from "../useTextSourceEditing";
 import type {
   MarkdownHeadingLevel,
+  MarkdownReference,
   MarkdownTableAlignment,
   MarkdownTableModel,
 } from "../markdownEditorUtils";
@@ -50,17 +67,21 @@ export function MarkdownRichEditor({
   onChange,
   commandRequest,
   onCommandHandled,
+  onOpenDocument,
 }: {
   filePath: string;
   model: TextModel;
   onChange: (model: TextModel) => void;
   commandRequest?: EditorCommandRequest | null;
   onCommandHandled?: (request: EditorCommandRequest) => void;
+  onOpenDocument?: (path: string) => void;
 }) {
   const sourceRef = useRef<HTMLTextAreaElement>(null);
-  const lineNumberRef = useRef<HTMLPreElement>(null);
+  const lineNumberRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLElement>(null);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
+  const pendingPreviewScrollLineRef = useRef<number | null>(null);
   const [mode, setMode] = useState<"source" | "preview">("source");
   const [sidePanel, setSidePanel] = useState<MarkdownSidePanelKind | null>(null);
   const [linkDraft, setLinkDraft] = useState("");
@@ -80,10 +101,27 @@ export function MarkdownRichEditor({
   const [matchCase, setMatchCase] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [regexSearch, setRegexSearch] = useState(false);
-  const [cursor, setCursor] = useState({ line: 1, column: 1, selection: 0 });
+  const [cursor, setCursor] = useState({
+    line: 1,
+    column: 1,
+    selection: 0,
+    offset: 0,
+  });
+  const [foldedSourceIds, setFoldedSourceIds] = useState<Set<string>>(() => new Set());
+  const [sourceScrollTop, setSourceScrollTop] = useState(0);
+  const [previewMappedLine, setPreviewMappedLine] = useState<number | null>(null);
   const lineCount = Math.max(1, model.content.split("\n").length);
   const outline = markdownOutline(model.content);
+  const headingAnchors = useMemo(() => markdownHeadingAnchors(outline), [outline]);
   const references = markdownReferences(model.content);
+  const activeReference =
+    references.find(
+      (reference) =>
+        cursor.offset >= reference.start &&
+        cursor.offset <= reference.end &&
+        (reference.labelStart !== undefined ||
+          reference.targetStart !== undefined),
+    ) ?? null;
   const tables = markdownTables(model.content);
   const activeTable =
     markdownTableAtLine(model.content, cursor.line) ?? tables[0] ?? null;
@@ -92,6 +130,43 @@ export function MarkdownRichEditor({
     ? parseFrontmatterFields(frontmatter.content, frontmatter.marker)
     : [];
   const stats = markdownStats(model.content, outline.length);
+  const foldRanges = sourceFoldRanges(model.content, "markdown");
+  const activeFoldedSourceIds = activeSourceFoldIds(foldedSourceIds, foldRanges);
+  const foldRangeByStart = new Map(foldRanges.map((range) => [range.startLine, range]));
+  const visibleSourceLines = sourceVisibleLines(model.content, foldRanges, activeFoldedSourceIds);
+  const sourceDisplayContent =
+    activeFoldedSourceIds.size > 0 ? sourceDisplayText(visibleSourceLines) : model.content;
+  const {
+    activateRectangularSourceSelection,
+    addNextSourceSelection,
+    applySourceEdit,
+    clearSourceSelections,
+    handleSourceMultiCursorKey,
+    handleSourcePaste: handleSharedSourcePaste,
+    pasteProgress,
+    setSourceSelectionRanges,
+    sourceSelectionRanges,
+  } = useTextSourceEditing({
+    content: model.content,
+    folded: activeFoldedSourceIds.size > 0,
+    sourceRef,
+    updateContent,
+    unfoldAll: () => setFoldedSourceIds(new Set()),
+    updateCursor,
+    syncLineNumberScroll,
+  });
+  const minimapLines = useMemo(
+    () => sourceMinimapLines(model.content),
+    [model.content],
+  );
+  const sourceSelectionFragments = useMemo(
+    () => sourceSelectionLineFragments(model.content, sourceSelectionRanges),
+    [model.content, sourceSelectionRanges],
+  );
+  const bracketPairFragments = useMemo(
+    () => sourceBracketPairFragments(model.content),
+    [model.content],
+  );
   const searchMatches = countMarkdownSearchMatches(model.content, searchDraft, {
     matchCase,
     wholeWord,
@@ -120,11 +195,25 @@ export function MarkdownRichEditor({
     [model, onChange],
   );
   const previewComponents = useMemo(
-    () => markdownPreviewComponents(filePath, toggleTaskListAtLine),
-    [filePath, toggleTaskListAtLine],
+    () =>
+      markdownPreviewComponents(
+        filePath,
+        toggleTaskListAtLine,
+        headingAnchors,
+        onOpenDocument,
+      ),
+    [filePath, headingAnchors, onOpenDocument, toggleTaskListAtLine],
   );
 
-  function updateContent(content: string) {
+  function updateContent(
+    content: string,
+    options: { preserveSourceSelections?: boolean } = {},
+  ) {
+    if (mode === "source" && activeFoldedSourceIds.size > 0) {
+      setFoldedSourceIds(new Set());
+      return;
+    }
+    if (!options.preserveSourceSelections) clearSourceSelections();
     onChange({ ...model, content, trailingNewline: hasTrailingTextNewline(content) });
   }
 
@@ -204,12 +293,29 @@ export function MarkdownRichEditor({
   }
 
   function insertCodeBlock() {
-    insertSourceSnippet("```\ncode\n```\n", 4, 8);
+    insertSourceSnippet("```\n\n```\n", 4, 4);
   }
 
   function insertMarkdownTable() {
-    insertSourceSnippet("| Header 1 | Header 2 |\n| --- | --- |\n|  |  |\n", 2, 10);
+    insertSourceSnippet("|  |  |\n| --- | --- |\n|  |  |\n", 2, 2);
     setSidePanel("table");
+  }
+
+  function insertTableOfContents() {
+    const textarea = sourceRef.current;
+    const offset = textarea?.selectionStart ?? frontmatter?.end ?? 0;
+    const next = insertOrUpdateMarkdownToc(model.content, offset);
+    if (!next) return;
+    updateContent(next.content);
+    setMode("source");
+    requestAnimationFrame(() => {
+      const source = sourceRef.current;
+      if (!source) return;
+      source.focus();
+      source.setSelectionRange(next.selectionStart, next.selectionEnd);
+      syncLineNumberScroll();
+      updateCursor();
+    });
   }
 
   function openTablePanel() {
@@ -315,7 +421,7 @@ export function MarkdownRichEditor({
         : Math.min(activeTable.headers.length, afterColumnIndex + 1);
     const headers = [...activeTable.headers];
     const alignments = [...activeTable.alignments];
-    headers.splice(insertAt, 0, `Column ${insertAt + 1}`);
+    headers.splice(insertAt, 0, "");
     alignments.splice(insertAt, 0, "default");
     updateMarkdownTable({
       ...activeTable,
@@ -335,7 +441,7 @@ export function MarkdownRichEditor({
       ...activeTable,
       headers: [
         ...activeTable.headers.slice(0, columnIndex + 1),
-        `${activeTable.headers[columnIndex] ?? "Column"} copy`,
+        activeTable.headers[columnIndex] ?? "",
         ...activeTable.headers.slice(columnIndex + 1),
       ],
       alignments: [
@@ -399,6 +505,17 @@ export function MarkdownRichEditor({
     setMode("source");
   }
 
+  function togglePreview() {
+    if (mode === "source") {
+      const line = cursor.line;
+      pendingPreviewScrollLineRef.current = line;
+      setPreviewMappedLine(line);
+      setMode("preview");
+      return;
+    }
+    focusSourceLine(previewMappedLine ?? cursor.line);
+  }
+
   function insertSourceSnippet(
     snippet: string,
     selectStartOffset = snippet.length,
@@ -448,6 +565,43 @@ export function MarkdownRichEditor({
     });
   }
 
+  function replaceMarkdownReferenceRange(start: number, end: number, value: string) {
+    const safeStart = Math.max(0, Math.min(model.content.length, start));
+    const safeEnd = Math.max(safeStart, Math.min(model.content.length, end));
+    const content = `${model.content.slice(0, safeStart)}${value}${model.content.slice(safeEnd)}`;
+    updateContent(content);
+  }
+
+  function updateMarkdownReferenceLabel(
+    reference: MarkdownReference,
+    value: string,
+  ) {
+    if (reference.labelStart === undefined || reference.labelEnd === undefined) {
+      return;
+    }
+    replaceMarkdownReferenceRange(
+      reference.labelStart,
+      reference.labelEnd,
+      reference.kind === "footnote"
+        ? `[^${normalizeMarkdownFootnoteId(value)}]`
+        : value,
+    );
+  }
+
+  function updateMarkdownReferenceTarget(
+    reference: MarkdownReference,
+    value: string,
+  ) {
+    if (reference.targetStart === undefined || reference.targetEnd === undefined) {
+      return;
+    }
+    replaceMarkdownReferenceRange(
+      reference.targetStart,
+      reference.targetEnd,
+      reference.kind === "footnote" ? formatMarkdownFootnoteBody(value) : value,
+    );
+  }
+
   function insertSourceLink(url: string) {
     const textarea = sourceRef.current;
     if (!textarea) {
@@ -471,9 +625,23 @@ export function MarkdownRichEditor({
   }
 
   function handleSourceKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (activeFoldedSourceIds.size > 0 && isPotentialSourceEditKey(event)) {
+      event.preventDefault();
+      setFoldedSourceIds(new Set());
+      return;
+    }
     const primary = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
-    if (event.key === "Tab") {
+    if (handleSourceMultiCursorKey(event)) {
+      return;
+    }
+    if (primary && key === "d") {
+      event.preventDefault();
+      addNextSourceSelection();
+    } else if (event.altKey && event.shiftKey && key === "r") {
+      event.preventDefault();
+      activateRectangularSourceSelection();
+    } else if (event.key === "Tab") {
       event.preventDefault();
       transformSelectedSourceLines(event.shiftKey ? outdentMarkdownLine : indentMarkdownLine);
     } else if (primary && key === "b") {
@@ -513,49 +681,73 @@ export function MarkdownRichEditor({
     } else if (primary && event.altKey && key === "t") {
       event.preventDefault();
       insertMarkdownTable();
+    } else if (primary && event.altKey && key === "m") {
+      event.preventDefault();
+      insertTableOfContents();
     } else if (primary && event.altKey && key === "o") {
       event.preventDefault();
       setSidePanel((current) => (current === "outline" ? null : "outline"));
     } else if (primary && event.shiftKey && key === "v") {
       event.preventDefault();
-      setMode((current) => (current === "preview" ? "source" : "preview"));
+      togglePreview();
     } else if (primary && event.altKey && isMarkdownHeadingKey(key)) {
       event.preventDefault();
       applySourceHeading(Number(key) as MarkdownHeadingLevel);
+    } else if (autoPairSource(event, model.content, "code", applySourceEdit)) {
+      event.preventDefault();
+      requestAnimationFrame(updateCursor);
     }
   }
 
   function handleSourcePaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
-    const textarea = sourceRef.current;
-    if (!textarea || textarea.selectionStart === textarea.selectionEnd) return;
-    const pasted = event.clipboardData.getData("text/plain").trim();
-    if (!isMarkdownUrl(pasted)) return;
-    event.preventDefault();
-    const selected = model.content.slice(textarea.selectionStart, textarea.selectionEnd);
-    const next = `${model.content.slice(0, textarea.selectionStart)}[${selected}](${pasted})${model.content.slice(textarea.selectionEnd)}`;
-    const start = textarea.selectionStart;
-    updateContent(next);
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start, start + selected.length + pasted.length + 4);
+    handleSharedSourcePaste(event, ({ pastedText, selectionStart, selectionEnd }) => {
+      if (selectionStart !== selectionEnd && isMarkdownUrl(pastedText.trim())) {
+        event.preventDefault();
+        const pasted = pastedText.trim();
+        const selected = model.content.slice(selectionStart, selectionEnd);
+        const next = `${model.content.slice(0, selectionStart)}[${selected}](${pasted})${model.content.slice(selectionEnd)}`;
+        updateContent(next);
+        requestAnimationFrame(() => {
+          const textarea = sourceRef.current;
+          if (!textarea) return;
+          textarea.focus();
+          textarea.setSelectionRange(
+            selectionStart,
+            selectionStart + selected.length + pasted.length + 4,
+          );
+        });
+        return true;
+      }
+      return false;
     });
   }
 
   function syncLineNumberScroll() {
     if (!sourceRef.current || !lineNumberRef.current) return;
     lineNumberRef.current.scrollTop = sourceRef.current.scrollTop;
+    setSourceScrollTop(sourceRef.current.scrollTop);
   }
 
   function updateCursor() {
     const textarea = sourceRef.current;
     if (!textarea) return;
+    if (activeFoldedSourceIds.size > 0) return;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
+    if (
+      sourceSelectionRanges.length > 0 &&
+      !sourceSelectionRanges.some(
+        (range) => range.start === start && range.end === end,
+      )
+    ) {
+      setSourceSelectionRanges([]);
+    }
     const line = lineForOffset(model.content, start);
     setCursor({
       line,
       column: start - offsetForLine(model.content, line) + 1,
       selection: Math.abs(end - start),
+      offset: start,
     });
   }
 
@@ -624,7 +816,29 @@ export function MarkdownRichEditor({
   }
 
   function focusSourceLine(line: number) {
+    unfoldSourceLine(line);
     focusSourceRange(offsetForLine(model.content, line), offsetForLine(model.content, line));
+  }
+
+  function toggleSourceFold(range: SourceFoldRange) {
+    setFoldedSourceIds((current) => {
+      const next = new Set(current);
+      if (next.has(range.id)) next.delete(range.id);
+      else next.add(range.id);
+      return next;
+    });
+  }
+
+  function unfoldSourceLine(line: number) {
+    setFoldedSourceIds((current) => {
+      const hiddenRange = foldRanges.find(
+        (range) => current.has(range.id) && line > range.startLine && line <= range.endLine,
+      );
+      if (!hiddenRange) return current;
+      const next = new Set(current);
+      next.delete(hiddenRange.id);
+      return next;
+    });
   }
 
   function focusSourceRange(start: number, end: number) {
@@ -761,7 +975,7 @@ export function MarkdownRichEditor({
     } else if (commandId === "heading6") {
       applyHeading(6);
     } else if (commandId === "togglePreview") {
-      setMode((current) => (current === "preview" ? "source" : "preview"));
+      togglePreview();
     } else if (commandId === "bulletList") {
       transformSelectedSourceLines((line) =>
         /^\s*(?:[-*+]|\d+\.)\s+/.test(line)
@@ -786,6 +1000,8 @@ export function MarkdownRichEditor({
       setImageInputOpen(true);
     } else if (commandId === "insertTable") {
       insertMarkdownTable();
+    } else if (commandId === "tableOfContents") {
+      insertTableOfContents();
     } else if (commandId === "outline") {
       setSidePanel((current) => (current === "outline" ? null : "outline"));
     } else if (commandId === "goToLine") {
@@ -798,9 +1014,33 @@ export function MarkdownRichEditor({
     },
   );
 
-  function togglePreview() {
-    setMode((current) => (current === "preview" ? "source" : "preview"));
+  function updatePreviewScrollLine() {
+    const preview = previewRef.current;
+    if (!preview) return;
+    const blocks = markdownPreviewLineElements(preview);
+    if (blocks.length === 0) return;
+    const previewTop = preview.getBoundingClientRect().top;
+    const current =
+      blocks
+        .filter((block) => block.getBoundingClientRect().top <= previewTop + 32)
+        .at(-1) ?? blocks[0];
+    const line = Number(current.dataset.markdownLine);
+    if (Number.isFinite(line)) setPreviewMappedLine(line);
   }
+
+  useEffect(() => {
+    if (mode !== "preview") return;
+    const targetLine = pendingPreviewScrollLineRef.current;
+    if (!targetLine) return;
+    pendingPreviewScrollLineRef.current = null;
+    window.requestAnimationFrame(() => {
+      const preview = previewRef.current;
+      if (!preview) return;
+      const target = nearestMarkdownPreviewLineElement(preview, targetLine);
+      target.element?.scrollIntoView({ block: "start" });
+      if (target.line !== null) setPreviewMappedLine(target.line);
+    });
+  }, [mode, model.content]);
 
   useEffect(() => {
     if (!commandRequest || handledCommandTokenRef.current === commandRequest.token) return;
@@ -836,6 +1076,7 @@ export function MarkdownRichEditor({
         onToggleLinkInput={() => setLinkInputOpen((current) => !current)}
         onToggleImageInput={() => setImageInputOpen((current) => !current)}
         onOpenTablePanel={openTablePanel}
+        onInsertTableOfContents={insertTableOfContents}
         onInsertFootnote={insertFootnote}
         onToggleOutlinePanel={() =>
           setSidePanel((current) => (current === "outline" ? null : "outline"))
@@ -888,10 +1129,68 @@ export function MarkdownRichEditor({
           onClose={() => setGoToLineOpen(false)}
         />
       )}
+      {mode === "source" && activeReference && (
+        <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+          <span className="mb-2 rounded border border-[var(--border)] px-1.5 py-0.5 uppercase text-[10px] text-[var(--text-faint)]">
+            {activeReference.kind}
+          </span>
+          {activeReference.labelStart !== undefined &&
+            activeReference.labelEnd !== undefined && (
+              <label className="grid min-w-40 gap-1">
+                <span className="uppercase tracking-wide">
+                  {activeReference.kind === "image"
+                    ? "Alt"
+                    : activeReference.kind === "footnote"
+                      ? "Footnote"
+                      : "Label"}
+                </span>
+                <input
+                  value={markdownReferenceInputLabel(activeReference)}
+                  onChange={(event) =>
+                    updateMarkdownReferenceLabel(
+                      activeReference,
+                      event.currentTarget.value,
+                    )
+                  }
+                  className="h-8 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                />
+              </label>
+            )}
+          {activeReference.targetStart !== undefined &&
+            activeReference.targetEnd !== undefined && (
+              <label className="grid min-w-56 flex-1 gap-1">
+                <span className="uppercase tracking-wide">
+                  {activeReference.kind === "footnote" ? "Body" : "Target"}
+                </span>
+                <input
+                  value={singleLineMarkdownReferenceTarget(activeReference)}
+                  onChange={(event) =>
+                    updateMarkdownReferenceTarget(
+                      activeReference,
+                      event.currentTarget.value,
+                    )
+                  }
+                  className="h-8 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                />
+              </label>
+            )}
+          <button
+            type="button"
+            onClick={() => focusSourceRange(activeReference.start, activeReference.end)}
+            className="mb-0.5 rounded border border-[var(--border)] px-2 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          >
+            Focus
+          </button>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
         <div className="min-h-0 flex-1">
           {mode === "preview" ? (
-            <article className="chat-markdown h-full min-h-0 overflow-y-auto p-5 text-sm">
+            <article
+              ref={previewRef}
+              onScroll={updatePreviewScrollLine}
+              className="chat-markdown h-full min-h-0 overflow-y-auto p-5 text-sm"
+            >
               <ReactMarkdown
                 components={previewComponents}
                 remarkPlugins={[remarkGfm]}
@@ -900,33 +1199,34 @@ export function MarkdownRichEditor({
               </ReactMarkdown>
             </article>
           ) : (
-            <div className="grid h-full min-h-0 grid-cols-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--bg)]">
-              <pre
-                ref={lineNumberRef}
-                className="select-none overflow-hidden border-r border-[var(--border)] bg-[var(--surface)] px-3 py-4 text-right font-mono text-xs leading-6 text-[var(--text-faint)]"
-              >
-                {Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}
-              </pre>
-              <textarea
-                ref={sourceRef}
-                value={model.content}
-                onChange={(event) => updateContent(event.target.value)}
-                onKeyDown={handleSourceKeyDown}
-                onPaste={handleSourcePaste}
-                onSelect={updateCursor}
-                onKeyUp={updateCursor}
-                onClick={updateCursor}
-                onScroll={syncLineNumberScroll}
-                spellCheck={false}
-                className="min-h-0 resize-none bg-[var(--bg)] p-4 font-mono text-sm leading-6 text-[var(--text)] outline-none"
-              />
-            </div>
+            <TextSourcePane
+              sourceRef={sourceRef}
+              lineNumberRef={lineNumberRef}
+              sourceDisplayContent={sourceDisplayContent}
+              visibleSourceLines={visibleSourceLines}
+              foldRangeByStart={foldRangeByStart}
+              activeFoldedSourceIds={activeFoldedSourceIds}
+              diagnosticsByLine={new Map()}
+              selectionFragments={sourceSelectionFragments}
+              bracketFragments={bracketPairFragments}
+              minimapLines={minimapLines}
+              cursorLine={cursor.line}
+              sourceScrollTop={sourceScrollTop}
+              onContentChange={updateContent}
+              onKeyDown={handleSourceKeyDown}
+              onPaste={handleSourcePaste}
+              onCursorUpdate={updateCursor}
+              onScroll={syncLineNumberScroll}
+              onFocusLine={focusSourceLine}
+              onToggleFold={toggleSourceFold}
+            />
           )}
         </div>
         {sidePanel && (
           <MarkdownSidePanel
             panel={sidePanel}
             outline={outline}
+            headingAnchors={headingAnchors}
             references={references}
             table={activeTable}
             frontmatter={frontmatter}
@@ -956,6 +1256,8 @@ export function MarkdownRichEditor({
             onFrontmatterCreate={openFrontmatterPanel}
             onNewFrontmatterKeyChange={setNewFrontmatterKey}
             onNewFrontmatterValueChange={setNewFrontmatterValue}
+            onReferenceLabelChange={updateMarkdownReferenceLabel}
+            onReferenceTargetChange={updateMarkdownReferenceTarget}
           />
         )}
       </div>
@@ -963,6 +1265,12 @@ export function MarkdownRichEditor({
         <span>
           L{cursor.line}:C{cursor.column}
           {cursor.selection > 0 ? ` · ${cursor.selection} selected` : ""}
+          {sourceSelectionRanges.length > 1
+            ? ` · ${sourceSelectionRanges.length} cursors`
+            : ""}
+          {pasteProgress
+            ? ` · pasting ${Math.round((pasteProgress.processed / Math.max(1, pasteProgress.total)) * 100)}%`
+            : ""}
         </span>
         <span>
           {stats.lines} lines · {stats.words} words · {stats.characters} chars · {stats.headings} headings
@@ -970,4 +1278,69 @@ export function MarkdownRichEditor({
       </div>
     </div>
   );
+}
+
+function normalizeMarkdownFootnoteId(value: string) {
+  return (
+    value
+      .trim()
+      .replace(/^\[\^/, "")
+      .replace(/\]$/, "")
+      .replace(/\s+/g, "-") || "note"
+  );
+}
+
+function formatMarkdownFootnoteBody(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line, index) => {
+      if (index === 0 || !line.trim()) return line;
+      return `    ${line.replace(/^\s+/, "")}`;
+    })
+    .join("\n");
+}
+
+function markdownReferenceInputLabel(reference: MarkdownReference) {
+  if (reference.kind === "footnote") {
+    return reference.label.replace(/^\[\^/, "").replace(/\]$/, "");
+  }
+  return reference.label;
+}
+
+function singleLineMarkdownReferenceTarget(reference: MarkdownReference) {
+  return (reference.target ?? "").replace(/\n\s*/g, " ");
+}
+
+function markdownPreviewLineElements(preview: HTMLElement) {
+  return Array.from(
+    preview.querySelectorAll<HTMLElement>("[data-markdown-line]"),
+  )
+    .filter((element) => Number.isFinite(Number(element.dataset.markdownLine)))
+    .sort(
+      (left, right) =>
+        Number(left.dataset.markdownLine) - Number(right.dataset.markdownLine),
+    );
+}
+
+function nearestMarkdownPreviewLineElement(preview: HTMLElement, targetLine: number) {
+  const elements = markdownPreviewLineElements(preview);
+  let previous: HTMLElement | null = null;
+  let next: HTMLElement | null = null;
+  for (const element of elements) {
+    const line = Number(element.dataset.markdownLine);
+    if (line === targetLine) {
+      return { element, line };
+    }
+    if (line < targetLine) {
+      previous = element;
+      continue;
+    }
+    next = element;
+    break;
+  }
+  const element = previous ?? next ?? elements[0] ?? null;
+  const line = element ? Number(element.dataset.markdownLine) : null;
+  return { element, line: Number.isFinite(line) ? line : null };
 }

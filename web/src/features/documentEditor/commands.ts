@@ -55,6 +55,7 @@ export type EditorCommandId =
   | "numberedList"
   | "pageBreak"
   | "taskList"
+  | "tableOfContents"
   | "blockquote"
   | "inlineCode"
   | "codeBlock"
@@ -63,6 +64,7 @@ export type EditorCommandId =
   | "outline"
   | "copyFormatting"
   | "pasteFormatting"
+  | "comment"
   | "footnote"
   | "endnote"
   | "newSlide"
@@ -222,6 +224,11 @@ const DOC_COMMANDS: EditorCommandDefinition[] = [
     primary: true,
     shift: true,
   }),
+  command("comment", "Comment", "Ctrl/Cmd+Alt+M", {
+    key: "m",
+    primary: true,
+    alt: true,
+  }),
   command("footnote", "Footnote", "Ctrl/Cmd+Alt+F", {
     key: "f",
     primary: true,
@@ -299,6 +306,11 @@ const MARKDOWN_COMMANDS: EditorCommandDefinition[] = [
     key: "9",
     primary: true,
     shift: true,
+  }),
+  command("tableOfContents", "Table of contents", "Ctrl/Cmd+Alt+M", {
+    key: "m",
+    primary: true,
+    alt: true,
   }),
   command("blockquote", "Blockquote", "Ctrl/Cmd+Shift+.", {
     key: ".",

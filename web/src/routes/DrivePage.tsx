@@ -104,6 +104,13 @@ export default function DrivePage() {
     setEditorDirty(false);
   }
 
+  function openDocumentPath(targetPath: string) {
+    if (targetPath !== selectedFilePath && !confirmDiscardEditorChanges()) return;
+    setPath(parentPath(targetPath));
+    setSelectedFilePath(targetPath);
+    setEditorDirty(false);
+  }
+
   function goUp() {
     if (path === ROOT_PATH) return;
     if (!confirmDiscardEditorChanges()) return;
@@ -307,6 +314,7 @@ export default function DrivePage() {
                   file={selectedFile}
                   onCloseEditor={closeSelectedFile}
                   onDirtyChange={setEditorDirty}
+                  onOpenDocument={openDocumentPath}
                 />
               )}
             </div>

@@ -66,7 +66,6 @@ export function DelimitedTableEditor({
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
   const [filterText, setFilterText] = useState("");
-  const [headerRowOverride, setHeaderRowOverride] = useState<boolean | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
@@ -75,7 +74,7 @@ export function DelimitedTableEditor({
   const columnCount = Math.max(MIN_DELIMITED_VISIBLE_COLUMNS, sourceColumnCount);
   const displayRowLimit = Math.max(MIN_DELIMITED_VISIBLE_ROWS, sourceRows.length);
   const rows = ensureDelimitedDisplayRows(sourceRows, displayRowLimit);
-  const headerRow = headerRowOverride ?? delimitedLooksLikeHeader(sourceRows);
+  const headerRow = model.headerRow ?? delimitedLooksLikeHeader(sourceRows);
   const visibleRows = filteredDelimitedRows(rows, columnCount, filterText);
   const rowWindow = virtualWindow(
     visibleRows.length,
@@ -498,7 +497,8 @@ export function DelimitedTableEditor({
       <DelimitedTableProfilePanel
         rows={sourceRows}
         headerRow={headerRow}
-        onHeaderRowChange={setHeaderRowOverride}
+        model={model}
+        onModelChange={onChange}
       />
       <div
         ref={gridRef}

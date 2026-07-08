@@ -30,6 +30,9 @@ export interface DocxBlock {
   tableCellVerticalAlign?: "top" | "center" | "bottom";
   relationshipId?: string;
   target?: string;
+  bookmarkId?: string;
+  bookmarkName?: string;
+  commentId?: string;
   footnoteId?: string;
   endnoteId?: string;
   mediaPath?: string;
@@ -42,6 +45,7 @@ export interface DocxBlock {
   imageCropTop?: number;
   imageCropRight?: number;
   imageCropBottom?: number;
+  imageWrap?: DocxImageWrap;
   altText?: string;
   sourceXml?: string;
   bold?: boolean;
@@ -69,6 +73,8 @@ export interface DocxTableMergedCell {
   rowSpan: number;
   colSpan: number;
 }
+
+export type DocxImageWrap = "inline" | "square" | "behind" | "inFront";
 
 export interface DocxPageSettings {
   orientation?: "portrait" | "landscape";
@@ -116,6 +122,9 @@ export interface XlsxCell {
   ref: string;
   value: string;
   formula?: string;
+  generated?: "spill";
+  spillParent?: string;
+  spillRange?: string;
   numberFormat?: string;
   fontFamily?: string;
   fontSize?: string;
@@ -250,6 +259,38 @@ export interface XlsxChart {
   path?: string;
   type?: string;
   title?: string;
+  legendVisible?: boolean;
+  legendPosition?: "r" | "l" | "t" | "b" | "tr";
+  categoryAxisTitle?: string;
+  valueAxisTitle?: string;
+  categoryAxisPosition?: "b" | "t";
+  valueAxisPosition?: "l" | "r";
+  categoryMajorGridlines?: boolean;
+  valueMajorGridlines?: boolean;
+  categoryAxisTickLabelPosition?: "nextTo" | "low" | "high" | "none";
+  valueAxisTickLabelPosition?: "nextTo" | "low" | "high" | "none";
+  categoryAxisMajorTickMark?: "cross" | "in" | "out" | "none";
+  valueAxisMajorTickMark?: "cross" | "in" | "out" | "none";
+  categoryAxisMinorTickMark?: "cross" | "in" | "out" | "none";
+  valueAxisMinorTickMark?: "cross" | "in" | "out" | "none";
+  categoryAxisNumberFormat?: string;
+  valueAxisNumberFormat?: string;
+  categoryAxisLineColor?: string;
+  valueAxisLineColor?: string;
+  categoryAxisLineWidth?: number;
+  valueAxisLineWidth?: number;
+  categoryAxisLineDash?: "solid" | "dash" | "dot" | "dashDot";
+  valueAxisLineDash?: "solid" | "dash" | "dot" | "dashDot";
+  categoryAxisLabelTextColor?: string;
+  valueAxisLabelTextColor?: string;
+  categoryAxisLabelFontSize?: number;
+  valueAxisLabelFontSize?: number;
+  categoryAxisLabelRotation?: number;
+  valueAxisLabelRotation?: number;
+  categoryAxisLabelBold?: boolean;
+  valueAxisLabelBold?: boolean;
+  categoryAxisLabelItalic?: boolean;
+  valueAxisLabelItalic?: boolean;
   categories?: string[];
   series?: XlsxChartSeries[];
   anchor?: XlsxObjectAnchor;
@@ -257,8 +298,11 @@ export interface XlsxChart {
 
 export interface XlsxChartSeries {
   name?: string;
+  nameFormula?: string;
   categories?: string[];
+  categoriesFormula?: string;
   values?: string[];
+  valuesFormula?: string;
 }
 
 export interface XlsxTableColumn {
@@ -292,11 +336,29 @@ export interface XlsxImage {
   anchor?: XlsxObjectAnchor;
 }
 
+export interface XlsxPivotField {
+  index: number;
+  name?: string;
+  axis?: "axisRow" | "axisCol" | "axisPage" | "axisValues";
+  dataField?: boolean;
+  showAll?: boolean;
+  defaultSubtotal?: boolean;
+  subtotal?: string;
+}
+
+export interface XlsxPivotDataField {
+  fieldIndex: number;
+  name?: string;
+  subtotal?: string;
+}
+
 export interface XlsxPivot {
   id: string;
   path?: string;
   name?: string;
   cacheId?: string;
+  fields?: XlsxPivotField[];
+  dataFields?: XlsxPivotDataField[];
 }
 
 export interface XlsxSheetProtection {
@@ -377,6 +439,11 @@ export interface DelimitedTableModel {
   rows: string[][];
   encoding?: string;
   bom?: boolean;
+  delimiter?: string;
+  quoteCharacter?: string;
+  escapePolicy?: "double" | "backslash";
+  headerRow?: boolean;
+  columnTypes?: string[];
   quoteStyle?: "minimal" | "always";
   lineEnding?: string;
   trailingNewline?: boolean;
@@ -386,6 +453,7 @@ export interface PptxText {
   id: string;
   groupId?: string;
   text: string;
+  placeholderType?: string;
   textIndex?: number;
   x?: number;
   y?: number;
@@ -403,10 +471,33 @@ export interface PptxText {
   align?: "left" | "center" | "right";
 }
 
+export type PptxLineArrow = "none" | "triangle" | "stealth" | "diamond" | "oval";
+
+export type PptxShapeKind =
+  | "rect"
+  | "roundRect"
+  | "ellipse"
+  | "line"
+  | "straightConnector1"
+  | "triangle"
+  | "diamond"
+  | "parallelogram"
+  | "trapezoid"
+  | "pentagon"
+  | "hexagon"
+  | "rightArrow"
+  | "leftArrow"
+  | "upArrow"
+  | "downArrow"
+  | "leftRightArrow"
+  | "star5"
+  | "heart"
+  | "cloud";
+
 export interface PptxShape {
   id: string;
   groupId?: string;
-  kind: "rect" | "ellipse" | "line";
+  kind: PptxShapeKind;
   x?: number;
   y?: number;
   width?: number;
@@ -415,6 +506,8 @@ export interface PptxShape {
   fillColor?: string;
   strokeColor?: string;
   strokeWidth?: number;
+  lineStartArrow?: PptxLineArrow;
+  lineEndArrow?: PptxLineArrow;
 }
 
 export interface PptxTable {
@@ -422,11 +515,29 @@ export interface PptxTable {
   groupId?: string;
   textIndexStart?: number;
   rows: string[][];
+  cellStyles?: PptxTableCellStyle[][];
+  columnWidths?: number[];
+  rowHeights?: number[];
   x?: number;
   y?: number;
   width?: number;
   height?: number;
   rotation?: number;
+  tableStyleId?: string;
+  firstRow?: boolean;
+  firstColumn?: boolean;
+  lastRow?: boolean;
+  lastColumn?: boolean;
+  bandedRows?: boolean;
+  bandedColumns?: boolean;
+}
+
+export interface PptxTableCellStyle {
+  fillColor?: string;
+  textColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  align?: "left" | "center" | "right";
 }
 
 export interface PptxImage {
@@ -441,7 +552,33 @@ export interface PptxImage {
   width?: number;
   height?: number;
   rotation?: number;
+  imageCropLeft?: number;
+  imageCropTop?: number;
+  imageCropRight?: number;
+  imageCropBottom?: number;
   altText?: string;
+}
+
+export interface PptxMedia {
+  id: string;
+  kind?: "audio" | "video";
+  relationshipId?: string;
+  mediaPath?: string;
+  mimeType?: string;
+  shapeId?: string;
+  name?: string;
+  description?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  rotation?: number;
+  timingIndex?: number;
+  volumePercent?: number;
+  muted?: boolean;
+  showWhenStopped?: boolean;
+  delayMs?: number;
+  durationMs?: number;
 }
 
 export interface PptxChartSeries {
@@ -457,6 +594,38 @@ export interface PptxChart {
   path?: string;
   type?: string;
   title?: string;
+  legendVisible?: boolean;
+  legendPosition?: "r" | "l" | "t" | "b" | "tr";
+  categoryAxisTitle?: string;
+  valueAxisTitle?: string;
+  categoryAxisPosition?: "b" | "t";
+  valueAxisPosition?: "l" | "r";
+  categoryMajorGridlines?: boolean;
+  valueMajorGridlines?: boolean;
+  categoryAxisTickLabelPosition?: "nextTo" | "low" | "high" | "none";
+  valueAxisTickLabelPosition?: "nextTo" | "low" | "high" | "none";
+  categoryAxisMajorTickMark?: "cross" | "in" | "out" | "none";
+  valueAxisMajorTickMark?: "cross" | "in" | "out" | "none";
+  categoryAxisMinorTickMark?: "cross" | "in" | "out" | "none";
+  valueAxisMinorTickMark?: "cross" | "in" | "out" | "none";
+  categoryAxisNumberFormat?: string;
+  valueAxisNumberFormat?: string;
+  categoryAxisLineColor?: string;
+  valueAxisLineColor?: string;
+  categoryAxisLineWidth?: number;
+  valueAxisLineWidth?: number;
+  categoryAxisLineDash?: "solid" | "dash" | "dot" | "dashDot";
+  valueAxisLineDash?: "solid" | "dash" | "dot" | "dashDot";
+  categoryAxisLabelTextColor?: string;
+  valueAxisLabelTextColor?: string;
+  categoryAxisLabelFontSize?: number;
+  valueAxisLabelFontSize?: number;
+  categoryAxisLabelRotation?: number;
+  valueAxisLabelRotation?: number;
+  categoryAxisLabelBold?: boolean;
+  valueAxisLabelBold?: boolean;
+  categoryAxisLabelItalic?: boolean;
+  valueAxisLabelItalic?: boolean;
   x?: number;
   y?: number;
   width?: number;
@@ -485,6 +654,29 @@ export interface PptxAnimation {
   sourceXml?: string;
 }
 
+export interface PptxLayout {
+  path: string;
+  name?: string;
+  type?: string;
+  themePath?: string;
+  themeName?: string;
+  placeholderTexts?: PptxText[];
+}
+
+export interface PptxTheme {
+  path: string;
+  name?: string;
+  colors?: Record<string, string>;
+  majorFont?: string;
+  minorFont?: string;
+}
+
+export interface PptxTableStyle {
+  id: string;
+  name?: string;
+  default?: boolean;
+}
+
 export interface PptxSlide {
   id: string;
   name: string;
@@ -492,8 +684,24 @@ export interface PptxSlide {
   shapes?: PptxShape[];
   tables?: PptxTable[];
   images?: PptxImage[];
+  media?: PptxMedia[];
   charts?: PptxChart[];
+  layoutRelationshipId?: string;
+  layoutPath?: string;
+  layoutName?: string;
+  layoutType?: string;
+  layoutThemePath?: string;
+  layoutThemeName?: string;
+  backgroundKind?: "solid" | "gradient" | "image" | "preserved";
   backgroundColor?: string;
+  backgroundGradientStart?: string;
+  backgroundGradientEnd?: string;
+  backgroundGradientAngle?: number;
+  backgroundImageRelationshipId?: string;
+  backgroundImageMediaPath?: string;
+  backgroundImageMimeType?: string;
+  backgroundImageDataUrl?: string;
+  backgroundSourceXml?: string;
   notes?: string;
   transition?: PptxTransition;
   animations?: PptxAnimation[];
@@ -503,6 +711,9 @@ export interface PptxSlide {
 
 export interface PptxModel {
   slides: PptxSlide[];
+  layouts?: PptxLayout[];
+  themes?: PptxTheme[];
+  tableStyles?: PptxTableStyle[];
 }
 
 export * from "./modelNormalizers";

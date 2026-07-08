@@ -11,12 +11,16 @@ import type {
   PptxImage,
   PptxShape,
   PptxSlide,
+  PptxTableCellStyle,
 } from "./models";
 import {
+  PPTX_SNAP_GRID_PERCENT,
+  isPptxLineShape,
   pptxChartStyle,
   pptxImageStyle,
+  pptxSlideBackgroundStyle,
 } from "./pptxEditorUtils";
-import type { SlideDragState } from "./pptxEditorUtils";
+import type { PptxSnapGuide, SlideDragState } from "./pptxEditorUtils";
 import {
   pptxSelectionKey,
 } from "./pptxSelection";
@@ -39,6 +43,8 @@ export function PptxSlideCanvas({
   canvasRef,
   slide,
   selectionBoxBounds,
+  snapGuides,
+  showSnapGrid,
   activeTextId,
   activeShapeId,
   activeImageId,
@@ -62,11 +68,16 @@ export function PptxSlideCanvas({
   onAddTableColumn,
   onDeleteTableRow,
   onDeleteTableColumn,
+  onTableColumnWidthChange,
+  onTableRowHeightChange,
+  onTableCellStyleChange,
   onAddSlide,
 }: {
   canvasRef: RefObject<HTMLDivElement | null>;
   slide: PptxSlide | undefined;
   selectionBoxBounds: PptxSelectionBoxBounds | null;
+  snapGuides: PptxSnapGuide[];
+  showSnapGrid: boolean;
   activeTextId: string | null;
   activeShapeId: string | null;
   activeImageId: string | null;
@@ -100,13 +111,29 @@ export function PptxSlideCanvas({
   onAddTableColumn: (tableId: string, columnIndex: number) => void;
   onDeleteTableRow: (tableId: string, rowIndex: number) => void;
   onDeleteTableColumn: (tableId: string, columnIndex: number) => void;
+  onTableColumnWidthChange: (
+    tableId: string,
+    columnIndex: number,
+    value: number,
+  ) => void;
+  onTableRowHeightChange: (
+    tableId: string,
+    rowIndex: number,
+    value: number,
+  ) => void;
+  onTableCellStyleChange: (
+    tableId: string,
+    rowIndex: number,
+    columnIndex: number,
+    patch: Partial<PptxTableCellStyle>,
+  ) => void;
   onAddSlide: () => void;
 }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-6">
       <div
         className="mx-auto aspect-video max-w-4xl border border-[var(--border)] shadow-sm"
-        style={{ backgroundColor: slide?.backgroundColor ?? "#ffffff" }}
+        style={pptxSlideBackgroundStyle(slide)}
       >
         <div
           ref={canvasRef}
@@ -118,6 +145,39 @@ export function PptxSlideCanvas({
           onPointerLeave={onCanvasPointerUp}
           onPointerDown={onCanvasPointerDown}
         >
+          {showSnapGrid && (
+            <div
+              className="pointer-events-none absolute inset-0 z-0 opacity-30"
+              style={{
+                backgroundImage:
+                  "linear-gradient(to right, var(--border) 1px, transparent 1px), linear-gradient(to bottom, var(--border) 1px, transparent 1px)",
+                backgroundSize: `${PPTX_SNAP_GRID_PERCENT * 5}% ${PPTX_SNAP_GRID_PERCENT * 5}%`,
+              }}
+            />
+          )}
+          {snapGuides.map((guide, index) => (
+            <div
+              key={`${guide.orientation}-${guide.position}-${index}`}
+              className="pointer-events-none absolute z-[9998] bg-[var(--accent)]/60"
+              style={
+                guide.orientation === "vertical"
+                  ? {
+                      left: `${guide.position}%`,
+                      top: 0,
+                      bottom: 0,
+                      width: 1,
+                      transform: "translateX(-0.5px)",
+                    }
+                  : {
+                      top: `${guide.position}%`,
+                      left: 0,
+                      right: 0,
+                      height: 1,
+                      transform: "translateY(-0.5px)",
+                    }
+              }
+            />
+          ))}
           {selectionBoxBounds && (
             <div
               className="pointer-events-none absolute z-[9999] border border-[var(--accent)] bg-[var(--accent)]/10"
@@ -154,7 +214,7 @@ export function PptxSlideCanvas({
                   left: `${shape.x ?? 24}%`,
                   top: `${shape.y ?? 34}%`,
                   width: `${shape.width ?? 26}%`,
-                  height: `${shape.kind === "line" ? Math.max(1, shape.height ?? 0) : shape.height ?? 20}%`,
+                  height: `${isPptxLineShape(shape) ? Math.max(1, shape.height ?? 0) : shape.height ?? 20}%`,
                   transform: `rotate(${shape.rotation ?? 0}deg)`,
                   zIndex: index + 1,
                 }}
@@ -287,6 +347,15 @@ export function PptxSlideCanvas({
                 onDeleteRow={(rowIndex) => onDeleteTableRow(table.id, rowIndex)}
                 onDeleteColumn={(columnIndex) =>
                   onDeleteTableColumn(table.id, columnIndex)
+                }
+                onColumnWidthChange={(columnIndex, value) =>
+                  onTableColumnWidthChange(table.id, columnIndex, value)
+                }
+                onRowHeightChange={(rowIndex, value) =>
+                  onTableRowHeightChange(table.id, rowIndex, value)
+                }
+                onCellStyleChange={(rowIndex, columnIndex, patch) =>
+                  onTableCellStyleChange(table.id, rowIndex, columnIndex, patch)
                 }
               />
             );

@@ -366,6 +366,7 @@ export default function Chat() {
                   path={editorPath}
                   onClose={closeSidePanel}
                   onDirtyChange={setEditorDirty}
+                  onOpenDocument={setEditorPath}
                 />
               ) : null}
             </div>

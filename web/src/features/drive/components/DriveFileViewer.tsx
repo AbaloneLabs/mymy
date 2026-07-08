@@ -9,10 +9,12 @@ export function DriveFileViewer({
   file,
   onCloseEditor,
   onDirtyChange,
+  onOpenDocument,
 }: {
   file: DriveFileResponse | null;
   onCloseEditor?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onOpenDocument?: (path: string) => void;
 }) {
   const { t } = useTranslation();
   if (!file) {
@@ -60,6 +62,7 @@ export function DriveFileViewer({
         path={file.path}
         onClose={onCloseEditor ?? (() => undefined)}
         onDirtyChange={onDirtyChange}
+        onOpenDocument={onOpenDocument}
         variant="embedded"
       />
     );

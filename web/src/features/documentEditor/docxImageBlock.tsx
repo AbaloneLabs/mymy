@@ -1,7 +1,7 @@
 import { Crop, Image as ImageIcon, RotateCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import type { DocxBlock } from "./models";
+import type { DocxBlock, DocxImageWrap } from "./models";
 import {
   clampImageDimension,
   clampImageCropPercent,
@@ -21,6 +21,13 @@ const DOCX_IMAGE_CROP_CONTROLS: Array<{
   { key: "imageCropTop", label: "T" },
   { key: "imageCropRight", label: "R" },
   { key: "imageCropBottom", label: "B" },
+];
+
+const DOCX_IMAGE_WRAP_OPTIONS: Array<{ value: DocxImageWrap; label: string }> = [
+  { value: "inline", label: "Inline" },
+  { value: "square", label: "Square" },
+  { value: "behind", label: "Behind" },
+  { value: "inFront", label: "In front" },
 ];
 
 export function DocxImageBlock({
@@ -65,6 +72,7 @@ export function DocxImageBlock({
   return (
     <figure
       tabIndex={0}
+      data-docx-block={block.id}
       onFocus={onFocus}
       onClick={onFocus}
       className={cn(
@@ -102,7 +110,7 @@ export function DocxImageBlock({
       </div>
       {active && (
         <figcaption className="mt-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-xs text-neutral-600">
-          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_96px_96px_96px]">
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_96px_96px_96px_110px]">
             <label className="min-w-0">
               <span className="mb-1 block text-[10px] uppercase tracking-wide text-neutral-400">
                 Alt
@@ -155,6 +163,24 @@ export function DocxImageBlock({
                 onChange={(event) => updateRotation(Number(event.target.value))}
                 className="h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 outline-none focus:border-[var(--accent)]"
               />
+            </label>
+            <label>
+              <span className="mb-1 block text-[10px] uppercase tracking-wide text-neutral-400">
+                Wrap
+              </span>
+              <select
+                value={block.imageWrap ?? "inline"}
+                onChange={(event) =>
+                  onChange({ imageWrap: event.target.value as DocxImageWrap })
+                }
+                className="h-8 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 outline-none focus:border-[var(--accent)]"
+              >
+                {DOCX_IMAGE_WRAP_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
           <div className="mt-2 grid gap-2 md:grid-cols-4">

@@ -762,6 +762,7 @@ const ja = {
   documentEditor: {
     title: "ドキュメントエディター",
     unsaved: "未保存",
+    saveQueued: "保存予約済み",
     savedAt: "{time} に保存",
     loadError: "ドキュメントを読み込めませんでした。",
     saveError: "保存できませんでした。ファイルが変更された場合は開き直してください。",
@@ -788,6 +789,10 @@ const ja = {
     commandPalette: "コマンドパレット",
     commandPalettePlaceholder: "コマンドを検索",
     noCommands: "コマンドがありません",
+    matchCase: "大文字小文字を区別",
+    wholeWord: "単語単位",
+    regex: "正規表現",
+    replaceAll: "すべて置換",
     toggleFormulas: "数式表示を切り替え",
     columnWidth: "列幅",
     rowHeight: "行の高さ",

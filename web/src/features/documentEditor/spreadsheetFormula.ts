@@ -1,176 +1,60 @@
 import { columnName } from "./models";
+import {
+  spreadsheetFormulaAverageIf,
+  spreadsheetFormulaAverageIfs,
+  spreadsheetFormulaCountIf,
+  spreadsheetFormulaCountIfs,
+  spreadsheetFormulaSumIf,
+  spreadsheetFormulaSumIfs,
+} from "./spreadsheetFormulaCriteria";
+import {
+  compareSpreadsheetFormulaValues,
+  isSpreadsheetFormulaError,
+  isSpreadsheetFormulaNa,
+  spreadsheetFormulaArray,
+  spreadsheetFormulaAsArray,
+  spreadsheetFormulaFirstError,
+  spreadsheetFormulaFlattenValues,
+  spreadsheetFormulaValueBoolean,
+  spreadsheetFormulaValueNumber,
+  spreadsheetFormulaValuesEqual,
+  spreadsheetFormulaValueText,
+  wildcardSpreadsheetFormulaPattern,
+} from "./spreadsheetFormulaValues";
+import type { SpreadsheetFormulaValue } from "./spreadsheetFormulaValues";
 
-export type SpreadsheetFormulaValue = number | string | boolean;
+export {
+  formatSpreadsheetFormulaResult,
+  isSpreadsheetFormulaArray,
+  spreadsheetFormulaValueBoolean,
+  spreadsheetFormulaValueNumber,
+} from "./spreadsheetFormulaValues";
+export type {
+  SpreadsheetFormulaArray,
+  SpreadsheetFormulaScalar,
+  SpreadsheetFormulaValue,
+} from "./spreadsheetFormulaValues";
 
 export interface SpreadsheetFormulaFunction {
   name: string;
   signature: string;
   description: string;
-  category: "Math" | "Logical" | "Text" | "Date";
+  category:
+    | "Math"
+    | "Statistical"
+    | "Logical"
+    | "Text"
+    | "Date"
+    | "Financial"
+    | "Information"
+    | "Lookup";
 }
 
-export const SPREADSHEET_FORMULA_FUNCTIONS: SpreadsheetFormulaFunction[] = [
-  {
-    name: "SUM",
-    signature: "SUM(number1, [number2], ...)",
-    description: "Adds numbers, cell references, and ranges.",
-    category: "Math",
-  },
-  {
-    name: "AVERAGE",
-    signature: "AVERAGE(number1, [number2], ...)",
-    description: "Returns the arithmetic mean of numeric arguments.",
-    category: "Math",
-  },
-  {
-    name: "COUNT",
-    signature: "COUNT(value1, [value2], ...)",
-    description: "Counts numeric values.",
-    category: "Math",
-  },
-  {
-    name: "COUNTA",
-    signature: "COUNTA(value1, [value2], ...)",
-    description: "Counts non-empty values.",
-    category: "Math",
-  },
-  {
-    name: "MIN",
-    signature: "MIN(number1, [number2], ...)",
-    description: "Returns the smallest numeric value.",
-    category: "Math",
-  },
-  {
-    name: "MAX",
-    signature: "MAX(number1, [number2], ...)",
-    description: "Returns the largest numeric value.",
-    category: "Math",
-  },
-  {
-    name: "ABS",
-    signature: "ABS(number)",
-    description: "Returns the absolute value.",
-    category: "Math",
-  },
-  {
-    name: "ROUND",
-    signature: "ROUND(number, digits)",
-    description: "Rounds a number to a fixed number of digits.",
-    category: "Math",
-  },
-  {
-    name: "POWER",
-    signature: "POWER(number, power)",
-    description: "Raises a number to a power.",
-    category: "Math",
-  },
-  {
-    name: "SQRT",
-    signature: "SQRT(number)",
-    description: "Returns the square root.",
-    category: "Math",
-  },
-  {
-    name: "IF",
-    signature: "IF(test, value_if_true, value_if_false)",
-    description: "Returns one value when a condition is true and another when false.",
-    category: "Logical",
-  },
-  {
-    name: "AND",
-    signature: "AND(condition1, [condition2], ...)",
-    description: "Returns TRUE when every argument is true.",
-    category: "Logical",
-  },
-  {
-    name: "OR",
-    signature: "OR(condition1, [condition2], ...)",
-    description: "Returns TRUE when any argument is true.",
-    category: "Logical",
-  },
-  {
-    name: "NOT",
-    signature: "NOT(condition)",
-    description: "Reverses a logical value.",
-    category: "Logical",
-  },
-  {
-    name: "LEN",
-    signature: "LEN(text)",
-    description: "Returns the number of characters in text.",
-    category: "Text",
-  },
-  {
-    name: "CONCAT",
-    signature: "CONCAT(value1, [value2], ...)",
-    description: "Joins values into one text value.",
-    category: "Text",
-  },
-  {
-    name: "CONCATENATE",
-    signature: "CONCATENATE(value1, [value2], ...)",
-    description: "Joins values into one text value.",
-    category: "Text",
-  },
-  {
-    name: "LEFT",
-    signature: "LEFT(text, [count])",
-    description: "Returns characters from the start of text.",
-    category: "Text",
-  },
-  {
-    name: "RIGHT",
-    signature: "RIGHT(text, [count])",
-    description: "Returns characters from the end of text.",
-    category: "Text",
-  },
-  {
-    name: "MID",
-    signature: "MID(text, start, count)",
-    description: "Returns characters from the middle of text.",
-    category: "Text",
-  },
-  {
-    name: "LOWER",
-    signature: "LOWER(text)",
-    description: "Converts text to lowercase.",
-    category: "Text",
-  },
-  {
-    name: "UPPER",
-    signature: "UPPER(text)",
-    description: "Converts text to uppercase.",
-    category: "Text",
-  },
-  {
-    name: "TRIM",
-    signature: "TRIM(text)",
-    description: "Removes extra spaces from text.",
-    category: "Text",
-  },
-  {
-    name: "TODAY",
-    signature: "TODAY()",
-    description: "Returns the current date as an Excel serial number.",
-    category: "Date",
-  },
-  {
-    name: "NOW",
-    signature: "NOW()",
-    description: "Returns the current date and time as an Excel serial number.",
-    category: "Date",
-  },
-  {
-    name: "DATE",
-    signature: "DATE(year, month, day)",
-    description: "Builds an Excel date serial number.",
-    category: "Date",
-  },
-];
-
+export { SPREADSHEET_FORMULA_FUNCTIONS } from "./spreadsheetFormulaCatalog";
 type SpreadsheetFormulaToken =
   | { type: "number"; value: string }
   | { type: "string"; value: string }
+  | { type: "error"; value: string }
   | { type: "identifier"; value: string }
   | { type: "operator"; value: string };
 
@@ -179,6 +63,12 @@ type SpreadsheetFormulaEvaluator = (
   numbers: number[],
 ) => SpreadsheetFormulaValue;
 
+export interface SpreadsheetFormulaEvaluationContext {
+  valueForRef: (reference: string) => SpreadsheetFormulaValue;
+  valuesForRange?: (startRef: string, endRef: string) => SpreadsheetFormulaValue[];
+  valuesForName?: (name: string) => SpreadsheetFormulaValue[];
+}
+
 const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator> = {
   SUM: (_args, numbers) => numbers.reduce((total, value) => total + value, 0),
   AVERAGE: (_args, numbers) =>
@@ -186,12 +76,20 @@ const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator
       ? 0
       : numbers.reduce((total, value) => total + value, 0) / numbers.length,
   COUNT: (args) =>
-    args.filter(
+    spreadsheetFormulaFlattenValues(args).filter(
       (value) =>
         spreadsheetFormulaValueText(value) !== "" && Number.isFinite(Number(value)),
     ).length,
+  COUNTIF: (args) => spreadsheetFormulaCountIf(args[0], args[1]),
+  COUNTIFS: (args) => spreadsheetFormulaCountIfs(args),
   COUNTA: (args) =>
-    args.filter((value) => spreadsheetFormulaValueText(value) !== "").length,
+    spreadsheetFormulaFlattenValues(args).filter(
+      (value) => spreadsheetFormulaValueText(value) !== "",
+    ).length,
+  SUMIF: (args) => spreadsheetFormulaSumIf(args[0], args[1], args[2]),
+  SUMIFS: (args) => spreadsheetFormulaSumIfs(args[0], args.slice(1)),
+  AVERAGEIF: (args) => spreadsheetFormulaAverageIf(args[0], args[1], args[2]),
+  AVERAGEIFS: (args) => spreadsheetFormulaAverageIfs(args[0], args.slice(1)),
   MIN: (_args, numbers) => (numbers.length === 0 ? 0 : Math.min(...numbers)),
   MAX: (_args, numbers) => (numbers.length === 0 ? 0 : Math.max(...numbers)),
   ABS: (_args, numbers) => Math.abs(numbers[0] ?? 0),
@@ -200,18 +98,123 @@ const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator
     const multiplier = 10 ** places;
     return Math.round((numbers[0] ?? 0) * multiplier) / multiplier;
   },
+  ROUNDUP: (_args, numbers) => {
+    const places = Math.trunc(numbers[1] ?? 0);
+    return roundSpreadsheetFormulaNumber(numbers[0] ?? 0, places, "away");
+  },
+  ROUNDDOWN: (_args, numbers) => {
+    const places = Math.trunc(numbers[1] ?? 0);
+    return roundSpreadsheetFormulaNumber(numbers[0] ?? 0, places, "toward");
+  },
   POWER: (_args, numbers) => (numbers[0] ?? 0) ** (numbers[1] ?? 0),
   SQRT: (_args, numbers) => Math.sqrt(numbers[0] ?? 0),
+  PRODUCT: (_args, numbers) =>
+    numbers.length === 0
+      ? 0
+      : numbers.reduce((total, value) => total * value, 1),
+  MEDIAN: (_args, numbers) => {
+    if (numbers.length === 0) return 0;
+    const sorted = [...numbers].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+      : (sorted[middle] ?? 0);
+  },
+  MOD: (_args, numbers) => {
+    const divisor = numbers[1] ?? 0;
+    if (divisor === 0) return 0;
+    return (numbers[0] ?? 0) - divisor * Math.floor((numbers[0] ?? 0) / divisor);
+  },
+  INT: (_args, numbers) => Math.floor(numbers[0] ?? 0),
+  CEILING: (_args, numbers) =>
+    roundSpreadsheetFormulaMultiple(numbers[0] ?? 0, numbers[1] ?? 1, "up"),
+  FLOOR: (_args, numbers) =>
+    roundSpreadsheetFormulaMultiple(numbers[0] ?? 0, numbers[1] ?? 1, "down"),
+  SUMSQ: (_args, numbers) =>
+    numbers.reduce((total, value) => total + value * value, 0),
+  SIGN: (_args, numbers) => Math.sign(numbers[0] ?? 0),
+  TRUNC: (_args, numbers) => {
+    const places = Math.trunc(numbers[1] ?? 0);
+    const multiplier = 10 ** places;
+    return Math.trunc((numbers[0] ?? 0) * multiplier) / multiplier;
+  },
+  MROUND: (_args, numbers) => {
+    const multiple = numbers[1] ?? 0;
+    if (multiple === 0) return 0;
+    return Math.round((numbers[0] ?? 0) / multiple) * multiple;
+  },
+  ODD: (_args, numbers) => roundSpreadsheetFormulaOddEven(numbers[0] ?? 0, "odd"),
+  EVEN: (_args, numbers) => roundSpreadsheetFormulaOddEven(numbers[0] ?? 0, "even"),
+  RAND: () => Math.random(),
+  RANDBETWEEN: (_args, numbers) => {
+    const bottom = Math.ceil(Math.min(numbers[0] ?? 0, numbers[1] ?? 0));
+    const top = Math.floor(Math.max(numbers[0] ?? 0, numbers[1] ?? 0));
+    return Math.floor(Math.random() * (top - bottom + 1)) + bottom;
+  },
+  COUNTBLANK: (args) =>
+    spreadsheetFormulaFlattenValues(args).filter(
+      (value) => spreadsheetFormulaValueText(value) === "",
+    ).length,
+  "STDEV.S": (_args, numbers) => spreadsheetFormulaStandardDeviation(numbers, true),
+  "STDEV.P": (_args, numbers) => spreadsheetFormulaStandardDeviation(numbers, false),
+  "VAR.S": (_args, numbers) => spreadsheetFormulaVariance(numbers, true),
+  "VAR.P": (_args, numbers) => spreadsheetFormulaVariance(numbers, false),
+  LARGE: (_args, numbers) =>
+    spreadsheetFormulaNthSorted(
+      numbers.slice(0, -1),
+      Math.trunc(numbers.at(-1) ?? 1),
+      "desc",
+    ),
+  SMALL: (_args, numbers) =>
+    spreadsheetFormulaNthSorted(
+      numbers.slice(0, -1),
+      Math.trunc(numbers.at(-1) ?? 1),
+      "asc",
+    ),
+  "PERCENTILE.INC": (_args, numbers) =>
+    spreadsheetFormulaPercentile(numbers.slice(0, -1), numbers.at(-1) ?? 0),
+  "QUARTILE.INC": (_args, numbers) =>
+    spreadsheetFormulaPercentile(numbers.slice(0, -1), (numbers.at(-1) ?? 0) / 4),
   IF: (args) =>
     spreadsheetFormulaValueBoolean(args[0])
       ? (args[1] ?? true)
       : (args[2] ?? false),
-  AND: (args) => args.every(spreadsheetFormulaValueBoolean),
-  OR: (args) => args.some(spreadsheetFormulaValueBoolean),
+  AND: (args) => spreadsheetFormulaFlattenValues(args).every(spreadsheetFormulaValueBoolean),
+  OR: (args) => spreadsheetFormulaFlattenValues(args).some(spreadsheetFormulaValueBoolean),
   NOT: (args) => !spreadsheetFormulaValueBoolean(args[0]),
+  TRUE: () => true,
+  FALSE: () => false,
+  XOR: (args) =>
+    spreadsheetFormulaFlattenValues(args).filter(spreadsheetFormulaValueBoolean).length % 2 === 1,
+  IFERROR: (args) => (isSpreadsheetFormulaError(args[0]) ? (args[1] ?? "") : (args[0] ?? "")),
+  IFNA: (args) => (isSpreadsheetFormulaNa(args[0]) ? (args[1] ?? "") : (args[0] ?? "")),
+  IFS: (args) => {
+    for (let index = 0; index < args.length; index += 2) {
+      if (spreadsheetFormulaValueBoolean(args[index])) return args[index + 1] ?? true;
+    }
+    return "#N/A";
+  },
+  SWITCH: (args) => {
+    const expression = args[0];
+    for (let index = 1; index + 1 < args.length; index += 2) {
+      if (compareSpreadsheetFormulaValues(expression ?? "", args[index] ?? "", "=") === true) {
+        return args[index + 1] ?? "";
+      }
+    }
+    return args.length % 2 === 0 ? (args.at(-1) ?? "#N/A") : "#N/A";
+  },
   LEN: (args) => spreadsheetFormulaValueText(args[0]).length,
-  CONCAT: (args) => args.map(spreadsheetFormulaValueText).join(""),
-  CONCATENATE: (args) => args.map(spreadsheetFormulaValueText).join(""),
+  CONCAT: (args) => spreadsheetFormulaFlattenValues(args).map(spreadsheetFormulaValueText).join(""),
+  CONCATENATE: (args) =>
+    spreadsheetFormulaFlattenValues(args).map(spreadsheetFormulaValueText).join(""),
+  TEXTJOIN: (args) => {
+    const delimiter = spreadsheetFormulaValueText(args[0]);
+    const ignoreEmpty = spreadsheetFormulaValueBoolean(args[1]);
+    return spreadsheetFormulaFlattenValues(args.slice(2))
+      .map(spreadsheetFormulaValueText)
+      .filter((value) => !ignoreEmpty || value !== "")
+      .join(delimiter);
+  },
   LEFT: (args, numbers) =>
     spreadsheetFormulaValueText(args[0]).slice(
       0,
@@ -229,6 +232,58 @@ const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator
   LOWER: (args) => spreadsheetFormulaValueText(args[0]).toLowerCase(),
   UPPER: (args) => spreadsheetFormulaValueText(args[0]).toUpperCase(),
   TRIM: (args) => spreadsheetFormulaValueText(args[0]).trim().replace(/\s+/g, " "),
+  SUBSTITUTE: (args, numbers) =>
+    substituteSpreadsheetFormulaText(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1]),
+      spreadsheetFormulaValueText(args[2]),
+      numbers[3],
+    ),
+  REPLACE: (args, numbers) => {
+    const text = spreadsheetFormulaValueText(args[0]);
+    const start = Math.max(0, Math.trunc(numbers[1] ?? 1) - 1);
+    const count = Math.max(0, Math.trunc(numbers[2] ?? 0));
+    return `${text.slice(0, start)}${spreadsheetFormulaValueText(args[3])}${text.slice(start + count)}`;
+  },
+  FIND: (args, numbers) =>
+    findSpreadsheetFormulaText(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1]),
+      numbers[2],
+      false,
+    ),
+  SEARCH: (args, numbers) =>
+    findSpreadsheetFormulaText(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1]),
+      numbers[2],
+      true,
+    ),
+  EXACT: (args) =>
+    spreadsheetFormulaValueText(args[0]) === spreadsheetFormulaValueText(args[1]),
+  VALUE: (args) => spreadsheetFormulaValueNumber(spreadsheetFormulaValueText(args[0])),
+  NUMBERVALUE: (args) =>
+    spreadsheetFormulaNumberValue(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1] ?? "."),
+      spreadsheetFormulaValueText(args[2] ?? ","),
+    ),
+  CLEAN: (args) =>
+    [...spreadsheetFormulaValueText(args[0])]
+      .filter((char) => char.charCodeAt(0) >= 32)
+      .join(""),
+  TEXTBEFORE: (args) =>
+    spreadsheetFormulaTextAroundDelimiter(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1]),
+      "before",
+    ),
+  TEXTAFTER: (args) =>
+    spreadsheetFormulaTextAroundDelimiter(
+      spreadsheetFormulaValueText(args[0]),
+      spreadsheetFormulaValueText(args[1]),
+      "after",
+    ),
   TODAY: () => excelSerialFromDate(new Date()),
   NOW: () => excelSerialFromDateTime(new Date()),
   DATE: (_args, numbers) =>
@@ -237,13 +292,107 @@ const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator
       Math.trunc(numbers[1] ?? 1),
       Math.trunc(numbers[2] ?? 1),
     ),
+  YEAR: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCFullYear(),
+  MONTH: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCMonth() + 1,
+  DAY: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCDate(),
+  HOUR: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCHours(),
+  MINUTE: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCMinutes(),
+  SECOND: (_args, numbers) => excelDateFromSerial(numbers[0] ?? 0).getUTCSeconds(),
+  DAYS: (_args, numbers) => Math.trunc((numbers[0] ?? 0) - (numbers[1] ?? 0)),
+  TIME: (_args, numbers) =>
+    ((Math.trunc(numbers[0] ?? 0) * 3600 +
+      Math.trunc(numbers[1] ?? 0) * 60 +
+      Math.trunc(numbers[2] ?? 0)) %
+      86400) /
+    86400,
+  DATEVALUE: (args) => excelSerialFromDateText(spreadsheetFormulaValueText(args[0])),
+  WEEKDAY: (_args, numbers) => spreadsheetFormulaWeekday(numbers[0] ?? 0, numbers[1] ?? 1),
+  EOMONTH: (_args, numbers) => excelSerialEndOfMonth(numbers[0] ?? 0, numbers[1] ?? 0),
+  INDEX: (args) =>
+    spreadsheetFormulaIndex(
+      args[0],
+      Math.trunc(spreadsheetFormulaValueNumber(args[1])),
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 1)),
+    ),
+  MATCH: (args) =>
+    spreadsheetFormulaMatch(
+      args[0] ?? "",
+      args[1],
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 0)),
+    ),
+  XMATCH: (args) =>
+    spreadsheetFormulaXMatch(
+      args[0] ?? "",
+      args[1],
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 0)),
+      Math.trunc(spreadsheetFormulaValueNumber(args[3] ?? 1)),
+    ),
+  XLOOKUP: (args) =>
+    spreadsheetFormulaXLookup(
+      args[0] ?? "",
+      args[1],
+      args[2],
+      args[3],
+      Math.trunc(spreadsheetFormulaValueNumber(args[4] ?? 0)),
+      Math.trunc(spreadsheetFormulaValueNumber(args[5] ?? 1)),
+    ),
+  VLOOKUP: (args) =>
+    spreadsheetFormulaTableLookup(
+      args[0] ?? "",
+      args[1],
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 1)),
+      spreadsheetFormulaValueBoolean(args[3] ?? true),
+      "vertical",
+    ),
+  HLOOKUP: (args) =>
+    spreadsheetFormulaTableLookup(
+      args[0] ?? "",
+      args[1],
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 1)),
+      spreadsheetFormulaValueBoolean(args[3] ?? true),
+      "horizontal",
+    ),
+  CHOOSE: (args) =>
+    args[Math.trunc(spreadsheetFormulaValueNumber(args[0] ?? 1))] ?? "#VALUE!",
+  FILTER: (args) => spreadsheetFormulaFilter(args[0], args[1], args[2]),
+  UNIQUE: (args) => spreadsheetFormulaUnique(args[0]),
+  SORT: (args) =>
+    spreadsheetFormulaSort(
+      args[0],
+      Math.trunc(spreadsheetFormulaValueNumber(args[1] ?? 1)),
+      Math.trunc(spreadsheetFormulaValueNumber(args[2] ?? 1)),
+    ),
+  ISBLANK: (args) => spreadsheetFormulaValueText(args[0]) === "",
+  ISNUMBER: (args) =>
+    typeof args[0] === "number" ||
+    (spreadsheetFormulaValueText(args[0]) !== "" &&
+      Number.isFinite(Number(args[0]))),
+  ISTEXT: (args) => typeof args[0] === "string" && !isSpreadsheetFormulaError(args[0]),
+  ISERROR: (args) => isSpreadsheetFormulaError(args[0]),
+  ISNA: (args) => isSpreadsheetFormulaNa(args[0]),
+  PMT: (_args, numbers) =>
+    spreadsheetFormulaPmt(
+      numbers[0] ?? 0,
+      numbers[1] ?? 0,
+      numbers[2] ?? 0,
+      numbers[3] ?? 0,
+      numbers[4] ?? 0,
+    ),
 };
+
+const SPREADSHEET_FORMULA_ERROR_HANDLERS = new Set(["IFERROR", "IFNA", "ISERROR", "ISNA"]);
 
 export function evaluateSpreadsheetFormula(
   formula: string,
-  valueForRef: (reference: string) => string,
+  contextOrValueForRef:
+    | SpreadsheetFormulaEvaluationContext
+    | ((reference: string) => SpreadsheetFormulaValue),
 ) {
-  return new SpreadsheetFormulaParser(formula, valueForRef).parse();
+  const context =
+    typeof contextOrValueForRef === "function"
+      ? { valueForRef: contextOrValueForRef }
+      : contextOrValueForRef;
+  return new SpreadsheetFormulaParser(formula, context).parse();
 }
 
 export function adjustSpreadsheetFormulaReferences(
@@ -265,7 +414,10 @@ export function adjustSpreadsheetFormulaReferences(
   );
 }
 
-export function spreadsheetFormulaReferences(formula: string) {
+export function spreadsheetFormulaReferences(
+  formula: string,
+  options?: { referencesForName?: (name: string) => string[] },
+) {
   try {
     const tokens = tokenizeSpreadsheetFormula(formula);
     const references = new Set<string>();
@@ -288,7 +440,17 @@ export function spreadsheetFormulaReferences(formula: string) {
         continue;
       }
       if (token.type === "identifier" && isSpreadsheetFormulaCellReference(token.value)) {
-        references.add(normalizeSpreadsheetFormulaRef(token.value));
+        references.add(displaySpreadsheetFormulaRef(token.value));
+        continue;
+      }
+      if (
+        token.type === "identifier" &&
+        !(tokens[index + 1]?.type === "operator" && tokens[index + 1]?.value === "(") &&
+        !isSpreadsheetFormulaCellReference(token.value)
+      ) {
+        options?.referencesForName?.(token.value).forEach((reference) =>
+          references.add(reference),
+        );
       }
     }
     return [...references].sort(compareSpreadsheetFormulaRefs);
@@ -297,45 +459,17 @@ export function spreadsheetFormulaReferences(formula: string) {
   }
 }
 
-export function spreadsheetFormulaValueNumber(
-  value: SpreadsheetFormulaValue | string | undefined,
-) {
-  if (typeof value === "boolean") return value ? 1 : 0;
-  const number = Number(value ?? "");
-  return Number.isFinite(number) ? number : 0;
-}
-
-export function spreadsheetFormulaValueBoolean(
-  value: SpreadsheetFormulaValue | string | undefined,
-) {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0 && Number.isFinite(value);
-  const normalized = String(value ?? "").trim().toUpperCase();
-  if (!normalized) return false;
-  if (normalized === "FALSE") return false;
-  if (normalized === "TRUE") return true;
-  const number = Number(normalized);
-  return Number.isFinite(number) ? number !== 0 : true;
-}
-
-export function formatSpreadsheetFormulaResult(value: SpreadsheetFormulaValue) {
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "string") return value;
-  if (Number.isInteger(value)) return String(value);
-  return Number(value.toPrecision(12)).toString();
-}
-
 class SpreadsheetFormulaParser {
   private readonly tokens: SpreadsheetFormulaToken[];
-  private readonly valueForRef: (reference: string) => string;
+  private readonly context: SpreadsheetFormulaEvaluationContext;
   private index = 0;
 
   constructor(
     formula: string,
-    valueForRef: (reference: string) => string,
+    context: SpreadsheetFormulaEvaluationContext,
   ) {
     this.tokens = tokenizeSpreadsheetFormula(formula);
-    this.valueForRef = valueForRef;
+    this.context = context;
   }
 
   parse() {
@@ -373,30 +507,46 @@ class SpreadsheetFormulaParser {
     return value;
   }
 
-  private parseAdditive(): number {
+  private parseAdditive(): SpreadsheetFormulaValue {
     let value = this.parseTerm();
     while (this.matchOperator("+") || this.matchOperator("-")) {
       const operator = this.previous().value;
       const right = this.parseTerm();
-      value = operator === "+" ? value + right : value - right;
+      const error = spreadsheetFormulaFirstError([value, right]);
+      if (error) return error;
+      value =
+        operator === "+"
+          ? spreadsheetFormulaValueNumber(value) + spreadsheetFormulaValueNumber(right)
+          : spreadsheetFormulaValueNumber(value) - spreadsheetFormulaValueNumber(right);
     }
     return value;
   }
 
-  private parseTerm(): number {
+  private parseTerm(): SpreadsheetFormulaValue {
     let value = this.parsePower();
     while (this.matchOperator("*") || this.matchOperator("/")) {
       const operator = this.previous().value;
       const right = this.parsePower();
-      value = operator === "*" ? value * right : value / right;
+      const error = spreadsheetFormulaFirstError([value, right]);
+      if (error) return error;
+      if (operator === "/" && spreadsheetFormulaValueNumber(right) === 0) {
+        return "#DIV/0!";
+      }
+      value =
+        operator === "*"
+          ? spreadsheetFormulaValueNumber(value) * spreadsheetFormulaValueNumber(right)
+          : spreadsheetFormulaValueNumber(value) / spreadsheetFormulaValueNumber(right);
     }
     return value;
   }
 
-  private parsePower(): number {
-    let value = spreadsheetFormulaValueNumber(this.parseUnary());
-    while (this.matchOperator("^")) {
-      value = value ** spreadsheetFormulaValueNumber(this.parseUnary());
+  private parsePower(): SpreadsheetFormulaValue {
+    const value = this.parseUnary();
+    if (this.matchOperator("^")) {
+      const right = this.parsePower();
+      const error = spreadsheetFormulaFirstError([value, right]);
+      if (error) return error;
+      return spreadsheetFormulaValueNumber(value) ** spreadsheetFormulaValueNumber(right);
     }
     return value;
   }
@@ -408,7 +558,15 @@ class SpreadsheetFormulaParser {
     if (this.matchOperator("-")) {
       return -spreadsheetFormulaValueNumber(this.parseUnary());
     }
-    return this.parsePrimary();
+    return this.parsePercent();
+  }
+
+  private parsePercent(): SpreadsheetFormulaValue {
+    let value = this.parsePrimary();
+    while (this.matchOperator("%")) {
+      value = spreadsheetFormulaValueNumber(value) / 100;
+    }
+    return value;
   }
 
   private parsePrimary(): SpreadsheetFormulaValue {
@@ -421,15 +579,18 @@ class SpreadsheetFormulaParser {
     if (!token) throw new Error("Expected formula value");
     if (token.type === "number") return Number(token.value);
     if (token.type === "string") return token.value;
+    if (token.type === "error") return token.value;
     if (token.type === "identifier") {
-      if (token.value.toUpperCase() === "TRUE") return true;
-      if (token.value.toUpperCase() === "FALSE") return false;
       if (this.matchOperator("(")) {
         return this.evaluateFunction(token.value);
       }
+      if (token.value.toUpperCase() === "TRUE") return true;
+      if (token.value.toUpperCase() === "FALSE") return false;
       if (isSpreadsheetFormulaCellReference(token.value)) {
-        return this.valueForRef(token.value);
+        return this.context.valueForRef(token.value);
       }
+      const namedValues = this.context.valuesForName?.(token.value) ?? [];
+      if (namedValues.length > 0) return namedValues[0] ?? "";
     }
     throw new Error("Unsupported formula value");
   }
@@ -438,18 +599,20 @@ class SpreadsheetFormulaParser {
     const args: SpreadsheetFormulaValue[] = [];
     if (!this.checkOperator(")")) {
       do {
-        args.push(...this.parseFunctionArgument());
-      } while (this.matchOperator(","));
+        args.push(this.parseFunctionArgument());
+      } while (this.matchArgumentSeparator());
     }
     this.consumeOperator(")");
     const upper = name.toUpperCase();
-    const numbers = args.map(spreadsheetFormulaValueNumber);
+    const numbers = spreadsheetFormulaFlattenValues(args).map(spreadsheetFormulaValueNumber);
+    const error = spreadsheetFormulaFirstError(args);
+    if (error && !SPREADSHEET_FORMULA_ERROR_HANDLERS.has(upper)) return error;
     const evaluator = SPREADSHEET_FORMULA_EVALUATORS[upper];
     if (evaluator) return evaluator(args, numbers);
     throw new Error("Unsupported formula function");
   }
 
-  private parseFunctionArgument(): SpreadsheetFormulaValue[] {
+  private parseFunctionArgument(): SpreadsheetFormulaValue {
     const start = this.peek();
     const colon = this.peek(1);
     const end = this.peek(2);
@@ -464,11 +627,34 @@ class SpreadsheetFormulaParser {
       this.advance();
       this.advance();
       this.advance();
-      return spreadsheetFormulaRangeReferences(start.value, end.value).map(
-        (reference) => this.valueForRef(reference),
-      );
+      return this.rangeValue(start.value, end.value);
     }
-    return [this.parseExpression()];
+    if (
+      start?.type === "identifier" &&
+      !isSpreadsheetFormulaCellReference(start.value) &&
+      this.context.valuesForName
+    ) {
+      const values = this.context.valuesForName(start.value);
+      if (values.length > 0) {
+        this.advance();
+        return spreadsheetFormulaArray(values, values.length, values.length > 0 ? 1 : 0);
+      }
+    }
+    return this.parseExpression();
+  }
+
+  private rangeValue(startRef: string, endRef: string) {
+    const dimensions = spreadsheetFormulaRangeDimensions(startRef, endRef);
+    const values =
+      this.context.valuesForRange?.(startRef, endRef) ??
+      spreadsheetFormulaRangeReferences(startRef, endRef).map((reference) =>
+        this.context.valueForRef(reference),
+      );
+    return spreadsheetFormulaArray(
+      values,
+      dimensions?.width ?? values.length,
+      dimensions?.height ?? (values.length > 0 ? 1 : 0),
+    );
   }
 
   private matchOperator(value: string) {
@@ -488,6 +674,10 @@ class SpreadsheetFormulaParser {
     }
   }
 
+  private matchArgumentSeparator() {
+    return this.matchOperator(",") || this.matchOperator(";");
+  }
+
   private advance() {
     const token = this.peek();
     if (token) this.index += 1;
@@ -505,6 +695,7 @@ class SpreadsheetFormulaParser {
 
 function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] {
   const source = formula.trim().replace(/^=/, "");
+  const decimalComma = spreadsheetFormulaUsesDecimalComma(source);
   const tokens: SpreadsheetFormulaToken[] = [];
   let index = 0;
   while (index < source.length) {
@@ -513,7 +704,13 @@ function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] 
       index += 1;
       continue;
     }
-    if (/[()+\-*/^,:]/.test(char)) {
+    const number = nextSpreadsheetFormulaNumberToken(source.slice(index), decimalComma);
+    if (number) {
+      tokens.push({ type: "number", value: number.value });
+      index += number.length;
+      continue;
+    }
+    if (/[()+\-*/^,;:%]/.test(char)) {
       tokens.push({ type: "operator", value: char });
       index += 1;
       continue;
@@ -542,10 +739,19 @@ function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] 
       index += 1;
       continue;
     }
-    const number = /^\d+(?:\.\d+)?/.exec(source.slice(index));
-    if (number) {
-      tokens.push({ type: "number", value: number[0] });
-      index += number[0].length;
+    const error = /^#(?:DIV\/0!|N\/A|NAME\?|NULL!|NUM!|REF!|VALUE!|SPILL!|CALC!)/i.exec(
+      source.slice(index),
+    );
+    if (error) {
+      tokens.push({ type: "error", value: error[0].toUpperCase() });
+      index += error[0].length;
+      continue;
+    }
+    const quotedSheetReference =
+      /^'(?:[^']|'')+'!\$?[A-Za-z]{1,3}\$?\d+/.exec(source.slice(index));
+    if (quotedSheetReference) {
+      tokens.push({ type: "identifier", value: quotedSheetReference[0] });
+      index += quotedSheetReference[0].length;
       continue;
     }
     const identifier = /^\$?[A-Za-z_][A-Za-z0-9_.$!]*/.exec(source.slice(index));
@@ -559,10 +765,30 @@ function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] 
   return tokens;
 }
 
+function spreadsheetFormulaUsesDecimalComma(source: string) {
+  return (
+    /\d,\d/.test(source) &&
+    (source.includes(";") || !/[A-Za-z_][A-Za-z0-9_.$!]*\s*\(/.test(source))
+  );
+}
+
+function nextSpreadsheetFormulaNumberToken(source: string, decimalComma: boolean) {
+  const pattern = decimalComma
+    ? /^(?:\d+(?:,\d*)?|,\d+)(?:[eE][+-]?\d+)?/
+    : /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/;
+  const match = pattern.exec(source);
+  if (!match) return null;
+  return {
+    length: match[0].length,
+    value: decimalComma ? match[0].replace(",", ".") : match[0],
+  };
+}
+
 function spreadsheetFormulaRangeReferences(startRef: string, endRef: string) {
   const start = spreadsheetFormulaReferencePosition(startRef);
   const end = spreadsheetFormulaReferencePosition(endRef);
   if (!start || !end) return [];
+  const prefix = formulaReferenceSheetPrefix(startRef) ?? formulaReferenceSheetPrefix(endRef) ?? "";
   const top = Math.min(start.row, end.row);
   const bottom = Math.max(start.row, end.row);
   const left = Math.min(start.column, end.column);
@@ -570,10 +796,20 @@ function spreadsheetFormulaRangeReferences(startRef: string, endRef: string) {
   const references: string[] = [];
   for (let row = top; row <= bottom; row += 1) {
     for (let column = left; column <= right; column += 1) {
-      references.push(`${columnName(column)}${row + 1}`);
+      references.push(`${prefix}${columnName(column)}${row + 1}`);
     }
   }
   return references;
+}
+
+function spreadsheetFormulaRangeDimensions(startRef: string, endRef: string) {
+  const start = spreadsheetFormulaReferencePosition(startRef);
+  const end = spreadsheetFormulaReferencePosition(endRef);
+  if (!start || !end) return null;
+  return {
+    width: Math.abs(end.column - start.column) + 1,
+    height: Math.abs(end.row - start.row) + 1,
+  };
 }
 
 function spreadsheetFormulaReferencePosition(reference: string) {
@@ -586,14 +822,25 @@ function spreadsheetFormulaReferencePosition(reference: string) {
 }
 
 function normalizeSpreadsheetFormulaRef(reference: string) {
-  return reference
-    .slice(reference.lastIndexOf("!") + 1)
-    .replace(/\$/g, "")
-    .toUpperCase();
+  return formulaReferenceBody(reference).replace(/\$/g, "").toUpperCase();
+}
+
+function displaySpreadsheetFormulaRef(reference: string) {
+  return `${formulaReferenceSheetPrefix(reference) ?? ""}${normalizeSpreadsheetFormulaRef(reference)}`;
 }
 
 function isSpreadsheetFormulaCellReference(value: string) {
   return /^[A-Z]+\d+$/i.test(normalizeSpreadsheetFormulaRef(value));
+}
+
+function formulaReferenceSheetPrefix(reference: string) {
+  const separator = reference.lastIndexOf("!");
+  if (separator < 0) return null;
+  return reference.slice(0, separator + 1);
+}
+
+function formulaReferenceBody(reference: string) {
+  return reference.slice(reference.lastIndexOf("!") + 1);
 }
 
 function columnIndexFromName(name: string) {
@@ -611,41 +858,6 @@ function compareSpreadsheetFormulaRefs(left: string, right: string) {
     leftPosition.row - rightPosition.row ||
     leftPosition.column - rightPosition.column
   );
-}
-
-function spreadsheetFormulaValueText(
-  value: SpreadsheetFormulaValue | string | undefined,
-) {
-  if (value === undefined) return "";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  return String(value);
-}
-
-function compareSpreadsheetFormulaValues(
-  left: SpreadsheetFormulaValue,
-  right: SpreadsheetFormulaValue,
-  operator: string,
-) {
-  const leftNumber = Number(left);
-  const rightNumber = Number(right);
-  const comparable =
-    Number.isFinite(leftNumber) && Number.isFinite(rightNumber)
-      ? leftNumber - rightNumber
-      : spreadsheetFormulaValueText(left).localeCompare(
-          spreadsheetFormulaValueText(right),
-          undefined,
-          {
-            numeric: true,
-            sensitivity: "base",
-          },
-        );
-  if (operator === "=") return comparable === 0;
-  if (operator === "<>") return comparable !== 0;
-  if (operator === "<") return comparable < 0;
-  if (operator === "<=") return comparable <= 0;
-  if (operator === ">") return comparable > 0;
-  if (operator === ">=") return comparable >= 0;
-  return false;
 }
 
 function excelSerialFromDate(date: Date) {
@@ -670,4 +882,372 @@ function excelSerialFromDateParts(year: number, month: number, day: number) {
   const date = Date.UTC(year, month - 1, day);
   const epoch = Date.UTC(1899, 11, 30);
   return Math.round((date - epoch) / 86400000);
+}
+
+function excelDateFromSerial(serial: number) {
+  const epoch = Date.UTC(1899, 11, 30);
+  return new Date(epoch + serial * 86400000);
+}
+
+function roundSpreadsheetFormulaNumber(
+  value: number,
+  places: number,
+  direction: "away" | "toward",
+) {
+  const multiplier = 10 ** places;
+  const scaled = value * multiplier;
+  const rounded =
+    direction === "away"
+      ? Math.sign(scaled) * Math.ceil(Math.abs(scaled))
+      : Math.sign(scaled) * Math.floor(Math.abs(scaled));
+  return rounded / multiplier;
+}
+
+function roundSpreadsheetFormulaMultiple(
+  value: number,
+  significance: number,
+  direction: "up" | "down",
+) {
+  const multiple = Math.abs(significance || 1);
+  const scaled = value / multiple;
+  return (
+    (direction === "up" ? Math.ceil(scaled) : Math.floor(scaled)) * multiple
+  );
+}
+
+function roundSpreadsheetFormulaOddEven(value: number, parity: "odd" | "even") {
+  if (value === 0 && parity === "odd") return 1;
+  const sign = value < 0 ? -1 : 1;
+  let integer = Math.ceil(Math.abs(value));
+  if (parity === "odd" && integer % 2 === 0) integer += 1;
+  if (parity === "even" && integer % 2 !== 0) integer += 1;
+  return sign * integer;
+}
+
+function spreadsheetFormulaVariance(numbers: number[], sample: boolean) {
+  const values = numbers.filter(Number.isFinite);
+  const denominator = sample ? values.length - 1 : values.length;
+  if (denominator <= 0) return 0;
+  const mean = values.reduce((total, value) => total + value, 0) / values.length;
+  return values.reduce((total, value) => total + (value - mean) ** 2, 0) / denominator;
+}
+
+function spreadsheetFormulaStandardDeviation(numbers: number[], sample: boolean) {
+  return Math.sqrt(spreadsheetFormulaVariance(numbers, sample));
+}
+
+function spreadsheetFormulaNthSorted(
+  numbers: number[],
+  rank: number,
+  direction: "asc" | "desc",
+) {
+  const values = numbers.filter(Number.isFinite).sort((left, right) =>
+    direction === "asc" ? left - right : right - left,
+  );
+  if (rank < 1 || rank > values.length) return "#NUM!";
+  return values[rank - 1] ?? "#NUM!";
+}
+
+function spreadsheetFormulaPercentile(numbers: number[], percentile: number) {
+  const values = numbers.filter(Number.isFinite).sort((left, right) => left - right);
+  if (values.length === 0 || percentile < 0 || percentile > 1) return "#NUM!";
+  if (values.length === 1) return values[0] ?? 0;
+  const position = (values.length - 1) * percentile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  const weight = position - lower;
+  return (values[lower] ?? 0) * (1 - weight) + (values[upper] ?? 0) * weight;
+}
+
+function spreadsheetFormulaNumberValue(
+  text: string,
+  decimalSeparator: string,
+  groupSeparator: string,
+) {
+  const decimal = decimalSeparator || ".";
+  const group = groupSeparator || ",";
+  const normalized = text
+    .split(group)
+    .join("")
+    .replace(decimal, ".")
+    .replace(/\s+/g, "");
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : "#VALUE!";
+}
+
+function spreadsheetFormulaTextAroundDelimiter(
+  text: string,
+  delimiter: string,
+  side: "before" | "after",
+) {
+  if (!delimiter) return "#VALUE!";
+  const index = text.indexOf(delimiter);
+  if (index < 0) return "#N/A";
+  return side === "before"
+    ? text.slice(0, index)
+    : text.slice(index + delimiter.length);
+}
+
+function excelSerialFromDateText(text: string) {
+  const timestamp = Date.parse(text);
+  if (!Number.isFinite(timestamp)) return "#VALUE!";
+  const date = new Date(timestamp);
+  return excelSerialFromDateParts(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+  );
+}
+
+function spreadsheetFormulaWeekday(serial: number, returnType: number) {
+  const day = excelDateFromSerial(serial).getUTCDay();
+  const type = Math.trunc(returnType || 1);
+  if (type === 2) return day === 0 ? 7 : day;
+  if (type === 3) return day === 0 ? 6 : day - 1;
+  return day + 1;
+}
+
+function excelSerialEndOfMonth(startSerial: number, months: number) {
+  const date = excelDateFromSerial(startSerial);
+  const end = new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth() + Math.trunc(months) + 1,
+      0,
+    ),
+  );
+  return excelSerialFromDateParts(
+    end.getUTCFullYear(),
+    end.getUTCMonth() + 1,
+    end.getUTCDate(),
+  );
+}
+
+function spreadsheetFormulaPmt(
+  rate: number,
+  periods: number,
+  presentValue: number,
+  futureValue: number,
+  dueType: number,
+) {
+  if (periods === 0) return "#NUM!";
+  if (rate === 0) return -(presentValue + futureValue) / periods;
+  const factor = (1 + rate) ** periods;
+  return (
+    -(rate * (futureValue + factor * presentValue)) /
+    ((1 + rate * dueType) * (factor - 1))
+  );
+}
+
+function spreadsheetFormulaIndex(
+  arrayValue: SpreadsheetFormulaValue | undefined,
+  row: number,
+  column: number,
+) {
+  const array = spreadsheetFormulaAsArray(arrayValue);
+  if (!array || row < 1 || column < 1) return "#REF!";
+  const index = (row - 1) * array.width + (column - 1);
+  return array.values[index] ?? "#REF!";
+}
+
+function spreadsheetFormulaMatch(
+  lookupValue: SpreadsheetFormulaValue,
+  arrayValue: SpreadsheetFormulaValue | undefined,
+  matchType: number,
+) {
+  const values = spreadsheetFormulaAsArray(arrayValue)?.values ?? [];
+  if (values.length === 0) return "#N/A";
+  if (matchType === 0) {
+    const index = values.findIndex((value) =>
+      spreadsheetFormulaValuesEqual(value, lookupValue),
+    );
+    return index < 0 ? "#N/A" : index + 1;
+  }
+  const lookupNumber = spreadsheetFormulaValueNumber(lookupValue);
+  let bestIndex = -1;
+  values.forEach((value, index) => {
+    const number = spreadsheetFormulaValueNumber(value);
+    if (
+      (matchType > 0 && number <= lookupNumber) ||
+      (matchType < 0 && number >= lookupNumber)
+    ) {
+      bestIndex = index;
+    }
+  });
+  return bestIndex < 0 ? "#N/A" : bestIndex + 1;
+}
+
+function spreadsheetFormulaXMatch(
+  lookupValue: SpreadsheetFormulaValue,
+  arrayValue: SpreadsheetFormulaValue | undefined,
+  matchMode: number,
+  searchMode: number,
+) {
+  const values = spreadsheetFormulaAsArray(arrayValue)?.values ?? [];
+  const indexes = values.map((_, index) => index);
+  if (searchMode === -1) indexes.reverse();
+  const exact = indexes.find((index) =>
+    spreadsheetFormulaValuesEqual(values[index] ?? "", lookupValue),
+  );
+  if (exact !== undefined) return exact + 1;
+  if (matchMode === 2) {
+    const pattern = wildcardSpreadsheetFormulaPattern(spreadsheetFormulaValueText(lookupValue));
+    const wildcard = indexes.find((index) =>
+      pattern.test(spreadsheetFormulaValueText(values[index] ?? "")),
+    );
+    if (wildcard !== undefined) return wildcard + 1;
+  }
+  if (matchMode === -1 || matchMode === 1) {
+    return spreadsheetFormulaMatch(lookupValue, arrayValue, matchMode);
+  }
+  return "#N/A";
+}
+
+function spreadsheetFormulaXLookup(
+  lookupValue: SpreadsheetFormulaValue,
+  lookupArrayValue: SpreadsheetFormulaValue | undefined,
+  returnArrayValue: SpreadsheetFormulaValue | undefined,
+  fallback: SpreadsheetFormulaValue | undefined,
+  matchMode: number,
+  searchMode: number,
+) {
+  const lookupArray = spreadsheetFormulaAsArray(lookupArrayValue);
+  const returnArray = spreadsheetFormulaAsArray(returnArrayValue);
+  if (!lookupArray || !returnArray) return fallback ?? "#N/A";
+  const position = spreadsheetFormulaXMatch(
+    lookupValue,
+    lookupArray,
+    matchMode,
+    searchMode,
+  );
+  if (typeof position !== "number") return fallback ?? position;
+  return returnArray.values[position - 1] ?? fallback ?? "#N/A";
+}
+
+function spreadsheetFormulaTableLookup(
+  lookupValue: SpreadsheetFormulaValue,
+  tableValue: SpreadsheetFormulaValue | undefined,
+  resultIndex: number,
+  approximate: boolean,
+  direction: "vertical" | "horizontal",
+) {
+  const table = spreadsheetFormulaAsArray(tableValue);
+  if (!table || resultIndex < 1) return "#N/A";
+  if (direction === "vertical") {
+    const lookupColumn = Array.from({ length: table.height }, (_, row) =>
+      table.values[row * table.width] ?? "",
+    );
+    const position = spreadsheetFormulaMatch(
+      lookupValue,
+      spreadsheetFormulaArray(lookupColumn, 1, lookupColumn.length),
+      approximate ? 1 : 0,
+    );
+    if (typeof position !== "number") return position;
+    return table.values[(position - 1) * table.width + resultIndex - 1] ?? "#REF!";
+  }
+  const lookupRow = table.values.slice(0, table.width);
+  const position = spreadsheetFormulaMatch(
+    lookupValue,
+    spreadsheetFormulaArray(lookupRow, lookupRow.length, 1),
+    approximate ? 1 : 0,
+  );
+  if (typeof position !== "number") return position;
+  return table.values[(resultIndex - 1) * table.width + position - 1] ?? "#REF!";
+}
+
+function spreadsheetFormulaFilter(
+  arrayValue: SpreadsheetFormulaValue | undefined,
+  includeValue: SpreadsheetFormulaValue | undefined,
+  fallback: SpreadsheetFormulaValue | undefined,
+) {
+  const array = spreadsheetFormulaAsArray(arrayValue);
+  const include = spreadsheetFormulaAsArray(includeValue);
+  if (!array || !include) return fallback ?? "#CALC!";
+  const values = array.values.filter((_, index) =>
+    spreadsheetFormulaValueBoolean(include.values[index] ?? false),
+  );
+  return values.length > 0
+    ? spreadsheetFormulaArray(values, Math.min(array.width, values.length), Math.ceil(values.length / Math.max(array.width, 1)))
+    : (fallback ?? "#CALC!");
+}
+
+function spreadsheetFormulaUnique(arrayValue: SpreadsheetFormulaValue | undefined) {
+  const array = spreadsheetFormulaAsArray(arrayValue);
+  if (!array) return "#CALC!";
+  const seen = new Set<string>();
+  const values = array.values.filter((value) => {
+    const key = spreadsheetFormulaValueText(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return spreadsheetFormulaArray(values, Math.min(array.width, values.length), Math.ceil(values.length / Math.max(array.width, 1)));
+}
+
+function spreadsheetFormulaSort(
+  arrayValue: SpreadsheetFormulaValue | undefined,
+  sortIndex: number,
+  sortOrder: number,
+) {
+  const array = spreadsheetFormulaAsArray(arrayValue);
+  if (!array || array.width === 0) return "#CALC!";
+  const targetColumn = Math.max(0, Math.min(array.width - 1, sortIndex - 1));
+  const rows = Array.from({ length: array.height }, (_, rowIndex) =>
+    array.values.slice(rowIndex * array.width, rowIndex * array.width + array.width),
+  );
+  rows.sort((left, right) => {
+    const comparison = compareSpreadsheetFormulaValues(
+      left[targetColumn] ?? "",
+      right[targetColumn] ?? "",
+      "<",
+    );
+    if (comparison === true) return sortOrder < 0 ? 1 : -1;
+    const reverseComparison = compareSpreadsheetFormulaValues(
+      left[targetColumn] ?? "",
+      right[targetColumn] ?? "",
+      ">",
+    );
+    if (reverseComparison === true) return sortOrder < 0 ? -1 : 1;
+    return 0;
+  });
+  return spreadsheetFormulaArray(rows.flat(), array.width, rows.length);
+}
+
+function substituteSpreadsheetFormulaText(
+  text: string,
+  oldText: string,
+  newText: string,
+  instance: number | undefined,
+) {
+  if (!oldText) return text;
+  const targetInstance =
+    instance === undefined ? undefined : Math.max(1, Math.trunc(instance));
+  if (targetInstance === undefined) return text.split(oldText).join(newText);
+  let seen = 0;
+  let index = 0;
+  let output = "";
+  while (index < text.length) {
+    if (text.startsWith(oldText, index)) {
+      seen += 1;
+      output += seen === targetInstance ? newText : oldText;
+      index += oldText.length;
+    } else {
+      output += text[index];
+      index += 1;
+    }
+  }
+  return output;
+}
+
+function findSpreadsheetFormulaText(
+  needle: string,
+  haystack: string,
+  start: number | undefined,
+  insensitive: boolean,
+) {
+  const offset = Math.max(0, Math.trunc(start ?? 1) - 1);
+  const searchNeedle = insensitive ? needle.toLowerCase() : needle;
+  const searchHaystack = insensitive ? haystack.toLowerCase() : haystack;
+  const index = searchHaystack.indexOf(searchNeedle, offset);
+  return index < 0 ? 0 : index + 1;
 }

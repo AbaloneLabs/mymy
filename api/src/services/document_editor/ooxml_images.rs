@@ -17,6 +17,34 @@ pub(super) struct OoxmlImageData {
     pub(super) mime_type: &'static str,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DocxImageWrap {
+    Inline,
+    Square,
+    Behind,
+    InFront,
+}
+
+impl DocxImageWrap {
+    fn from_model(value: Option<&str>) -> Self {
+        match value {
+            Some("square") => Self::Square,
+            Some("behind") => Self::Behind,
+            Some("inFront") => Self::InFront,
+            _ => Self::Inline,
+        }
+    }
+
+    fn as_value(self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::Square => "square",
+            Self::Behind => "behind",
+            Self::InFront => "inFront",
+        }
+    }
+}
+
 pub(super) fn image_mime_type_from_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -133,6 +161,7 @@ pub(super) fn docx_image_block_from_segment(
         "dataUrl": data_url,
         "width": width,
         "height": height,
+        "imageWrap": docx_image_wrap(segment).as_value(),
         "altText": docx_image_alt_text(segment),
         "sourceXml": segment
     });
@@ -169,8 +198,11 @@ pub(super) fn docx_image_relationship_id(segment: &str) -> Option<String> {
 }
 
 pub(super) fn build_docx_image_paragraph(block: &Value) -> String {
+    let wrap = DocxImageWrap::from_model(block.get("imageWrap").and_then(Value::as_str));
     if let Some(source_xml) = block.get("sourceXml").and_then(Value::as_str) {
-        return update_docx_image_source_xml(source_xml, block);
+        if docx_image_wrap(source_xml) == wrap {
+            return update_docx_image_source_xml(source_xml, block);
+        }
     }
     let relationship_id = block
         .get("relationshipId")
@@ -193,8 +225,43 @@ pub(super) fn build_docx_image_paragraph(block: &Value) -> String {
         .map(|value| format!(r#" rot="{value}""#))
         .unwrap_or_default();
     let src_rect = docx_image_src_rect_xml(block).unwrap_or_default();
+    let graphic = docx_image_graphic_xml(relationship_id, width, height, &rotation, &src_rect);
+    let body = match wrap {
+        DocxImageWrap::Inline => {
+            format!(
+                r#"<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{width}" cy="{height}"/><wp:docPr id="1" name="Picture" descr="{alt}"/>{graphic}</wp:inline>"#
+            )
+        }
+        DocxImageWrap::Square | DocxImageWrap::Behind | DocxImageWrap::InFront => {
+            let behind_doc = if wrap == DocxImageWrap::Behind {
+                "1"
+            } else {
+                "0"
+            };
+            let wrap_xml = match wrap {
+                DocxImageWrap::Square => r#"<wp:wrapSquare wrapText="bothSides"/>"#,
+                DocxImageWrap::Behind | DocxImageWrap::InFront => "<wp:wrapNone/>",
+                DocxImageWrap::Inline => "",
+            };
+            format!(
+                r#"<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251658240" behindDoc="{behind_doc}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:align>center</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="{width}" cy="{height}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{wrap_xml}<wp:docPr id="1" name="Picture" descr="{alt}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>{graphic}</wp:anchor>"#
+            )
+        }
+    };
     format!(
-        r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{width}" cy="{height}"/><wp:docPr id="1" name="Picture" descr="{alt}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{relationship_id}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm{rotation}><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#
+        r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">{body}</w:drawing></w:r></w:p>"#
+    )
+}
+
+fn docx_image_graphic_xml(
+    relationship_id: &str,
+    width: u64,
+    height: u64,
+    rotation: &str,
+    src_rect: &str,
+) -> String {
+    format!(
+        r#"<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{relationship_id}"/>{src_rect}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm{rotation}><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
     )
 }
 
@@ -295,6 +362,25 @@ fn docx_image_rotation(segment: &str) -> Option<i32> {
         .and_then(|value| value.parse::<i64>().ok())
         .map(|value| ((value as f64 / 60_000.0).round() as i32).clamp(-360, 360))
         .filter(|value| *value != 0)
+}
+
+fn docx_image_wrap(segment: &str) -> DocxImageWrap {
+    if segment.contains("<wp:inline") {
+        return DocxImageWrap::Inline;
+    }
+    if !segment.contains("<wp:anchor") {
+        return DocxImageWrap::Inline;
+    }
+    if matches!(
+        docx_tag_attr(segment, "<wp:anchor", "behindDoc").as_deref(),
+        Some("1") | Some("true")
+    ) {
+        return DocxImageWrap::Behind;
+    }
+    if segment.contains("<wp:wrapNone") {
+        return DocxImageWrap::InFront;
+    }
+    DocxImageWrap::Square
 }
 
 fn docx_image_crop_percent(segment: &str, attr: &str) -> Option<f64> {

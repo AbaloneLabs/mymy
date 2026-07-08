@@ -15,6 +15,7 @@ import {
   rangeCoversSheet,
   spacerColumnCount,
   viewportFromElement,
+  xlsxRangeFromRef,
 } from "./spreadsheetGeometry";
 import type {
   CellPosition,
@@ -59,6 +60,12 @@ type SpreadsheetFillDrag = {
   end: CellPosition;
 };
 
+type SpreadsheetTableResizeDrag = {
+  tableId: string;
+  source: NormalizedCellRange;
+  end: CellPosition;
+};
+
 export function SpreadsheetGrid({
   gridRef,
   sheet,
@@ -77,6 +84,8 @@ export function SpreadsheetGrid({
   extraSelectionRanges,
   fillDrag,
   fillPreviewRange,
+  tableResizeDrag,
+  tableResizePreviewRange,
   showFormulas,
   onViewportChange,
   onSelectAllCells,
@@ -90,6 +99,8 @@ export function SpreadsheetGrid({
   onUpdateCellsFromMatrix,
   onSetFillDrag,
   onStartFillDrag,
+  onSetTableResizeDrag,
+  onStartTableResizeDrag,
 }: {
   gridRef: RefObject<HTMLDivElement | null>;
   sheet: XlsxSheet | undefined;
@@ -108,11 +119,13 @@ export function SpreadsheetGrid({
   extraSelectionRanges: NormalizedCellRange[];
   fillDrag: SpreadsheetFillDrag | null;
   fillPreviewRange: NormalizedCellRange | null;
+  tableResizeDrag: SpreadsheetTableResizeDrag | null;
+  tableResizePreviewRange: NormalizedCellRange | null;
   showFormulas: boolean;
   onViewportChange: (viewport: SpreadsheetViewport) => void;
-  onSelectAllCells: () => void;
-  onSelectColumn: (column: number) => void;
-  onSelectRow: (row: number) => void;
+  onSelectAllCells: (additive?: boolean) => void;
+  onSelectColumn: (column: number, extend?: boolean, additive?: boolean) => void;
+  onSelectRow: (row: number, extend?: boolean, additive?: boolean) => void;
   onStartColumnResize: (
     event: ReactPointerEvent<HTMLButtonElement>,
     columnIndex: number,
@@ -142,8 +155,23 @@ export function SpreadsheetGrid({
     event: ReactPointerEvent<HTMLButtonElement>,
     source: NormalizedCellRange,
   ) => void;
+  onSetTableResizeDrag: (drag: SpreadsheetTableResizeDrag) => void;
+  onStartTableResizeDrag: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    tableId: string,
+    source: NormalizedCellRange,
+  ) => void;
 }) {
   const skipNextFocusSelectRef = useRef(false);
+  const tableRanges = (sheet?.tables ?? [])
+    .map((table) => ({
+      tableId: table.id,
+      range: xlsxRangeFromRef(table.ref ?? ""),
+    }))
+    .filter(
+      (record): record is { tableId: string; range: NormalizedCellRange } =>
+        record.range !== null,
+    );
 
   return (
     <div
@@ -155,7 +183,9 @@ export function SpreadsheetGrid({
         <thead>
           <tr>
             <th
-              onClick={onSelectAllCells}
+              onClick={(event) =>
+                onSelectAllCells(event.metaKey || event.ctrlKey)
+              }
               className={cn(
                 "sticky left-0 top-0 z-20 h-8 min-w-12 cursor-pointer border border-[var(--border)] bg-[var(--surface)] text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
                 rangeCoversSheet(selectionRange, displayRowLimit, columnCount) &&
@@ -176,7 +206,13 @@ export function SpreadsheetGrid({
             {visibleColumnIndexes.map((index) => (
               <th
                 key={index}
-                onClick={() => onSelectColumn(index)}
+                onClick={(event) =>
+                  onSelectColumn(
+                    index,
+                    event.shiftKey,
+                    event.metaKey || event.ctrlKey,
+                  )
+                }
                 className={cn(
                   "group relative sticky top-0 z-10 h-8 min-w-32 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-center font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
                   rangeCoversColumn(selectionRange, index, displayRowLimit) &&
@@ -224,7 +260,13 @@ export function SpreadsheetGrid({
               style={{ height: xlsxRowHeightPx(row) }}
             >
               <th
-                onClick={() => onSelectRow(rowIndex)}
+                onClick={(event) =>
+                  onSelectRow(
+                    rowIndex,
+                    event.shiftKey,
+                    event.metaKey || event.ctrlKey,
+                  )
+                }
                 className={cn(
                   "group relative sticky left-0 z-10 cursor-pointer border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text-faint)] hover:bg-[var(--surface-hover)]",
                   rangeCoversRow(selectionRange, rowIndex, columnCount) &&
@@ -283,6 +325,12 @@ export function SpreadsheetGrid({
                 const inExtraSelection = extraSelectionRanges.some((range) =>
                   spreadsheetRangeContainsCell(range, rowIndex, cellIndex),
                 );
+                const tableRecord = tableRanges.find((record) =>
+                  spreadsheetRangeContainsCell(record.range, rowIndex, cellIndex),
+                );
+                const tableRange = tableRecord?.range;
+                const tableBottomRight =
+                  tableRange?.bottom === rowIndex && tableRange.right === cellIndex;
                 return (
                   <td
                     key={`${cell.ref}:${cellIndex}`}
@@ -304,6 +352,23 @@ export function SpreadsheetGrid({
                       fillPreviewRange &&
                         spreadsheetRangeContainsCell(fillPreviewRange, rowIndex, cellIndex) &&
                         "outline outline-1 outline-offset-[-1px] outline-[rgba(132,204,22,0.75)]",
+                      tableRange &&
+                        "shadow-[inset_0_0_0_1px_rgba(14,165,233,0.18)]",
+                      tableRange?.top === rowIndex &&
+                        "border-t-sky-400/70",
+                      tableRange?.bottom === rowIndex &&
+                        "border-b-sky-400/70",
+                      tableRange?.left === cellIndex &&
+                        "border-l-sky-400/70",
+                      tableRange?.right === cellIndex &&
+                        "border-r-sky-400/70",
+                      tableResizePreviewRange &&
+                        spreadsheetRangeContainsCell(
+                          tableResizePreviewRange,
+                          rowIndex,
+                          cellIndex,
+                        ) &&
+                        "outline outline-1 outline-offset-[-1px] outline-sky-400",
                     )}
                   >
                     {hasComment && (
@@ -334,6 +399,13 @@ export function SpreadsheetGrid({
                         );
                       }}
                       onMouseEnter={(event) => {
+                        if (tableResizeDrag && event.buttons === 1) {
+                          onSetTableResizeDrag({
+                            ...tableResizeDrag,
+                            end: { row: rowIndex, column: cellIndex },
+                          });
+                          return;
+                        }
                         if (fillDrag && event.buttons === 1) {
                           onSetFillDrag({
                             ...fillDrag,
@@ -386,6 +458,21 @@ export function SpreadsheetGrid({
                           aria-label="Fill handle"
                         />
                       )}
+                    {tableRecord && tableRange && tableBottomRight && (
+                      <button
+                        type="button"
+                        onPointerDown={(event) =>
+                          onStartTableResizeDrag(
+                            event,
+                            tableRecord.tableId,
+                            tableRange,
+                          )
+                        }
+                        className="absolute bottom-0 right-0 z-30 h-3 w-3 translate-x-1/2 translate-y-1/2 cursor-nwse-resize border border-white bg-sky-500 shadow-sm"
+                        title="Resize table"
+                        aria-label="Resize table"
+                      />
+                    )}
                   </td>
                 );
               })}

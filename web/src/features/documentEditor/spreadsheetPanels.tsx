@@ -2,8 +2,11 @@ import type { ComponentType } from "react";
 import { BarChart3, ImageIcon, Table } from "lucide-react";
 import type {
   XlsxChart,
+  XlsxChartSeries,
   XlsxImage,
   XlsxPivot,
+  XlsxPivotDataField,
+  XlsxPivotField,
   XlsxSheet,
   XlsxTable,
   XlsxTableColumn,
@@ -16,6 +19,8 @@ import {
   xlsxTableDetail,
   xlsxTableLabel,
 } from "./spreadsheetPresentation";
+import { SpreadsheetChartEditor } from "./spreadsheetChartEditor";
+import type { NormalizedCellRange } from "./spreadsheetGeometry";
 
 /**
  * Spreadsheet panels are render-only surfaces for workbook metadata and grid
@@ -40,21 +45,39 @@ export function SpreadsheetStatusBar({
 
 export function SpreadsheetObjectStrip({
   sheet,
+  selectionRange,
   onTableChange,
   onTableColumnChange,
-  onChartTitleChange,
+  onTableResizeToSelection,
+  onTableInferHeaders,
+  onChartChange,
+  canAddChartSeriesFromSelection,
+  onChartAddSeriesFromSelection,
+  onChartSeriesChange,
   onChartSeriesNameChange,
   onChartPointChange,
   onPivotNameChange,
+  onPivotFieldChange,
+  onPivotDataFieldChange,
 }: {
   sheet: XlsxSheet | undefined;
+  selectionRange: NormalizedCellRange | null;
   onTableChange: (tableId: string, patch: Partial<XlsxTable>) => void;
   onTableColumnChange: (
     tableId: string,
     columnIndex: number,
     patch: Partial<XlsxTableColumn>,
   ) => void;
-  onChartTitleChange: (chartId: string, title: string) => void;
+  onTableResizeToSelection: (tableId: string) => void;
+  onTableInferHeaders: (tableId: string) => void;
+  onChartChange: (chartId: string, patch: Partial<XlsxChart>) => void;
+  canAddChartSeriesFromSelection: boolean;
+  onChartAddSeriesFromSelection: (chartId: string) => void;
+  onChartSeriesChange: (
+    chartId: string,
+    seriesIndex: number,
+    patch: Partial<XlsxChartSeries>,
+  ) => void;
   onChartSeriesNameChange: (
     chartId: string,
     seriesIndex: number,
@@ -68,6 +91,16 @@ export function SpreadsheetObjectStrip({
     value: string,
   ) => void;
   onPivotNameChange: (pivotId: string, name: string) => void;
+  onPivotFieldChange: (
+    pivotId: string,
+    fieldIndex: number,
+    patch: Partial<XlsxPivotField>,
+  ) => void;
+  onPivotDataFieldChange: (
+    pivotId: string,
+    fieldIndex: number,
+    patch: Partial<XlsxPivotDataField>,
+  ) => void;
 }) {
   const tables = sheet?.tables ?? [];
   const charts = sheet?.charts ?? [];
@@ -122,17 +155,27 @@ export function SpreadsheetObjectStrip({
               <SpreadsheetTableEditor
                 key={`table-editor:${table.id}:${table.path ?? ""}`}
                 table={table}
+                canResizeToSelection={Boolean(selectionRange)}
                 onChange={(patch) => onTableChange(table.id, patch)}
                 onColumnChange={(columnIndex, patch) =>
                   onTableColumnChange(table.id, columnIndex, patch)
                 }
+                onResizeToSelection={() => onTableResizeToSelection(table.id)}
+                onInferHeaders={() => onTableInferHeaders(table.id)}
               />
             ))}
             {charts.map((chart) => (
               <SpreadsheetChartEditor
                 key={`chart-editor:${chart.id}:${chart.path ?? ""}`}
                 chart={chart}
-                onTitleChange={(title) => onChartTitleChange(chart.id, title)}
+                onChange={(patch) => onChartChange(chart.id, patch)}
+                canAddSeriesFromSelection={canAddChartSeriesFromSelection}
+                onAddSeriesFromSelection={() =>
+                  onChartAddSeriesFromSelection(chart.id)
+                }
+                onSeriesChange={(seriesIndex, patch) =>
+                  onChartSeriesChange(chart.id, seriesIndex, patch)
+                }
                 onSeriesNameChange={(seriesIndex, value) =>
                   onChartSeriesNameChange(chart.id, seriesIndex, value)
                 }
@@ -146,6 +189,12 @@ export function SpreadsheetObjectStrip({
                 key={`pivot-editor:${pivot.id}:${pivot.path ?? ""}`}
                 pivot={pivot}
                 onNameChange={(name) => onPivotNameChange(pivot.id, name)}
+                onFieldChange={(fieldIndex, patch) =>
+                  onPivotFieldChange(pivot.id, fieldIndex, patch)
+                }
+                onDataFieldChange={(fieldIndex, patch) =>
+                  onPivotDataFieldChange(pivot.id, fieldIndex, patch)
+                }
               />
             ))}
           </div>
@@ -179,14 +228,43 @@ const XLSX_TOTALS_ROW_FUNCTIONS = [
   "none",
 ];
 
+const XLSX_PIVOT_AXIS_OPTIONS = [
+  ["", "Hidden"],
+  ["axisRow", "Rows"],
+  ["axisCol", "Columns"],
+  ["axisPage", "Filters"],
+  ["axisValues", "Values"],
+] as const;
+
+const XLSX_PIVOT_SUBTOTAL_OPTIONS = [
+  ["", "Default"],
+  ["sum", "Sum"],
+  ["count", "Count"],
+  ["countA", "Count non-empty"],
+  ["average", "Average"],
+  ["max", "Max"],
+  ["min", "Min"],
+  ["product", "Product"],
+  ["stdDev", "StdDev"],
+  ["stdDevP", "StdDevP"],
+  ["var", "Variance"],
+  ["varP", "Variance P"],
+] as const;
+
 function SpreadsheetTableEditor({
   table,
+  canResizeToSelection,
   onChange,
   onColumnChange,
+  onResizeToSelection,
+  onInferHeaders,
 }: {
   table: XlsxTable;
+  canResizeToSelection: boolean;
   onChange: (patch: Partial<XlsxTable>) => void;
   onColumnChange: (columnIndex: number, patch: Partial<XlsxTableColumn>) => void;
+  onResizeToSelection: () => void;
+  onInferHeaders: () => void;
 }) {
   const styleName = table.tableStyleName ?? "";
   const styleOptions = XLSX_TABLE_STYLE_NAMES.includes(styleName) || !styleName
@@ -241,6 +319,21 @@ function SpreadsheetTableEditor({
         </label>
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onResizeToSelection}
+          disabled={!canResizeToSelection}
+          className="h-8 rounded-md border border-[var(--border)] px-2 text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Resize to selection
+        </button>
+        <button
+          type="button"
+          onClick={onInferHeaders}
+          className="h-8 rounded-md border border-[var(--border)] px-2 text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        >
+          Use first row as headers
+        </button>
         <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-[var(--text-muted)]">
           <input
             type="checkbox"
@@ -372,10 +465,22 @@ function SpreadsheetTableToggle({
 function SpreadsheetPivotEditor({
   pivot,
   onNameChange,
+  onFieldChange,
+  onDataFieldChange,
 }: {
   pivot: XlsxPivot;
   onNameChange: (name: string) => void;
+  onFieldChange: (
+    fieldIndex: number,
+    patch: Partial<XlsxPivotField>,
+  ) => void;
+  onDataFieldChange: (
+    fieldIndex: number,
+    patch: Partial<XlsxPivotDataField>,
+  ) => void;
 }) {
+  const fields = pivot.fields ?? [];
+  const dataFields = pivot.dataFields ?? [];
   return (
     <div className="rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-xs">
       <div className="grid gap-2 md:grid-cols-[minmax(12rem,1fr)_auto]">
@@ -393,120 +498,153 @@ function SpreadsheetPivotEditor({
           {pivot.cacheId ? `cache ${pivot.cacheId}` : pivot.path}
         </div>
       </div>
+      {fields.length > 0 && (
+        <div className="mt-3 overflow-x-auto">
+          <div className="grid min-w-[48rem] grid-cols-[minmax(9rem,1.4fr)_8rem_5rem_6rem_8rem] gap-2 border-t border-[var(--border)] pt-2">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Field
+            </div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Axis
+            </div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Items
+            </div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Subtotal
+            </div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Function
+            </div>
+            {fields.map((field) => (
+              <PivotFieldRow
+                key={`pivot-field:${pivot.id}:${field.index}`}
+                field={field}
+                onChange={(patch) => onFieldChange(field.index, patch)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      {dataFields.length > 0 && (
+        <div className="mt-3 overflow-x-auto">
+          <div className="grid min-w-[28rem] grid-cols-[minmax(10rem,1fr)_9rem] gap-2 border-t border-[var(--border)] pt-2">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Data field
+            </div>
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              Function
+            </div>
+            {dataFields.map((field) => (
+              <PivotDataFieldRow
+                key={`pivot-data-field:${pivot.id}:${field.fieldIndex}`}
+                field={field}
+                onChange={(patch) =>
+                  onDataFieldChange(field.fieldIndex, patch)
+                }
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function SpreadsheetChartEditor({
-  chart,
-  onTitleChange,
-  onSeriesNameChange,
-  onPointChange,
+function PivotFieldRow({
+  field,
+  onChange,
 }: {
-  chart: XlsxChart;
-  onTitleChange: (title: string) => void;
-  onSeriesNameChange: (seriesIndex: number, value: string) => void;
-  onPointChange: (
-    seriesIndex: number,
-    pointIndex: number,
-    key: "categories" | "values",
-    value: string,
-  ) => void;
+  field: XlsxPivotField;
+  onChange: (patch: Partial<XlsxPivotField>) => void;
 }) {
   return (
-    <div className="rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-xs">
-      <div className="mb-2 grid gap-2 md:grid-cols-[minmax(12rem,1fr)_auto]">
-        <label className="grid gap-1">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-            Chart title
-          </span>
-          <input
-            value={chart.title ?? ""}
-            onChange={(event) => onTitleChange(event.target.value)}
-            className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          />
-        </label>
-        <div className="flex items-end text-[11px] text-[var(--text-muted)]">
-          {chart.type ?? "chart"}
-        </div>
+    <>
+      <div className="flex h-8 items-center truncate rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-[var(--text)]">
+        {field.name || `Field ${field.index + 1}`}
       </div>
-      {(chart.series ?? []).length === 0 ? (
-        <div className="rounded border border-dashed border-[var(--border)] px-2 py-1 text-[var(--text-muted)]">
-          No chart data
-        </div>
-      ) : (
-        <div className="grid gap-2">
-          {(chart.series ?? []).map((series, seriesIndex) => {
-            const rowCount = Math.max(
-              series.categories?.length ?? 0,
-              series.values?.length ?? 0,
-              chart.categories?.length ?? 0,
-            );
-            return (
-              <div key={`${series.name ?? "series"}-${seriesIndex}`}>
-                <input
-                  value={series.name ?? ""}
-                  onChange={(event) =>
-                    onSeriesNameChange(seriesIndex, event.target.value)
-                  }
-                  className="mb-1 h-7 w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                />
-                <table className="w-full table-fixed border-collapse">
-                  <thead>
-                    <tr className="text-left text-[11px] text-[var(--text-muted)]">
-                      <th className="border border-[var(--border)] px-2 py-1 font-medium">
-                        Category
-                      </th>
-                      <th className="border border-[var(--border)] px-2 py-1 font-medium">
-                        Value
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Array.from({ length: rowCount }).map((_, pointIndex) => (
-                      <tr key={pointIndex}>
-                        <td className="border border-[var(--border)] p-0">
-                          <input
-                            value={
-                              series.categories?.[pointIndex] ??
-                              chart.categories?.[pointIndex] ??
-                              ""
-                            }
-                            onChange={(event) =>
-                              onPointChange(
-                                seriesIndex,
-                                pointIndex,
-                                "categories",
-                                event.target.value,
-                              )
-                            }
-                            className="h-7 w-full bg-transparent px-2 text-xs text-[var(--text)] outline-none focus:bg-[var(--surface-hover)]"
-                          />
-                        </td>
-                        <td className="border border-[var(--border)] p-0">
-                          <input
-                            value={series.values?.[pointIndex] ?? ""}
-                            onChange={(event) =>
-                              onPointChange(
-                                seriesIndex,
-                                pointIndex,
-                                "values",
-                                event.target.value,
-                              )
-                            }
-                            className="h-7 w-full bg-transparent px-2 text-xs text-[var(--text)] outline-none focus:bg-[var(--surface-hover)]"
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+      <select
+        value={field.axis ?? ""}
+        onChange={(event) => {
+          const axis = event.currentTarget.value as XlsxPivotField["axis"] | "";
+          onChange({
+            axis: axis || undefined,
+            dataField: axis === "axisValues",
+          });
+        }}
+        className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+      >
+        {XLSX_PIVOT_AXIS_OPTIONS.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <label className="flex h-8 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)]">
+        <input
+          type="checkbox"
+          checked={field.showAll ?? true}
+          onChange={(event) =>
+            onChange({ showAll: event.currentTarget.checked })
+          }
+        />
+      </label>
+      <label className="flex h-8 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)]">
+        <input
+          type="checkbox"
+          checked={field.defaultSubtotal ?? true}
+          onChange={(event) =>
+            onChange({ defaultSubtotal: event.currentTarget.checked })
+          }
+        />
+      </label>
+      <select
+        value={field.subtotal ?? ""}
+        onChange={(event) =>
+          onChange({ subtotal: event.currentTarget.value || undefined })
+        }
+        className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+      >
+        {XLSX_PIVOT_SUBTOTAL_OPTIONS.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+}
+
+function PivotDataFieldRow({
+  field,
+  onChange,
+}: {
+  field: XlsxPivotDataField;
+  onChange: (patch: Partial<XlsxPivotDataField>) => void;
+}) {
+  return (
+    <>
+      <input
+        value={field.name ?? ""}
+        onChange={(event) => onChange({ name: event.currentTarget.value })}
+        className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+      />
+      <select
+        value={field.subtotal ?? ""}
+        onChange={(event) =>
+          onChange({ subtotal: event.currentTarget.value || undefined })
+        }
+        className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+      >
+        {XLSX_PIVOT_SUBTOTAL_OPTIONS.filter(([value]) => value !== "").map(
+          ([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ),
+        )}
+      </select>
+    </>
   );
 }
 

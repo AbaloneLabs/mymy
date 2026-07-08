@@ -1888,6 +1888,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dotenvy",
+ "encoding_rs",
  "futures",
  "hex",
  "hkdf",

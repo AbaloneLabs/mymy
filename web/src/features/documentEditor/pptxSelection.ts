@@ -77,6 +77,99 @@ export function pptxSlideObjectRecords(slide: PptxSlide): PptxObjectRecord[] {
   ];
 }
 
+export function derivePptxEditorSelection({
+  slide,
+  activeTextId,
+  activeShapeId,
+  activeImageId,
+  activeTableId,
+  activeChartId,
+  selectedObjectKeys,
+}: {
+  slide: PptxSlide | undefined;
+  activeTextId: string | null;
+  activeShapeId: string | null;
+  activeImageId: string | null;
+  activeTableId: string | null;
+  activeChartId: string | null;
+  selectedObjectKeys: PptxSelectionKey[];
+}) {
+  const activeText = slide?.texts.find((item) => item.id === activeTextId);
+  const activeShape = slide?.shapes?.find((item) => item.id === activeShapeId);
+  const activeImage = slide?.images?.find((item) => item.id === activeImageId);
+  const activeTable = slide?.tables?.find((item) => item.id === activeTableId);
+  const activeChart = slide?.charts?.find((item) => item.id === activeChartId);
+  const activeTextIndex = slide?.texts.findIndex((item) => item.id === activeTextId) ?? -1;
+  const activeShapeIndex =
+    slide?.shapes?.findIndex((item) => item.id === activeShapeId) ?? -1;
+  const activeImageIndex =
+    slide?.images?.findIndex((item) => item.id === activeImageId) ?? -1;
+  const activeTableIndex =
+    slide?.tables?.findIndex((item) => item.id === activeTableId) ?? -1;
+  const activeChartIndex =
+    slide?.charts?.findIndex((item) => item.id === activeChartId) ?? -1;
+  const activeObject =
+    activeText ?? activeShape ?? activeImage ?? activeTable ?? activeChart;
+  const activeLayerIndex = activeText
+    ? activeTextIndex
+    : activeShape
+      ? activeShapeIndex
+      : activeImage
+        ? activeImageIndex
+        : activeTable
+          ? activeTableIndex
+          : activeChart
+            ? activeChartIndex
+            : -1;
+  const activeLayerLength = activeText
+    ? (slide?.texts.length ?? 0)
+    : activeShape
+      ? (slide?.shapes?.length ?? 0)
+      : activeImage
+        ? (slide?.images?.length ?? 0)
+        : activeTable
+          ? (slide?.tables?.length ?? 0)
+          : activeChart
+            ? (slide?.charts?.length ?? 0)
+            : 0;
+  const selectedObjectKeySet = new Set(selectedObjectKeys);
+  const selectedObjects = slide
+    ? pptxSlideObjectRecords(slide).filter((record) =>
+        selectedObjectKeySet.has(
+          pptxSelectionKey(record.objectKind, record.objectId),
+        ),
+      )
+    : [];
+  const activeObjectKey = activeText
+    ? pptxSelectionKey("text", activeText.id)
+    : activeShape
+      ? pptxSelectionKey("shape", activeShape.id)
+      : activeImage
+        ? pptxSelectionKey("image", activeImage.id)
+        : activeTable
+          ? pptxSelectionKey("table", activeTable.id)
+          : activeChart
+            ? pptxSelectionKey("chart", activeChart.id)
+            : null;
+
+  return {
+    activeChart,
+    activeImage,
+    activeLayerIndex,
+    activeLayerLength,
+    activeObject,
+    activeObjectKey,
+    activeShape,
+    activeTable,
+    activeText,
+    hasGroupedSelection: selectedObjects.some((record) => record.object.groupId),
+    hasMultiSelection: selectedObjects.length > 1,
+    hasObjectSelection: selectedObjects.length > 0,
+    selectedObjectKeySet,
+    selectedObjects,
+  };
+}
+
 export function patchPptxSlideObjects(
   slide: PptxSlide,
   patches: Map<PptxSelectionKey, PptxGeometryPatch>,

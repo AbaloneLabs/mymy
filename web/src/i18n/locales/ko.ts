@@ -784,6 +784,7 @@ const ko = {
   documentEditor: {
     title: "문서 편집기",
     unsaved: "저장 안 됨",
+    saveQueued: "저장 예약됨",
     savedAt: "{time} 저장됨",
     loadError: "문서를 불러오지 못했습니다.",
     saveError: "저장하지 못했습니다. 파일이 바뀌었으면 다시 열어주세요.",
@@ -812,6 +813,10 @@ const ko = {
     commandPalette: "명령 팔레트",
     commandPalettePlaceholder: "명령 검색",
     noCommands: "명령 없음",
+    matchCase: "대소문자 구분",
+    wholeWord: "단어 단위",
+    regex: "정규식",
+    replaceAll: "모두 바꾸기",
     toggleFormulas: "수식 보기 전환",
     columnWidth: "열 너비",
     rowHeight: "행 높이",

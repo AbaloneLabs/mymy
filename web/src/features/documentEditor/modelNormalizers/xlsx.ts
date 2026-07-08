@@ -16,6 +16,8 @@ import type {
   XlsxPageMargins,
   XlsxPageSetup,
   XlsxPivot,
+  XlsxPivotDataField,
+  XlsxPivotField,
   XlsxSheetProtection,
   XlsxTable,
   XlsxTableColumn,
@@ -162,6 +164,15 @@ export function normalizeXlsxModel(model: unknown): XlsxModel {
                 formula:
                   typeof cellItem.formula === "string"
                     ? cellItem.formula
+                    : undefined,
+                generated: cellItem.generated === "spill" ? "spill" : undefined,
+                spillParent:
+                  typeof cellItem.spillParent === "string"
+                    ? cellItem.spillParent
+                    : undefined,
+                spillRange:
+                  typeof cellItem.spillRange === "string"
+                    ? cellItem.spillRange
                     : undefined,
                 numberFormat:
                   typeof cellItem.numberFormat === "string"
@@ -397,6 +408,89 @@ function normalizeXlsxChart(value: unknown): XlsxChart | null {
     path: typeof item.path === "string" ? item.path : undefined,
     type: typeof item.type === "string" ? item.type : undefined,
     title: typeof item.title === "string" ? item.title : undefined,
+    legendVisible:
+      typeof item.legendVisible === "boolean" ? item.legendVisible : undefined,
+    legendPosition: xlsxChartLegendPosition(item.legendPosition),
+    categoryAxisTitle:
+      typeof item.categoryAxisTitle === "string"
+        ? item.categoryAxisTitle
+        : undefined,
+    valueAxisTitle:
+      typeof item.valueAxisTitle === "string" ? item.valueAxisTitle : undefined,
+    categoryAxisPosition: xlsxChartCategoryAxisPosition(
+      item.categoryAxisPosition,
+    ),
+    valueAxisPosition: xlsxChartValueAxisPosition(item.valueAxisPosition),
+    categoryMajorGridlines:
+      typeof item.categoryMajorGridlines === "boolean"
+        ? item.categoryMajorGridlines
+        : undefined,
+    valueMajorGridlines:
+      typeof item.valueMajorGridlines === "boolean"
+        ? item.valueMajorGridlines
+        : undefined,
+    categoryAxisTickLabelPosition: xlsxChartTickLabelPosition(
+      item.categoryAxisTickLabelPosition,
+    ),
+    valueAxisTickLabelPosition: xlsxChartTickLabelPosition(
+      item.valueAxisTickLabelPosition,
+    ),
+    categoryAxisMajorTickMark: xlsxChartTickMark(
+      item.categoryAxisMajorTickMark,
+    ),
+    valueAxisMajorTickMark: xlsxChartTickMark(item.valueAxisMajorTickMark),
+    categoryAxisMinorTickMark: xlsxChartTickMark(
+      item.categoryAxisMinorTickMark,
+    ),
+    valueAxisMinorTickMark: xlsxChartTickMark(item.valueAxisMinorTickMark),
+    categoryAxisNumberFormat:
+      typeof item.categoryAxisNumberFormat === "string"
+        ? item.categoryAxisNumberFormat
+        : undefined,
+    valueAxisNumberFormat:
+      typeof item.valueAxisNumberFormat === "string"
+        ? item.valueAxisNumberFormat
+        : undefined,
+    categoryAxisLineColor:
+      typeof item.categoryAxisLineColor === "string"
+        ? item.categoryAxisLineColor
+        : undefined,
+    valueAxisLineColor:
+      typeof item.valueAxisLineColor === "string"
+        ? item.valueAxisLineColor
+        : undefined,
+    categoryAxisLineWidth: numericField(item.categoryAxisLineWidth),
+    valueAxisLineWidth: numericField(item.valueAxisLineWidth),
+    categoryAxisLineDash: xlsxChartLineDash(item.categoryAxisLineDash),
+    valueAxisLineDash: xlsxChartLineDash(item.valueAxisLineDash),
+    categoryAxisLabelTextColor:
+      typeof item.categoryAxisLabelTextColor === "string"
+        ? item.categoryAxisLabelTextColor
+        : undefined,
+    valueAxisLabelTextColor:
+      typeof item.valueAxisLabelTextColor === "string"
+        ? item.valueAxisLabelTextColor
+        : undefined,
+    categoryAxisLabelFontSize: numericField(item.categoryAxisLabelFontSize),
+    valueAxisLabelFontSize: numericField(item.valueAxisLabelFontSize),
+    categoryAxisLabelRotation: numericField(item.categoryAxisLabelRotation),
+    valueAxisLabelRotation: numericField(item.valueAxisLabelRotation),
+    categoryAxisLabelBold:
+      typeof item.categoryAxisLabelBold === "boolean"
+        ? item.categoryAxisLabelBold
+        : undefined,
+    valueAxisLabelBold:
+      typeof item.valueAxisLabelBold === "boolean"
+        ? item.valueAxisLabelBold
+        : undefined,
+    categoryAxisLabelItalic:
+      typeof item.categoryAxisLabelItalic === "boolean"
+        ? item.categoryAxisLabelItalic
+        : undefined,
+    valueAxisLabelItalic:
+      typeof item.valueAxisLabelItalic === "boolean"
+        ? item.valueAxisLabelItalic
+        : undefined,
     categories: normalizeChartStringList(item.categories),
     series: Array.isArray(item.series)
       ? item.series
@@ -407,12 +501,74 @@ function normalizeXlsxChart(value: unknown): XlsxChart | null {
   };
 }
 
+function xlsxChartLegendPosition(
+  value: unknown,
+): XlsxChart["legendPosition"] | undefined {
+  return value === "r" ||
+    value === "l" ||
+    value === "t" ||
+    value === "b" ||
+    value === "tr"
+    ? value
+    : undefined;
+}
+
+function xlsxChartCategoryAxisPosition(
+  value: unknown,
+): XlsxChart["categoryAxisPosition"] | undefined {
+  return value === "b" || value === "t" ? value : undefined;
+}
+
+function xlsxChartValueAxisPosition(
+  value: unknown,
+): XlsxChart["valueAxisPosition"] | undefined {
+  return value === "l" || value === "r" ? value : undefined;
+}
+
+function xlsxChartTickLabelPosition(
+  value: unknown,
+): XlsxChart["categoryAxisTickLabelPosition"] | undefined {
+  return value === "nextTo" ||
+    value === "low" ||
+    value === "high" ||
+    value === "none"
+    ? value
+    : undefined;
+}
+
+function xlsxChartTickMark(
+  value: unknown,
+): XlsxChart["categoryAxisMajorTickMark"] | undefined {
+  return value === "cross" || value === "in" || value === "out" || value === "none"
+    ? value
+    : undefined;
+}
+
+function xlsxChartLineDash(
+  value: unknown,
+): XlsxChart["categoryAxisLineDash"] | undefined {
+  return value === "solid" ||
+    value === "dash" ||
+    value === "dot" ||
+    value === "dashDot"
+    ? value
+    : undefined;
+}
+
 function normalizeXlsxChartSeries(value: unknown): XlsxChartSeries | null {
   const item = isRecord(value) ? value : {};
   const series: XlsxChartSeries = {
     name: typeof item.name === "string" ? item.name : undefined,
+    nameFormula:
+      typeof item.nameFormula === "string" ? item.nameFormula : undefined,
     categories: normalizeChartStringList(item.categories),
+    categoriesFormula:
+      typeof item.categoriesFormula === "string"
+        ? item.categoriesFormula
+        : undefined,
     values: normalizeChartStringList(item.values),
+    valuesFormula:
+      typeof item.valuesFormula === "string" ? item.valuesFormula : undefined,
   };
   return Object.values(series).some((field) => field !== undefined)
     ? series
@@ -497,6 +653,54 @@ function normalizeXlsxPivot(value: unknown): XlsxPivot | null {
     path: typeof item.path === "string" ? item.path : undefined,
     name: typeof item.name === "string" ? item.name : undefined,
     cacheId: typeof item.cacheId === "string" ? item.cacheId : undefined,
+    fields: Array.isArray(item.fields)
+      ? item.fields
+          .map((field) => normalizeXlsxPivotField(field))
+          .filter((field): field is XlsxPivotField => field !== null)
+      : undefined,
+    dataFields: Array.isArray(item.dataFields)
+      ? item.dataFields
+          .map((field) => normalizeXlsxPivotDataField(field))
+          .filter((field): field is XlsxPivotDataField => field !== null)
+      : undefined,
+  };
+}
+
+function normalizeXlsxPivotField(value: unknown): XlsxPivotField | null {
+  const item = isRecord(value) ? value : {};
+  const index = numericField(item.index);
+  if (index === undefined) return null;
+  const axis =
+    item.axis === "axisRow" ||
+    item.axis === "axisCol" ||
+    item.axis === "axisPage" ||
+    item.axis === "axisValues"
+      ? item.axis
+      : undefined;
+  return {
+    index: Math.max(0, Math.floor(index)),
+    name: typeof item.name === "string" ? item.name : undefined,
+    axis,
+    dataField: typeof item.dataField === "boolean" ? item.dataField : undefined,
+    showAll: typeof item.showAll === "boolean" ? item.showAll : undefined,
+    defaultSubtotal:
+      typeof item.defaultSubtotal === "boolean"
+        ? item.defaultSubtotal
+        : undefined,
+    subtotal: typeof item.subtotal === "string" ? item.subtotal : undefined,
+  };
+}
+
+function normalizeXlsxPivotDataField(
+  value: unknown,
+): XlsxPivotDataField | null {
+  const item = isRecord(value) ? value : {};
+  const fieldIndex = numericField(item.fieldIndex);
+  if (fieldIndex === undefined) return null;
+  return {
+    fieldIndex: Math.max(0, Math.floor(fieldIndex)),
+    name: typeof item.name === "string" ? item.name : undefined,
+    subtotal: typeof item.subtotal === "string" ? item.subtotal : undefined,
   };
 }
 

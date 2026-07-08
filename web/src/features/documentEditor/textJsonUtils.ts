@@ -132,16 +132,6 @@ export function firstJsonChildPathSegment(value: unknown): JsonPathSegment | nul
   return null;
 }
 
-export function nextJsonObjectKey(value: Record<string, unknown>, prefix = "key") {
-  let index = Object.keys(value).length + 1;
-  let key = `${prefix}${index}`;
-  while (key in value) {
-    index += 1;
-    key = `${prefix}${index}`;
-  }
-  return key;
-}
-
 export function insertJsonObjectEntry(
   value: Record<string, unknown>,
   afterKey: string,
@@ -242,23 +232,6 @@ export function jsonTableColumns(rows: Array<Record<string, unknown>>) {
     for (const key of Object.keys(row)) columns.add(key);
   }
   return Array.from(columns);
-}
-
-export function nextJsonColumnKey(columns: string[]) {
-  let index = columns.length + 1;
-  while (columns.includes(`key${index}`)) index += 1;
-  return `key${index}`;
-}
-
-export function nextJsonTableObjectKey(rows: JsonTableRow[], prefix = "row") {
-  const existing = new Set(rows.map((row) => row.key).filter(Boolean));
-  let index = rows.length + 1;
-  let key = `${prefix}${index}`;
-  while (existing.has(key)) {
-    index += 1;
-    key = `${prefix}${index}`;
-  }
-  return key;
 }
 
 export function jsonCellToString(value: unknown) {

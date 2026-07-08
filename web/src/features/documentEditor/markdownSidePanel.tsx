@@ -2,6 +2,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   FrontmatterField,
+  MarkdownHeadingAnchor,
   MarkdownFrontmatter,
   MarkdownHeading,
   MarkdownReference,
@@ -16,6 +17,7 @@ export type MarkdownSidePanelKind = "outline" | "frontmatter" | "references" | "
 export function MarkdownSidePanel({
   panel,
   outline,
+  headingAnchors,
   references,
   table,
   frontmatter,
@@ -45,9 +47,12 @@ export function MarkdownSidePanel({
   onFrontmatterCreate,
   onNewFrontmatterKeyChange,
   onNewFrontmatterValueChange,
+  onReferenceLabelChange,
+  onReferenceTargetChange,
 }: {
   panel: MarkdownSidePanelKind;
   outline: MarkdownHeading[];
+  headingAnchors: MarkdownHeadingAnchor[];
   references: MarkdownReference[];
   table: MarkdownTableModel | null;
   frontmatter: MarkdownFrontmatter | null;
@@ -80,6 +85,8 @@ export function MarkdownSidePanel({
   onFrontmatterCreate: () => void;
   onNewFrontmatterKeyChange: (value: string) => void;
   onNewFrontmatterValueChange: (value: string) => void;
+  onReferenceLabelChange: (reference: MarkdownReference, value: string) => void;
+  onReferenceTargetChange: (reference: MarkdownReference, value: string) => void;
 }) {
   const { t } = useTranslation();
 
@@ -104,11 +111,17 @@ export function MarkdownSidePanel({
         </button>
       </div>
       {panel === "outline" ? (
-        <MarkdownOutlinePanel outline={outline} onFocusLine={onFocusLine} />
+        <MarkdownOutlinePanel
+          outline={outline}
+          headingAnchors={headingAnchors}
+          onFocusLine={onFocusLine}
+        />
       ) : panel === "references" ? (
         <MarkdownReferencesPanel
           references={references}
           onFocusRange={onFocusRange}
+          onLabelChange={onReferenceLabelChange}
+          onTargetChange={onReferenceTargetChange}
         />
       ) : panel === "table" ? (
         <MarkdownTablePanel
@@ -148,12 +161,15 @@ export function MarkdownSidePanel({
 
 function MarkdownOutlinePanel({
   outline,
+  headingAnchors,
   onFocusLine,
 }: {
   outline: MarkdownHeading[];
+  headingAnchors: MarkdownHeadingAnchor[];
   onFocusLine: (line: number) => void;
 }) {
   const { t } = useTranslation();
+  const anchorByLine = new Map(headingAnchors.map((anchor) => [anchor.line, anchor]));
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -171,7 +187,18 @@ function MarkdownOutlinePanel({
               className="block w-full truncate rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               style={{ paddingLeft: `${Math.max(0, heading.level - 1) * 12 + 8}px` }}
             >
-              {heading.text}
+              <span className="block truncate">{heading.text}</span>
+              {anchorByLine.get(heading.line) && (
+                <span className="mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[10px] text-[var(--text-faint)]">
+                  <span className="truncate">#{anchorByLine.get(heading.line)?.id}</span>
+                  {(anchorByLine.get(heading.line)?.duplicateCount ?? 0) > 1 && (
+                    <span className="shrink-0 rounded border border-[var(--status-warning)]/40 px-1 text-[var(--status-warning)]">
+                      {anchorByLine.get(heading.line)?.duplicateIndex}/
+                      {anchorByLine.get(heading.line)?.duplicateCount}
+                    </span>
+                  )}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -183,9 +210,13 @@ function MarkdownOutlinePanel({
 function MarkdownReferencesPanel({
   references,
   onFocusRange,
+  onLabelChange,
+  onTargetChange,
 }: {
   references: MarkdownReference[];
   onFocusRange: (start: number, end: number) => void;
+  onLabelChange: (reference: MarkdownReference, value: string) => void;
+  onTargetChange: (reference: MarkdownReference, value: string) => void;
 }) {
   const { t } = useTranslation();
 
@@ -200,11 +231,9 @@ function MarkdownReferencesPanel({
       ) : (
         <div className="space-y-2">
           {references.map((reference) => (
-            <button
-              key={`${reference.kind}:${reference.line}:${reference.start}:${reference.label}`}
-              type="button"
-              onClick={() => onFocusRange(reference.start, reference.end)}
-              className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
+            <div
+              key={`${reference.kind}:${reference.line}:${reference.start}`}
+              className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-2"
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-xs font-medium text-[var(--text)]">
@@ -214,20 +243,77 @@ function MarkdownReferencesPanel({
                   {reference.kind}
                 </span>
               </div>
-              {reference.target && (
-                <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-faint)]">
-                  {reference.target}
-                </div>
+              {reference.labelStart !== undefined &&
+                reference.labelEnd !== undefined && (
+                  <label className="mt-2 grid gap-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                    <span>
+                      {reference.kind === "image"
+                        ? "Alt"
+                        : reference.kind === "footnote"
+                          ? "Footnote"
+                          : "Label"}
+                    </span>
+                    <input
+                      value={markdownReferenceEditableLabel(reference)}
+                      onChange={(event) =>
+                        onLabelChange(reference, event.currentTarget.value)
+                      }
+                      className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                    />
+                  </label>
+                )}
+              {reference.targetStart !== undefined &&
+                reference.targetEnd !== undefined && (
+                  <label className="mt-2 grid gap-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                    <span>
+                      {reference.kind === "footnote" ? "Body" : "Target"}
+                    </span>
+                    {reference.kind === "footnote" ? (
+                      <textarea
+                        value={reference.target ?? ""}
+                        rows={Math.min(
+                          6,
+                          Math.max(2, (reference.target ?? "").split("\n").length),
+                        )}
+                        onChange={(event) =>
+                          onTargetChange(reference, event.currentTarget.value)
+                        }
+                        className="min-h-16 resize-y rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                      />
+                    ) : (
+                      <input
+                        value={reference.target ?? ""}
+                        onChange={(event) =>
+                          onTargetChange(reference, event.currentTarget.value)
+                        }
+                        className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                      />
+                    )}
+                  </label>
               )}
-              <div className="mt-1 text-[10px] text-[var(--text-faint)]">
-                L{reference.line}
+              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[var(--text-faint)]">
+                <span>L{reference.line}</span>
+                <button
+                  type="button"
+                  onClick={() => onFocusRange(reference.start, reference.end)}
+                  className="rounded border border-[var(--border)] px-2 py-1 text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                >
+                  {t("documentEditor.focusSource", { defaultValue: "Focus source" })}
+                </button>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function markdownReferenceEditableLabel(reference: MarkdownReference) {
+  if (reference.kind === "footnote") {
+    return reference.label.replace(/^\[\^/, "").replace(/\]$/, "");
+  }
+  return reference.label;
 }
 
 function MarkdownFrontmatterPanel({

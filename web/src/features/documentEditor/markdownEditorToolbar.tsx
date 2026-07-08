@@ -53,6 +53,7 @@ export function MarkdownEditorToolbar({
   onToggleLinkInput,
   onToggleImageInput,
   onOpenTablePanel,
+  onInsertTableOfContents,
   onInsertFootnote,
   onToggleOutlinePanel,
   onOpenFrontmatterPanel,
@@ -88,6 +89,7 @@ export function MarkdownEditorToolbar({
   onToggleLinkInput: () => void;
   onToggleImageInput: () => void;
   onOpenTablePanel: () => void;
+  onInsertTableOfContents: () => void;
   onInsertFootnote: () => void;
   onToggleOutlinePanel: () => void;
   onOpenFrontmatterPanel: () => void;
@@ -159,6 +161,11 @@ export function MarkdownEditorToolbar({
         label={t("documentEditor.table")}
         active={sidePanel === "table"}
         onClick={onOpenTablePanel}
+      />
+      <ToolbarButton
+        icon={ListTree}
+        label={t("documentEditor.tableOfContents", { defaultValue: "TOC" })}
+        onClick={onInsertTableOfContents}
       />
       <ToolbarButton
         icon={Plus}

@@ -389,6 +389,8 @@ export function DocxTableBlock({
   return (
     <div
       ref={tableRef}
+      tabIndex={0}
+      data-docx-block={block.id}
       className={cn(
         "mb-4 rounded-sm p-1",
         active && "ring-1 ring-[var(--accent)]/30",

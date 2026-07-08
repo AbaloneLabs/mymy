@@ -784,6 +784,7 @@ const en = {
   documentEditor: {
     title: "Document editor",
     unsaved: "Unsaved",
+    saveQueued: "Save queued",
     savedAt: "Saved {time}",
     loadError: "Could not load the document.",
     saveError: "Could not save. Reopen the file if it changed.",
@@ -812,6 +813,10 @@ const en = {
     commandPalette: "Command palette",
     commandPalettePlaceholder: "Search commands",
     noCommands: "No commands",
+    matchCase: "Match case",
+    wholeWord: "Whole word",
+    regex: "Regex",
+    replaceAll: "Replace all",
     toggleFormulas: "Toggle formulas",
     columnWidth: "Column width",
     rowHeight: "Row height",

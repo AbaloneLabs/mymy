@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ExternalLink,
+  Play,
   RefreshCw,
   Shield,
 } from "lucide-react";
@@ -46,8 +47,14 @@ function LightweightBrowserSession({
   const initialEntry = useMemo(() => browserEntryForSource(source), [source]);
   const [history, setHistory] = useState<BrowserHistoryEntry[]>([initialEntry]);
   const [index, setIndex] = useState(0);
+  const [addressDraft, setAddressDraft] = useState<{
+    label: string;
+    value: string;
+  } | null>(null);
   const [blockedExternalUrl, setBlockedExternalUrl] = useState<string | null>(null);
   const current = history[index] ?? initialEntry;
+  const currentAddress =
+    addressDraft?.label === current.label ? addressDraft.value : current.label;
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
@@ -78,6 +85,34 @@ function LightweightBrowserSession({
     const iframe = iframeRef.current;
     if (!iframe) return;
     iframe.src = current.url;
+  }
+
+  function pushHistoryEntry(entry: BrowserHistoryEntry) {
+    setBlockedExternalUrl(null);
+    setAddressDraft(null);
+    setHistory((currentHistory) => {
+      const next = [...currentHistory.slice(0, index + 1), entry];
+      setIndex(next.length - 1);
+      return next;
+    });
+  }
+
+  function submitAddress() {
+    const address = currentAddress.trim();
+    if (!address) return;
+    if (address.startsWith("/drive/")) {
+      pushHistoryEntry({ url: driveHtmlViewerUrl(address), label: address });
+      return;
+    }
+    const viewerUrl = normalizeViewerUrl(address);
+    if (viewerUrl) {
+      pushHistoryEntry({ url: viewerUrl, label: labelFromViewerUrl(viewerUrl) });
+      return;
+    }
+    const externalUrl = externalViewerUrl(address);
+    if (externalUrl) {
+      setBlockedExternalUrl(externalUrl);
+    }
   }
 
   return (
@@ -111,10 +146,33 @@ function LightweightBrowserSession({
         >
           <RefreshCw className="h-4 w-4" strokeWidth={1.75} />
         </button>
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-muted)]">
+        <form
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--text-muted)] focus-within:border-[var(--accent)]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitAddress();
+          }}
+        >
           <Shield className="h-3.5 w-3.5 shrink-0 text-[var(--status-success)]" strokeWidth={1.75} />
-          <span className="truncate font-mono">{current.label}</span>
-        </div>
+          <input
+            value={currentAddress}
+            onChange={(event) =>
+              setAddressDraft({
+                label: current.label,
+                value: event.currentTarget.value,
+              })
+            }
+            className="min-w-0 flex-1 bg-transparent font-mono text-xs text-[var(--text)] outline-none"
+            aria-label={t("browser.address", { defaultValue: "Address" })}
+          />
+          <button
+            type="submit"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            title={t("browser.go", { defaultValue: "Go" })}
+          >
+            <Play className="h-3 w-3" strokeWidth={1.75} />
+          </button>
+        </form>
         <a
           href={current.url}
           target="_blank"

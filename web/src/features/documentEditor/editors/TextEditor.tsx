@@ -1,5 +1,7 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   ArrowDown,
   ArrowDownAZ,
@@ -7,14 +9,17 @@ import {
   Braces,
   Copy,
   FileCog,
+  FilePlus,
   IndentDecrease,
   IndentIncrease,
   ListTree,
   MessageSquare,
   Pilcrow,
   Rows3,
+  Save,
   Search,
   Table,
+  Trash2,
   WrapText,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -24,6 +29,7 @@ import type { EditorCommandRequest } from "../commands";
 import type { TextModel } from "../models";
 import {
   autoPairSource,
+  activeSourceFoldIds,
   blockCommentTokens,
   buildSearchRegex,
   countSearchMatches,
@@ -41,27 +47,55 @@ import {
   offsetForTextLine,
   outdentTextLine,
   selectedLineRange,
+  sourceBracketMatch,
+  sourceBracketPairFragments,
+  sourceDisplayText,
+  sourceFoldRanges,
+  sourceMinimapLines,
+  sourceSelectionLineFragments,
+  sourceVisibleLines,
+  startChunkedSearchCount,
+  startChunkedSearchRange,
   textEditorKind,
   textSourceOutline,
   textStats,
   toggleBlockCommentRange,
   toggleCommentLine,
   transformSelectedLines,
+  isPotentialSourceEditKey,
 } from "../textSourceUtils";
-import type { SourceEdit } from "../textSourceUtils";
+import type { SourceFoldRange, SourceSelectionRange } from "../textSourceUtils";
 import { jsonSchemaDiagnostics, sourceDiagnostics } from "../textStructuredUtils";
 import { isTabularJson, parseJsonContent, sortJsonValue } from "../textJsonUtils";
 import { JsonPreview, JsonTableEditor, StructuredJsonEditor } from "../textJsonEditors";
+import {
+  createJsonSchemaRegistryEntry,
+  jsonSchemaParseError,
+  loadJsonSchemaRegistry,
+  saveJsonSchemaRegistry,
+  schemaNameFromPath,
+  updateJsonSchemaRegistryEntry,
+} from "../textSchemaRegistry";
 import {
   ConfigPreview,
   FlatConfigEditor,
   LargeTextSourceViewer,
 } from "../textConfigEditors";
+import { TextSourcePane } from "../textSourcePane";
+import { useTextSourceEditing } from "../useTextSourceEditing";
 
 type TextEditorMode = "source" | "tree" | "table" | "preview";
 
 const LARGE_TEXT_FILE_CHAR_LIMIT = 1_000_000;
 const LARGE_TEXT_FILE_LINE_LIMIT = 50_000;
+
+interface LargeSearchSignature {
+  caseSensitive: boolean;
+  content: string;
+  query: string;
+  regexSearch: boolean;
+  wholeWord: boolean;
+}
 
 export function PlainTextEditor({
   filePath,
@@ -78,8 +112,10 @@ export function PlainTextEditor({
 }) {
   const { t } = useTranslation();
   const sourceRef = useRef<HTMLTextAreaElement>(null);
-  const lineNumberRef = useRef<HTMLPreElement>(null);
+  const lineNumberRef = useRef<HTMLDivElement>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
+  const searchCountCancelRef = useRef<(() => void) | null>(null);
+  const searchRangeCancelRef = useRef<(() => void) | null>(null);
   const [mode, setMode] = useState<TextEditorMode>("source");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
@@ -88,11 +124,37 @@ export function PlainTextEditor({
   const [goToLineDraft, setGoToLineDraft] = useState("");
   const [schemaOpen, setSchemaOpen] = useState(false);
   const [schemaDraft, setSchemaDraft] = useState("");
+  const [schemaNameDraft, setSchemaNameDraft] = useState(() => schemaNameFromPath(filePath));
+  const [schemaRegistry, setSchemaRegistry] = useState(loadJsonSchemaRegistry);
+  const [selectedSchemaId, setSelectedSchemaId] = useState("");
+  const [foldedSourceIds, setFoldedSourceIds] = useState<Set<string>>(() => new Set());
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [sourceScrollTop, setSourceScrollTop] = useState(0);
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [regexSearch, setRegexSearch] = useState(false);
-  const [cursor, setCursor] = useState({ line: 1, column: 1, selection: 0 });
+  const [cursor, setCursor] = useState({
+    line: 1,
+    column: 1,
+    selection: 0,
+    offset: 0,
+  });
+  const [streamingSearchCount, setStreamingSearchCount] = useState<{
+    query: string;
+    count: number;
+    processed: number;
+    total: number;
+    complete: boolean;
+  } | null>(null);
+  const [largeSearchResult, setLargeSearchResult] = useState<{
+    range: SourceSelectionRange | null;
+    signature: LargeSearchSignature;
+  } | null>(null);
+  const [largeSearchNavigation, setLargeSearchNavigation] = useState<{
+    processed: number;
+    total: number;
+    signature: LargeSearchSignature;
+  } | null>(null);
   const kind = textEditorKind(filePath);
   const language = languageForPath(filePath, kind);
   const structured = kind === "json" || kind === "yaml" || kind === "toml";
@@ -103,20 +165,96 @@ export function PlainTextEditor({
     lineCount > LARGE_TEXT_FILE_LINE_LIMIT;
   const parsedJson = json && !largeTextMode ? parseJsonContent(model.content) : undefined;
   const tableAvailable = !largeTextMode && isTabularJson(parsedJson);
+  const schemaDiagnostics = largeTextMode
+    ? []
+    : jsonSchemaDiagnostics(parsedJson, schemaDraft, json);
+  const schemaDraftError = jsonSchemaParseError(schemaDraft);
+  const selectedSchema = schemaRegistry.find((entry) => entry.id === selectedSchemaId);
   const diagnostics = largeTextMode
     ? []
     : [
         ...sourceDiagnostics(model.content, kind),
-        ...jsonSchemaDiagnostics(parsedJson, schemaDraft, json),
+        ...schemaDiagnostics,
       ];
+  const diagnosticsByLine = new Map<number, typeof diagnostics>();
+  diagnostics.forEach((diagnostic) => {
+    if (!diagnostic.line) return;
+    diagnosticsByLine.set(diagnostic.line, [
+      ...(diagnosticsByLine.get(diagnostic.line) ?? []),
+      diagnostic,
+    ]);
+  });
   const outline = largeTextMode ? [] : textSourceOutline(model.content, language);
   const stats = textStats(model.content);
-  const blockComments = blockCommentTokens(filePath, kind);
-  const searchMatches = countSearchMatches(model.content, searchDraft, {
-    caseSensitive,
-    wholeWord,
-    regexSearch,
+  const foldRanges = largeTextMode ? [] : sourceFoldRanges(model.content, language);
+  const activeFoldedSourceIds = activeSourceFoldIds(foldedSourceIds, foldRanges);
+  const foldRangeByStart = new Map(foldRanges.map((range) => [range.startLine, range]));
+  const visibleSourceLines = sourceVisibleLines(model.content, foldRanges, activeFoldedSourceIds);
+  const sourceDisplayContent =
+    activeFoldedSourceIds.size > 0 ? sourceDisplayText(visibleSourceLines) : model.content;
+  const {
+    activateRectangularSourceSelection,
+    addNextSourceSelection,
+    applySourceEdit,
+    clearSourceSelections,
+    handleSourceMultiCursorKey,
+    handleSourcePaste,
+    pasteProgress,
+    setSourceSelectionRanges,
+    sourceSelectionRanges,
+    withTextareaSelection,
+  } = useTextSourceEditing({
+    content: model.content,
+    folded: activeFoldedSourceIds.size > 0,
+    sourceRef,
+    updateContent,
+    unfoldAll: () => setFoldedSourceIds(new Set()),
+    updateCursor,
+    syncLineNumberScroll,
   });
+  const minimapLines = useMemo(
+    () => (largeTextMode ? [] : sourceMinimapLines(model.content)),
+    [largeTextMode, model.content],
+  );
+  const bracketMatch = useMemo(
+    () => (largeTextMode ? null : sourceBracketMatch(model.content, cursor.offset)),
+    [cursor.offset, largeTextMode, model.content],
+  );
+  const sourceSelectionFragments = useMemo(
+    () => sourceSelectionLineFragments(model.content, sourceSelectionRanges),
+    [model.content, sourceSelectionRanges],
+  );
+  const bracketPairFragments = useMemo(
+    () => (largeTextMode ? [] : sourceBracketPairFragments(model.content)),
+    [largeTextMode, model.content],
+  );
+  const blockComments = blockCommentTokens(filePath, kind);
+  const largeSearchSignature = {
+    caseSensitive,
+    content: model.content,
+    query: searchDraft,
+    regexSearch,
+    wholeWord,
+  };
+  const streamingSearchCountForQuery =
+    streamingSearchCount?.query === searchDraft ? streamingSearchCount : null;
+  const largeSearchRange =
+    largeSearchResult &&
+    sameLargeSearchSignature(largeSearchResult.signature, largeSearchSignature)
+      ? largeSearchResult.range
+      : null;
+  const largeSearchNavigationForQuery =
+    largeSearchNavigation &&
+    sameLargeSearchSignature(largeSearchNavigation.signature, largeSearchSignature)
+      ? largeSearchNavigation
+      : null;
+  const searchMatches = largeTextMode
+    ? (streamingSearchCountForQuery?.count ?? 0)
+    : countSearchMatches(model.content, searchDraft, {
+        caseSensitive,
+        wholeWord,
+        regexSearch,
+      });
   const activeMode =
     largeTextMode
       ? "source"
@@ -125,6 +263,69 @@ export function PlainTextEditor({
         : mode === "tree" && !structured
           ? "source"
           : mode;
+
+  useEffect(() => {
+    saveJsonSchemaRegistry(schemaRegistry);
+  }, [schemaRegistry]);
+
+  useEffect(() => {
+    return () => {
+      searchCountCancelRef.current?.();
+      searchRangeCancelRef.current?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    searchRangeCancelRef.current?.();
+    searchRangeCancelRef.current = null;
+  }, [
+    caseSensitive,
+    largeTextMode,
+    model.content,
+    regexSearch,
+    searchDraft,
+    wholeWord,
+  ]);
+
+  useEffect(() => {
+    searchCountCancelRef.current?.();
+    searchCountCancelRef.current = null;
+    if (!largeTextMode || !searchDraft) return;
+    searchCountCancelRef.current = startChunkedSearchCount({
+      content: model.content,
+      query: searchDraft,
+      caseSensitive,
+      wholeWord,
+      regexSearch,
+      onProgress: ({ count, processed, total }) =>
+        setStreamingSearchCount({
+          query: searchDraft,
+          count,
+          processed,
+          total,
+          complete: false,
+        }),
+      onDone: (count) =>
+        setStreamingSearchCount({
+          query: searchDraft,
+          count,
+          processed: model.content.length,
+          total: model.content.length,
+          complete: true,
+        }),
+    });
+    return () => {
+      searchCountCancelRef.current?.();
+      searchCountCancelRef.current = null;
+    };
+  }, [
+    caseSensitive,
+    largeTextMode,
+    model.content,
+    regexSearch,
+    searchDraft,
+    wholeWord,
+  ]);
 
   function togglePreviewMode() {
     setMode((current) => (current === "preview" ? "source" : "preview"));
@@ -154,47 +355,38 @@ export function PlainTextEditor({
     }
   }
 
-  function updateContent(content: string) {
+  function updateContent(
+    content: string,
+    options: { preserveSourceSelections?: boolean } = {},
+  ) {
     if (largeTextMode) return;
+    if (!options.preserveSourceSelections) clearSourceSelections();
     onChange({ ...model, content, trailingNewline: hasTrailingTextNewline(content) });
   }
 
   function syncLineNumberScroll() {
     if (!sourceRef.current || !lineNumberRef.current) return;
     lineNumberRef.current.scrollTop = sourceRef.current.scrollTop;
+    setSourceScrollTop(sourceRef.current.scrollTop);
   }
 
   function updateCursor() {
     const textarea = sourceRef.current;
     if (!textarea) return;
-    setCursor(cursorPosition(model.content, textarea.selectionStart, textarea.selectionEnd));
-  }
-
-  function applySourceEdit(
-    edit: SourceEdit | null,
-    fallbackSelection?: { start: number; end: number },
-  ) {
-    if (!edit) return;
-    updateContent(edit.content);
-    requestAnimationFrame(() => {
-      const textarea = sourceRef.current;
-      if (!textarea) return;
-      textarea.focus();
-      textarea.setSelectionRange(
-        fallbackSelection?.start ?? edit.selectionStart,
-        fallbackSelection?.end ?? edit.selectionEnd,
-      );
-      updateCursor();
-      syncLineNumberScroll();
+    if (activeFoldedSourceIds.size > 0) return;
+    if (
+      sourceSelectionRanges.length > 0 &&
+      !sourceSelectionRanges.some(
+        (range) =>
+          range.start === textarea.selectionStart && range.end === textarea.selectionEnd,
+      )
+    ) {
+      setSourceSelectionRanges([]);
+    }
+    setCursor({
+      ...cursorPosition(model.content, textarea.selectionStart, textarea.selectionEnd),
+      offset: textarea.selectionStart,
     });
-  }
-
-  function withTextareaSelection(
-    operation: (start: number, end: number) => SourceEdit | null,
-  ) {
-    const textarea = sourceRef.current;
-    if (!textarea) return;
-    applySourceEdit(operation(textarea.selectionStart, textarea.selectionEnd));
   }
 
   function indentSelection() {
@@ -244,6 +436,73 @@ export function PlainTextEditor({
     updateContent(`${model.content}\n`);
   }
 
+  function toggleSourceFold(range: SourceFoldRange) {
+    setFoldedSourceIds((current) => {
+      const next = new Set(current);
+      if (next.has(range.id)) next.delete(range.id);
+      else next.add(range.id);
+      return next;
+    });
+  }
+
+  function unfoldSourceLine(line: number) {
+    setFoldedSourceIds((current) => {
+      const hiddenRange = foldRanges.find(
+        (range) => current.has(range.id) && line > range.startLine && line <= range.endLine,
+      );
+      if (!hiddenRange) return current;
+      const next = new Set(current);
+      next.delete(hiddenRange.id);
+      return next;
+    });
+  }
+
+  function selectSchema(schemaId: string) {
+    setSelectedSchemaId(schemaId);
+    const entry = schemaRegistry.find((candidate) => candidate.id === schemaId);
+    if (!entry) {
+      setSchemaDraft("");
+      setSchemaNameDraft(schemaNameFromPath(filePath));
+      return;
+    }
+    setSchemaDraft(entry.schema);
+    setSchemaNameDraft(entry.name);
+  }
+
+  function startNewSchema() {
+    setSelectedSchemaId("");
+    setSchemaDraft("");
+    setSchemaNameDraft(schemaNameFromPath(filePath));
+  }
+
+  function saveCurrentSchema() {
+    if (!schemaDraft.trim() || schemaDraftError) return;
+    if (selectedSchema) {
+      const updated = updateJsonSchemaRegistryEntry(
+        selectedSchema,
+        schemaNameDraft,
+        schemaDraft,
+      );
+      setSchemaRegistry((current) =>
+        current
+          .map((entry) => (entry.id === updated.id ? updated : entry))
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+      );
+      setSchemaNameDraft(updated.name);
+      return;
+    }
+    const created = createJsonSchemaRegistryEntry(schemaNameDraft, schemaDraft);
+    setSchemaRegistry((current) => [created, ...current]);
+    setSelectedSchemaId(created.id);
+    setSchemaNameDraft(created.name);
+  }
+
+  function deleteSelectedSchema() {
+    if (!selectedSchema) return;
+    setSchemaRegistry((current) => current.filter((entry) => entry.id !== selectedSchema.id));
+    startNewSchema();
+  }
+
   function selectCurrentLine() {
     const textarea = sourceRef.current;
     if (!textarea) return;
@@ -253,9 +512,23 @@ export function PlainTextEditor({
   }
 
   function handleSourceKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (activeFoldedSourceIds.size > 0 && isPotentialSourceEditKey(event)) {
+      event.preventDefault();
+      setFoldedSourceIds(new Set());
+      return;
+    }
     const primary = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
-    if (event.key === "Tab") {
+    if (handleSourceMultiCursorKey(event)) {
+      return;
+    }
+    if (primary && key === "d") {
+      event.preventDefault();
+      addNextSourceSelection();
+    } else if (event.altKey && event.shiftKey && key === "r") {
+      event.preventDefault();
+      activateRectangularSourceSelection();
+    } else if (event.key === "Tab") {
       event.preventDefault();
       if (event.shiftKey) outdentSelection();
       else indentSelection();
@@ -353,6 +626,7 @@ export function PlainTextEditor({
   }
 
   function focusSourceLine(line: number) {
+    unfoldSourceLine(line);
     const offset = offsetForTextLine(model.content, line);
     focusSourceRange(offset, offset);
   }
@@ -365,6 +639,35 @@ export function PlainTextEditor({
   }
 
   function findNext() {
+    if (largeTextMode) {
+      searchRangeCancelRef.current?.();
+      searchRangeCancelRef.current = null;
+      if (!searchDraft) return;
+      setLargeSearchNavigation({
+        processed: 0,
+        total: model.content.length,
+        signature: largeSearchSignature,
+      });
+      searchRangeCancelRef.current = startChunkedSearchRange({
+        content: model.content,
+        query: searchDraft,
+        caseSensitive,
+        wholeWord,
+        regexSearch,
+        start: largeSearchRange?.end ?? 0,
+        onProgress: (progress) =>
+          setLargeSearchNavigation({
+            ...progress,
+            signature: largeSearchSignature,
+          }),
+        onDone: (range) => {
+          searchRangeCancelRef.current = null;
+          setLargeSearchNavigation(null);
+          setLargeSearchResult({ range, signature: largeSearchSignature });
+        },
+      });
+      return;
+    }
     const start = sourceRef.current?.selectionEnd ?? 0;
     const range = nextSearchRange(model.content, searchDraft, {
       caseSensitive,
@@ -646,10 +949,20 @@ export function PlainTextEditor({
           <button type="button" onClick={findNext} className={toolbarTextButtonClass(false)}>
             Next
           </button>
-          <button type="button" onClick={replaceNext} className={toolbarTextButtonClass(false)}>
+          <button
+            type="button"
+            onClick={replaceNext}
+            disabled={largeTextMode}
+            className={toolbarTextButtonClass(false)}
+          >
             Replace
           </button>
-          <button type="button" onClick={replaceAll} className={toolbarTextButtonClass(false)}>
+          <button
+            type="button"
+            onClick={replaceAll}
+            disabled={largeTextMode}
+            className={toolbarTextButtonClass(false)}
+          >
             All
           </button>
           <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
@@ -677,6 +990,16 @@ export function PlainTextEditor({
             .*
           </label>
           <span className="text-xs text-[var(--text-faint)]">{searchMatches} matches</span>
+          {largeTextMode && streamingSearchCountForQuery && !streamingSearchCountForQuery.complete && (
+            <span className="text-xs text-[var(--text-faint)]">
+              scanning {Math.round((streamingSearchCountForQuery.processed / Math.max(1, streamingSearchCountForQuery.total)) * 100)}%
+            </span>
+          )}
+          {largeTextMode && largeSearchNavigationForQuery && (
+            <span className="text-xs text-[var(--text-faint)]">
+              locating {Math.round((largeSearchNavigationForQuery.processed / Math.max(1, largeSearchNavigationForQuery.total)) * 100)}%
+            </span>
+          )}
         </div>
       )}
       {goToLineOpen && (
@@ -712,11 +1035,59 @@ export function PlainTextEditor({
         </form>
       )}
       {json && schemaOpen && (
-        <div className="grid shrink-0 gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 md:grid-cols-[minmax(0,1fr)_minmax(180px,260px)]">
+        <div className="grid shrink-0 gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 lg:grid-cols-[220px_minmax(0,1fr)_minmax(180px,260px)]">
+          <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-xs">
+            <select
+              value={selectedSchemaId}
+              onChange={(event) => selectSchema(event.target.value)}
+              className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            >
+              <option value="">Unsaved schema</option>
+              {schemaRegistry.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+            <input
+              value={schemaNameDraft}
+              onChange={(event) => setSchemaNameDraft(event.target.value)}
+              className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+              placeholder="Schema name"
+            />
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={startNewSchema}
+                className={toolbarTextButtonClass(false)}
+              >
+                <FilePlus className="h-3.5 w-3.5" strokeWidth={1.75} />
+                New
+              </button>
+              <button
+                type="button"
+                onClick={saveCurrentSchema}
+                disabled={!schemaDraft.trim() || Boolean(schemaDraftError)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Save className="h-3.5 w-3.5" strokeWidth={1.75} />
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={deleteSelectedSchema}
+                disabled={!selectedSchema}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                Delete
+              </button>
+            </div>
+          </div>
           <textarea
             value={schemaDraft}
             onChange={(event) => setSchemaDraft(event.target.value)}
-            placeholder='{"type":"object","required":[],"properties":{}}'
+            placeholder="JSON Schema"
             spellCheck={false}
             className="h-24 min-h-0 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 font-mono text-xs leading-5 text-[var(--text)] outline-none focus:border-[var(--accent)]"
           />
@@ -725,12 +1096,21 @@ export function PlainTextEditor({
             <div className="mt-1 text-[var(--text-faint)]">
               type, required, properties, items, enum
             </div>
-            {schemaDraft.trim() ? (
+            {schemaDraftError ? (
+              <div className="mt-2 text-[var(--status-error)]">{schemaDraftError}</div>
+            ) : schemaDraft.trim() ? (
               <div className="mt-2 text-[var(--text-faint)]">
-                {jsonSchemaDiagnostics(parsedJson, schemaDraft, json).length} schema issues
+                {schemaDiagnostics.length} schema issues
               </div>
             ) : (
-              <div className="mt-2 text-[var(--text-faint)]">No schema selected</div>
+              <div className="mt-2 text-[var(--text-faint)]">
+                {schemaRegistry.length} saved schemas
+              </div>
+            )}
+            {selectedSchema && (
+              <div className="mt-2 text-[var(--text-faint)]">
+                Updated {new Date(selectedSchema.updatedAt).toLocaleString()}
+              </div>
             )}
           </div>
         </div>
@@ -743,11 +1123,19 @@ export function PlainTextEditor({
       {diagnostics.length > 0 && (
         <div className="shrink-0 border-b border-[var(--status-warning)]/30 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
           {diagnostics.map((diagnostic) => (
-            <div key={`${diagnostic.line}:${diagnostic.path}:${diagnostic.message}`}>
+            <button
+              key={`${diagnostic.line}:${diagnostic.path}:${diagnostic.message}`}
+              type="button"
+              onClick={() => {
+                if (diagnostic.line) focusSourceLine(diagnostic.line);
+              }}
+              disabled={!diagnostic.line}
+              className="block w-full rounded px-1 py-0.5 text-left disabled:cursor-default"
+            >
               {diagnostic.line ? `L${diagnostic.line}: ` : ""}
               {diagnostic.path ? `${diagnostic.path}: ` : ""}
               {diagnostic.message}
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -781,28 +1169,33 @@ export function PlainTextEditor({
               <HighlightedCodeBlock code={model.content} language={language} />
             </div>
           ) : largeTextMode ? (
-            <LargeTextSourceViewer content={model.content} lineCount={lineCount} />
+            <LargeTextSourceViewer
+              content={model.content}
+              lineCount={lineCount}
+              searchRange={largeSearchRange}
+            />
           ) : (
-            <div className="grid h-full min-h-0 grid-cols-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--bg)]">
-              <pre
-                ref={lineNumberRef}
-                className="select-none overflow-hidden border-r border-[var(--border)] bg-[var(--surface)] px-3 py-4 text-right font-mono text-xs leading-6 text-[var(--text-faint)]"
-              >
-                {Array.from({ length: lineCount }, (_, index) => index + 1).join("\n")}
-              </pre>
-              <textarea
-                ref={sourceRef}
-                value={model.content}
-                onChange={(event) => updateContent(event.target.value)}
-                onKeyDown={handleSourceKeyDown}
-                onSelect={updateCursor}
-                onKeyUp={updateCursor}
-                onClick={updateCursor}
-                onScroll={syncLineNumberScroll}
-                spellCheck={false}
-                className="min-h-0 resize-none bg-[var(--bg)] p-4 font-mono text-sm leading-6 text-[var(--text)] outline-none"
-              />
-            </div>
+            <TextSourcePane
+              sourceRef={sourceRef}
+              lineNumberRef={lineNumberRef}
+              sourceDisplayContent={sourceDisplayContent}
+              visibleSourceLines={visibleSourceLines}
+              foldRangeByStart={foldRangeByStart}
+              activeFoldedSourceIds={activeFoldedSourceIds}
+              diagnosticsByLine={diagnosticsByLine}
+              minimapLines={minimapLines}
+              cursorLine={cursor.line}
+              sourceScrollTop={sourceScrollTop}
+              selectionFragments={sourceSelectionFragments}
+              bracketFragments={bracketPairFragments}
+              onContentChange={updateContent}
+              onKeyDown={handleSourceKeyDown}
+              onPaste={handleSourcePaste}
+              onCursorUpdate={updateCursor}
+              onScroll={syncLineNumberScroll}
+              onFocusLine={focusSourceLine}
+              onToggleFold={toggleSourceFold}
+            />
           )}
         </div>
         {outlineOpen && (
@@ -852,8 +1245,26 @@ export function PlainTextEditor({
         <span>
           L{cursor.line}:C{cursor.column}
           {cursor.selection > 0 ? ` · ${cursor.selection} selected` : ""}
+          {sourceSelectionRanges.length > 1
+            ? ` · ${sourceSelectionRanges.length} cursors`
+            : ""}
           {largeTextMode ? " · read-only" : ""}
+          {pasteProgress
+            ? ` · pasting ${Math.round((pasteProgress.processed / Math.max(1, pasteProgress.total)) * 100)}%`
+            : ""}
         </span>
+        {bracketMatch && (
+          <span
+            className={cn(
+              "hidden min-w-0 truncate px-3 font-mono sm:inline",
+              bracketMatch.matched ? "text-[var(--text-muted)]" : "text-[var(--status-warning)]",
+            )}
+          >
+            {bracketMatch.matched
+              ? `${bracketMatch.open.char} L${bracketMatch.open.line}:C${bracketMatch.open.column} <-> ${bracketMatch.close.char} L${bracketMatch.close.line}:C${bracketMatch.close.column}`
+              : `${bracketMatch.focus.char} unmatched at L${bracketMatch.focus.line}:C${bracketMatch.focus.column}`}
+          </span>
+        )}
         <span>
           {stats.lines} lines · {stats.characters} chars · {lineEndingLabel(model.lineEnding)}
         </span>
@@ -879,5 +1290,18 @@ function modeButtonClass(active: boolean) {
     active
       ? "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--text)]"
       : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)]",
+  );
+}
+
+function sameLargeSearchSignature(
+  left: LargeSearchSignature,
+  right: LargeSearchSignature,
+) {
+  return (
+    left.content === right.content &&
+    left.query === right.query &&
+    left.caseSensitive === right.caseSensitive &&
+    left.wholeWord === right.wholeWord &&
+    left.regexSearch === right.regexSearch
   );
 }

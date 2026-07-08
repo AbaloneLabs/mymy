@@ -105,6 +105,7 @@ export function SpreadsheetSheetTabs({
           <input
             value={activeSheet.name}
             onChange={(event) => onRenameSheet(event.target.value)}
+            maxLength={31}
             className="ml-auto h-7 w-40 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             aria-label="Sheet name"
           />

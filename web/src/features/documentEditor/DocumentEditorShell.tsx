@@ -62,6 +62,7 @@ export function DocumentEditorToolbar({
   dirty,
   lastSavedAt,
   isSaving,
+  isSaveQueued,
   canUndo,
   canRedo,
   findPanelOpen,
@@ -76,6 +77,7 @@ export function DocumentEditorToolbar({
   dirty: boolean;
   lastSavedAt: string | null;
   isSaving: boolean;
+  isSaveQueued: boolean;
   canUndo: boolean;
   canRedo: boolean;
   findPanelOpen: boolean;
@@ -149,7 +151,9 @@ export function DocumentEditorToolbar({
       </button>
       {dirty && (
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--text-muted)]">
-          {t("documentEditor.unsaved")}
+          {isSaveQueued
+            ? t("documentEditor.saveQueued", { defaultValue: "Save queued" })
+            : t("documentEditor.unsaved")}
         </span>
       )}
       {lastSavedAt && !dirty && (
@@ -171,6 +175,60 @@ export function DocumentEditorToolbar({
         )}
         {t("common.save")}
       </button>
+    </div>
+  );
+}
+
+export function DocumentEditorStatusBar({
+  kind,
+  model,
+  fingerprint,
+  dirty,
+  isSaving,
+  isSaveQueued,
+  warningCount,
+}: {
+  kind: DocumentEditorKind;
+  model: unknown;
+  fingerprint: string;
+  dirty: boolean;
+  isSaving: boolean;
+  isSaveQueued: boolean;
+  warningCount: number;
+}) {
+  const { t } = useTranslation();
+  const statusItems = documentEditorStatusItems(kind, model);
+  return (
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-1.5 text-[11px] text-[var(--text-muted)]">
+      <span className="font-medium text-[var(--text)]">
+        {documentEditorKindLabel(kind)}
+      </span>
+      <span>
+        {isSaving
+          ? t("documentEditor.saving", { defaultValue: "Saving" })
+          : isSaveQueued
+            ? t("documentEditor.saveQueued", { defaultValue: "Save queued" })
+            : dirty
+            ? t("documentEditor.unsaved")
+            : t("documentEditor.saved", { defaultValue: "Saved" })}
+      </span>
+      <span className="font-mono text-[var(--text-faint)]">
+        {t("documentEditor.revision", { defaultValue: "rev" })}{" "}
+        {fingerprint.slice(0, 10)}
+      </span>
+      {warningCount > 0 && (
+        <span className="text-[var(--status-warning)]">
+          {t("documentEditor.compatibilityWarningCount", {
+            defaultValue: "{{count}} compatibility warnings",
+            count: warningCount,
+          })}
+        </span>
+      )}
+      {statusItems.map((item) => (
+        <span key={item} className="truncate">
+          {item}
+        </span>
+      ))}
     </div>
   );
 }
@@ -261,6 +319,109 @@ export function CommandPalette({
   );
 }
 
+function documentEditorKindLabel(kind: DocumentEditorKind) {
+  if (kind === "docx") return "DOCX";
+  if (kind === "xlsx") return "XLSX";
+  if (kind === "pptx") return "PPTX";
+  if (kind === "markdown") return "Markdown";
+  if (kind === "csv") return "CSV";
+  if (kind === "tsv") return "TSV";
+  if (kind === "preview") return "Preview";
+  return "Text";
+}
+
+function documentEditorStatusItems(kind: DocumentEditorKind, model: unknown) {
+  if (!isPlainRecord(model)) return [];
+  if (typeof model.content === "string") {
+    return compactStatusItems([
+      `${lineCount(model.content)} lines`,
+      `${model.content.length} chars`,
+      typeof model.encoding === "string" ? model.encoding : null,
+      typeof model.lineEnding === "string" ? lineEndingLabel(model.lineEnding) : null,
+      model.bom === true ? "BOM" : null,
+      model.trailingNewline === false ? "no final newline" : null,
+    ]);
+  }
+  if (Array.isArray(model.rows)) {
+    const rows = model.rows.filter(Array.isArray);
+    return compactStatusItems([
+      `${rows.length} rows`,
+      `${maxRowLength(rows)} columns`,
+      typeof model.encoding === "string" ? model.encoding : null,
+      typeof model.lineEnding === "string" ? lineEndingLabel(model.lineEnding) : null,
+      model.bom === true ? "BOM" : null,
+      model.trailingNewline === false ? "no final newline" : null,
+    ]);
+  }
+  if (Array.isArray(model.blocks)) {
+    const blocks = model.blocks.filter(isPlainRecord);
+    return compactStatusItems([
+      `${blocks.length} blocks`,
+      `${blocks.filter((block) => block.type === "table").length} tables`,
+      `${blocks.filter((block) => block.type === "image").length} images`,
+      `${arrayLength(model.headers) + arrayLength(model.footers)} headers/footers`,
+      `${arrayLength(model.comments)} comments`,
+      `${arrayLength(model.footnotes) + arrayLength(model.endnotes)} notes`,
+    ]);
+  }
+  if (Array.isArray(model.sheets)) {
+    const sheets = model.sheets.filter(isPlainRecord);
+    return compactStatusItems([
+      `${sheets.length} sheets`,
+      `${sheets.reduce((count, sheet) => count + arrayLength(sheet.rows), 0)} rows`,
+      `${sheets.reduce((count, sheet) => count + sheetCellCount(sheet), 0)} cells`,
+      `${sheets.reduce((count, sheet) => count + arrayLength(sheet.charts), 0)} charts`,
+      `${sheets.reduce((count, sheet) => count + arrayLength(sheet.pivots), 0)} pivots`,
+    ]);
+  }
+  if (Array.isArray(model.slides)) {
+    const slides = model.slides.filter(isPlainRecord);
+    return compactStatusItems([
+      `${slides.length} slides`,
+      `${slides.reduce((count, slide) => count + arrayLength(slide.texts), 0)} text boxes`,
+      `${slides.reduce((count, slide) => count + arrayLength(slide.shapes), 0)} shapes`,
+      `${slides.reduce((count, slide) => count + arrayLength(slide.images), 0)} images`,
+      `${slides.reduce((count, slide) => count + arrayLength(slide.charts), 0)} charts`,
+    ]);
+  }
+  return compactStatusItems([documentEditorKindLabel(kind)]);
+}
+
+function compactStatusItems(items: Array<string | null>) {
+  return items.filter((item): item is string => Boolean(item));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function arrayLength(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function sheetCellCount(sheet: Record<string, unknown>) {
+  if (!Array.isArray(sheet.rows)) return 0;
+  return sheet.rows.reduce((count, row) => {
+    if (!isPlainRecord(row) || !Array.isArray(row.cells)) return count;
+    return count + row.cells.length;
+  }, 0);
+}
+
+function maxRowLength(rows: unknown[][]) {
+  return rows.reduce((max, row) => Math.max(max, row.length), 0);
+}
+
+function lineCount(content: string) {
+  return content.length === 0 ? 1 : content.split("\n").length;
+}
+
+function lineEndingLabel(value: string) {
+  if (value === "\r\n") return "CRLF";
+  if (value === "\r") return "CR";
+  if (value === "\n") return "LF";
+  return value;
+}
+
 function CommandPaletteItem({
   command,
   onRun,
@@ -327,10 +488,14 @@ export function FindReplacePanel({
   query,
   replacement,
   matchCase,
+  wholeWord,
+  regexSearch,
   matchCount,
   onQueryChange,
   onReplacementChange,
   onMatchCaseChange,
+  onWholeWordChange,
+  onRegexSearchChange,
   onReplaceFirst,
   onReplaceAll,
   onClose,
@@ -338,10 +503,14 @@ export function FindReplacePanel({
   query: string;
   replacement: string;
   matchCase: boolean;
+  wholeWord: boolean;
+  regexSearch: boolean;
   matchCount: number;
   onQueryChange: (query: string) => void;
   onReplacementChange: (replacement: string) => void;
   onMatchCaseChange: (matchCase: boolean) => void;
+  onWholeWordChange: (wholeWord: boolean) => void;
+  onRegexSearchChange: (regexSearch: boolean) => void;
   onReplaceFirst: () => void;
   onReplaceAll: () => void;
   onClose: () => void;
@@ -380,6 +549,24 @@ export function FindReplacePanel({
         />
         {t("documentEditor.matchCase", { defaultValue: "Match case" })}
       </label>
+      <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)]">
+        <input
+          type="checkbox"
+          checked={wholeWord}
+          onChange={(event) => onWholeWordChange(event.target.checked)}
+          className="h-3.5 w-3.5"
+        />
+        {t("documentEditor.wholeWord", { defaultValue: "Whole word" })}
+      </label>
+      <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)]">
+        <input
+          type="checkbox"
+          checked={regexSearch}
+          onChange={(event) => onRegexSearchChange(event.target.checked)}
+          className="h-3.5 w-3.5"
+        />
+        {t("documentEditor.regex", { defaultValue: "Regex" })}
+      </label>
       <button
         type="button"
         onClick={onReplaceFirst}
@@ -407,4 +594,3 @@ export function FindReplacePanel({
     </div>
   );
 }
-

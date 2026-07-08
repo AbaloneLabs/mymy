@@ -48,6 +48,24 @@ export function normalizeDelimitedTableModel(
       typeof model.lineEnding === "string" ? model.lineEnding : undefined,
     encoding: typeof model.encoding === "string" ? model.encoding : undefined,
     bom: typeof model.bom === "boolean" ? model.bom : undefined,
+    delimiter:
+      typeof model.delimiter === "string" && [...model.delimiter].length === 1
+        ? model.delimiter
+        : undefined,
+    quoteCharacter:
+      typeof model.quoteCharacter === "string" && [...model.quoteCharacter].length === 1
+        ? model.quoteCharacter
+        : undefined,
+    escapePolicy:
+      model.escapePolicy === "backslash" || model.escapePolicy === "double"
+        ? model.escapePolicy
+        : undefined,
+    headerRow: typeof model.headerRow === "boolean" ? model.headerRow : undefined,
+    columnTypes: Array.isArray(model.columnTypes)
+      ? model.columnTypes.map((value) =>
+          typeof value === "string" ? value : "auto",
+        )
+      : undefined,
     quoteStyle:
       model.quoteStyle === "always" || model.quoteStyle === "minimal"
         ? model.quoteStyle
