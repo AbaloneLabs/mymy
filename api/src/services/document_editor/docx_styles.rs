@@ -219,12 +219,15 @@ fn build_docx_paragraph_style(style: &Value, style_id: &str) -> String {
         .filter(|value| !value.is_empty())
         .map(|value| format!(r#"<w:next w:val="{}"/>"#, escape_xml(value)))
         .unwrap_or_default();
-    let quick_format = style
+    let quick_format = if style
         .get("quickFormat")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-        .then_some("<w:qFormat/>")
-        .unwrap_or_default();
+    {
+        "<w:qFormat/>"
+    } else {
+        ""
+    };
     let paragraph_properties = docx_style_paragraph_properties(style);
     let run_properties = docx_style_run_properties(style);
     format!(

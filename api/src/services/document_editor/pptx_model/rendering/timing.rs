@@ -250,7 +250,7 @@ pub(in crate::services::document_editor) fn build_pptx_animation_segment(
         .id
         .as_deref()
         .filter(|value| value.chars().all(|ch| ch.is_ascii_digit()))
-        .unwrap_or_else(|| if fallback_id == 0 { "1" } else { "" });
+        .unwrap_or(if fallback_id == 0 { "1" } else { "" });
     let fallback_id_string;
     let id = if id.is_empty() {
         fallback_id_string = fallback_id.max(1).to_string();
