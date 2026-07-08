@@ -20,6 +20,107 @@ pub(in crate::services::document_editor) fn pptx_theme_models(
     Ok(themes)
 }
 
+pub(in crate::services::document_editor) fn pptx_presentation_slide_size_model(
+    bytes: &[u8],
+) -> Option<Value> {
+    let xml = read_zip_text(bytes, "ppt/presentation.xml").ok()?;
+    let size = pptx_slide_size_spec_from_xml(&xml)?;
+    let mut model = serde_json::Map::new();
+    model.insert("slideWidthEmu".to_string(), json!(size.width_emu));
+    model.insert("slideHeightEmu".to_string(), json!(size.height_emu));
+    if let Some(size_type) = pptx_slide_size_type_from_xml(&xml) {
+        model.insert("slideSizeType".to_string(), json!(size_type));
+    }
+    Some(Value::Object(model))
+}
+
+pub(in crate::services::document_editor) fn pptx_slide_size_from_model_or_package(
+    model: &Value,
+    original: &[u8],
+) -> PptxSlideSize {
+    pptx_slide_size_from_model(model)
+        .or_else(|| {
+            read_zip_text(original, "ppt/presentation.xml")
+                .ok()
+                .and_then(|xml| pptx_slide_size_spec_from_xml(&xml))
+        })
+        .unwrap_or_default()
+}
+
+pub(in crate::services::document_editor) fn pptx_slide_size_from_model(
+    model: &Value,
+) -> Option<PptxSlideSize> {
+    let width = model.get("slideWidthEmu")?.as_f64()?;
+    let height = model.get("slideHeightEmu")?.as_f64()?;
+    (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
+        .then(|| PptxSlideSize::new(width, height))
+}
+
+pub(in crate::services::document_editor) fn pptx_slide_size_spec_from_xml(
+    xml: &str,
+) -> Option<PptxSlideSize> {
+    let tag = xml_named_empty_elements(xml, "p:sldSz")
+        .into_iter()
+        .next()
+        .or_else(|| xml_named_segments(xml, "p:sldSz").into_iter().next())?;
+    let width = attr_value(&tag, "cx")?.parse::<f64>().ok()?;
+    let height = attr_value(&tag, "cy")?.parse::<f64>().ok()?;
+    (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
+        .then(|| PptxSlideSize::new(width, height))
+}
+
+pub(in crate::services::document_editor) fn pptx_slide_size_type_from_xml(
+    xml: &str,
+) -> Option<String> {
+    let tag = xml_named_empty_elements(xml, "p:sldSz")
+        .into_iter()
+        .next()
+        .or_else(|| xml_named_segments(xml, "p:sldSz").into_iter().next())?;
+    attr_value(&tag, "type").filter(|value| !value.trim().is_empty())
+}
+
+pub(in crate::services::document_editor) fn update_pptx_presentation_slide_size(
+    presentation: &str,
+    model: &Value,
+    slide_size: PptxSlideSize,
+) -> String {
+    if pptx_slide_size_from_model(model).is_none() && !presentation.contains("<p:sldSz") {
+        return presentation.to_string();
+    }
+    let mut attrs = vec![
+        ("cx", format!("{}", slide_size.width_emu.round() as i64)),
+        ("cy", format!("{}", slide_size.height_emu.round() as i64)),
+    ];
+    if let Some(size_type) = model.get("slideSizeType").and_then(Value::as_str) {
+        let size_type = size_type.trim();
+        if !size_type.is_empty() {
+            attrs.push(("type", size_type.to_string()));
+        }
+    } else if let Some(size_type) = pptx_slide_size_type_from_xml(presentation) {
+        attrs.push(("type", size_type));
+    }
+    let replacement = format!(
+        r#"<p:sldSz {}/>"#,
+        attrs
+            .iter()
+            .map(|(key, value)| format!(r#"{key}="{}""#, escape_xml(value)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if let Some(existing) = xml_named_empty_elements(presentation, "p:sldSz")
+        .into_iter()
+        .next()
+        .or_else(|| {
+            xml_named_segments(presentation, "p:sldSz")
+                .into_iter()
+                .next()
+        })
+    {
+        return presentation.replacen(&existing, &replacement, 1);
+    }
+    append_before_or_end(presentation, "</p:presentation>", &replacement)
+}
+
 pub(in crate::services::document_editor) fn pptx_theme_colors(xml: &str) -> Value {
     let mut colors = serde_json::Map::new();
     for key in PPTX_THEME_COLOR_KEYS {
@@ -96,6 +197,7 @@ pub(in crate::services::document_editor) fn pptx_table_style_models(
 pub(in crate::services::document_editor) fn pptx_layout_models(
     bytes: &[u8],
     theme_names: &BTreeMap<String, String>,
+    slide_size: PptxSlideSize,
 ) -> AppResult<Vec<Value>> {
     let mut layouts = Vec::new();
     for name in zip_entry_names(bytes)? {
@@ -107,6 +209,10 @@ pub(in crate::services::document_editor) fn pptx_layout_models(
         let layout_name = docx_tag_attr(&xml, "<p:cSld", "name")
             .or_else(|| layout_type.clone())
             .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(&name).to_string());
+        let master_path = pptx_layout_master_path(bytes, &name);
+        let master_name = master_path
+            .as_ref()
+            .and_then(|path| pptx_master_name(bytes, path));
         let theme_path = pptx_layout_theme_path(bytes, &name);
         let theme_name = theme_path
             .as_ref()
@@ -116,15 +222,48 @@ pub(in crate::services::document_editor) fn pptx_layout_models(
             "path": name,
             "name": layout_name,
             "type": layout_type,
+            "masterPath": master_path,
+            "masterName": master_name,
             "themePath": theme_path,
             "themeName": theme_name,
-            "placeholderTexts": pptx_layout_placeholder_texts(&xml)
+            "placeholderTexts": pptx_layout_placeholder_texts(&xml, slide_size)
         }));
     }
     Ok(layouts)
 }
 
-pub(in crate::services::document_editor) fn pptx_layout_placeholder_texts(xml: &str) -> Vec<Value> {
+pub(in crate::services::document_editor) fn pptx_master_models(
+    bytes: &[u8],
+    theme_names: &BTreeMap<String, String>,
+    slide_size: PptxSlideSize,
+) -> AppResult<Vec<Value>> {
+    let mut masters = Vec::new();
+    for name in zip_entry_names(bytes)? {
+        if !(name.starts_with("ppt/slideMasters/slideMaster") && name.ends_with(".xml")) {
+            continue;
+        }
+        let xml = read_zip_text(bytes, &name)?;
+        let theme_path = pptx_master_theme_path(bytes, &name);
+        let theme_name = theme_path
+            .as_ref()
+            .and_then(|path| theme_names.get(path))
+            .cloned();
+        masters.push(json!({
+            "path": name,
+            "name": docx_tag_attr(&xml, "<p:cSld", "name")
+                .unwrap_or_else(|| "Slide Master".to_string()),
+            "themePath": theme_path,
+            "themeName": theme_name,
+            "placeholderTexts": pptx_layout_placeholder_texts(&xml, slide_size)
+        }));
+    }
+    Ok(masters)
+}
+
+pub(in crate::services::document_editor) fn pptx_layout_placeholder_texts(
+    xml: &str,
+    slide_size: PptxSlideSize,
+) -> Vec<Value> {
     pptx_shape_segments(xml)
         .into_iter()
         .enumerate()
@@ -140,7 +279,7 @@ pub(in crate::services::document_editor) fn pptx_layout_placeholder_texts(xml: &
             } else {
                 text
             };
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&shape);
+            let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&shape, slide_size);
             let run = pptx_run_properties_segment(&shape).unwrap_or_default();
             Some(json!({
                 "id": format!("layout-placeholder-{}", index + 1),
@@ -180,14 +319,42 @@ pub(in crate::services::document_editor) fn pptx_placeholder_default_text(
     }
 }
 
+pub(in crate::services::document_editor) fn pptx_master_name(
+    bytes: &[u8],
+    master_path: &str,
+) -> Option<String> {
+    let xml = read_zip_text(bytes, master_path).ok()?;
+    docx_tag_attr(&xml, "<p:cSld", "name").or_else(|| {
+        master_path
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+    })
+}
+
 pub(in crate::services::document_editor) fn pptx_layout_theme_path(
     bytes: &[u8],
     layout_path: &str,
 ) -> Option<String> {
+    let master_path = pptx_layout_master_path(bytes, layout_path)?;
+    pptx_master_theme_path(bytes, &master_path)
+}
+
+pub(in crate::services::document_editor) fn pptx_layout_master_path(
+    bytes: &[u8],
+    layout_path: &str,
+) -> Option<String> {
     let layout_rels = read_zip_text(bytes, &xlsx_part_rels_path(layout_path)).ok()?;
-    let master_path = xlsx_relationship_target_by_type(layout_path, &layout_rels, "/slideMaster")?;
-    let master_rels = read_zip_text(bytes, &xlsx_part_rels_path(&master_path)).ok()?;
-    xlsx_relationship_target_by_type(&master_path, &master_rels, "/theme")
+    xlsx_relationship_target_by_type(layout_path, &layout_rels, "/slideMaster")
+}
+
+pub(in crate::services::document_editor) fn pptx_master_theme_path(
+    bytes: &[u8],
+    master_path: &str,
+) -> Option<String> {
+    let master_rels = read_zip_text(bytes, &xlsx_part_rels_path(master_path)).ok()?;
+    xlsx_relationship_target_by_type(master_path, &master_rels, "/theme")
 }
 
 pub(in crate::services::document_editor) fn pptx_slide_layout_model(
@@ -211,7 +378,14 @@ pub(in crate::services::document_editor) fn pptx_slide_layout_model(
         .and_then(Value::as_str)
         .and_then(|path| layouts_by_path.get(path))
     {
-        for key in ["name", "type", "themePath", "themeName"] {
+        for key in [
+            "name",
+            "type",
+            "masterPath",
+            "masterName",
+            "themePath",
+            "themeName",
+        ] {
             if let Some(value) = layout.get(key).cloned() {
                 model.insert(format!("layout{}", uppercase_first(key)), value);
             }
@@ -252,6 +426,115 @@ pub(in crate::services::document_editor) fn add_pptx_theme_replacements(
             upsert_zip_replacement(replacements, path.to_string(), updated.into_bytes());
         }
     }
+}
+
+pub(in crate::services::document_editor) fn add_pptx_master_replacements(
+    original: &[u8],
+    model: &Value,
+    slide_size: PptxSlideSize,
+    replacements: &mut Vec<(String, Vec<u8>)>,
+) {
+    let Some(masters) = model.get("masters").and_then(Value::as_array) else {
+        return;
+    };
+    for master in masters {
+        let Some(path) = master
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| valid_pptx_master_path(path))
+        else {
+            continue;
+        };
+        let Ok(original_xml) = read_zip_text(original, path) else {
+            continue;
+        };
+        let updated = update_pptx_master_xml(&original_xml, master, slide_size);
+        if updated != original_xml {
+            upsert_zip_replacement(replacements, path.to_string(), updated.into_bytes());
+        }
+    }
+}
+
+pub(in crate::services::document_editor) fn valid_pptx_master_path(path: &str) -> bool {
+    path.starts_with("ppt/slideMasters/") && path.ends_with(".xml") && !path.contains("..")
+}
+
+pub(in crate::services::document_editor) fn update_pptx_master_xml(
+    xml: &str,
+    master: &Value,
+    slide_size: PptxSlideSize,
+) -> String {
+    let mut updated = xml.to_string();
+    if let Some(name) = master.get("name").and_then(Value::as_str) {
+        updated = set_first_xml_tag_attrs(&updated, "<p:cSld", &[("name", name.to_string())]);
+    }
+    let specs = pptx_master_placeholder_specs(master);
+    if !specs.is_empty() {
+        updated = update_pptx_placeholder_shapes(&updated, &specs, slide_size);
+    }
+    updated
+}
+
+pub(in crate::services::document_editor) fn pptx_master_placeholder_specs(
+    master: &Value,
+) -> Vec<PptxTextSpec> {
+    let Some(placeholders) = master.get("placeholderTexts").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    pptx_text_specs(&json!({ "texts": placeholders }))
+}
+
+pub(in crate::services::document_editor) fn update_pptx_placeholder_shapes(
+    xml: &str,
+    specs: &[PptxTextSpec],
+    slide_size: PptxSlideSize,
+) -> String {
+    let mut output = String::new();
+    let mut rest = xml;
+    let mut spec_index = 0usize;
+    while let Some(start) = find_xml_start(rest, "<p:sp") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start..];
+        let Some(end) = after_start.find("</p:sp>") else {
+            output.push_str(after_start);
+            return output;
+        };
+        let end_index = end + "</p:sp>".len();
+        let shape = &after_start[..end_index];
+        if shape.contains("<p:ph") {
+            if let Some(spec) = specs.get(spec_index) {
+                let shape = replace_or_insert_pptx_shape_text(shape, &spec.text);
+                output.push_str(&replace_pptx_shape_geometry(&shape, spec, slide_size));
+            } else {
+                output.push_str(shape);
+            }
+            spec_index += 1;
+        } else {
+            output.push_str(shape);
+        }
+        rest = &after_start[end_index..];
+    }
+    output.push_str(rest);
+    output
+}
+
+pub(in crate::services::document_editor) fn replace_or_insert_pptx_shape_text(
+    shape: &str,
+    text: &str,
+) -> String {
+    if shape.contains("<a:t") {
+        return replace_tag_texts(shape, "a:t", &[text.to_string()]);
+    }
+    let text_xml = format!(r#"<a:p><a:r><a:t>{}</a:t></a:r></a:p>"#, escape_xml(text));
+    if let Some(index) = shape.find("</p:txBody>") {
+        let mut output = String::new();
+        output.push_str(&shape[..index]);
+        output.push_str(&text_xml);
+        output.push_str(&shape[index..]);
+        return output;
+    }
+    let body_xml = format!(r#"<p:txBody><a:bodyPr/><a:lstStyle/>{text_xml}</p:txBody>"#);
+    append_before_or_end(shape, "</p:sp>", &body_xml)
 }
 
 pub(in crate::services::document_editor) fn valid_pptx_theme_path(path: &str) -> bool {

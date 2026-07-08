@@ -3,6 +3,7 @@ import type { XlsxDefinedName, XlsxSheet } from "./models";
 import { columnName } from "./models";
 import { xlsxDefinedNameTarget } from "./spreadsheetDefinedNames";
 import { spreadsheetFormulaReferences } from "./spreadsheetFormula";
+import { xlsxStructuredReferenceReferences } from "./spreadsheetStructuredReferences";
 
 interface SpreadsheetFormulaRecord {
   ref: string;
@@ -264,7 +265,16 @@ function spreadsheetFormulaGraph(
   const records = spreadsheetFormulaRecords(
     sheet,
     recalculatedSheet,
-    (name) => referencesForDefinedName(name, sheet, sheets, definedNames),
+    {
+      referencesForName: (name) => referencesForDefinedName(name, sheet, sheets, definedNames),
+      referencesForStructuredReference: (reference, currentCellReference) =>
+        referencesForStructuredReference(
+          reference,
+          sheet,
+          sheets,
+          currentCellReference,
+        ),
+    },
   );
   const recordByRef = new Map(records.map((record) => [record.ref, record]));
   const visitState = new Map<string, "visiting" | "visited">();
@@ -302,7 +312,13 @@ function spreadsheetFormulaGraph(
 function spreadsheetFormulaRecords(
   sheet: XlsxSheet | undefined,
   recalculatedSheet?: XlsxSheet,
-  referencesForName?: (name: string) => string[],
+  references?: {
+    referencesForName?: (name: string) => string[];
+    referencesForStructuredReference?: (
+      reference: string,
+      currentCellReference: string,
+    ) => string[];
+  },
 ) {
   const records: SpreadsheetFormulaRecord[] = [];
   sheet?.rows.forEach((row, rowIndex) => {
@@ -313,7 +329,9 @@ function spreadsheetFormulaRecords(
         ref,
         formula: cell.formula,
         dependencies: spreadsheetFormulaReferences(cell.formula, {
-          referencesForName,
+          referencesForName: references?.referencesForName,
+          referencesForStructuredReference: (reference) =>
+            references?.referencesForStructuredReference?.(reference, ref) ?? [],
         }),
         cachedValue: cell.value,
         recalculatedValue: xlsxCellValueAt(recalculatedSheet, ref),
@@ -321,6 +339,20 @@ function spreadsheetFormulaRecords(
     });
   });
   return records.sort((left, right) => compareSpreadsheetRefs(left.ref, right.ref));
+}
+
+function referencesForStructuredReference(
+  reference: string,
+  sheet: XlsxSheet | undefined,
+  sheets: XlsxSheet[],
+  currentCellReference: string,
+) {
+  if (!sheet) return [];
+  return xlsxStructuredReferenceReferences(reference, {
+    currentCellReference,
+    currentSheet: sheet,
+    sheets,
+  });
 }
 
 function formulaCacheState(record: SpreadsheetFormulaRecord) {

@@ -4,6 +4,9 @@ use super::*;
 pub(in crate::services::document_editor) struct SheetCellWrite {
     pub(in crate::services::document_editor) value: String,
     pub(in crate::services::document_editor) formula: Option<String>,
+    pub(in crate::services::document_editor) formula_type: Option<String>,
+    pub(in crate::services::document_editor) formula_ref: Option<String>,
+    pub(in crate::services::document_editor) formula_shared_index: Option<String>,
     pub(in crate::services::document_editor) style: Option<XlsxCellStyle>,
     pub(in crate::services::document_editor) style_index: Option<usize>,
 }

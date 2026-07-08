@@ -1,45 +1,43 @@
 use super::*;
 
-pub(in crate::services::document_editor) fn build_pptx_slide(
+pub(in crate::services::document_editor) fn build_pptx_slide_for_size(
     texts: &[PptxTextSpec],
     basic_shapes: &[PptxShapeSpec],
     tables: &[PptxTableSpec],
     images: &[PptxImageSpec],
     charts: &[PptxChartSpec],
     background: Option<&PptxBackgroundSpec>,
+    slide_size: PptxSlideSize,
 ) -> String {
     let mut objects = Vec::new();
     objects.extend(
         basic_shapes
             .iter()
             .enumerate()
-            .map(|(index, shape)| pptx_basic_shape_renderable(index + 2, shape)),
+            .map(|(index, shape)| pptx_basic_shape_renderable(index + 2, shape, slide_size)),
     );
-    objects.extend(
-        texts
-            .iter()
-            .enumerate()
-            .map(|(index, text)| pptx_text_renderable(basic_shapes.len() + index + 2, text)),
-    );
+    objects.extend(texts.iter().enumerate().map(|(index, text)| {
+        pptx_text_renderable(basic_shapes.len() + index + 2, text, slide_size)
+    }));
     objects.extend(
         tables
             .iter()
             .enumerate()
-            .map(|(index, table)| pptx_table_renderable(10_000 + index, table)),
+            .map(|(index, table)| pptx_table_renderable(10_000 + index, table, slide_size)),
     );
     objects.extend(
         images
             .iter()
             .filter(|image| image.relationship_id.is_some())
             .enumerate()
-            .map(|(index, image)| pptx_image_renderable(20_000 + index, image)),
+            .map(|(index, image)| pptx_image_renderable(20_000 + index, image, slide_size)),
     );
     objects.extend(
         charts
             .iter()
             .filter(|chart| chart.relationship_id.is_some())
             .enumerate()
-            .map(|(index, chart)| pptx_chart_renderable(30_000 + index, chart)),
+            .map(|(index, chart)| pptx_chart_renderable(30_000 + index, chart, slide_size)),
     );
     let drawing_xml = render_pptx_objects(objects, 40_000);
     let background = pptx_slide_background_xml(background);
@@ -51,55 +49,60 @@ pub(in crate::services::document_editor) fn build_pptx_slide(
 pub(in crate::services::document_editor) fn pptx_basic_shape_renderable(
     shape_id: usize,
     spec: &PptxShapeSpec,
+    slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
-        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height),
-        xml: build_pptx_basic_shape(shape_id, spec),
+        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
+        xml: build_pptx_basic_shape_for_size(shape_id, spec, slide_size),
     }
 }
 
 pub(in crate::services::document_editor) fn pptx_text_renderable(
     shape_id: usize,
     spec: &PptxTextSpec,
+    slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
-        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height),
-        xml: build_pptx_text_shape(shape_id, spec),
+        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
+        xml: build_pptx_text_shape_for_size(shape_id, spec, slide_size),
     }
 }
 
 pub(in crate::services::document_editor) fn pptx_table_renderable(
     shape_id: usize,
     spec: &PptxTableSpec,
+    slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
-        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height),
-        xml: build_pptx_table(shape_id, spec),
+        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
+        xml: build_pptx_table_for_size(shape_id, spec, slide_size),
     }
 }
 
 pub(in crate::services::document_editor) fn pptx_image_renderable(
     shape_id: usize,
     spec: &PptxImageSpec,
+    slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
-        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height),
-        xml: build_pptx_image(shape_id, spec),
+        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
+        xml: build_pptx_image_for_size(shape_id, spec, slide_size),
     }
 }
 
 pub(in crate::services::document_editor) fn pptx_chart_renderable(
     shape_id: usize,
     spec: &PptxChartSpec,
+    slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
-        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height),
-        xml: build_pptx_chart_frame(shape_id, spec),
+        bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
+        xml: build_pptx_chart_frame_for_size(shape_id, spec, slide_size),
     }
 }
 
@@ -206,8 +209,9 @@ pub(in crate::services::document_editor) fn pptx_bounds_from_percent(
     y: f64,
     width: f64,
     height: f64,
+    slide_size: PptxSlideSize,
 ) -> PptxObjectBounds {
-    let (x, y, width, height) = pptx_percent_geometry_emu(x, y, width, height);
+    let (x, y, width, height) = pptx_percent_geometry_emu_for_size(x, y, width, height, slide_size);
     PptxObjectBounds {
         x,
         y,
@@ -280,13 +284,14 @@ pub(in crate::services::document_editor) fn update_pptx_slide_visibility(
     )
 }
 
-pub(in crate::services::document_editor) fn regroup_pptx_slide_objects(
+pub(in crate::services::document_editor) fn regroup_pptx_slide_objects_for_size(
     slide_xml: &str,
     texts: &[PptxTextSpec],
     shapes: &[PptxShapeSpec],
     tables: &[PptxTableSpec],
     images: &[PptxImageSpec],
     charts: &[PptxChartSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     if !pptx_specs_have_groups(texts, shapes, tables, images, charts) {
         return slide_xml.to_string();
@@ -294,25 +299,22 @@ pub(in crate::services::document_editor) fn regroup_pptx_slide_objects(
 
     let mut objects = Vec::new();
     let mut next_shape_id = next_pptx_drawing_id(slide_xml).max(50_000);
-    objects.extend(
-        shapes
-            .iter()
-            .enumerate()
-            .map(|(index, shape)| pptx_basic_shape_renderable(next_shape_id + index, shape)),
-    );
+    objects.extend(shapes.iter().enumerate().map(|(index, shape)| {
+        pptx_basic_shape_renderable(next_shape_id + index, shape, slide_size)
+    }));
     next_shape_id += shapes.len();
     objects.extend(
         texts
             .iter()
             .enumerate()
-            .map(|(index, text)| pptx_text_renderable(next_shape_id + index, text)),
+            .map(|(index, text)| pptx_text_renderable(next_shape_id + index, text, slide_size)),
     );
     next_shape_id += texts.len();
     objects.extend(
         tables
             .iter()
             .enumerate()
-            .map(|(index, table)| pptx_table_renderable(next_shape_id + index, table)),
+            .map(|(index, table)| pptx_table_renderable(next_shape_id + index, table, slide_size)),
     );
     next_shape_id += tables.len();
     objects.extend(
@@ -320,7 +322,7 @@ pub(in crate::services::document_editor) fn regroup_pptx_slide_objects(
             .iter()
             .filter(|image| image.relationship_id.is_some())
             .enumerate()
-            .map(|(index, image)| pptx_image_renderable(next_shape_id + index, image)),
+            .map(|(index, image)| pptx_image_renderable(next_shape_id + index, image, slide_size)),
     );
     next_shape_id += images
         .iter()
@@ -331,7 +333,7 @@ pub(in crate::services::document_editor) fn regroup_pptx_slide_objects(
             .iter()
             .filter(|chart| chart.relationship_id.is_some())
             .enumerate()
-            .map(|(index, chart)| pptx_chart_renderable(next_shape_id + index, chart)),
+            .map(|(index, chart)| pptx_chart_renderable(next_shape_id + index, chart, slide_size)),
     );
     next_shape_id += charts
         .iter()
@@ -461,12 +463,13 @@ pub(in crate::services::document_editor) fn remove_empty_pptx_group_shapes(xml: 
 pub(in crate::services::document_editor) fn insert_pptx_text_shapes(
     slide_xml: &str,
     texts: &[PptxTextSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let first_shape_id = next_pptx_drawing_id(slide_xml);
     let shapes = texts
         .iter()
         .enumerate()
-        .map(|(index, text)| pptx_text_renderable(first_shape_id + index, text))
+        .map(|(index, text)| pptx_text_renderable(first_shape_id + index, text, slide_size))
         .collect::<Vec<_>>();
     let shapes = render_pptx_objects(shapes, first_shape_id + texts.len());
     insert_pptx_sp_tree_end(slide_xml, &shapes)
@@ -500,9 +503,10 @@ pub(in crate::services::document_editor) fn insert_pptx_after_root_group_propert
     insert_pptx_sp_tree_end(slide_xml, drawing_xml)
 }
 
-pub(in crate::services::document_editor) fn replace_pptx_basic_shapes(
+pub(in crate::services::document_editor) fn replace_pptx_basic_shapes_for_size(
     xml: &str,
     specs: &[PptxShapeSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let mut output = String::new();
     let mut rest = xml;
@@ -519,7 +523,7 @@ pub(in crate::services::document_editor) fn replace_pptx_basic_shapes(
         let shape = &after_start[..end_index];
         if pptx_managed_basic_shape_segment(shape).is_some() {
             if let Some(spec) = specs.get(spec_index) {
-                output.push_str(&build_pptx_basic_shape(shape_id, spec));
+                output.push_str(&build_pptx_basic_shape_for_size(shape_id, spec, slide_size));
                 shape_id += 1;
             }
             spec_index += 1;
@@ -530,7 +534,7 @@ pub(in crate::services::document_editor) fn replace_pptx_basic_shapes(
     }
     output.push_str(rest);
     if spec_index < specs.len() {
-        insert_pptx_basic_shapes(&output, &specs[spec_index..], shape_id)
+        insert_pptx_basic_shapes(&output, &specs[spec_index..], shape_id, slide_size)
     } else {
         output
     }
@@ -566,11 +570,14 @@ pub(in crate::services::document_editor) fn insert_pptx_basic_shapes(
     slide_xml: &str,
     specs: &[PptxShapeSpec],
     first_shape_id: usize,
+    slide_size: PptxSlideSize,
 ) -> String {
     let shapes = specs
         .iter()
         .enumerate()
-        .map(|(index, shape)| pptx_basic_shape_renderable(first_shape_id + index, shape))
+        .map(|(index, shape)| {
+            pptx_basic_shape_renderable(first_shape_id + index, shape, slide_size)
+        })
         .collect::<Vec<_>>();
     let shapes = render_pptx_objects(shapes, first_shape_id + specs.len());
     if shapes.is_empty() {
@@ -583,6 +590,7 @@ pub(in crate::services::document_editor) fn update_pptx_tables(
     xml: &str,
     specs: &[PptxTableSpec],
     remove_missing: bool,
+    slide_size: PptxSlideSize,
 ) -> String {
     if specs.is_empty() && !remove_missing {
         return xml.to_string();
@@ -601,9 +609,10 @@ pub(in crate::services::document_editor) fn update_pptx_tables(
         let frame = &after_start[..end_index];
         if frame.contains("<a:tbl") {
             if let Some(spec) = specs.get(spec_index) {
-                output.push_str(&build_pptx_table(
+                output.push_str(&build_pptx_table_for_size(
                     next_pptx_drawing_id(xml) + spec_index,
                     spec,
+                    slide_size,
                 ));
             } else if !remove_missing {
                 output.push_str(frame);
@@ -616,7 +625,7 @@ pub(in crate::services::document_editor) fn update_pptx_tables(
     }
     output.push_str(rest);
     if spec_index < specs.len() {
-        insert_pptx_tables(&output, &specs[spec_index..])
+        insert_pptx_tables(&output, &specs[spec_index..], slide_size)
     } else {
         output
     }
@@ -625,12 +634,13 @@ pub(in crate::services::document_editor) fn update_pptx_tables(
 pub(in crate::services::document_editor) fn insert_pptx_tables(
     slide_xml: &str,
     tables: &[PptxTableSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let first_shape_id = next_pptx_drawing_id(slide_xml);
     let table_xml = tables
         .iter()
         .enumerate()
-        .map(|(index, table)| pptx_table_renderable(first_shape_id + index, table))
+        .map(|(index, table)| pptx_table_renderable(first_shape_id + index, table, slide_size))
         .collect::<Vec<_>>();
     let table_xml = render_pptx_objects(table_xml, first_shape_id + tables.len());
     if table_xml.is_empty() {
@@ -639,11 +649,13 @@ pub(in crate::services::document_editor) fn insert_pptx_tables(
     insert_pptx_sp_tree_end(slide_xml, &table_xml)
 }
 
-pub(in crate::services::document_editor) fn build_pptx_table(
+pub(in crate::services::document_editor) fn build_pptx_table_for_size(
     shape_id: usize,
     spec: &PptxTableSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let (x, y, width, height) =
+        pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let column_count = spec.rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let row_count = spec.rows.len().max(1);
@@ -784,6 +796,7 @@ pub(in crate::services::document_editor) fn update_pptx_images(
     xml: &str,
     specs: &[PptxImageSpec],
     remove_missing: bool,
+    slide_size: PptxSlideSize,
 ) -> String {
     if specs.is_empty() && !remove_missing {
         return xml.to_string();
@@ -819,7 +832,7 @@ pub(in crate::services::document_editor) fn update_pptx_images(
         if let Some(spec_index) = spec_index {
             matched[spec_index] = true;
             let spec = &specs[spec_index];
-            output.push_str(&update_pptx_image_segment(picture, spec));
+            output.push_str(&update_pptx_image_segment(picture, spec, slide_size));
         } else if !remove_missing {
             output.push_str(picture);
         }
@@ -835,15 +848,17 @@ pub(in crate::services::document_editor) fn update_pptx_images(
     if new_images.is_empty() {
         output
     } else {
-        insert_pptx_images(&output, &new_images)
+        insert_pptx_images(&output, &new_images, slide_size)
     }
 }
 
 pub(in crate::services::document_editor) fn update_pptx_image_segment(
     segment: &str,
     spec: &PptxImageSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let (x, y, width, height) =
+        pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let mut output = set_first_xml_tag_attrs(
         segment,
@@ -873,12 +888,13 @@ pub(in crate::services::document_editor) fn update_pptx_image_segment(
 pub(in crate::services::document_editor) fn insert_pptx_images(
     slide_xml: &str,
     images: &[&PptxImageSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let first_shape_id = next_pptx_drawing_id(slide_xml);
     let pictures = images
         .iter()
         .enumerate()
-        .map(|(index, image)| pptx_image_renderable(first_shape_id + index, image))
+        .map(|(index, image)| pptx_image_renderable(first_shape_id + index, image, slide_size))
         .collect::<Vec<_>>();
     let pictures = render_pptx_objects(pictures, first_shape_id + images.len());
     if pictures.is_empty() {
@@ -887,12 +903,14 @@ pub(in crate::services::document_editor) fn insert_pptx_images(
     insert_pptx_sp_tree_end(slide_xml, &pictures)
 }
 
-pub(in crate::services::document_editor) fn build_pptx_image(
+pub(in crate::services::document_editor) fn build_pptx_image_for_size(
     shape_id: usize,
     spec: &PptxImageSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
     let relationship_id = spec.relationship_id.as_deref().unwrap_or_default();
-    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let (x, y, width, height) =
+        pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let alt_text = spec
         .alt_text
@@ -962,6 +980,7 @@ pub(in crate::services::document_editor) fn update_pptx_charts(
     xml: &str,
     specs: &[PptxChartSpec],
     remove_missing: bool,
+    slide_size: PptxSlideSize,
 ) -> String {
     if specs.is_empty() && !remove_missing {
         return xml.to_string();
@@ -1001,7 +1020,7 @@ pub(in crate::services::document_editor) fn update_pptx_charts(
             if let Some(spec_index) = spec_index {
                 matched[spec_index] = true;
                 let spec = &specs[spec_index];
-                output.push_str(&update_pptx_chart_frame(frame, spec));
+                output.push_str(&update_pptx_chart_frame(frame, spec, slide_size));
             } else if !remove_missing {
                 output.push_str(frame);
             }
@@ -1020,15 +1039,17 @@ pub(in crate::services::document_editor) fn update_pptx_charts(
     if inserted.is_empty() {
         output
     } else {
-        insert_pptx_charts(&output, &inserted)
+        insert_pptx_charts(&output, &inserted, slide_size)
     }
 }
 
 pub(in crate::services::document_editor) fn update_pptx_chart_frame(
     frame: &str,
     spec: &PptxChartSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let (x, y, width, height) =
+        pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let mut output = set_first_xml_tag_attrs(
         frame,
@@ -1046,12 +1067,13 @@ pub(in crate::services::document_editor) fn update_pptx_chart_frame(
 pub(in crate::services::document_editor) fn insert_pptx_charts(
     slide_xml: &str,
     charts: &[&PptxChartSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let first_shape_id = next_pptx_drawing_id(slide_xml);
     let frames = charts
         .iter()
         .enumerate()
-        .map(|(index, chart)| pptx_chart_renderable(first_shape_id + index, chart))
+        .map(|(index, chart)| pptx_chart_renderable(first_shape_id + index, chart, slide_size))
         .collect::<Vec<_>>();
     let frames = render_pptx_objects(frames, first_shape_id + charts.len());
     if frames.is_empty() {
@@ -1060,12 +1082,14 @@ pub(in crate::services::document_editor) fn insert_pptx_charts(
     insert_pptx_sp_tree_end(slide_xml, &frames)
 }
 
-pub(in crate::services::document_editor) fn build_pptx_chart_frame(
+pub(in crate::services::document_editor) fn build_pptx_chart_frame_for_size(
     shape_id: usize,
     spec: &PptxChartSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
     let relationship_id = spec.relationship_id.as_deref().unwrap_or_default();
-    let (x, y, width, height) = pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height);
+    let (x, y, width, height) =
+        pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     format!(
         r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{shape_id}" name="Chart {shape_id}"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm rot="{rotation}"><a:off x="{x}" y="{y}"/><a:ext cx="{width}" cy="{height}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="{}"/></a:graphicData></a:graphic></p:graphicFrame>"#,
@@ -1427,11 +1451,12 @@ pub(in crate::services::document_editor) fn build_pptx_transition_child(
     }
 }
 
-pub(in crate::services::document_editor) fn build_pptx_basic_shape(
+pub(in crate::services::document_editor) fn build_pptx_basic_shape_for_size(
     shape_id: usize,
     spec: &PptxShapeSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_shape_geometry_emu(spec);
+    let (x, y, width, height) = pptx_shape_geometry_emu_for_size(spec, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let fill = if spec.kind.is_line_like() {
         "<a:noFill/>".to_string()
@@ -1482,11 +1507,12 @@ pub(in crate::services::document_editor) fn pptx_line_xml(
     format!(r#"<a:ln w="{width}">{fill}{tail_end}{head_end}</a:ln>"#)
 }
 
-pub(in crate::services::document_editor) fn build_pptx_text_shape(
+pub(in crate::services::document_editor) fn build_pptx_text_shape_for_size(
     shape_id: usize,
     spec: &PptxTextSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_geometry_emu(spec);
+    let (x, y, width, height) = pptx_geometry_emu_for_size(spec, slide_size);
     let rotation = pptx_rotation_unit(spec.rotation);
     let shape_fill = pptx_shape_fill_xml(spec.fill_color.as_deref());
     let run_properties = pptx_run_properties_xml("a:rPr", spec);
@@ -1550,9 +1576,10 @@ pub(in crate::services::document_editor) fn pptx_shape_fill_xml(
         .unwrap_or_else(|| "<a:noFill/>".to_string())
 }
 
-pub(in crate::services::document_editor) fn update_pptx_shape_geometries(
+pub(in crate::services::document_editor) fn update_pptx_shape_geometries_for_size(
     xml: &str,
     specs: &[PptxTextSpec],
+    slide_size: PptxSlideSize,
 ) -> String {
     let mut output = String::new();
     let mut rest = xml;
@@ -1568,7 +1595,7 @@ pub(in crate::services::document_editor) fn update_pptx_shape_geometries(
         let shape = &after_start[..end_index];
         if shape.contains("<a:t") {
             if let Some(spec) = specs.get(text_shape_index) {
-                output.push_str(&replace_pptx_shape_geometry(shape, spec));
+                output.push_str(&replace_pptx_shape_geometry(shape, spec, slide_size));
             } else {
                 output.push_str(shape);
             }
@@ -1585,8 +1612,9 @@ pub(in crate::services::document_editor) fn update_pptx_shape_geometries(
 pub(in crate::services::document_editor) fn replace_pptx_shape_geometry(
     shape: &str,
     spec: &PptxTextSpec,
+    slide_size: PptxSlideSize,
 ) -> String {
-    let (x, y, width, height) = pptx_geometry_emu(spec);
+    let (x, y, width, height) = pptx_geometry_emu_for_size(spec, slide_size);
     let shape = replace_empty_xml_element(shape, "<a:off", &format!(r#"<a:off x="{x}" y="{y}"/>"#));
     let shape = replace_empty_xml_element(
         &shape,

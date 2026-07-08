@@ -13,7 +13,8 @@ import { MarkdownGoToLineBar, MarkdownSearchBar } from "../markdownSearchBars";
 import {
   buildMarkdownSearchRegex,
   countMarkdownSearchMatches,
-  formatFrontmatterField,
+  addFrontmatterFieldBody,
+  deleteFrontmatterFieldBody,
   hasTrailingTextNewline,
   indentMarkdownLine,
   insertOrUpdateMarkdownToc,
@@ -34,6 +35,7 @@ import {
   parseFrontmatter,
   parseFrontmatterFields,
   replaceFrontmatterBody,
+  updateFrontmatterFieldBody,
   replaceMarkdownTable,
 } from "../markdownEditorUtils";
 import { markdownPreviewComponents, markdownRelativeFileReference } from "../markdownPreview";
@@ -922,27 +924,34 @@ export function MarkdownRichEditor({
 
   function updateFrontmatterField(lineIndex: number, key: string, value: string) {
     if (!frontmatter) return;
-    const lines = frontmatter.content.split(/\r?\n/);
-    const cleanKey = key.trim();
-    if (!cleanKey) return;
-    lines[lineIndex] = formatFrontmatterField(cleanKey, value, frontmatter.marker);
-    updateFrontmatterBody(lines.join("\n"));
+    const field = frontmatterFields.find((item) => item.lineIndex === lineIndex);
+    if (!field) return;
+    updateFrontmatterBody(
+      updateFrontmatterFieldBody(frontmatter.content, frontmatter.marker, field, key, value),
+    );
   }
 
   function deleteFrontmatterField(lineIndex: number) {
     if (!frontmatter) return;
-    const lines = frontmatter.content.split(/\r?\n/);
-    lines.splice(lineIndex, 1);
-    updateFrontmatterBody(lines.join("\n"));
+    const field = frontmatterFields.find((item) => item.lineIndex === lineIndex);
+    if (!field) return;
+    updateFrontmatterBody(
+      deleteFrontmatterFieldBody(frontmatter.content, frontmatter.marker, field),
+    );
   }
 
   function addFrontmatterField() {
     if (!frontmatter) return;
     const cleanKey = newFrontmatterKey.trim();
     if (!cleanKey) return;
-    const lines = frontmatter.content.split(/\r?\n/).filter((line) => line.length > 0);
-    lines.push(formatFrontmatterField(cleanKey, newFrontmatterValue, frontmatter.marker));
-    updateFrontmatterBody(lines.join("\n"));
+    updateFrontmatterBody(
+      addFrontmatterFieldBody(
+        frontmatter.content,
+        frontmatter.marker,
+        cleanKey,
+        newFrontmatterValue,
+      ),
+    );
     setNewFrontmatterKey("");
     setNewFrontmatterValue("");
   }

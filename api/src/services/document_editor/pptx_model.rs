@@ -22,6 +22,11 @@ pub(super) use types::*;
 
 pub(super) fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
     let mut slides = Vec::new();
+    let slide_size_model = pptx_presentation_slide_size_model(bytes);
+    let slide_size = slide_size_model
+        .as_ref()
+        .and_then(pptx_slide_size_from_model)
+        .unwrap_or_default();
     let themes = pptx_theme_models(bytes)?;
     let theme_names = themes
         .iter()
@@ -32,7 +37,8 @@ pub(super) fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
             ))
         })
         .collect::<BTreeMap<_, _>>();
-    let layouts = pptx_layout_models(bytes, &theme_names)?;
+    let layouts = pptx_layout_models(bytes, &theme_names, slide_size)?;
+    let masters = pptx_master_models(bytes, &theme_names, slide_size)?;
     let layouts_by_path = layouts
         .iter()
         .filter_map(|layout| Some((layout.get("path")?.as_str()?.to_string(), layout.clone())))
@@ -43,7 +49,7 @@ pub(super) fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
             continue;
         }
         let xml = read_zip_text(bytes, &name)?;
-        let mut texts = pptx_shape_texts(&xml);
+        let mut texts = pptx_shape_texts_for_size(&xml, slide_size);
         if texts.is_empty() {
             texts = extract_text_tags(&xml, "a:t")
                 .into_iter()
@@ -61,11 +67,11 @@ pub(super) fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
             "name": name.rsplit('/').next().unwrap_or(&name),
             "notes": pptx_slide_notes(bytes, &name).unwrap_or_default(),
             "texts": texts,
-            "shapes": pptx_slide_shapes(&xml),
-            "tables": pptx_slide_tables(&xml),
-            "images": pptx_slide_images(bytes, &name, &xml),
-            "media": pptx_slide_media(bytes, &name, &xml),
-            "charts": pptx_slide_charts(bytes, &name, &xml),
+            "shapes": pptx_slide_shapes_for_size(&xml, slide_size),
+            "tables": pptx_slide_tables(&xml, slide_size),
+            "images": pptx_slide_images(bytes, &name, &xml, slide_size),
+            "media": pptx_slide_media(bytes, &name, &xml, slide_size),
+            "charts": pptx_slide_charts(bytes, &name, &xml, slide_size),
             "transition": pptx_slide_transition(&xml),
             "animations": pptx_slide_animations(&xml),
             "animationTimingSourceXml": pptx_slide_timing(&xml),
@@ -77,12 +83,19 @@ pub(super) fn pptx_model(bytes: &[u8]) -> AppResult<Value> {
         }
         slides.push(slide);
     }
-    Ok(json!({
+    let mut model = json!({
         "slides": slides,
         "layouts": layouts,
+        "masters": masters,
         "themes": themes,
         "tableStyles": table_styles
-    }))
+    });
+    if let (Some(model_object), Some(slide_size)) = (model.as_object_mut(), slide_size_model) {
+        if let Some(slide_size) = slide_size.as_object() {
+            model_object.extend(slide_size.clone());
+        }
+    }
+    Ok(model)
 }
 
 pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
@@ -92,6 +105,7 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
         .ok_or_else(|| AppError::BadRequest("PPTX model requires slides".into()))?;
     let original_refs = pptx_presentation_slides(original).unwrap_or_default();
     let slide_writes = pptx_slide_writes(slides, &original_refs);
+    let slide_size = pptx_slide_size_from_model_or_package(model, original);
     let mut replacements = Vec::new();
     let mut existing_names = zip_entry_names(original).unwrap_or_default();
     let mut added_note_paths = Vec::new();
@@ -143,13 +157,14 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
         }
         let background = pptx_background_spec(slide, background_image_specs.first());
         let Ok(original_xml) = read_zip_text(original, &slide_write.path) else {
-            let slide_xml = build_pptx_slide(
+            let slide_xml = build_pptx_slide_for_size(
                 &text_specs,
                 &shape_specs,
                 &table_specs,
                 &image_specs,
                 &chart_specs,
                 background.as_ref(),
+                slide_size,
             );
             replacements.push((slide_write.path.clone(), slide_xml.into_bytes()));
             add_pptx_chart_replacements(
@@ -174,26 +189,43 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
             )?;
             continue;
         };
-        let original_text_count = pptx_shape_texts(&original_xml).len();
+        let original_text_count = pptx_shape_texts_for_size(&original_xml, slide_size).len();
         let mut texts = extract_text_tags(&original_xml, "a:t");
         apply_pptx_text_replacements(&mut texts, &text_specs);
         apply_pptx_table_replacements(&mut texts, &table_specs);
         let mut updated = replace_tag_texts(&original_xml, "a:t", &texts);
-        updated = update_pptx_shape_geometries(&updated, &text_specs);
+        updated = update_pptx_shape_geometries_for_size(&updated, &text_specs, slide_size);
         if text_specs.len() > original_text_count {
-            updated = insert_pptx_text_shapes(&updated, &text_specs[original_text_count..]);
+            updated =
+                insert_pptx_text_shapes(&updated, &text_specs[original_text_count..], slide_size);
         }
-        updated = replace_pptx_basic_shapes(&updated, &shape_specs);
-        updated = update_pptx_tables(&updated, &table_specs, slide.get("tables").is_some());
-        updated = update_pptx_images(&updated, &image_specs, image_model_controls_slide);
-        updated = update_pptx_charts(&updated, &chart_specs, chart_model_controls_slide);
-        updated = regroup_pptx_slide_objects(
+        updated = replace_pptx_basic_shapes_for_size(&updated, &shape_specs, slide_size);
+        updated = update_pptx_tables(
+            &updated,
+            &table_specs,
+            slide.get("tables").is_some(),
+            slide_size,
+        );
+        updated = update_pptx_images(
+            &updated,
+            &image_specs,
+            image_model_controls_slide,
+            slide_size,
+        );
+        updated = update_pptx_charts(
+            &updated,
+            &chart_specs,
+            chart_model_controls_slide,
+            slide_size,
+        );
+        updated = regroup_pptx_slide_objects_for_size(
             &updated,
             &text_specs,
             &shape_specs,
             &table_specs,
             &image_specs,
             &chart_specs,
+            slide_size,
         );
         updated = update_pptx_transition(&updated, transition_spec.as_ref());
         updated = update_pptx_animations(
@@ -230,6 +262,7 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
         let content_types = content_types.unwrap_or_default();
         let (presentation, rels) =
             update_pptx_presentation_manifest(&presentation, &rels, &slide_writes);
+        let presentation = update_pptx_presentation_slide_size(&presentation, model, slide_size);
         let content_types =
             append_pptx_slide_content_types_for_writes(&content_types, &slide_writes);
         let content_types = append_pptx_notes_content_types(&content_types, &added_note_paths);
@@ -247,6 +280,7 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
         ));
     }
     add_pptx_theme_replacements(original, model, &mut replacements);
+    add_pptx_master_replacements(original, model, slide_size, &mut replacements);
     let replacement_refs = replacements
         .iter()
         .map(|(path, bytes)| (path.as_str(), bytes.clone()))

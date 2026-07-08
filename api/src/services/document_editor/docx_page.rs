@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::{
     docx_tag_attr, docx_u32_attr, docx_u32_model_attr, docx_u32_model_attr_allow_zero,
-    replace_empty_xml_element,
+    replace_empty_xml_element, replace_xml_element,
 };
 
 pub(super) fn docx_page_settings(document: &str) -> Value {
@@ -31,6 +31,15 @@ pub(super) fn docx_page_settings(document: &str) -> Value {
             page[key] = json!(value);
         }
     }
+    if let Some(columns) = docx_u32_attr(&section, "<w:cols", "w:num") {
+        page["columnCount"] = json!(columns);
+    }
+    if let Some(spacing) = docx_u32_attr(&section, "<w:cols", "w:space") {
+        page["columnSpacing"] = json!(spacing);
+    }
+    if let Some(equal_width) = docx_tag_attr(&section, "<w:cols", "w:equalWidth") {
+        page["columnEqualWidth"] = json!(!matches!(equal_width.as_str(), "0" | "false" | "off"));
+    }
     page
 }
 
@@ -40,7 +49,8 @@ pub(super) fn update_docx_page_settings(document: &str, page: Option<&Value>) ->
     };
     let page_size = docx_page_size_xml(page);
     let page_margins = docx_page_margins_xml(page);
-    if page_size.is_none() && page_margins.is_none() {
+    let columns = docx_columns_xml(page);
+    if page_size.is_none() && page_margins.is_none() && columns.is_none() {
         return document.to_string();
     }
 
@@ -54,6 +64,10 @@ pub(super) fn update_docx_page_settings(document: &str, page: Option<&Value>) ->
             updated_section =
                 replace_or_insert_docx_section_child(&updated_section, "<w:pgMar", &page_margins);
         }
+        if let Some(columns) = columns {
+            updated_section =
+                replace_or_insert_docx_section_child(&updated_section, "<w:cols", &columns);
+        }
         let mut output = String::new();
         output.push_str(&document[..start]);
         output.push_str(&updated_section);
@@ -62,9 +76,10 @@ pub(super) fn update_docx_page_settings(document: &str, page: Option<&Value>) ->
     }
 
     let section = format!(
-        "<w:sectPr>{}{}</w:sectPr>",
+        "<w:sectPr>{}{}{}</w:sectPr>",
         page_size.unwrap_or_default(),
-        page_margins.unwrap_or_default()
+        page_margins.unwrap_or_default(),
+        columns.unwrap_or_default()
     );
     if let Some(index) = document.find("</w:body>") {
         let mut output = String::new();
@@ -75,6 +90,29 @@ pub(super) fn update_docx_page_settings(document: &str, page: Option<&Value>) ->
     } else {
         format!("{document}{section}")
     }
+}
+
+fn docx_columns_xml(page: &Value) -> Option<String> {
+    let count = docx_u32_model_attr(page, "columnCount", 12);
+    let spacing = docx_u32_model_attr_allow_zero(page, "columnSpacing", 14_400);
+    let equal_width = page
+        .get("columnEqualWidth")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if count.is_none() && spacing.is_none() && equal_width {
+        return None;
+    }
+    let mut attrs = Vec::new();
+    if let Some(count) = count {
+        attrs.push(format!(r#"w:num="{}""#, count.max(1)));
+    }
+    if let Some(spacing) = spacing {
+        attrs.push(format!(r#"w:space="{spacing}""#));
+    }
+    if !equal_width {
+        attrs.push(r#"w:equalWidth="0""#.to_string());
+    }
+    Some(format!("<w:cols {}/>", attrs.join(" ")))
 }
 
 fn docx_page_size_xml(page: &Value) -> Option<String> {
@@ -148,6 +186,11 @@ fn expand_docx_section_properties(section: &str) -> String {
 
 fn replace_or_insert_docx_section_child(section: &str, marker: &str, child: &str) -> String {
     if section.contains(marker) {
+        if let Some(tag) = marker.strip_prefix("<") {
+            if let Some(replaced) = replace_xml_element(section, tag, child) {
+                return replaced;
+            }
+        }
         return replace_empty_xml_element(section, marker, child);
     }
     let Some(open_end) = section.find('>') else {

@@ -63,6 +63,13 @@ fn pptx_model_exposes_layout_and_theme_metadata() {
     assert_eq!(model["slides"][0]["layoutType"], "title");
     assert_eq!(model["slides"][0]["layoutThemeName"], "Mymy Theme");
     assert_eq!(model["layouts"][0]["themeName"], "Mymy Theme");
+    assert_eq!(
+        model["layouts"][0]["masterPath"],
+        "ppt/slideMasters/slideMaster1.xml"
+    );
+    assert_eq!(model["layouts"][0]["masterName"], "slideMaster1.xml");
+    assert_eq!(model["masters"][0]["name"], "Slide Master");
+    assert_eq!(model["masters"][0]["themeName"], "Mymy Theme");
     assert_eq!(model["themes"][0]["name"], "Mymy Theme");
     assert_eq!(model["themes"][0]["colors"]["accent1"], "#4472C4");
     assert_eq!(model["themes"][0]["colors"]["dk1"], "#000000");
@@ -80,6 +87,92 @@ fn pptx_model_exposes_layout_and_theme_metadata() {
         model["layouts"][0]["placeholderTexts"][0]["fontFamily"],
         "Aptos Display"
     );
+}
+
+#[test]
+fn pptx_update_rewrites_master_placeholder_text_and_geometry() {
+    let package = test_ooxml_package(&[
+        ("[Content_Types].xml", pptx_test_content_types(false)),
+        ("ppt/presentation.xml", pptx_test_presentation_xml()),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            pptx_test_presentation_rels(),
+        ),
+        (
+            "ppt/slides/slide1.xml",
+            r#"<p:sld><p:cSld><p:spTree/></p:cSld></p:sld>"#,
+        ),
+        (
+            "ppt/slideMasters/slideMaster1.xml",
+            r#"<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name="Old Master"><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title Placeholder"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="7315200" cy="914400"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>Old title</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sldMaster>"#,
+        ),
+    ]);
+    let mut model = pptx_model(&package).unwrap();
+    model["masters"][0]["name"] = json!("Edited Master");
+    model["masters"][0]["placeholderTexts"][0]["text"] = json!("Edited master title");
+    model["masters"][0]["placeholderTexts"][0]["y"] = json!(20.0);
+    model["masters"][0]["placeholderTexts"][0]["height"] = json!(15.0);
+
+    let updated = update_pptx(&package, &model).unwrap();
+    let master = read_zip_text(&updated, "ppt/slideMasters/slideMaster1.xml").unwrap();
+
+    assert!(master.contains(r#"name="Edited Master""#));
+    assert!(master.contains("<a:t>Edited master title</a:t>"));
+    assert!(master.contains(r#"y="1028700""#));
+    assert!(master.contains(r#"cy="771525""#));
+}
+
+#[test]
+fn pptx_model_uses_presentation_slide_size_for_geometry() {
+    let package = test_ooxml_package(&[
+        (
+            "ppt/presentation.xml",
+            r#"<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldSz cx="9144000" cy="6858000" type="screen4x3"/><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>"#,
+        ),
+        (
+            "ppt/slides/slide1.xml",
+            r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:spPr><a:xfrm><a:off x="914400" y="685800"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>Four three</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+        ),
+    ]);
+
+    let model = pptx_model(&package).unwrap();
+    let text = &model["slides"][0]["texts"][0];
+
+    assert_eq!(model["slideWidthEmu"], 9_144_000.0);
+    assert_eq!(model["slideHeightEmu"], 6_858_000.0);
+    assert_eq!(model["slideSizeType"], "screen4x3");
+    assert!((text["y"].as_f64().unwrap() - 10.0).abs() < 0.01);
+    assert!((text["height"].as_f64().unwrap() - 20.0).abs() < 0.01);
+}
+
+#[test]
+fn pptx_update_preserves_slide_size_and_writes_geometry_against_it() {
+    let package = test_ooxml_package(&[
+        ("[Content_Types].xml", pptx_test_content_types(false)),
+        (
+            "ppt/presentation.xml",
+            r#"<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldSz cx="9144000" cy="6858000" type="screen4x3"/><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>"#,
+        ),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            pptx_test_presentation_rels(),
+        ),
+        (
+            "ppt/slides/slide1.xml",
+            r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:spPr><a:xfrm><a:off x="914400" y="685800"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>Four three</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#,
+        ),
+    ]);
+    let mut model = pptx_model(&package).unwrap();
+    model["slides"][0]["texts"][0]["y"] = json!(15.0);
+    model["slides"][0]["texts"][0]["height"] = json!(25.0);
+
+    let updated = update_pptx(&package, &model).unwrap();
+    let presentation = read_zip_text(&updated, "ppt/presentation.xml").unwrap();
+    let slide = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+
+    assert!(presentation.contains(r#"<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>"#));
+    assert!(slide.contains(r#"y="1028700""#));
+    assert!(slide.contains(r#"cy="1714500""#));
 }
 
 #[test]
@@ -164,7 +257,7 @@ fn pptx_text_shape_writes_basic_run_formatting() {
         align: Some("ctr".to_string()),
     };
 
-    let xml = build_pptx_text_shape(7, &spec);
+    let xml = build_pptx_text_shape_for_size(7, &spec, PptxSlideSize::default());
 
     assert!(
         xml.contains(r#"<a:rPr lang="en-US" sz="2400" b="1" i="1" u="sng" strike="sngStrike">"#)
@@ -180,7 +273,7 @@ fn pptx_text_shape_writes_basic_run_formatting() {
 #[test]
 fn pptx_shape_model_reads_and_updates_geometry() {
     let xml = r#"<p:sld><p:sp><p:spPr><a:xfrm rot="1800000"><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="r"/><a:r><a:rPr u="sng" strike="sngStrike"/><a:t>Box</a:t></a:r></a:p></p:txBody></p:sp></p:sld>"#;
-    let texts = pptx_shape_texts(xml);
+    let texts = pptx_shape_texts_for_size(xml, PptxSlideSize::default());
     assert_eq!(texts[0]["text"], "Box");
     assert_eq!(texts[0]["x"], 10.0);
     assert_eq!(texts[0]["y"], 10.0);
@@ -210,7 +303,7 @@ fn pptx_shape_model_reads_and_updates_geometry() {
         strikethrough: false,
         align: None,
     };
-    let updated = update_pptx_shape_geometries(xml, &[spec]);
+    let updated = update_pptx_shape_geometries_for_size(xml, &[spec], PptxSlideSize::default());
 
     assert!(updated.contains(r#"<a:off x="1828800" y="1543050"/>"#));
     assert!(updated.contains(r#"<a:ext cx="3657600" cy="2571750"/>"#));
@@ -221,7 +314,7 @@ fn pptx_shape_model_reads_and_updates_geometry() {
 fn pptx_basic_shape_model_reads_fill_stroke_and_geometry() {
     let xml = r##"<p:sld><p:sp><p:spPr><a:xfrm rot="900000"><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="DBEAFE"/></a:solidFill><a:ln w="25400"><a:solidFill><a:srgbClr val="2563EB"/></a:solidFill></a:ln></p:spPr></p:sp><p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="1"/></a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:noFill/><a:ln w="12700"><a:solidFill><a:srgbClr val="111827"/></a:solidFill><a:tailEnd type="diamond"/><a:headEnd type="triangle"/></a:ln></p:spPr></p:sp></p:sld>"##;
 
-    let shapes = pptx_slide_shapes(xml);
+    let shapes = pptx_slide_shapes_for_size(xml, PptxSlideSize::default());
 
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0]["kind"], "ellipse");
@@ -245,7 +338,7 @@ fn pptx_basic_shape_model_reads_fill_stroke_and_geometry() {
 fn pptx_basic_shape_model_reads_extended_shapes_and_connectors() {
     let xml = r##"<p:sld><p:sp><p:spPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm><a:prstGeom prst="pentagon"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="DBEAFE"/></a:solidFill></p:spPr></p:sp><p:cxnSp><p:nvCxnSpPr><p:cNvPr id="5" name="Connector"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="1"/></a:xfrm><a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom><a:noFill/><a:ln w="12700"><a:solidFill><a:srgbClr val="111827"/></a:solidFill><a:headEnd type="triangle"/></a:ln></p:spPr></p:cxnSp></p:sld>"##;
 
-    let shapes = pptx_slide_shapes(xml);
+    let shapes = pptx_slide_shapes_for_size(xml, PptxSlideSize::default());
 
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0]["kind"], "pentagon");
@@ -270,7 +363,7 @@ fn pptx_basic_shape_writes_geometry_fill_and_stroke() {
         line_end_arrow: None,
     };
 
-    let xml = build_pptx_basic_shape(9, &spec);
+    let xml = build_pptx_basic_shape_for_size(9, &spec, PptxSlideSize::default());
 
     assert!(xml.contains(r#"<p:cNvPr id="9" name="Shape 9"/>"#));
     assert!(xml.contains(r#"<a:xfrm rot="1800000">"#));
@@ -299,7 +392,7 @@ fn pptx_connector_shape_writes_connector_xml() {
         line_end_arrow: Some(PptxLineArrowKind::Triangle),
     };
 
-    let xml = build_pptx_basic_shape(9, &spec);
+    let xml = build_pptx_basic_shape_for_size(9, &spec, PptxSlideSize::default());
 
     assert!(xml.contains("<p:cxnSp>"));
     assert!(xml.contains("<p:cNvCxnSpPr/>"));
@@ -311,8 +404,8 @@ fn pptx_connector_shape_writes_connector_xml() {
 fn pptx_group_shape_model_reads_group_ids() {
     let xml = r##"<p:sld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr/><p:grpSp><p:nvGrpSpPr><p:cNvPr id="9" name="Group group7"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="3657600" cy="1543050"/><a:chOff x="914400" y="514350"/><a:chExt cx="3657600" cy="1543050"/></a:xfrm></p:grpSpPr><p:sp><p:spPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="514350"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:p><a:r><a:t>Grouped text</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:spPr><a:xfrm><a:off x="2743200" y="1028700"/><a:ext cx="1828800" cy="1028700"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="DBEAFE"/></a:solidFill></p:spPr></p:sp></p:grpSp></p:spTree></p:sld>"##;
 
-    let texts = pptx_shape_texts(xml);
-    let shapes = pptx_slide_shapes(xml);
+    let texts = pptx_shape_texts_for_size(xml, PptxSlideSize::default());
+    let shapes = pptx_slide_shapes_for_size(xml, PptxSlideSize::default());
 
     assert_eq!(texts[0]["groupId"], "group7");
     assert_eq!(shapes[0]["groupId"], "group7");
@@ -355,7 +448,15 @@ fn pptx_grouped_objects_render_as_group_shape() {
         line_end_arrow: None,
     };
 
-    let xml = build_pptx_slide(&[text], &[shape], &[], &[], &[], None);
+    let xml = build_pptx_slide_for_size(
+        &[text],
+        &[shape],
+        &[],
+        &[],
+        &[],
+        None,
+        PptxSlideSize::default(),
+    );
 
     assert!(xml.contains("<p:grpSp>"));
     assert!(xml.contains(r#"name="Group group1""#));
@@ -403,7 +504,15 @@ fn pptx_regroup_slide_objects_wraps_existing_managed_objects() {
         line_end_arrow: None,
     };
 
-    let updated = regroup_pptx_slide_objects(xml, &[text], &[shape], &[], &[], &[]);
+    let updated = regroup_pptx_slide_objects_for_size(
+        xml,
+        &[text],
+        &[shape],
+        &[],
+        &[],
+        &[],
+        PptxSlideSize::default(),
+    );
 
     assert!(updated.contains("<p:grpSp>"));
     assert!(updated.contains(r#"name="Group group2""#));
@@ -447,7 +556,7 @@ fn pptx_basic_shapes_replace_managed_shapes_only() {
         },
     ];
 
-    let updated = replace_pptx_basic_shapes(xml, &specs);
+    let updated = replace_pptx_basic_shapes_for_size(xml, &specs, PptxSlideSize::default());
 
     assert!(updated.contains("<a:t>Keep text</a:t>"));
     assert!(updated.contains(r#"<a:prstGeom prst="flowChartProcess">"#));
@@ -478,7 +587,7 @@ fn pptx_basic_shapes_replace_existing_connector_segments() {
         line_end_arrow: Some(PptxLineArrowKind::Triangle),
     }];
 
-    let updated = replace_pptx_basic_shapes(xml, &specs);
+    let updated = replace_pptx_basic_shapes_for_size(xml, &specs, PptxSlideSize::default());
 
     assert!(updated.contains(r#"<p:cNvPr id="20000" name="Connector 20000"/>"#));
     assert!(updated.contains(r#"<a:srgbClr val="2563EB"/>"#));

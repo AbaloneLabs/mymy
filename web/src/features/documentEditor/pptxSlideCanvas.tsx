@@ -42,6 +42,7 @@ type PptxSelectionBoxBounds = {
 export function PptxSlideCanvas({
   canvasRef,
   slide,
+  slideAspectRatio,
   selectionBoxBounds,
   snapGuides,
   showSnapGrid,
@@ -75,6 +76,7 @@ export function PptxSlideCanvas({
 }: {
   canvasRef: RefObject<HTMLDivElement | null>;
   slide: PptxSlide | undefined;
+  slideAspectRatio: number;
   selectionBoxBounds: PptxSelectionBoxBounds | null;
   snapGuides: PptxSnapGuide[];
   showSnapGrid: boolean;
@@ -132,8 +134,11 @@ export function PptxSlideCanvas({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-6">
       <div
-        className="mx-auto aspect-video max-w-4xl border border-[var(--border)] shadow-sm"
-        style={pptxSlideBackgroundStyle(slide)}
+        className="mx-auto max-w-4xl border border-[var(--border)] shadow-sm"
+        style={{
+          ...pptxSlideBackgroundStyle(slide),
+          aspectRatio: slideAspectRatio,
+        }}
       >
         <div
           ref={canvasRef}

@@ -1,6 +1,9 @@
 use super::*;
 
-pub(in crate::services::document_editor) fn pptx_shape_texts(xml: &str) -> Vec<Value> {
+pub(in crate::services::document_editor) fn pptx_shape_texts_for_size(
+    xml: &str,
+    slide_size: PptxSlideSize,
+) -> Vec<Value> {
     let groups = pptx_group_contexts(xml);
     pptx_shape_segments(xml)
         .into_iter()
@@ -11,7 +14,7 @@ pub(in crate::services::document_editor) fn pptx_shape_texts(xml: &str) -> Vec<V
                 return None;
             }
             let text_index = extract_text_tags(&xml[..offset], "a:t").len();
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&shape);
+            let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&shape, slide_size);
             let run = pptx_run_properties_segment(&shape).unwrap_or_default();
             let mut value = json!({
                 "id": format!("t{}", index + 1),
@@ -58,14 +61,17 @@ pub(in crate::services::document_editor) fn pptx_shape_segments(xml: &str) -> Ve
     shapes
 }
 
-pub(in crate::services::document_editor) fn pptx_slide_shapes(xml: &str) -> Vec<Value> {
+pub(in crate::services::document_editor) fn pptx_slide_shapes_for_size(
+    xml: &str,
+    slide_size: PptxSlideSize,
+) -> Vec<Value> {
     let groups = pptx_group_contexts(xml);
     pptx_basic_shape_segments(xml)
         .into_iter()
         .enumerate()
         .filter_map(|(index, (offset, shape))| {
             let kind = pptx_managed_basic_shape_kind(&shape)?;
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&shape);
+            let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&shape, slide_size);
             let mut value = json!({
                 "id": format!("s{}", index + 1),
                 "kind": kind.as_value(),
@@ -157,7 +163,10 @@ pub(in crate::services::document_editor) fn pptx_segments_with_offsets(
     segments
 }
 
-pub(in crate::services::document_editor) fn pptx_slide_tables(xml: &str) -> Vec<Value> {
+pub(in crate::services::document_editor) fn pptx_slide_tables(
+    xml: &str,
+    slide_size: PptxSlideSize,
+) -> Vec<Value> {
     let groups = pptx_group_contexts(xml);
     pptx_graphic_frame_segments(xml)
         .into_iter()
@@ -167,7 +176,7 @@ pub(in crate::services::document_editor) fn pptx_slide_tables(xml: &str) -> Vec<
                 return None;
             }
             let text_index_start = extract_text_tags(&xml[..offset], "a:t").len();
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&frame);
+            let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&frame, slide_size);
             let mut rows = Vec::new();
             let mut cell_styles = Vec::new();
             for row in xml_segments(&frame, "<a:tr", "</a:tr>") {
@@ -350,6 +359,7 @@ pub(in crate::services::document_editor) fn pptx_slide_images(
     bytes: &[u8],
     slide_path: &str,
     xml: &str,
+    slide_size: PptxSlideSize,
 ) -> Vec<Value> {
     let relationships = read_zip_text(bytes, &xlsx_part_rels_path(slide_path))
         .ok()
@@ -370,7 +380,8 @@ pub(in crate::services::document_editor) fn pptx_slide_images(
                     base64::engine::general_purpose::STANDARD.encode(bytes)
                 )
             });
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&picture);
+            let (x, y, width, height, rotation) =
+                pptx_shape_geometry_for_size(&picture, slide_size);
             let mut value = json!({
                 "id": format!("img{}", index + 1),
                 "relationshipId": relationship_id,
@@ -400,6 +411,7 @@ pub(in crate::services::document_editor) fn pptx_slide_charts(
     bytes: &[u8],
     slide_path: &str,
     xml: &str,
+    slide_size: PptxSlideSize,
 ) -> Vec<Value> {
     let relationships = read_zip_text(bytes, &xlsx_part_rels_path(slide_path))
         .ok()
@@ -419,7 +431,7 @@ pub(in crate::services::document_editor) fn pptx_slide_charts(
                 return None;
             }
             let chart_xml = read_zip_text(bytes, chart_path).unwrap_or_default();
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&frame);
+            let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&frame, slide_size);
             let series = ooxml_chart_series(&chart_xml);
             let categories = series
                 .first()
@@ -496,6 +508,7 @@ pub(in crate::services::document_editor) fn pptx_slide_media(
     bytes: &[u8],
     slide_path: &str,
     xml: &str,
+    slide_size: PptxSlideSize,
 ) -> Vec<Value> {
     let relationships = read_zip_text(bytes, &xlsx_part_rels_path(slide_path))
         .ok()
@@ -514,7 +527,8 @@ pub(in crate::services::document_editor) fn pptx_slide_media(
                 .and_then(|id| timing_by_shape.get(id))
                 .cloned()
                 .unwrap_or_default();
-            let (x, y, width, height, rotation) = pptx_shape_geometry(&picture);
+            let (x, y, width, height, rotation) =
+                pptx_shape_geometry_for_size(&picture, slide_size);
             Some(json!({
                 "id": format!("media{}", index + 1),
                 "kind": pptx_media_kind(&picture, media_path),
@@ -812,24 +826,25 @@ pub(in crate::services::document_editor) fn pptx_basic_shape_kind(
     PptxShapeKind::from_value(&preset)
 }
 
-pub(in crate::services::document_editor) fn pptx_shape_geometry(
+pub(in crate::services::document_editor) fn pptx_shape_geometry_for_size(
     shape: &str,
+    slide_size: PptxSlideSize,
 ) -> (f64, f64, f64, f64, f64) {
     let x = docx_tag_attr(shape, "<a:off", "x")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(|value| (value / PPTX_SLIDE_WIDTH_EMU) * 100.0)
+        .map(|value| (value / slide_size.width_emu) * 100.0)
         .unwrap_or(10.0);
     let y = docx_tag_attr(shape, "<a:off", "y")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(|value| (value / PPTX_SLIDE_HEIGHT_EMU) * 100.0)
+        .map(|value| (value / slide_size.height_emu) * 100.0)
         .unwrap_or(12.0);
     let width = docx_tag_attr(shape, "<a:ext", "cx")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(|value| (value / PPTX_SLIDE_WIDTH_EMU) * 100.0)
+        .map(|value| (value / slide_size.width_emu) * 100.0)
         .unwrap_or(80.0);
     let height = docx_tag_attr(shape, "<a:ext", "cy")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(|value| (value / PPTX_SLIDE_HEIGHT_EMU) * 100.0)
+        .map(|value| (value / slide_size.height_emu) * 100.0)
         .unwrap_or(10.0);
     let rotation = docx_tag_attr(shape, "<a:xfrm", "rot")
         .or_else(|| docx_tag_attr(shape, "<p:xfrm", "rot"))

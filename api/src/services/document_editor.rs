@@ -8,10 +8,15 @@
 mod compatibility;
 mod docx_blocks;
 mod docx_comments;
+mod docx_content_controls;
+mod docx_fields;
 mod docx_notes;
 mod docx_numbering;
 mod docx_page;
 mod docx_relationships;
+mod docx_revisions;
+mod docx_runs;
+mod docx_styles;
 mod docx_tables;
 mod docx_text_parts;
 mod kind;
@@ -57,13 +62,16 @@ use self::docx_blocks::{
 use self::docx_comments::{
     add_docx_comment_replacements, docx_comment_id_from_paragraph, docx_comments,
 };
+use self::docx_content_controls::docx_paragraph_content_controls;
+use self::docx_fields::docx_paragraph_fields;
 use self::docx_notes::{
     add_docx_note_replacements, docx_notes, DOCX_ENDNOTE_PART, DOCX_FOOTNOTE_PART,
 };
 #[cfg(test)]
 use self::docx_numbering::ensure_docx_basic_numbering_xml;
 use self::docx_numbering::{
-    add_docx_numbering_replacements, docx_blocks_have_lists, docx_list_kind, docx_numbering_formats,
+    add_docx_numbering_replacements, docx_blocks_have_lists, docx_list_kind, docx_list_level,
+    docx_list_numbering_id, docx_numbering_formats, docx_numbering_start_overrides,
 };
 #[cfg(test)]
 use self::docx_numbering::{DOCX_BULLET_NUM_ID, DOCX_NUMBER_NUM_ID};
@@ -72,6 +80,9 @@ use self::docx_relationships::{
     add_docx_hyperlink_relationships, docx_empty_content_types, docx_empty_relationships,
     ensure_docx_part_relationship,
 };
+use self::docx_revisions::docx_paragraph_revisions;
+use self::docx_runs::{docx_run_models, docx_runs_text};
+use self::docx_styles::{docx_paragraph_style_id, docx_paragraph_styles, docx_style_names};
 #[cfg(test)]
 use self::docx_tables::build_docx_table;
 use self::docx_tables::{
@@ -165,7 +176,7 @@ use self::xml_utils::{
     find_xml_tag_start, first_tag_text, remove_xml_named_elements, replace_empty_xml_element,
     replace_tag_texts, replace_xml_element, set_first_xml_tag_attrs, set_xml_attr, unescape_xml,
     xml_empty_elements, xml_first_empty_tag_attr, xml_has_named_empty_tag,
-    xml_named_empty_elements, xml_named_segments, xml_segments,
+    xml_named_empty_elements, xml_named_segments, xml_named_start_tag, xml_segments,
 };
 #[cfg(test)]
 use crate::models::document_editor::{
@@ -290,6 +301,10 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
     let relationships = docx_relationship_targets(&rels);
     let numbering = read_zip_text(bytes, "word/numbering.xml").unwrap_or_default();
     let numbering_formats = docx_numbering_formats(&numbering);
+    let numbering_starts = docx_numbering_start_overrides(&numbering);
+    let styles_xml = read_zip_text(bytes, "word/styles.xml").unwrap_or_default();
+    let style_names = docx_style_names(&styles_xml);
+    let paragraph_styles = docx_paragraph_styles(&styles_xml);
     let mut blocks = Vec::new();
     let mut index = 0usize;
     for segment in docx_body_segments(&document) {
@@ -359,6 +374,7 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
             }
             continue;
         }
+        let paragraph_style_id = docx_paragraph_style_id(&segment);
         let heading_level = docx_heading_level(&segment);
         let relationship_id = docx_tag_attr(&segment, "<w:hyperlink", "r:id");
         let hyperlink_target = relationship_id
@@ -370,10 +386,10 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
             "type": if heading_level.is_some() { "heading" } else { "paragraph" },
             "headingLevel": heading_level,
             "text": text,
-            "bold": segment.contains("<w:b") || segment.contains("<w:b/>"),
-            "italic": segment.contains("<w:i") || segment.contains("<w:i/>"),
-            "underline": segment.contains("<w:u"),
-            "strikethrough": segment.contains("<w:strike"),
+            "bold": docx_has_enabled_run_property(&segment, "<w:b"),
+            "italic": docx_has_enabled_run_property(&segment, "<w:i"),
+            "underline": docx_has_enabled_underline(&segment),
+            "strikethrough": docx_has_enabled_run_property(&segment, "<w:strike"),
             "verticalAlign": docx_vertical_align(&segment),
             "fontFamily": docx_tag_attr(&segment, "<w:rFonts", "w:ascii"),
             "fontSize": docx_font_size(&segment),
@@ -383,12 +399,30 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
             "highlight": docx_tag_attr(&segment, "<w:highlight", "w:val"),
             "align": docx_alignment(&segment),
             "listKind": docx_list_kind(&segment, &numbering_formats),
+            "listNumberingId": docx_list_numbering_id(&segment),
+            "listLevel": docx_list_level(&segment),
             "indentLeft": docx_u32_attr(&segment, "<w:ind", "w:left"),
             "spacingBefore": docx_u32_attr(&segment, "<w:spacing", "w:before"),
             "spacingAfter": docx_u32_attr(&segment, "<w:spacing", "w:after"),
             "lineSpacing": docx_u32_attr(&segment, "<w:spacing", "w:line"),
-            "pageBreakBefore": segment.contains("<w:pageBreakBefore")
+            "pageBreakBefore": segment.contains("<w:pageBreakBefore"),
+            "keepWithNext": segment.contains("<w:keepNext"),
+            "keepLinesTogether": segment.contains("<w:keepLines")
         });
+        if let Some(style_id) = paragraph_style_id {
+            block["paragraphStyleId"] = json!(style_id.clone());
+            if let Some(style_name) = style_names.get(&style_id) {
+                block["paragraphStyleName"] = json!(style_name);
+            }
+        }
+        if let (Some(num_id), Some(level)) = (
+            block.get("listNumberingId").and_then(Value::as_str),
+            block.get("listLevel").and_then(Value::as_u64),
+        ) {
+            if let Some(start) = numbering_starts.get(&(num_id.to_string(), level as u32)) {
+                block["listStart"] = json!(start);
+            }
+        }
         if let Some(relationship_id) = relationship_id {
             block["relationshipId"] = json!(relationship_id);
         }
@@ -410,6 +444,22 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
         if let Some(endnote_id) = docx_tag_attr(&segment, "<w:endnoteReference", "w:id") {
             block["endnoteId"] = json!(endnote_id);
         }
+        let content_controls = docx_paragraph_content_controls(&segment);
+        if !content_controls.is_empty() {
+            block["contentControls"] = json!(content_controls);
+        }
+        let fields = docx_paragraph_fields(&segment);
+        if !fields.is_empty() {
+            block["fields"] = json!(fields);
+        }
+        let revisions = docx_paragraph_revisions(&segment);
+        if !revisions.is_empty() {
+            block["revisions"] = json!(revisions);
+        }
+        let runs = docx_run_models(&segment);
+        if !runs.is_empty() && docx_runs_text(&runs) == text {
+            block["runs"] = json!(runs);
+        }
         blocks.push(block);
         index += 1;
     }
@@ -420,7 +470,8 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
         "footers": docx_text_parts(bytes, "footer"),
         "comments": docx_comments(bytes),
         "footnotes": docx_notes(bytes, "word/footnotes.xml", "w:footnote", "footnote"),
-        "endnotes": docx_notes(bytes, "word/endnotes.xml", "w:endnote", "endnote")
+        "endnotes": docx_notes(bytes, "word/endnotes.xml", "w:endnote", "endnote"),
+        "styles": paragraph_styles
     }))
 }
 
@@ -443,6 +494,18 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
         &mut replacements,
     )?;
     let hyperlinks_changed = add_docx_hyperlink_relationships(&mut blocks, &mut relationships);
+    let numbering_changed = if docx_blocks_have_lists(&blocks) {
+        add_docx_numbering_replacements(
+            original,
+            &mut blocks,
+            &mut relationships,
+            &mut content_types,
+            &mut replacements,
+        );
+        true
+    } else {
+        false
+    };
     let document = read_zip_text(original, "word/document.xml")?;
     assign_docx_bookmark_ids(&document, &mut blocks);
     let document = replace_docx_blocks(&document, &blocks);
@@ -474,17 +537,6 @@ fn update_docx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> {
         &mut content_types,
         &mut replacements,
     );
-    let numbering_changed = if docx_blocks_have_lists(&blocks) {
-        add_docx_numbering_replacements(
-            original,
-            &mut relationships,
-            &mut content_types,
-            &mut replacements,
-        );
-        true
-    } else {
-        false
-    };
     if manifest_changed
         || numbering_changed
         || hyperlinks_changed
@@ -677,6 +729,42 @@ fn docx_bookmark_id_from_model(block: &Value) -> Option<u32> {
 fn docx_vertical_align(xml: &str) -> Option<String> {
     docx_tag_attr(xml, "<w:vertAlign", "w:val")
         .filter(|value| matches!(value.as_str(), "superscript" | "subscript"))
+}
+
+fn docx_has_enabled_run_property(xml: &str, marker: &str) -> bool {
+    let mut rest = xml;
+    while let Some(start) = rest.find(marker) {
+        let after_start = &rest[start..];
+        let Some(end) = after_start.find('>') else {
+            return true;
+        };
+        let tag = &after_start[..=end];
+        if !docx_tag_attr(tag, marker, "w:val").is_some_and(|value| {
+            matches!(value.to_ascii_lowercase().as_str(), "false" | "0" | "off")
+        }) {
+            return true;
+        }
+        rest = &after_start[end + 1..];
+    }
+    false
+}
+
+fn docx_has_enabled_underline(xml: &str) -> bool {
+    let mut rest = xml;
+    while let Some(start) = rest.find("<w:u") {
+        let after_start = &rest[start..];
+        let Some(end) = after_start.find('>') else {
+            return true;
+        };
+        let tag = &after_start[..=end];
+        if !docx_tag_attr(tag, "<w:u", "w:val")
+            .is_some_and(|value| value.eq_ignore_ascii_case("none"))
+        {
+            return true;
+        }
+        rest = &after_start[end + 1..];
+    }
+    false
 }
 
 fn docx_heading_level(xml: &str) -> Option<u32> {

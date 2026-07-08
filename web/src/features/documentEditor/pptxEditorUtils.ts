@@ -45,6 +45,71 @@ export type PptxSnapGuide = {
 export const SLIDE_ASPECT_RATIO = 16 / 9;
 export const PPTX_SNAP_GRID_PERCENT = 1;
 export const PPTX_SNAP_THRESHOLD_PERCENT = 1;
+export const PPTX_EMU_PER_INCH = 914_400;
+
+export const PPTX_SLIDE_SIZE_PRESETS = {
+  widescreen: {
+    label: "Widescreen 16:9",
+    widthEmu: 12_192_000,
+    heightEmu: 6_858_000,
+    type: "screen16x9",
+  },
+  standard: {
+    label: "Standard 4:3",
+    widthEmu: 9_144_000,
+    heightEmu: 6_858_000,
+    type: "screen4x3",
+  },
+} as const;
+
+export type PptxSlideSizePreset = keyof typeof PPTX_SLIDE_SIZE_PRESETS | "custom";
+
+export function pptxSlideAspectRatio(
+  model?: Pick<PptxModel, "slideWidthEmu" | "slideHeightEmu">,
+) {
+  const width = model?.slideWidthEmu;
+  const height = model?.slideHeightEmu;
+  if (
+    typeof width === "number" &&
+    typeof height === "number" &&
+    Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    width > 0 &&
+    height > 0
+  ) {
+    return width / height;
+  }
+  return SLIDE_ASPECT_RATIO;
+}
+
+export function pptxSlideSizePreset(
+  model?: Pick<PptxModel, "slideWidthEmu" | "slideHeightEmu" | "slideSizeType">,
+): PptxSlideSizePreset {
+  const width = Math.round(model?.slideWidthEmu ?? 0);
+  const height = Math.round(model?.slideHeightEmu ?? 0);
+  const entry = Object.entries(PPTX_SLIDE_SIZE_PRESETS).find(
+    ([, preset]) =>
+      Math.round(preset.widthEmu) === width &&
+      Math.round(preset.heightEmu) === height,
+  );
+  return (entry?.[0] as PptxSlideSizePreset | undefined) ?? "custom";
+}
+
+export function pptxEmuToInches(
+  emu?: number,
+  fallbackEmu: number = PPTX_SLIDE_SIZE_PRESETS.widescreen.widthEmu,
+) {
+  const value =
+    typeof emu === "number" && Number.isFinite(emu) && emu > 0
+      ? emu
+      : fallbackEmu;
+  return value / PPTX_EMU_PER_INCH;
+}
+
+export function pptxInchesToEmu(inches: number) {
+  if (!Number.isFinite(inches)) return PPTX_SLIDE_SIZE_PRESETS.widescreen.widthEmu;
+  return Math.round(Math.min(100, Math.max(1, inches)) * PPTX_EMU_PER_INCH);
+}
 
 export function isPptxLineShapeKind(kind?: PptxShapeKind) {
   return kind === "line" || kind === "straightConnector1";
@@ -255,6 +320,28 @@ export function normalizeRotation(value: number) {
 export function firstVisibleSlideIndex(slides: PptxSlide[]) {
   const index = slides.findIndex((slide) => !slide.hidden);
   return index >= 0 ? index : 0;
+}
+
+export function lastVisibleSlideIndex(slides: PptxSlide[]) {
+  for (let index = slides.length - 1; index >= 0; index -= 1) {
+    if (!slides[index]?.hidden) return index;
+  }
+  return Math.max(0, slides.length - 1);
+}
+
+export function adjacentVisibleSlideIndex(
+  slides: PptxSlide[],
+  currentIndex: number,
+  direction: -1 | 1,
+) {
+  for (
+    let index = currentIndex + direction;
+    index >= 0 && index < slides.length;
+    index += direction
+  ) {
+    if (!slides[index]?.hidden) return index;
+  }
+  return null;
 }
 
 export function nextVisibleSlideIndex(

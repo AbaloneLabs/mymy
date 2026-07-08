@@ -67,11 +67,32 @@ pub(in crate::services::document_editor) fn sheet_cell_writes(
                 formula = Some(value.trim_start_matches('=').to_string());
                 value.clear();
             }
+            let formula_type = cell
+                .get("formulaType")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| matches!(*value, "array" | "shared" | "dataTable"))
+                .map(str::to_string);
+            let formula_ref = cell
+                .get("formulaRef")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| valid_xlsx_range_reference(value))
+                .map(str::to_string);
+            let formula_shared_index = cell
+                .get("formulaSharedIndex")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+                .map(str::to_string);
             writes.insert(
                 reference.to_string(),
                 SheetCellWrite {
                     value,
                     formula,
+                    formula_type,
+                    formula_ref,
+                    formula_shared_index,
                     style: xlsx_cell_style_from_model(cell),
                     style_index: None,
                 },

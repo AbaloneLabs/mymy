@@ -15,14 +15,17 @@ import { jsonPreviewTypeClass } from "./textJsonPreviewUtils";
 import {
   appendFlatConfigEntry,
   configEntryPathLabel,
+  configEntryLineRange,
   configScalarType,
   deleteFlatConfigGroup,
   duplicateFlatConfigEntry,
   flatConfigEntryCanDuplicate,
   flatConfigEntryCanMove,
-  flatConfigLine,
+  flatConfigLines,
+  joinStructuredTextLines,
   moveFlatConfigEntry,
   parseFlatConfig,
+  splitStructuredTextLines,
 } from "./textStructuredUtils";
 import type { ConfigEntry } from "./textStructuredUtils";
 import type { SourceSelectionRange } from "./textSourceUtils";
@@ -109,15 +112,21 @@ export function FlatConfigEditor({
   function updateLine(entry: ConfigEntry, key: string, value: string) {
     const cleanKey = key.trim();
     if (entry.keyEditable && !cleanKey) return;
-    const lines = content.split("\n");
-    lines[entry.lineIndex] = flatConfigLine(entry, cleanKey, value, kind);
-    onChangeContent(lines.join("\n"));
+    const lines = splitStructuredTextLines(content);
+    const range = configEntryLineRange(entry);
+    lines.splice(
+      range.start,
+      range.end - range.start,
+      ...flatConfigLines(entry, cleanKey, value, kind),
+    );
+    onChangeContent(joinStructuredTextLines(lines, content));
   }
 
-  function deleteLine(lineIndex: number) {
-    const lines = content.split("\n");
-    lines.splice(lineIndex, 1);
-    onChangeContent(lines.join("\n"));
+  function deleteEntry(entry: ConfigEntry) {
+    const lines = splitStructuredTextLines(content);
+    const range = configEntryLineRange(entry);
+    lines.splice(range.start, range.end - range.start);
+    onChangeContent(joinStructuredTextLines(lines, content));
   }
 
   function duplicateEntry(entry: ConfigEntry) {
@@ -186,11 +195,20 @@ export function FlatConfigEditor({
         >
           {configScalarType(entry.value)}
         </span>
-        <input
-          value={entry.value}
-          onChange={(event) => updateLine(entry, entry.key, event.target.value)}
-          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-        />
+        {entry.valueStyle ? (
+          <textarea
+            value={entry.value}
+            onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+            rows={Math.min(8, Math.max(3, entry.value.split("\n").length))}
+            className="min-w-0 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          />
+        ) : (
+          <input
+            value={entry.value}
+            onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+            className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          />
+        )}
         <div className="flex items-center gap-1">
           <JsonIconButton
             disabled={!flatConfigEntryCanMove(parsed.entries, entry, -1)}
@@ -210,7 +228,7 @@ export function FlatConfigEditor({
             label="Duplicate entry"
             onClick={() => duplicateEntry(entry)}
           />
-          <JsonDeleteButton onClick={() => deleteLine(entry.lineIndex)} />
+          <JsonDeleteButton onClick={() => deleteEntry(entry)} />
         </div>
       </div>
     );

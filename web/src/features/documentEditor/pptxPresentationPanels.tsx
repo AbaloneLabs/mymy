@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ChevronDown, ChevronUp, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -10,11 +11,13 @@ import type {
   PptxText,
 } from "./models";
 import { PptxReadOnlySlide } from "./pptxEditorPanels";
+import { adjacentVisibleSlideIndex } from "./pptxEditorUtils";
 
 export function PptxPresentationOverlay({
   slides,
   presentingIndex,
   presentingSlide,
+  slideAspectRatio,
   onMove,
   onClose,
   onKeyDown,
@@ -22,10 +25,36 @@ export function PptxPresentationOverlay({
   slides: PptxSlide[];
   presentingIndex: number;
   presentingSlide: PptxSlide;
+  slideAspectRatio: number;
   onMove: (direction: -1 | 1) => void;
   onClose: () => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  const nextSlideIndex = useMemo(
+    () => adjacentVisibleSlideIndex(slides, presentingIndex, 1),
+    [slides, presentingIndex],
+  );
+  const previousSlideIndex = useMemo(
+    () => adjacentVisibleSlideIndex(slides, presentingIndex, -1),
+    [slides, presentingIndex],
+  );
+  const nextSlide = nextSlideIndex === null ? null : slides[nextSlideIndex];
+  const notes = presentingSlide.notes?.trim() ?? "";
+  const visibleSlideCount = slides.filter((slide) => !slide.hidden).length || slides.length;
+  const currentVisiblePosition =
+    slides.slice(0, presentingIndex + 1).filter((slide) => !slide.hidden).length || 1;
+  const progress = Math.min(
+    100,
+    Math.max(0, (currentVisiblePosition / Math.max(1, visibleSlideCount)) * 100),
+  );
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   return (
     <div
       role="dialog"
@@ -36,14 +65,20 @@ export function PptxPresentationOverlay({
       autoFocus
     >
       <div className="flex h-12 shrink-0 items-center justify-between px-4 text-xs text-white/70">
-        <span>
-          {presentingIndex + 1} / {slides.length}
-        </span>
+        <div className="flex items-center gap-3">
+          <span>
+            {presentingIndex + 1} / {slides.length}
+          </span>
+          <span>
+            {currentVisiblePosition} / {visibleSlideCount} visible
+          </span>
+          <span>{formatPresenterElapsed(now - startedAt)}</span>
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => onMove(-1)}
-            disabled={presentingIndex <= 0}
+            disabled={previousSlideIndex === null}
             className="rounded-md border border-white/20 px-2 py-1 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Prev
@@ -51,7 +86,7 @@ export function PptxPresentationOverlay({
           <button
             type="button"
             onClick={() => onMove(1)}
-            disabled={presentingIndex >= slides.length - 1}
+            disabled={nextSlideIndex === null}
             className="rounded-md border border-white/20 px-2 py-1 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Next
@@ -65,21 +100,69 @@ export function PptxPresentationOverlay({
           </button>
         </div>
       </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-        <PptxReadOnlySlide slide={presentingSlide} />
+      <div className="h-1 shrink-0 bg-white/10">
+        <div
+          className="h-full bg-[var(--accent)]"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+      <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="flex min-h-0 items-center justify-center">
+          <PptxReadOnlySlide
+            slide={presentingSlide}
+            slideAspectRatio={slideAspectRatio}
+          />
+        </div>
+        <aside className="grid min-h-0 gap-3 overflow-hidden rounded-md border border-white/15 bg-white/[0.06] p-3 text-sm text-white/80">
+          <section className="min-h-0 overflow-auto">
+            <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-white/45">
+              Speaker notes
+            </div>
+            <div className="whitespace-pre-wrap leading-relaxed">
+              {notes || " "}
+            </div>
+          </section>
+          <section className="grid gap-2 border-t border-white/10 pt-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-white/45">
+              {nextSlideIndex === null ? "Next" : `Next · ${nextSlideIndex + 1}`}
+            </div>
+            {nextSlide ? (
+              <div className="overflow-hidden rounded border border-white/10 bg-black/40">
+                <PptxReadOnlySlide
+                  slide={nextSlide}
+                  slideAspectRatio={slideAspectRatio}
+                />
+              </div>
+            ) : (
+              <div className="h-24 rounded border border-white/10 bg-black/40" />
+            )}
+          </section>
+        </aside>
       </div>
     </div>
   );
 }
 
+function formatPresenterElapsed(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function PptxSlideNavigator({
   slides,
   activeSlideId,
+  slideAspectRatio,
   slideLabel,
   onSelect,
 }: {
   slides: PptxSlide[];
   activeSlideId?: string;
+  slideAspectRatio: number;
   slideLabel: (index: number) => string;
   onSelect: (slideId: string) => void;
 }) {
@@ -106,7 +189,10 @@ export function PptxSlideNavigator({
               </span>
             )}
           </span>
-          <span className="mt-2 block aspect-video rounded-sm bg-white p-1 text-[8px] leading-tight text-neutral-700 shadow-inner">
+          <span
+            className="mt-2 block rounded-sm bg-white p-1 text-[8px] leading-tight text-neutral-700 shadow-inner"
+            style={{ aspectRatio: slideAspectRatio }}
+          >
             {[
               ...item.texts.slice(0, 2).map((text) => text.text),
               ...(item.shapes ?? []).slice(0, 2).map((shape) => shape.kind),

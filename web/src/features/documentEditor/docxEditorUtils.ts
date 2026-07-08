@@ -46,6 +46,8 @@ export const DEFAULT_DOCX_TABLE_BORDER_SIZE = 4;
 const DOCX_FORMAT_KEYS = [
   "type",
   "headingLevel",
+  "paragraphStyleId",
+  "paragraphStyleName",
   "bold",
   "italic",
   "underline",
@@ -82,6 +84,11 @@ export function docxPageStyle(page: DocxPageSettings | undefined): CSSProperties
       page?.marginBottom !== undefined ? twipsToCssPixels(page.marginBottom) : 64,
     paddingLeft:
       page?.marginLeft !== undefined ? twipsToCssPixels(page.marginLeft) : 80,
+    columnCount: page?.columnCount && page.columnCount > 1 ? page.columnCount : undefined,
+    columnGap:
+      page?.columnCount && page.columnCount > 1
+        ? twipsToCssPixels(page.columnSpacing ?? 720)
+        : undefined,
   };
 }
 
@@ -315,6 +322,30 @@ export function textOffsetWithin(element: HTMLElement) {
   before.selectNodeContents(element);
   before.setEnd(range.startContainer, range.startOffset);
   return before.toString().length;
+}
+
+export function textSelectionOffsetsWithin(element: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (
+    !element.contains(range.startContainer) ||
+    !element.contains(range.endContainer)
+  ) {
+    return null;
+  }
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(element);
+  startRange.setEnd(range.startContainer, range.startOffset);
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(element);
+  endRange.setEnd(range.endContainer, range.endOffset);
+  const start = startRange.toString().length;
+  const end = endRange.toString().length;
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  };
 }
 
 export function focusDocxBlock(id: string) {

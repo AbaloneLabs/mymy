@@ -80,6 +80,67 @@ fn docx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
     );
     push_warning_if(
         &mut warnings,
+        document.contains("<w:moveFrom") || document.contains("<w:moveTo"),
+        "docx-move-tracking",
+        DocumentCompatibilityWarningSeverity::Warning,
+        "Tracked move ranges are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        document.contains("<w:sdt"),
+        "docx-content-controls",
+        DocumentCompatibilityWarningSeverity::Warning,
+        "Content controls and form fields are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        document.contains("<w:fldSimple") || document.contains("<w:instrText"),
+        "docx-fields",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Document fields such as page numbers, references, and tables of contents are preserved.",
+    );
+    push_warning_if(
+        &mut warnings,
+        document.contains("<m:oMath") || document.contains("<m:oMathPara"),
+        "docx-equations",
+        DocumentCompatibilityWarningSeverity::Warning,
+        "Equation markup is preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name.starts_with("word/charts/")),
+        "docx-charts",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Embedded charts are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| {
+            matches!(
+                name.as_str(),
+                "word/styles.xml" | "word/theme/theme1.xml" | "word/fontTable.xml"
+            )
+        }),
+        "docx-styles-fonts",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Styles, theme, and font table metadata are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name.starts_with("customXml/")),
+        "docx-custom-xml",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Custom XML parts are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name == "word/vbaProject.bin"),
+        "docx-macros",
+        DocumentCompatibilityWarningSeverity::Danger,
+        "This document contains macros. Macro parts are preserved in the document package.",
+    );
+    push_warning_if(
+        &mut warnings,
         document.contains("<w:sectPr"),
         "docx-section",
         DocumentCompatibilityWarningSeverity::Info,
@@ -103,6 +164,13 @@ fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         "xlsx-formulas",
         DocumentCompatibilityWarningSeverity::Info,
         "Formulas and cached values are preserved in the workbook package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        sheet_xml.contains(r#"<f t="array""#) || sheet_xml.contains(r#"<f ref=""#),
+        "xlsx-array-formulas",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Array formula metadata is preserved with formula ranges and cached values.",
     );
     push_warning_if(
         &mut warnings,
@@ -141,6 +209,20 @@ fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
     );
     push_warning_if(
         &mut warnings,
+        names.iter().any(|name| name.starts_with("xl/tables/")),
+        "xlsx-tables",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Worksheet tables are preserved and editable for range, style, totals, and column metadata.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name.starts_with("xl/drawings/")),
+        "xlsx-drawings",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Worksheet drawings and image relationships are preserved in the workbook package.",
+    );
+    push_warning_if(
+        &mut warnings,
         names.iter().any(|name| name.starts_with("xl/charts/")),
         "xlsx-charts",
         DocumentCompatibilityWarningSeverity::Info,
@@ -155,6 +237,15 @@ fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
     );
     push_warning_if(
         &mut warnings,
+        names
+            .iter()
+            .any(|name| name.starts_with("xl/externalLinks/")),
+        "xlsx-external-links",
+        DocumentCompatibilityWarningSeverity::Warning,
+        "External workbook links are preserved, but linked data is not refreshed by mymy.",
+    );
+    push_warning_if(
+        &mut warnings,
         names.iter().any(|name| name == "xl/vbaProject.bin"),
         "xlsx-macros",
         DocumentCompatibilityWarningSeverity::Danger,
@@ -165,6 +256,7 @@ fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
 
 fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning> {
     let names = zip_entry_names(bytes).unwrap_or_default();
+    let presentation = read_zip_text(bytes, "ppt/presentation.xml").unwrap_or_default();
     let slide_xml = names
         .iter()
         .filter(|name| name.starts_with("ppt/slides/") && name.ends_with(".xml"))
@@ -178,6 +270,38 @@ fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         "pptx-media",
         DocumentCompatibilityWarningSeverity::Info,
         "Slide media parts are preserved in the presentation package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names
+            .iter()
+            .any(|name| name.starts_with("ppt/slideMasters/")),
+        "pptx-slide-masters",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Slide masters and master placeholders are preserved and can be edited where exposed.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names
+            .iter()
+            .any(|name| name.starts_with("ppt/slideLayouts/")),
+        "pptx-slide-layouts",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Slide layouts are preserved and can be applied to slides.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name.starts_with("ppt/theme/")),
+        "pptx-themes",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Presentation themes are preserved and editable for theme colors and Latin fonts.",
+    );
+    push_warning_if(
+        &mut warnings,
+        presentation.contains("<p:sldSz"),
+        "pptx-slide-size",
+        DocumentCompatibilityWarningSeverity::Info,
+        "Presentation slide size is preserved when editing and saving slides.",
     );
     push_warning_if(
         &mut warnings,
@@ -215,6 +339,13 @@ fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         "pptx-animations",
         DocumentCompatibilityWarningSeverity::Info,
         "Animation timing nodes are preserved in the presentation package.",
+    );
+    push_warning_if(
+        &mut warnings,
+        names.iter().any(|name| name == "ppt/vbaProject.bin"),
+        "pptx-macros",
+        DocumentCompatibilityWarningSeverity::Danger,
+        "This presentation contains macros. Macro parts are preserved in the presentation package.",
     );
     warnings
 }

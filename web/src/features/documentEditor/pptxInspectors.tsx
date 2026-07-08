@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { PptxAnimation, PptxMedia } from "./models";
+import { PptxAnimationTimeline } from "./pptxAnimationTimeline";
 import { animationLabel } from "./pptxEditorUtils";
 
 export function PptxAnimationInspector({
@@ -108,6 +109,13 @@ export function PptxAnimationInspector({
             </div>
           ))}
         </div>
+      )}
+      {animations.length > 0 && (
+        <PptxAnimationTimeline
+          animations={animations}
+          disabled={disabled}
+          onTimingChange={onTimingChange}
+        />
       )}
     </div>
   );

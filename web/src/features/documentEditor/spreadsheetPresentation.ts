@@ -189,6 +189,9 @@ export function stripXlsxCellStyle(cell: XlsxCell): XlsxCell {
     ref: cell.ref,
     value: cell.value,
     formula: cell.formula,
+    formulaType: cell.formulaType,
+    formulaRef: cell.formulaRef,
+    formulaSharedIndex: cell.formulaSharedIndex,
   };
 }
 

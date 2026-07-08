@@ -20,6 +20,7 @@ import type {
   SpreadsheetFormulaValue,
 } from "./spreadsheetFormula";
 import { xlsxDefinedNameTarget } from "./spreadsheetDefinedNames";
+import { xlsxStructuredReferenceRange } from "./spreadsheetStructuredReferences";
 import { xlsxSqrefRanges } from "./spreadsheetXlsxMetadata";
 import { columnName, normalizeXlsxCells } from "./models";
 import type {
@@ -324,6 +325,21 @@ export function recalculateXlsxModel(model: XlsxModel): XlsxModel {
           sheetIndexById.get(sheet.id) ?? -1,
           nextVisiting,
         ),
+      valuesForStructuredReference: (structuredReference) => {
+        const resolved = xlsxStructuredReferenceRange(structuredReference, {
+          currentCellReference: reference,
+          currentSheet: sheet,
+          sheets: normalizedSheets,
+        });
+        if (!resolved) return null;
+        return {
+          height: resolved.height,
+          values: resolved.references.map((ref) =>
+            evaluateCell(resolved.sheet, ref, nextVisiting),
+          ),
+          width: resolved.width,
+        };
+      },
     });
     cache.set(key, value);
     return value;
@@ -452,6 +468,9 @@ export function xlsxCellFromInput(input: string) {
     return {
       value: "",
       formula: input.slice(1),
+      formulaType: undefined,
+      formulaRef: undefined,
+      formulaSharedIndex: undefined,
       generated: undefined,
       spillParent: undefined,
       spillRange: undefined,
@@ -460,6 +479,9 @@ export function xlsxCellFromInput(input: string) {
   return {
     value: input,
     formula: undefined,
+    formulaType: undefined,
+    formulaRef: undefined,
+    formulaSharedIndex: undefined,
     generated: undefined,
     spillParent: undefined,
     spillRange: undefined,
@@ -549,6 +571,9 @@ function clearGeneratedXlsxCell(cell: XlsxCell): XlsxCell {
     ...cell,
     value: "",
     formula: undefined,
+    formulaType: undefined,
+    formulaRef: undefined,
+    formulaSharedIndex: undefined,
     generated: undefined,
     spillParent: undefined,
     spillRange: undefined,

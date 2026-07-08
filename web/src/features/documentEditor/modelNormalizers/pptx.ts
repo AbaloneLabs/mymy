@@ -4,6 +4,7 @@ import type {
   PptxChartSeries,
   PptxImage,
   PptxLayout,
+  PptxMaster,
   PptxMedia,
   PptxModel,
   PptxShape,
@@ -96,6 +97,21 @@ function normalizePptxLayout(value: unknown): PptxLayout | null {
     path: value.path,
     name: typeof value.name === "string" ? value.name : undefined,
     type: typeof value.type === "string" ? value.type : undefined,
+    masterPath: typeof value.masterPath === "string" ? value.masterPath : undefined,
+    masterName: typeof value.masterName === "string" ? value.masterName : undefined,
+    themePath: typeof value.themePath === "string" ? value.themePath : undefined,
+    themeName: typeof value.themeName === "string" ? value.themeName : undefined,
+    placeholderTexts: Array.isArray(value.placeholderTexts)
+      ? value.placeholderTexts.map((text, index) => normalizePptxText(text, index))
+      : undefined,
+  };
+}
+
+function normalizePptxMaster(value: unknown): PptxMaster | null {
+  if (!isRecord(value) || typeof value.path !== "string") return null;
+  return {
+    path: value.path,
+    name: typeof value.name === "string" ? value.name : undefined,
     themePath: typeof value.themePath === "string" ? value.themePath : undefined,
     themeName: typeof value.themeName === "string" ? value.themeName : undefined,
     placeholderTexts: Array.isArray(value.placeholderTexts)
@@ -214,10 +230,19 @@ function normalizePptxTableCellAlign(
 export function normalizePptxModel(model: unknown): PptxModel {
   if (!isRecord(model) || !Array.isArray(model.slides)) return { slides: [] };
   return {
+    slideWidthEmu: numericField(model.slideWidthEmu),
+    slideHeightEmu: numericField(model.slideHeightEmu),
+    slideSizeType:
+      typeof model.slideSizeType === "string" ? model.slideSizeType : undefined,
     layouts: Array.isArray(model.layouts)
       ? model.layouts
           .map((layout) => normalizePptxLayout(layout))
           .filter((layout): layout is PptxLayout => layout !== null)
+      : undefined,
+    masters: Array.isArray(model.masters)
+      ? model.masters
+          .map((master) => normalizePptxMaster(master))
+          .filter((master): master is PptxMaster => master !== null)
       : undefined,
     themes: Array.isArray(model.themes)
       ? model.themes
@@ -292,6 +317,14 @@ export function normalizePptxModel(model: unknown): PptxModel {
           typeof item.layoutName === "string" ? item.layoutName : undefined,
         layoutType:
           typeof item.layoutType === "string" ? item.layoutType : undefined,
+        layoutMasterPath:
+          typeof item.layoutMasterPath === "string"
+            ? item.layoutMasterPath
+            : undefined,
+        layoutMasterName:
+          typeof item.layoutMasterName === "string"
+            ? item.layoutMasterName
+            : undefined,
         layoutThemePath:
           typeof item.layoutThemePath === "string"
             ? item.layoutThemePath

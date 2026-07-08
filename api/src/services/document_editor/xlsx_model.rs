@@ -430,6 +430,7 @@ pub(super) fn build_sheet_cell(original: &str, reference: &str, cell: &SheetCell
         .or_else(|| attr_value(original, "s"))
         .map(|style| format!(r#" s="{}""#, escape_xml(&style)))
         .unwrap_or_default();
+    let formula_attrs = sheet_cell_formula_attrs(cell);
     if let Some(formula) = cell
         .formula
         .as_deref()
@@ -441,14 +442,55 @@ pub(super) fn build_sheet_cell(original: &str, reference: &str, cell: &SheetCell
             format!("<v>{}</v>", escape_xml(&cell.value))
         };
         return format!(
-            r#"<c r="{reference}"{style}><f>{}</f>{value}</c>"#,
-            escape_xml(formula)
+            r#"<c r="{reference}"{style}><f{formula_attrs}>{}</f>{value}</c>"#,
+            escape_xml(formula),
         );
+    }
+    if !formula_attrs.is_empty() {
+        let value = if cell.value.is_empty() {
+            String::new()
+        } else {
+            format!("<v>{}</v>", escape_xml(&cell.value))
+        };
+        return format!(r#"<c r="{reference}"{style}><f{formula_attrs}/>{value}</c>"#);
     }
     format!(
         r#"<c r="{reference}"{style} t="inlineStr"><is><t>{}</t></is></c>"#,
         escape_xml(&cell.value)
     )
+}
+
+fn sheet_cell_formula_attrs(cell: &SheetCellWrite) -> String {
+    let mut attrs = Vec::new();
+    if let Some(formula_type) = cell
+        .formula_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        attrs.push(format!(r#"t="{}""#, escape_xml(formula_type)));
+    }
+    if let Some(formula_ref) = cell
+        .formula_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        attrs.push(format!(r#"ref="{}""#, escape_xml(formula_ref)));
+    }
+    if let Some(shared_index) = cell
+        .formula_shared_index
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        attrs.push(format!(r#"si="{}""#, escape_xml(shared_index)));
+    }
+    if attrs.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", attrs.join(" "))
+    }
 }
 
 pub(super) fn original_sheet_cells(xml: &str) -> BTreeMap<String, String> {

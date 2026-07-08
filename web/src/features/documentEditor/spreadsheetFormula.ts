@@ -7,6 +7,8 @@ import {
   spreadsheetFormulaSumIf,
   spreadsheetFormulaSumIfs,
 } from "./spreadsheetFormulaCriteria";
+import { SPREADSHEET_ENGINEERING_FORMULA_EVALUATORS } from "./spreadsheetEngineeringFormulas";
+import { SPREADSHEET_FINANCIAL_FORMULA_EVALUATORS } from "./spreadsheetFinancialFormulas";
 import {
   compareSpreadsheetFormulaValues,
   isSpreadsheetFormulaError,
@@ -46,6 +48,7 @@ export interface SpreadsheetFormulaFunction {
     | "Text"
     | "Date"
     | "Financial"
+    | "Engineering"
     | "Information"
     | "Lookup";
 }
@@ -56,9 +59,10 @@ type SpreadsheetFormulaToken =
   | { type: "string"; value: string }
   | { type: "error"; value: string }
   | { type: "identifier"; value: string }
+  | { type: "structuredReference"; value: string }
   | { type: "operator"; value: string };
 
-type SpreadsheetFormulaEvaluator = (
+export type SpreadsheetFormulaEvaluator = (
   args: SpreadsheetFormulaValue[],
   numbers: number[],
 ) => SpreadsheetFormulaValue;
@@ -67,6 +71,13 @@ export interface SpreadsheetFormulaEvaluationContext {
   valueForRef: (reference: string) => SpreadsheetFormulaValue;
   valuesForRange?: (startRef: string, endRef: string) => SpreadsheetFormulaValue[];
   valuesForName?: (name: string) => SpreadsheetFormulaValue[];
+  valuesForStructuredReference?: (reference: string) =>
+    | {
+        height: number;
+        values: SpreadsheetFormulaValue[];
+        width: number;
+      }
+    | null;
 }
 
 const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator> = {
@@ -370,14 +381,8 @@ const SPREADSHEET_FORMULA_EVALUATORS: Record<string, SpreadsheetFormulaEvaluator
   ISTEXT: (args) => typeof args[0] === "string" && !isSpreadsheetFormulaError(args[0]),
   ISERROR: (args) => isSpreadsheetFormulaError(args[0]),
   ISNA: (args) => isSpreadsheetFormulaNa(args[0]),
-  PMT: (_args, numbers) =>
-    spreadsheetFormulaPmt(
-      numbers[0] ?? 0,
-      numbers[1] ?? 0,
-      numbers[2] ?? 0,
-      numbers[3] ?? 0,
-      numbers[4] ?? 0,
-    ),
+  ...SPREADSHEET_FINANCIAL_FORMULA_EVALUATORS,
+  ...SPREADSHEET_ENGINEERING_FORMULA_EVALUATORS,
 };
 
 const SPREADSHEET_FORMULA_ERROR_HANDLERS = new Set(["IFERROR", "IFNA", "ISERROR", "ISNA"]);
@@ -401,22 +406,25 @@ export function adjustSpreadsheetFormulaReferences(
   columnOffset: number,
 ) {
   return formula.replace(
-    /(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g,
-    (_match, columnLock: string, column: string, rowLock: string, row: string) => {
-      const nextColumnIndex = columnLock
-        ? columnIndexFromName(column)
-        : Math.max(0, columnIndexFromName(column) + columnOffset);
-      const nextRow = rowLock
-        ? Number(row)
-        : Math.max(1, Number(row) + rowOffset);
-      return `${columnLock}${columnName(nextColumnIndex)}${rowLock}${nextRow}`;
+    /'(?:[^']|'')+'!\$?[A-Za-z]{1,3}\$?\d+|[A-Za-z_][A-Za-z0-9_.]*!\$?[A-Za-z]{1,3}\$?\d+|\$?[A-Za-z]{1,3}\$?\d+/g,
+    (match, offset: number, source: string) => {
+      if (
+        spreadsheetFormulaReferenceInsideStructuredReference(source, offset) ||
+        spreadsheetFormulaReferenceInsideIdentifier(source, offset, match.length)
+      ) {
+        return match;
+      }
+      return adjustSpreadsheetFormulaReferenceToken(match, rowOffset, columnOffset);
     },
   );
 }
 
 export function spreadsheetFormulaReferences(
   formula: string,
-  options?: { referencesForName?: (name: string) => string[] },
+  options?: {
+    referencesForName?: (name: string) => string[];
+    referencesForStructuredReference?: (reference: string) => string[];
+  },
 ) {
   try {
     const tokens = tokenizeSpreadsheetFormula(formula);
@@ -441,6 +449,12 @@ export function spreadsheetFormulaReferences(
       }
       if (token.type === "identifier" && isSpreadsheetFormulaCellReference(token.value)) {
         references.add(displaySpreadsheetFormulaRef(token.value));
+        continue;
+      }
+      if (token.type === "structuredReference") {
+        options?.referencesForStructuredReference?.(token.value).forEach((reference) =>
+          references.add(reference),
+        );
         continue;
       }
       if (
@@ -580,6 +594,9 @@ class SpreadsheetFormulaParser {
     if (token.type === "number") return Number(token.value);
     if (token.type === "string") return token.value;
     if (token.type === "error") return token.value;
+    if (token.type === "structuredReference") {
+      return this.structuredReferenceValue(token.value);
+    }
     if (token.type === "identifier") {
       if (this.matchOperator("(")) {
         return this.evaluateFunction(token.value);
@@ -641,6 +658,16 @@ class SpreadsheetFormulaParser {
       }
     }
     return this.parseExpression();
+  }
+
+  private structuredReferenceValue(reference: string) {
+    const resolved = this.context.valuesForStructuredReference?.(reference);
+    if (!resolved) return "#REF!";
+    return spreadsheetFormulaArray(
+      resolved.values,
+      resolved.width,
+      resolved.height,
+    );
   }
 
   private rangeValue(startRef: string, endRef: string) {
@@ -710,6 +737,12 @@ function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] 
       index += number.length;
       continue;
     }
+    const structuredReference = nextSpreadsheetFormulaStructuredReferenceToken(source.slice(index));
+    if (structuredReference) {
+      tokens.push({ type: "structuredReference", value: structuredReference.value });
+      index += structuredReference.length;
+      continue;
+    }
     if (/[()+\-*/^,;:%]/.test(char)) {
       tokens.push({ type: "operator", value: char });
       index += 1;
@@ -763,6 +796,81 @@ function tokenizeSpreadsheetFormula(formula: string): SpreadsheetFormulaToken[] 
     throw new Error("Invalid formula token");
   }
   return tokens;
+}
+
+function nextSpreadsheetFormulaStructuredReferenceToken(source: string) {
+  const tableName = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(source)?.[0] ?? "";
+  const bracketStart = tableName ? tableName.length : 0;
+  if (source[bracketStart] !== "[") return null;
+  let depth = 0;
+  for (let index = bracketStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "[") depth += 1;
+    if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        const length = index + 1;
+        return {
+          length,
+          value: source.slice(0, length),
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function adjustSpreadsheetFormulaReferenceToken(
+  reference: string,
+  rowOffset: number,
+  columnOffset: number,
+) {
+  const separator = reference.lastIndexOf("!");
+  const prefix = separator >= 0 ? reference.slice(0, separator + 1) : "";
+  const body = separator >= 0 ? reference.slice(separator + 1) : reference;
+  const match = /^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$/.exec(body);
+  if (!match) return reference;
+  const [, columnLock, column, rowLock, row] = match;
+  const nextColumnIndex = columnLock
+    ? columnIndexFromName(column)
+    : Math.max(0, columnIndexFromName(column) + columnOffset);
+  const nextRow = rowLock
+    ? Number(row)
+    : Math.max(1, Number(row) + rowOffset);
+  return `${prefix}${columnLock}${columnName(nextColumnIndex)}${rowLock}${nextRow}`;
+}
+
+function spreadsheetFormulaReferenceInsideStructuredReference(
+  source: string,
+  offset: number,
+) {
+  let depth = 0;
+  let inString = false;
+  for (let index = 0; index < offset; index += 1) {
+    const char = source[index];
+    if (char === '"') {
+      if (inString && source[index + 1] === '"') {
+        index += 1;
+      } else {
+        inString = !inString;
+      }
+      continue;
+    }
+    if (inString) continue;
+    if (char === "[") depth += 1;
+    if (char === "]") depth = Math.max(0, depth - 1);
+  }
+  return depth > 0;
+}
+
+function spreadsheetFormulaReferenceInsideIdentifier(
+  source: string,
+  offset: number,
+  length: number,
+) {
+  const before = source[offset - 1] ?? "";
+  const after = source[offset + length] ?? "";
+  return /[A-Za-z0-9_.$]/.test(before) || /[A-Za-z0-9_.$[]/.test(after);
 }
 
 function spreadsheetFormulaUsesDecimalComma(source: string) {
@@ -1020,22 +1128,6 @@ function excelSerialEndOfMonth(startSerial: number, months: number) {
     end.getUTCFullYear(),
     end.getUTCMonth() + 1,
     end.getUTCDate(),
-  );
-}
-
-function spreadsheetFormulaPmt(
-  rate: number,
-  periods: number,
-  presentValue: number,
-  futureValue: number,
-  dueType: number,
-) {
-  if (periods === 0) return "#NUM!";
-  if (rate === 0) return -(presentValue + futureValue) / periods;
-  const factor = (1 + rate) ** periods;
-  return (
-    -(rate * (futureValue + factor * presentValue)) /
-    ((1 + rate * dueType) * (factor - 1))
   );
 }
 

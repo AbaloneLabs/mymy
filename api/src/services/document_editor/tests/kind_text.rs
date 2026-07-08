@@ -144,9 +144,15 @@ fn docx_compatibility_warnings_detect_preserved_uneditable_parts() {
     let bytes = test_ooxml_package(&[
         (
             "word/document.xml",
-            r#"<w:document><w:body><w:p><w:r><w:drawing/></w:r></w:p><w:sectPr/></w:body></w:document>"#,
+            r#"<w:document><w:body><w:p><w:sdt/><w:fldSimple/><w:moveFrom/><w:r><w:drawing/><m:oMath/></w:r></w:p><w:sectPr/></w:body></w:document>"#,
         ),
         ("word/header1.xml", "<w:hdr/>"),
+        ("word/styles.xml", "<w:styles/>"),
+        ("word/theme/theme1.xml", "<a:theme/>"),
+        ("word/fontTable.xml", "<w:fonts/>"),
+        ("word/charts/chart1.xml", "<c:chartSpace/>"),
+        ("customXml/item1.xml", "<root/>"),
+        ("word/vbaProject.bin", "macro"),
     ]);
 
     let warnings = compatibility_warnings_for_bytes(DocumentEditorKind::Docx, &bytes);
@@ -155,6 +161,17 @@ fn docx_compatibility_warnings_detect_preserved_uneditable_parts() {
     assert!(codes.contains(&"docx-drawing"));
     assert!(codes.contains(&"docx-header-footer"));
     assert!(codes.contains(&"docx-section"));
+    assert!(codes.contains(&"docx-content-controls"));
+    assert!(codes.contains(&"docx-fields"));
+    assert!(codes.contains(&"docx-move-tracking"));
+    assert!(codes.contains(&"docx-equations"));
+    assert!(codes.contains(&"docx-charts"));
+    assert!(codes.contains(&"docx-styles-fonts"));
+    assert!(codes.contains(&"docx-custom-xml"));
+    assert!(codes.contains(&"docx-macros"));
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.severity == DocumentCompatibilityWarningSeverity::Danger));
 }
 
 #[test]
@@ -162,9 +179,12 @@ fn xlsx_compatibility_warnings_detect_formulas_and_macros() {
     let bytes = test_ooxml_package(&[
         (
             "xl/worksheets/sheet1.xml",
-            r#"<worksheet><sheetData><row r="1"><c r="A1"><f>B1+C1</f><v>3</v></c></row></sheetData></worksheet>"#,
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><f t="array" ref="A1:B2">B1:C2</f><v>3</v></c></row></sheetData></worksheet>"#,
         ),
         ("xl/styles.xml", "<styleSheet/>"),
+        ("xl/tables/table1.xml", "<table/>"),
+        ("xl/drawings/drawing1.xml", "<xdr:wsDr/>"),
+        ("xl/externalLinks/externalLink1.xml", "<externalLink/>"),
         ("xl/vbaProject.bin", "macro"),
     ]);
 
@@ -172,8 +192,16 @@ fn xlsx_compatibility_warnings_detect_formulas_and_macros() {
     let codes = warning_codes(&warnings);
 
     assert!(codes.contains(&"xlsx-formulas"));
+    assert!(codes.contains(&"xlsx-array-formulas"));
     assert!(codes.contains(&"xlsx-styles"));
+    assert!(codes.contains(&"xlsx-tables"));
+    assert!(codes.contains(&"xlsx-drawings"));
+    assert!(codes.contains(&"xlsx-external-links"));
     assert!(codes.contains(&"xlsx-macros"));
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.code == "xlsx-external-links"
+            && warning.severity == DocumentCompatibilityWarningSeverity::Warning));
     assert!(warnings
         .iter()
         .any(|warning| warning.severity == DocumentCompatibilityWarningSeverity::Danger));
@@ -183,18 +211,34 @@ fn xlsx_compatibility_warnings_detect_formulas_and_macros() {
 fn pptx_compatibility_warnings_detect_media_and_motion() {
     let bytes = test_ooxml_package(&[
         (
+            "ppt/presentation.xml",
+            r#"<p:presentation><p:sldSz cx="12192000" cy="6858000" type="wide"/></p:presentation>"#,
+        ),
+        (
             "ppt/slides/slide1.xml",
             r#"<p:sld><p:cSld><p:spTree><p:pic/><p:sp><p:txBody><a:p><a:r><a:t>Hi</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:transition/><p:timing/></p:sld>"#,
         ),
         ("ppt/media/image1.png", "image"),
+        ("ppt/slideMasters/slideMaster1.xml", "<p:sldMaster/>"),
+        ("ppt/slideLayouts/slideLayout1.xml", "<p:sldLayout/>"),
+        ("ppt/theme/theme1.xml", "<a:theme/>"),
+        ("ppt/vbaProject.bin", "macro"),
     ]);
 
     let warnings = compatibility_warnings_for_bytes(DocumentEditorKind::Pptx, &bytes);
     let codes = warning_codes(&warnings);
 
     assert!(codes.contains(&"pptx-media"));
+    assert!(codes.contains(&"pptx-slide-masters"));
+    assert!(codes.contains(&"pptx-slide-layouts"));
+    assert!(codes.contains(&"pptx-themes"));
+    assert!(codes.contains(&"pptx-slide-size"));
     assert!(codes.contains(&"pptx-transitions"));
     assert!(codes.contains(&"pptx-animations"));
+    assert!(codes.contains(&"pptx-macros"));
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.severity == DocumentCompatibilityWarningSeverity::Danger));
 }
 
 #[test]

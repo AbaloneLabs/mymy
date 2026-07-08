@@ -6,6 +6,53 @@ export interface TextModel {
   trailingNewline?: boolean;
 }
 
+export interface DocxRun {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  verticalAlign?: "superscript" | "subscript";
+  fontFamily?: string;
+  fontSize?: string;
+  color?: string;
+  highlight?: string;
+}
+
+export interface DocxField {
+  id: string;
+  source?: "simple" | "complex";
+  kind?: string;
+  instruction: string;
+  resultText?: string;
+}
+
+export interface DocxContentControlItem {
+  value: string;
+  displayText?: string;
+}
+
+export interface DocxContentControl {
+  id: string;
+  kind: "text" | "checkbox" | "dropdown" | "comboBox" | "date";
+  alias?: string;
+  tag?: string;
+  controlId?: string;
+  text?: string;
+  checked?: boolean;
+  items?: DocxContentControlItem[];
+}
+
+export interface DocxRevision {
+  id: string;
+  kind: "insertion" | "deletion" | "moveFrom" | "moveTo";
+  revisionId?: string;
+  author?: string;
+  date?: string;
+  text: string;
+  action?: "accept" | "reject";
+}
+
 export interface DocxBlock {
   id: string;
   type:
@@ -48,6 +95,12 @@ export interface DocxBlock {
   imageWrap?: DocxImageWrap;
   altText?: string;
   sourceXml?: string;
+  paragraphStyleId?: string;
+  paragraphStyleName?: string;
+  runs?: DocxRun[];
+  fields?: DocxField[];
+  contentControls?: DocxContentControl[];
+  revisions?: DocxRevision[];
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -59,12 +112,38 @@ export interface DocxBlock {
   highlight?: string;
   align?: "left" | "center" | "right" | "justify";
   listKind?: "bullet" | "number";
+  listLevel?: number;
+  listNumberingId?: string;
+  listStart?: number;
   indentLeft?: number;
   spacingBefore?: number;
   spacingAfter?: number;
   lineSpacing?: number;
   pageBreakBefore?: boolean;
+  keepWithNext?: boolean;
+  keepLinesTogether?: boolean;
   breakKind?: "nextPage" | "continuous" | "evenPage" | "oddPage";
+}
+
+export interface DocxStyle {
+  id: string;
+  name: string;
+  type?: "paragraph" | "character" | "table" | "numbering";
+  custom?: boolean;
+  default?: boolean;
+  quickFormat?: boolean;
+  basedOn?: string;
+  next?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  verticalAlign?: "superscript" | "subscript";
+  fontFamily?: string;
+  fontSize?: string;
+  color?: string;
+  highlight?: string;
+  align?: "left" | "center" | "right" | "justify";
 }
 
 export interface DocxTableMergedCell {
@@ -84,6 +163,9 @@ export interface DocxPageSettings {
   marginRight?: number;
   marginBottom?: number;
   marginLeft?: number;
+  columnCount?: number;
+  columnSpacing?: number;
+  columnEqualWidth?: boolean;
 }
 
 export interface DocxTextPart {
@@ -111,6 +193,7 @@ export interface DocxNote {
 export interface DocxModel {
   blocks: DocxBlock[];
   page?: DocxPageSettings;
+  styles?: DocxStyle[];
   headers?: DocxTextPart[];
   footers?: DocxTextPart[];
   comments?: DocxComment[];
@@ -122,6 +205,9 @@ export interface XlsxCell {
   ref: string;
   value: string;
   formula?: string;
+  formulaType?: string;
+  formulaRef?: string;
+  formulaSharedIndex?: string;
   generated?: "spill";
   spillParent?: string;
   spillRange?: string;
@@ -658,6 +744,16 @@ export interface PptxLayout {
   path: string;
   name?: string;
   type?: string;
+  masterPath?: string;
+  masterName?: string;
+  themePath?: string;
+  themeName?: string;
+  placeholderTexts?: PptxText[];
+}
+
+export interface PptxMaster {
+  path: string;
+  name?: string;
   themePath?: string;
   themeName?: string;
   placeholderTexts?: PptxText[];
@@ -690,6 +786,8 @@ export interface PptxSlide {
   layoutPath?: string;
   layoutName?: string;
   layoutType?: string;
+  layoutMasterPath?: string;
+  layoutMasterName?: string;
   layoutThemePath?: string;
   layoutThemeName?: string;
   backgroundKind?: "solid" | "gradient" | "image" | "preserved";
@@ -710,8 +808,12 @@ export interface PptxSlide {
 }
 
 export interface PptxModel {
+  slideWidthEmu?: number;
+  slideHeightEmu?: number;
+  slideSizeType?: string;
   slides: PptxSlide[];
   layouts?: PptxLayout[];
+  masters?: PptxMaster[];
   themes?: PptxTheme[];
   tableStyles?: PptxTableStyle[];
 }

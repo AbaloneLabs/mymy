@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import type {
   XlsxComment,
   XlsxConditionalRule,
+  XlsxCell,
   XlsxDataValidation,
   XlsxHyperlink,
   XlsxPageMargins,
@@ -65,9 +66,11 @@ const XLSX_NUMBER_FORMATS = [
 export function SpreadsheetToolbar({
   activeCellLabel,
   activeCellValue,
+  activeCellFormulaMetadata,
   activeCellDisabled,
   onActiveCellLabelChange,
   onActiveCellChange,
+  onActiveCellFormulaMetadataChange,
   onAddRow,
   onAddColumn,
   onDeleteRow,
@@ -134,9 +137,13 @@ export function SpreadsheetToolbar({
 }: {
   activeCellLabel: string;
   activeCellValue: string;
+  activeCellFormulaMetadata?: XlsxCell;
   activeCellDisabled: boolean;
   onActiveCellLabelChange: (value: string) => void;
   onActiveCellChange: (value: string) => void;
+  onActiveCellFormulaMetadataChange?: (
+    patch: Pick<XlsxCell, "formulaType" | "formulaRef" | "formulaSharedIndex">,
+  ) => void;
   onAddRow: () => void;
   onAddColumn: () => void;
   onDeleteRow: () => void;
@@ -211,6 +218,17 @@ export function SpreadsheetToolbar({
   const [formulaHelpOpen, setFormulaHelpOpen] = useState(false);
   const [formulaSuggestionIndex, setFormulaSuggestionIndex] = useState(0);
   const formulaSuggestions = spreadsheetFormulaSuggestions(activeCellValue);
+  const formulaType = activeCellFormulaMetadata?.formulaType ?? "";
+  const formulaRef = activeCellFormulaMetadata?.formulaRef ?? "";
+  const formulaSharedIndex = activeCellFormulaMetadata?.formulaSharedIndex ?? "";
+  const formulaMetadataVisible =
+    !activeCellDisabled &&
+    Boolean(
+      activeCellValue.startsWith("=") ||
+        formulaType ||
+        formulaRef ||
+        formulaSharedIndex,
+    );
   const formulaPopoverOpen =
     formulaHelpOpen && !activeCellDisabled && formulaSuggestions.length > 0;
 
@@ -329,6 +347,58 @@ export function SpreadsheetToolbar({
         >
           <Sigma className="h-3.5 w-3.5" strokeWidth={1.75} />
         </button>
+      )}
+      {formulaMetadataVisible && onActiveCellFormulaMetadataChange && (
+        <div className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-1 py-0.5">
+          <select
+            value={formulaType}
+            onChange={(event) => {
+              const nextType = event.currentTarget.value || undefined;
+              onActiveCellFormulaMetadataChange({
+                formulaType: nextType,
+                formulaRef: nextType ? formulaRef || undefined : undefined,
+                formulaSharedIndex:
+                  nextType === "shared"
+                    ? formulaSharedIndex || undefined
+                    : nextType
+                      ? formulaSharedIndex || undefined
+                      : undefined,
+              });
+            }}
+            className="h-7 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[10px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            title="Formula metadata type"
+          >
+            <option value="">Normal</option>
+            <option value="array">Array</option>
+            <option value="shared">Shared</option>
+            <option value="dataTable">Data table</option>
+          </select>
+          <input
+            value={formulaRef}
+            onChange={(event) =>
+              onActiveCellFormulaMetadataChange({
+                formulaRef: event.currentTarget.value.trim() || undefined,
+              })
+            }
+            placeholder="ref"
+            disabled={!formulaType}
+            className="h-7 w-20 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[10px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            title="Formula reference range"
+          />
+          <input
+            value={formulaSharedIndex}
+            onChange={(event) =>
+              onActiveCellFormulaMetadataChange({
+                formulaSharedIndex:
+                  event.currentTarget.value.replace(/\D/g, "") || undefined,
+              })
+            }
+            placeholder="si"
+            disabled={!formulaType}
+            className="h-7 w-12 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[10px] text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            title="Shared formula index"
+          />
+        </div>
       )}
       {onApplyCellStyle && (
         <>

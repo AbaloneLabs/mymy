@@ -1,4 +1,34 @@
-use super::super::ooxml_charts::OoxmlChartSeriesSpec;
+use super::super::{
+    ooxml_charts::OoxmlChartSeriesSpec, PPTX_SLIDE_HEIGHT_EMU, PPTX_SLIDE_WIDTH_EMU,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::services::document_editor) struct PptxSlideSize {
+    pub(in crate::services::document_editor) width_emu: f64,
+    pub(in crate::services::document_editor) height_emu: f64,
+}
+
+impl Default for PptxSlideSize {
+    fn default() -> Self {
+        Self {
+            width_emu: PPTX_SLIDE_WIDTH_EMU,
+            height_emu: PPTX_SLIDE_HEIGHT_EMU,
+        }
+    }
+}
+
+impl PptxSlideSize {
+    pub(in crate::services::document_editor) fn new(width_emu: f64, height_emu: f64) -> Self {
+        if width_emu.is_finite() && height_emu.is_finite() && width_emu > 0.0 && height_emu > 0.0 {
+            Self {
+                width_emu,
+                height_emu,
+            }
+        } else {
+            Self::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxTextSpec {

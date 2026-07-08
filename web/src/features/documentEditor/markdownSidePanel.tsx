@@ -349,6 +349,14 @@ function MarkdownFrontmatterPanel({
     <div className="min-h-0 flex-1 overflow-y-auto p-3">
       {frontmatter ? (
         <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[11px] text-[var(--text-muted)]">
+            <span className="font-medium uppercase tracking-wide">
+              {frontmatter.format}
+            </span>
+            <span>
+              {fields.length} {t("documentEditor.fields", { defaultValue: "fields" })}
+            </span>
+          </div>
           <textarea
             value={frontmatter.content}
             onChange={(event) => onBodyChange(event.target.value)}
@@ -359,23 +367,44 @@ function MarkdownFrontmatterPanel({
             <div className="space-y-2">
               {fields.map((field) => (
                 <div
-                  key={`${field.lineIndex}:${field.key}`}
+                  key={`${field.entryKind}:${field.lineIndex}:${field.key}`}
                   className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_auto] gap-1"
                 >
-                  <input
-                    value={field.key}
-                    onChange={(event) =>
-                      onFieldChange(field.lineIndex, event.target.value, field.value)
-                    }
-                    className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                  />
-                  <input
-                    value={field.value}
-                    onChange={(event) =>
-                      onFieldChange(field.lineIndex, field.key, event.target.value)
-                    }
-                    className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
-                  />
+                  <label className="grid gap-1">
+                    <span className="truncate text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                      {field.parentLabel}
+                    </span>
+                    <input
+                      value={field.key}
+                      disabled={!field.keyEditable}
+                      onChange={(event) =>
+                        onFieldChange(field.lineIndex, event.target.value, field.value)
+                      }
+                      className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="truncate text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                      {field.entryKind}
+                    </span>
+                    {field.value.includes("\n") ? (
+                      <textarea
+                        value={field.value}
+                        onChange={(event) =>
+                          onFieldChange(field.lineIndex, field.key, event.target.value)
+                        }
+                        className="min-h-20 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                      />
+                    ) : (
+                      <input
+                        value={field.value}
+                        onChange={(event) =>
+                          onFieldChange(field.lineIndex, field.key, event.target.value)
+                        }
+                        className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+                      />
+                    )}
+                  </label>
                   <ToolbarButton
                     icon={Trash2}
                     label={t("common.delete")}

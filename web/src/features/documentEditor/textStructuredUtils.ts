@@ -17,6 +17,7 @@ export interface SourceDiagnostic {
 
 export interface ConfigEntry {
   lineIndex: number;
+  lineEndIndex?: number;
   key: string;
   value: string;
   path: string[];
@@ -25,6 +26,9 @@ export interface ConfigEntry {
   suffix: string;
   keyEditable: boolean;
   entryKind: "mapping" | "sequence" | "toml";
+  valueHeader?: string;
+  valueIndent?: string;
+  valueStyle?: "yaml-block" | "toml-multiline";
 }
 
 export function sourceDiagnostics(content: string, kind: TextEditorKind): SourceDiagnostic[] {
@@ -246,6 +250,18 @@ export function parseFlatConfig(content: string, kind: "yaml" | "toml") {
   return kind === "yaml" ? parseYamlConfig(content) : parseTomlConfig(content);
 }
 
+export function splitStructuredTextLines(content: string) {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+}
+
+export function joinStructuredTextLines(lines: string[], originalContent: string) {
+  return lines.join(structuredTextLineEnding(originalContent));
+}
+
+function structuredTextLineEnding(content: string) {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
 function duplicateConfigPathDiagnostics(
   content: string,
   kind: "yaml" | "toml",
@@ -273,10 +289,12 @@ function parseYamlConfig(content: string) {
   const stack: Array<{ indent: number; key: string }> = [];
   const sequenceCounters = new Map<string, number>();
   let unsupportedCount = 0;
-  content.split("\n").forEach((line, lineIndex) => {
+  const lines = splitStructuredTextLines(content);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed === "---" || trimmed === "...") {
-      return;
+      continue;
     }
     const indent = leadingWhitespace(line);
     const indentSize = indent.length;
@@ -290,7 +308,27 @@ function parseYamlConfig(content: string) {
       const path = [...stack.map((item) => item.key), key];
       if (!parsed.value) {
         stack.push({ indent: indentSize, key });
-        return;
+        continue;
+      }
+      const blockHeader = yamlBlockScalarHeader(parsed.value);
+      if (blockHeader) {
+        const block = yamlBlockScalarValue(lines, lineIndex, indentSize);
+        entries.push({
+          lineIndex,
+          lineEndIndex: block.endLineIndex,
+          key,
+          value: block.value,
+          path,
+          indent,
+          suffix: parsed.suffix,
+          keyEditable: true,
+          entryKind: "mapping",
+          valueHeader: blockHeader,
+          valueIndent: block.indent,
+          valueStyle: "yaml-block",
+        });
+        lineIndex = block.endLineIndex;
+        continue;
       }
       entries.push({
         lineIndex,
@@ -302,7 +340,7 @@ function parseYamlConfig(content: string) {
         keyEditable: true,
         entryKind: "mapping",
       });
-      return;
+      continue;
     }
     const sequence = /^(\s*)-\s*(.*?)\s*$/.exec(line);
     if (sequence) {
@@ -313,7 +351,7 @@ function parseYamlConfig(content: string) {
       const parsed = splitInlineComment(sequence[2]);
       if (!parsed.value || /^[A-Za-z0-9_.-]+\s*:\s*/.test(parsed.value)) {
         unsupportedCount += 1;
-        return;
+        continue;
       }
       entries.push({
         lineIndex,
@@ -325,10 +363,10 @@ function parseYamlConfig(content: string) {
         keyEditable: false,
         entryKind: "sequence",
       });
-      return;
+      continue;
     }
     unsupportedCount += 1;
-  });
+  }
   return { entries, unsupportedCount };
 }
 
@@ -336,23 +374,44 @@ function parseTomlConfig(content: string) {
   const entries: ConfigEntry[] = [];
   let unsupportedCount = 0;
   let currentSection = "";
-  content.split("\n").forEach((line, lineIndex) => {
+  const lines = splitStructuredTextLines(content);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) return;
+    if (!trimmed || trimmed.startsWith("#")) continue;
     const table = /^\[\s*([^\]]+?)\s*\]$/.exec(trimmed);
     const arrayTable = /^\[\[\s*([^\]]+?)\s*\]\]$/.exec(trimmed);
     if (arrayTable || table) {
       currentSection = (arrayTable?.[1] ?? table?.[1] ?? "").trim();
-      return;
+      continue;
     }
     const match = /^(\s*)([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*$/.exec(line);
     if (!match) {
       unsupportedCount += 1;
-      return;
+      continue;
     }
     const key = match[2];
-    const parsed = splitInlineComment(match[3]);
     const sectionPath = currentSection ? currentSection.split(".").filter(Boolean) : [];
+    const multiline = tomlMultilineValue(lines, lineIndex, match[3]);
+    if (multiline) {
+      entries.push({
+        lineIndex,
+        lineEndIndex: multiline.endLineIndex,
+        key,
+        value: multiline.value,
+        path: [...sectionPath, ...key.split(".").filter(Boolean)],
+        section: currentSection,
+        indent: match[1],
+        suffix: multiline.suffix,
+        keyEditable: true,
+        entryKind: "toml",
+        valueHeader: multiline.delimiter,
+        valueStyle: "toml-multiline",
+      });
+      lineIndex = multiline.endLineIndex;
+      continue;
+    }
+    const parsed = splitInlineComment(match[3]);
     entries.push({
       lineIndex,
       key,
@@ -364,7 +423,7 @@ function parseTomlConfig(content: string) {
       keyEditable: true,
       entryKind: "toml",
     });
-  });
+  }
   return { entries, unsupportedCount };
 }
 
@@ -374,9 +433,33 @@ export function flatConfigLine(
   value: string,
   kind: "yaml" | "toml",
 ) {
-  if (kind === "toml") return `${entry.indent}${key} = ${value}${entry.suffix}`;
-  if (entry.entryKind === "sequence") return `${entry.indent}- ${value}${entry.suffix}`;
-  return `${entry.indent}${key}: ${value}${entry.suffix}`;
+  return flatConfigLines(entry, key, value, kind)[0] ?? "";
+}
+
+export function flatConfigLines(
+  entry: ConfigEntry,
+  key: string,
+  value: string,
+  kind: "yaml" | "toml",
+) {
+  if (entry.valueStyle === "toml-multiline") {
+    const delimiter = entry.valueHeader ?? '"""';
+    return [
+      `${entry.indent}${key} = ${delimiter}`,
+      ...splitConfigMultilineValue(value),
+      `${delimiter}${entry.suffix}`,
+    ];
+  }
+  if (entry.valueStyle === "yaml-block") {
+    const bodyIndent = entry.valueIndent ?? `${entry.indent}  `;
+    return [
+      `${entry.indent}${key}: ${entry.valueHeader ?? "|"}${entry.suffix}`,
+      ...splitConfigMultilineValue(value).map((line) => `${bodyIndent}${line}`),
+    ];
+  }
+  if (kind === "toml") return [`${entry.indent}${key} = ${value}${entry.suffix}`];
+  if (entry.entryKind === "sequence") return [`${entry.indent}- ${value}${entry.suffix}`];
+  return [`${entry.indent}${key}: ${value}${entry.suffix}`];
 }
 
 export function flatConfigEntryCanMove(
@@ -399,11 +482,14 @@ export function moveFlatConfigEntry(
 ) {
   const target = flatConfigEntryMoveTarget(entries, entry, direction);
   if (!target) return content;
-  const lines = content.split("\n");
+  const lines = splitStructuredTextLines(content);
   const entryRange = flatConfigEntryBlockRange(lines, entries, entry);
   const targetRange = flatConfigEntryBlockRange(lines, entries, target);
   const insertionIndex = direction < 0 ? targetRange.start : targetRange.end;
-  return moveLineBlock(lines, entryRange.start, entryRange.end, insertionIndex).join("\n");
+  return joinStructuredTextLines(
+    moveLineBlock(lines, entryRange.start, entryRange.end, insertionIndex),
+    content,
+  );
 }
 
 export function duplicateFlatConfigEntry(
@@ -412,9 +498,10 @@ export function duplicateFlatConfigEntry(
   kind: "yaml" | "toml",
 ) {
   if (!flatConfigEntryCanDuplicate(entry)) return content;
-  const lines = content.split("\n");
-  lines.splice(entry.lineIndex + 1, 0, flatConfigLine(entry, entry.key, entry.value, kind));
-  return lines.join("\n");
+  const lines = splitStructuredTextLines(content);
+  const insertAt = (entry.lineEndIndex ?? entry.lineIndex) + 1;
+  lines.splice(insertAt, 0, ...flatConfigLines(entry, entry.key, entry.value, kind));
+  return joinStructuredTextLines(lines, content);
 }
 
 function flatConfigEntryMoveTarget(
@@ -451,7 +538,7 @@ function flatConfigEntryBlockRange(
   ) {
     start -= 1;
   }
-  return { start, end: entry.lineIndex + 1 };
+  return { start, end: (entry.lineEndIndex ?? entry.lineIndex) + 1 };
 }
 
 function previousFlatConfigEntryInScope(entries: ConfigEntry[], entry: ConfigEntry) {
@@ -497,22 +584,24 @@ export function appendFlatConfigEntry(
     return appendYamlConfigEntry(content, entry.section, entry.key, entry.value);
   }
   if (!entry.section) {
-    const suffix = content.endsWith("\n") || content.length === 0 ? "" : "\n";
-    return `${content}${suffix}${entry.key} = ${entry.value}\n`;
+    const lineEnding = structuredTextLineEnding(content);
+    const suffix = content.endsWith("\n") || content.length === 0 ? "" : lineEnding;
+    return `${content}${suffix}${entry.key} = ${entry.value}${lineEnding}`;
   }
-  const lines = content.split("\n");
+  const lines = splitStructuredTextLines(content);
   const sectionHeader = `[${entry.section}]`;
   const sectionIndex = lines.findIndex((line) => line.trim() === sectionHeader);
   if (sectionIndex < 0) {
-    const suffix = content.endsWith("\n") || content.length === 0 ? "" : "\n";
-    return `${content}${suffix}${sectionHeader}\n${entry.key} = ${entry.value}\n`;
+    const lineEnding = structuredTextLineEnding(content);
+    const suffix = content.endsWith("\n") || content.length === 0 ? "" : lineEnding;
+    return `${content}${suffix}${sectionHeader}${lineEnding}${entry.key} = ${entry.value}${lineEnding}`;
   }
   let insertAt = sectionIndex + 1;
   while (insertAt < lines.length && !/^\s*\[[^\]]+\]\s*$/.test(lines[insertAt])) {
     insertAt += 1;
   }
   lines.splice(insertAt, 0, `${entry.key} = ${entry.value}`);
-  return lines.join("\n");
+  return joinStructuredTextLines(lines, content);
 }
 
 export function deleteFlatConfigGroup(
@@ -527,16 +616,18 @@ export function deleteFlatConfigGroup(
 }
 
 function appendYamlConfigEntry(content: string, parentPath: string, key: string, value: string) {
-  const lines = content.split("\n");
+  const lines = splitStructuredTextLines(content);
   const path = parentPath.split(".").map((segment) => segment.trim()).filter(Boolean);
   if (path.length === 0) {
-    const suffix = content.endsWith("\n") || content.length === 0 ? "" : "\n";
-    return `${content}${suffix}${key}: ${value}\n`;
+    const lineEnding = structuredTextLineEnding(content);
+    const suffix = content.endsWith("\n") || content.length === 0 ? "" : lineEnding;
+    return `${content}${suffix}${key}: ${value}${lineEnding}`;
   }
   const parent = findYamlParentLine(lines, path);
   if (!parent) {
-    const suffix = content.endsWith("\n") || content.length === 0 ? "" : "\n";
-    return `${content}${suffix}${path.map((segment, index) => `${"  ".repeat(index)}${segment}:`).join("\n")}\n${"  ".repeat(path.length)}${key}: ${value}\n`;
+    const lineEnding = structuredTextLineEnding(content);
+    const suffix = content.endsWith("\n") || content.length === 0 ? "" : lineEnding;
+    return `${content}${suffix}${path.map((segment, index) => `${"  ".repeat(index)}${segment}:`).join(lineEnding)}${lineEnding}${"  ".repeat(path.length)}${key}: ${value}${lineEnding}`;
   }
   let insertAt = parent.lineIndex + 1;
   while (
@@ -547,7 +638,7 @@ function appendYamlConfigEntry(content: string, parentPath: string, key: string,
     insertAt += 1;
   }
   lines.splice(insertAt, 0, `${" ".repeat(parent.indent + 2)}${key}: ${value}`);
-  return lines.join("\n");
+  return joinStructuredTextLines(lines, content);
 }
 
 function findYamlParentLine(
@@ -571,7 +662,7 @@ function findYamlParentLine(
 }
 
 function deleteYamlConfigGroup(content: string, path: string[]) {
-  const lines = content.split("\n");
+  const lines = splitStructuredTextLines(content);
   const parent = findYamlParentLine(lines, path);
   if (!parent) return content;
   let end = parent.lineIndex + 1;
@@ -585,7 +676,7 @@ function deleteYamlConfigGroup(content: string, path: string[]) {
     end += 1;
   }
   lines.splice(parent.lineIndex, end - parent.lineIndex);
-  return lines.join("\n");
+  return joinStructuredTextLines(lines, content);
 }
 
 function deleteTomlConfigGroup(content: string, path: string[]) {
@@ -596,7 +687,7 @@ function deleteTomlConfigGroup(content: string, path: string[]) {
   });
 
   let removingSection = false;
-  const lines = content.split("\n");
+  const lines = splitStructuredTextLines(content);
   lines.forEach((line, lineIndex) => {
     const section = tomlSectionName(line);
     if (section !== null) {
@@ -608,7 +699,10 @@ function deleteTomlConfigGroup(content: string, path: string[]) {
   });
 
   if (removableLines.size === 0) return content;
-  return lines.filter((_, lineIndex) => !removableLines.has(lineIndex)).join("\n");
+  return joinStructuredTextLines(
+    lines.filter((_, lineIndex) => !removableLines.has(lineIndex)),
+    content,
+  );
 }
 
 function configPathStartsWith(path: string[], prefix: string[]) {
@@ -633,6 +727,7 @@ export function configEntryPathLabel(entry: ConfigEntry) {
 
 export function configScalarType(value: string) {
   const trimmed = value.trim();
+  if (value.includes("\n")) return "multiline";
   if (!trimmed) return "empty";
   if (/^(true|false)$/i.test(trimmed)) return "boolean";
   if (/^(null|~)$/i.test(trimmed)) return "null";
@@ -644,6 +739,13 @@ export function configScalarType(value: string) {
     return "object";
   }
   return "string";
+}
+
+export function configEntryLineRange(entry: ConfigEntry) {
+  return {
+    start: entry.lineIndex,
+    end: (entry.lineEndIndex ?? entry.lineIndex) + 1,
+  };
 }
 
 function leadingWhitespace(value: string) {
@@ -665,4 +767,68 @@ function splitInlineComment(value: string) {
     }
   }
   return { value: value.trimEnd(), suffix: "" };
+}
+
+function yamlBlockScalarHeader(value: string) {
+  return /^[|>](?:[+-]?\d*|\d*[+-]?)?$/.test(value.trim()) ? value.trim() : null;
+}
+
+function yamlBlockScalarValue(
+  lines: string[],
+  headerLineIndex: number,
+  headerIndent: number,
+) {
+  let endLineIndex = headerLineIndex;
+  let bodyIndent: number | null = null;
+  for (let index = headerLineIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim()) {
+      const indent = leadingWhitespace(line).length;
+      if (indent <= headerIndent) break;
+      bodyIndent ??= indent;
+    }
+    endLineIndex = index;
+  }
+  const indent = " ".repeat(bodyIndent ?? headerIndent + 2);
+  const value = lines
+    .slice(headerLineIndex + 1, endLineIndex + 1)
+    .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line.trim() ? line.trimStart() : ""))
+    .join("\n");
+  return { endLineIndex, indent, value };
+}
+
+function tomlMultilineValue(lines: string[], lineIndex: number, rawValue: string) {
+  const trimmed = rawValue.trimStart();
+  const delimiter = trimmed.startsWith('"""') ? '"""' : trimmed.startsWith("'''") ? "'''" : null;
+  if (!delimiter) return null;
+  const firstLinePrefixLength = rawValue.indexOf(delimiter) + delimiter.length;
+  const firstLineAfterDelimiter = rawValue.slice(firstLinePrefixLength);
+  const sameLineEnd = firstLineAfterDelimiter.indexOf(delimiter);
+  if (sameLineEnd >= 0) {
+    return {
+      delimiter,
+      endLineIndex: lineIndex,
+      suffix: firstLineAfterDelimiter.slice(sameLineEnd + delimiter.length).trimEnd(),
+      value: firstLineAfterDelimiter.slice(0, sameLineEnd),
+    };
+  }
+  const valueLines = [firstLineAfterDelimiter];
+  for (let index = lineIndex + 1; index < lines.length; index += 1) {
+    const closeIndex = lines[index].indexOf(delimiter);
+    if (closeIndex >= 0) {
+      valueLines.push(lines[index].slice(0, closeIndex));
+      return {
+        delimiter,
+        endLineIndex: index,
+        suffix: lines[index].slice(closeIndex + delimiter.length).trimEnd(),
+        value: valueLines.join("\n"),
+      };
+    }
+    valueLines.push(lines[index]);
+  }
+  return null;
+}
+
+function splitConfigMultilineValue(value: string) {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 }

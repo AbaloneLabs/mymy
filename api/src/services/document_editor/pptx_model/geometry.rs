@@ -1,30 +1,32 @@
-use super::super::{PPTX_SLIDE_HEIGHT_EMU, PPTX_SLIDE_WIDTH_EMU};
-use super::{PptxShapeSpec, PptxTextSpec};
+use super::{PptxShapeSpec, PptxSlideSize, PptxTextSpec};
 
-pub(in crate::services::document_editor) fn pptx_geometry_emu(
+pub(in crate::services::document_editor) fn pptx_geometry_emu_for_size(
     spec: &PptxTextSpec,
+    slide_size: PptxSlideSize,
 ) -> (i64, i64, i64, i64) {
-    pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height)
+    pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size)
 }
 
-pub(in crate::services::document_editor) fn pptx_shape_geometry_emu(
+pub(in crate::services::document_editor) fn pptx_shape_geometry_emu_for_size(
     spec: &PptxShapeSpec,
+    slide_size: PptxSlideSize,
 ) -> (i64, i64, i64, i64) {
-    pptx_percent_geometry_emu(spec.x, spec.y, spec.width, spec.height)
+    pptx_percent_geometry_emu_for_size(spec.x, spec.y, spec.width, spec.height, slide_size)
 }
 
-pub(in crate::services::document_editor) fn pptx_percent_geometry_emu(
+pub(in crate::services::document_editor) fn pptx_percent_geometry_emu_for_size(
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+    slide_size: PptxSlideSize,
 ) -> (i64, i64, i64, i64) {
-    let x = ((x.clamp(0.0, 100.0) / 100.0) * PPTX_SLIDE_WIDTH_EMU).round() as i64;
-    let y = ((y.clamp(0.0, 100.0) / 100.0) * PPTX_SLIDE_HEIGHT_EMU).round() as i64;
-    let width = ((width.clamp(1.0, 100.0) / 100.0) * PPTX_SLIDE_WIDTH_EMU)
+    let x = ((x.clamp(0.0, 100.0) / 100.0) * slide_size.width_emu).round() as i64;
+    let y = ((y.clamp(0.0, 100.0) / 100.0) * slide_size.height_emu).round() as i64;
+    let width = ((width.clamp(1.0, 100.0) / 100.0) * slide_size.width_emu)
         .round()
         .max(1.0) as i64;
-    let height = ((height.clamp(1.0, 100.0) / 100.0) * PPTX_SLIDE_HEIGHT_EMU)
+    let height = ((height.clamp(1.0, 100.0) / 100.0) * slide_size.height_emu)
         .round()
         .max(1.0) as i64;
     (x, y, width, height)

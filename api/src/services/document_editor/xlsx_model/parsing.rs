@@ -20,6 +20,7 @@ pub(in crate::services::document_editor) fn parse_sheet_rows(
                 let style_index =
                     attr_value(&cell, "s").and_then(|value| value.parse::<usize>().ok());
                 let formula = first_tag_text(&cell, "f");
+                let formula_tag = xml_named_start_tag(&cell, "f");
                 let raw = if cell_type == "inlineStr" {
                     extract_text_tags(&cell, "t").join("")
                 } else {
@@ -36,6 +37,17 @@ pub(in crate::services::document_editor) fn parse_sheet_rows(
                 let mut cell_json = json!({ "ref": reference, "value": value });
                 if let Some(formula) = formula {
                     cell_json["formula"] = json!(formula);
+                }
+                if let Some(formula_tag) = formula_tag.as_deref() {
+                    if let Some(formula_type) = attr_value(formula_tag, "t") {
+                        cell_json["formulaType"] = json!(formula_type);
+                    }
+                    if let Some(formula_ref) = attr_value(formula_tag, "ref") {
+                        cell_json["formulaRef"] = json!(formula_ref);
+                    }
+                    if let Some(shared_index) = attr_value(formula_tag, "si") {
+                        cell_json["formulaSharedIndex"] = json!(shared_index);
+                    }
                 }
                 if let Some(style) = style_index
                     .and_then(|index| styles.and_then(|styles| styles.cell_styles.get(index)))

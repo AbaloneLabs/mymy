@@ -4,14 +4,18 @@ use super::docx_comments::{
     docx_comment_range_end_and_reference, docx_comment_range_start,
     docx_paragraph_needs_comment_reference_rebuild,
 };
+use super::docx_content_controls::replace_docx_content_control_states;
+use super::docx_fields::replace_docx_simple_field_instructions;
 use super::docx_notes::{docx_note_reference_run, docx_paragraph_needs_note_reference_rebuild};
 use super::docx_numbering::{DOCX_BULLET_NUM_ID, DOCX_NUMBER_NUM_ID};
+use super::docx_revisions::{apply_docx_revision_actions, docx_revisions_have_actions};
+use super::docx_runs::build_docx_run_sequence;
 use super::docx_tables::build_docx_table;
 use super::ooxml_images::{build_docx_image_paragraph, docx_image_relationship_id};
 use super::{
     docx_bookmark_id, docx_bookmark_id_from_model, docx_bookmark_name,
-    docx_bookmark_name_from_model, docx_hex_color, docx_tag_attr, docx_text_with_breaks,
-    docx_u32_model_attr, escape_xml, extract_text_tags, replace_tag_texts,
+    docx_bookmark_name_from_model, docx_tag_attr, docx_u32_model_attr, escape_xml,
+    extract_text_tags, replace_tag_texts,
 };
 
 pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
@@ -62,12 +66,19 @@ pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
                     && !docx_paragraph_needs_comment_reference_rebuild(segment, block)
                     && docx_paragraph_bookmark_matches_model(segment, block)
                 {
-                    let replacement = block
+                    let mut replacement = block
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    output.push_str(&replace_tag_texts(segment, "w:t", &[replacement]));
+                    let original_visible_text = extract_text_tags(segment, "w:t").join("");
+                    let segment = apply_docx_revision_actions(segment, block);
+                    if docx_revisions_have_actions(block) && replacement == original_visible_text {
+                        replacement = extract_text_tags(&segment, "w:t").join("");
+                    }
+                    let segment = replace_docx_content_control_states(&segment, block);
+                    let segment = replace_docx_simple_field_instructions(&segment, block);
+                    output.push_str(&replace_tag_texts(&segment, "w:t", &[replacement]));
                 } else {
                     output.push_str(&build_docx_block(block));
                 }
@@ -95,6 +106,13 @@ fn docx_paragraph_has_complex_content(paragraph: &str) -> bool {
         "<w:object",
         "<w:hyperlink",
         "<w:fldSimple",
+        "<w:sdt",
+        "<w:ins",
+        "<w:del",
+        "<w:moveFrom",
+        "<w:moveTo",
+        "<m:oMath",
+        "<m:oMathPara",
         "<w:bookmarkStart",
         "<w:footnoteReference",
         "<w:endnoteReference",
@@ -175,9 +193,7 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let style = docx_paragraph_properties(block);
-    let run_properties = docx_run_properties(block);
-    let text_xml = docx_text_with_breaks(text);
-    let run = format!("<w:r>{run_properties}{text_xml}</w:r>");
+    let runs = build_docx_run_sequence(block, text);
     let note_references = format!(
         "{}{}",
         docx_note_reference_run(
@@ -208,11 +224,11 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
         .filter(|value| !value.is_empty())
     {
         format!(
-            r#"<w:p>{style}{bookmark_start}{comment_start}<w:hyperlink r:id="{}">{run}</w:hyperlink>{comment_end_and_reference}{bookmark_end}{note_references}</w:p>"#,
+            r#"<w:p>{style}{bookmark_start}{comment_start}<w:hyperlink r:id="{}">{runs}</w:hyperlink>{comment_end_and_reference}{bookmark_end}{note_references}</w:p>"#,
             escape_xml(relationship_id)
         )
     } else {
-        format!("<w:p>{style}{bookmark_start}{comment_start}{run}{comment_end_and_reference}{bookmark_end}{note_references}</w:p>")
+        format!("<w:p>{style}{bookmark_start}{comment_start}{runs}{comment_end_and_reference}{bookmark_end}{note_references}</w:p>")
     }
 }
 
@@ -234,16 +250,38 @@ fn docx_paragraph_properties(block: &Value) -> String {
             .filter(|level| (1..=6).contains(level))
             .unwrap_or(1);
         props.push(format!(r#"<w:pStyle w:val="Heading{heading_level}"/>"#));
+    } else if let Some(style_id) = block
+        .get("paragraphStyleId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .filter(|value| {
+            value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character == '_' || character == '-'
+            })
+        })
+    {
+        props.push(format!(r#"<w:pStyle w:val="{}"/>"#, escape_xml(style_id)));
     }
     if let Some(list_kind) = block.get("listKind").and_then(Value::as_str) {
-        let num_id = match list_kind {
+        let fallback_num_id = match list_kind {
             "bullet" => Some(DOCX_BULLET_NUM_ID),
             "number" => Some(DOCX_NUMBER_NUM_ID),
             _ => None,
         };
+        let num_id = block
+            .get("listNumberingId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .or(fallback_num_id);
         if let Some(num_id) = num_id {
+            let level = block
+                .get("listLevel")
+                .and_then(Value::as_u64)
+                .filter(|level| *level <= 8)
+                .unwrap_or(0);
             props.push(format!(
-                r#"<w:numPr><w:ilvl w:val="0"/><w:numId w:val="{num_id}"/></w:numPr>"#
+                r#"<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="{num_id}"/></w:numPr>"#
             ));
         }
     }
@@ -260,6 +298,20 @@ fn docx_paragraph_properties(block: &Value) -> String {
         .unwrap_or(false)
     {
         props.push("<w:pageBreakBefore/>".to_string());
+    }
+    if block
+        .get("keepWithNext")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        props.push("<w:keepNext/>".to_string());
+    }
+    if block
+        .get("keepLinesTogether")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        props.push("<w:keepLines/>".to_string());
     }
     if let Some(indent_left) = docx_u32_model_attr(block, "indentLeft", 31_680) {
         props.push(format!(r#"<w:ind w:left="{indent_left}"/>"#));
@@ -284,80 +336,5 @@ fn docx_paragraph_properties(block: &Value) -> String {
         String::new()
     } else {
         format!("<w:pPr>{}</w:pPr>", props.join(""))
-    }
-}
-
-fn docx_run_properties(block: &Value) -> String {
-    let mut props = Vec::new();
-    if block.get("bold").and_then(Value::as_bool).unwrap_or(false) {
-        props.push("<w:b/>".to_string());
-    }
-    if block
-        .get("italic")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        props.push("<w:i/>".to_string());
-    }
-    if block
-        .get("underline")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        props.push(r#"<w:u w:val="single"/>"#.to_string());
-    }
-    if block
-        .get("strikethrough")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        props.push("<w:strike/>".to_string());
-    }
-    if let Some(vertical_align) = block
-        .get("verticalAlign")
-        .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "superscript" | "subscript"))
-    {
-        props.push(format!(r#"<w:vertAlign w:val="{vertical_align}"/>"#));
-    }
-    if let Some(font) = block.get("fontFamily").and_then(Value::as_str) {
-        let font = escape_xml(font);
-        props.push(format!(
-            r#"<w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:eastAsia="{font}"/>"#
-        ));
-    }
-    if let Some(size) = block
-        .get("fontSize")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse::<u32>().ok())
-    {
-        props.push(format!(r#"<w:sz w:val="{}"/>"#, size * 2));
-    }
-    if let Some(color) = block
-        .get("color")
-        .and_then(Value::as_str)
-        .and_then(docx_hex_color)
-    {
-        props.push(format!(r#"<w:color w:val="{color}"/>"#));
-    }
-    if let Some(highlight) = block.get("highlight").and_then(Value::as_str) {
-        props.push(format!(
-            r#"<w:highlight w:val="{}"/>"#,
-            docx_highlight_color(highlight)
-        ));
-    }
-    if props.is_empty() {
-        String::new()
-    } else {
-        format!("<w:rPr>{}</w:rPr>", props.join(""))
-    }
-}
-
-fn docx_highlight_color(value: &str) -> &'static str {
-    match value.to_ascii_lowercase().as_str() {
-        "#fef08a" | "yellow" => "yellow",
-        "#bbf7d0" | "green" => "green",
-        "#bfdbfe" | "blue" => "cyan",
-        _ => "yellow",
     }
 }

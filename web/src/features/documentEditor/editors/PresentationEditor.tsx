@@ -7,9 +7,10 @@ import { useTranslation } from "react-i18next";
 import type { EditorCommandRequest } from "../commands";
 import { builtInFontFamilies } from "../fonts";
 import {
-  SLIDE_ASPECT_RATIO,
+  adjacentVisibleSlideIndex,
   clampPercent,
   firstVisibleSlideIndex,
+  lastVisibleSlideIndex,
   lockedAspectResize,
   nextPptxChartId,
   nextPptxGroupId,
@@ -20,6 +21,7 @@ import {
   nextPptxTextId,
   nextVisibleSlideIndex,
   isPptxLineShapeKind,
+  pptxSlideAspectRatio,
   reorderPptxObjectsById,
 } from "../pptxEditorUtils";
 import type { PptxSnapGuide, SlideDragState } from "../pptxEditorUtils";
@@ -50,6 +52,7 @@ import type {
   PptxAnimation,
   PptxChart,
   PptxImage,
+  PptxMaster,
   PptxMedia,
   PptxShape,
   PptxSlide,
@@ -58,11 +61,6 @@ import type {
   PptxTheme,
   PptxTransition,
 } from "../models";
-import {
-  PptxAnimationInspector,
-  PptxMediaInspector,
-} from "../pptxInspectors";
-import { PptxChartDataEditor } from "../pptxEditorPanels";
 import { runPptxEditorCommand } from "../pptxEditorCommands";
 import {
   PptxObjectLayerPanel,
@@ -72,8 +70,8 @@ import {
 import { PptxEditorToolbar } from "../pptxEditorToolbar";
 import { duplicatePptxSelectedObjects } from "../pptxObjectDuplication";
 import { PptxSlideCanvas } from "../pptxSlideCanvas";
+import { PptxSlidePropertiesPanel } from "../pptxSlidePropertiesPanel";
 import { createPptxTableEditors } from "../pptxTableEditors";
-import { PptxThemeEditor } from "../pptxThemeEditor";
 import { derivePptxEditorState } from "../pptxEditorState";
 
 export function PptxEditor({
@@ -136,6 +134,7 @@ export function PptxEditor({
     presentingIndex,
     selectionBox,
   });
+  const slideAspectRatio = pptxSlideAspectRatio(model);
 
   useEffect(() => {
     function handlePresentationShortcut(event: KeyboardEvent) {
@@ -259,6 +258,13 @@ export function PptxEditor({
     });
   }
 
+  function updatePresentation(patch: Partial<PptxModel>) {
+    onChange({
+      ...model,
+      ...patch,
+    });
+  }
+
   function updateTheme(themePath: string, patch: Partial<PptxTheme>) {
     onChange({
       ...model,
@@ -285,6 +291,35 @@ export function PptxEditor({
     });
   }
 
+  function updateMaster(masterPath: string, patch: Partial<PptxMaster>) {
+    onChange({
+      ...model,
+      masters: (model.masters ?? []).map((master) =>
+        master.path === masterPath ? { ...master, ...patch } : master,
+      ),
+    });
+  }
+
+  function updateMasterPlaceholder(
+    masterPath: string,
+    placeholderIndex: number,
+    patch: Partial<PptxText>,
+  ) {
+    onChange({
+      ...model,
+      masters: (model.masters ?? []).map((master) =>
+        master.path === masterPath
+          ? {
+              ...master,
+              placeholderTexts: (master.placeholderTexts ?? []).map((placeholder, index) =>
+                index === placeholderIndex ? { ...placeholder, ...patch } : placeholder,
+              ),
+            }
+          : master,
+      ),
+    });
+  }
+
   function updateSlideNotes(notes: string) {
     updateSlide({ notes });
   }
@@ -306,6 +341,8 @@ export function PptxEditor({
         layoutPath: undefined,
         layoutName: undefined,
         layoutType: undefined,
+        layoutMasterPath: undefined,
+        layoutMasterName: undefined,
         layoutThemePath: undefined,
         layoutThemeName: undefined,
       });
@@ -315,6 +352,8 @@ export function PptxEditor({
       layoutPath: layout.path,
       layoutName: layout.name,
       layoutType: layout.type,
+      layoutMasterPath: layout.masterPath,
+      layoutMasterName: layout.masterName,
       layoutThemePath: layout.themePath,
       layoutThemeName: layout.themeName,
     });
@@ -635,6 +674,8 @@ export function PptxEditor({
       layoutPath: slide?.layoutPath,
       layoutName: slide?.layoutName,
       layoutType: slide?.layoutType,
+      layoutMasterPath: slide?.layoutMasterPath,
+      layoutMasterName: slide?.layoutMasterName,
       layoutThemePath: slide?.layoutThemePath,
       layoutThemeName: slide?.layoutThemeName,
       backgroundKind: "solid" as const,
@@ -801,7 +842,7 @@ export function PptxEditor({
       preview.onload = () => {
         const aspect = preview.naturalWidth / Math.max(preview.naturalHeight, 1);
         const width = 38;
-        const height = Math.min(70, Math.max(10, (width * SLIDE_ASPECT_RATIO) / aspect));
+        const height = Math.min(70, Math.max(10, (width * slideAspectRatio) / aspect));
         commitImage(width, height);
       };
       preview.onerror = () => commitImage(38, 24);
@@ -1402,7 +1443,7 @@ export function PptxEditor({
   function movePresentation(delta: -1 | 1) {
     setPresentingIndex((current) => {
       if (current === null) return current;
-      return nextVisibleSlideIndex(model.slides, current + delta, delta);
+      return adjacentVisibleSlideIndex(model.slides, current, delta) ?? current;
     });
   }
 
@@ -1410,6 +1451,12 @@ export function PptxEditor({
     if (event.key === "Escape") {
       event.preventDefault();
       setPresentingIndex(null);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setPresentingIndex(firstVisibleSlideIndex(model.slides));
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setPresentingIndex(lastVisibleSlideIndex(model.slides));
     } else if (
       event.key === "ArrowRight" ||
       event.key === "ArrowDown" ||
@@ -1549,6 +1596,7 @@ export function PptxEditor({
         onMoveActiveObjectLayer={moveActiveObjectLayer}
         onAlignActiveObject={alignActiveObject}
         onDistributeSelectedObjects={distributeSelectedObjects}
+        onUpdateModel={updatePresentation}
         onUpdateSlide={updateSlide}
         onUpdateActiveText={updateActiveText}
         onUpdateActiveShape={updateActiveShape}
@@ -1561,6 +1609,7 @@ export function PptxEditor({
           slides={model.slides}
           presentingIndex={presentingIndex}
           presentingSlide={presentingSlide}
+          slideAspectRatio={slideAspectRatio}
           onMove={movePresentation}
           onClose={() => setPresentingIndex(null)}
           onKeyDown={handlePresentationKeyDown}
@@ -1570,6 +1619,7 @@ export function PptxEditor({
         <PptxSlideNavigator
           slides={model.slides}
           activeSlideId={slide?.id}
+          slideAspectRatio={slideAspectRatio}
           slideLabel={(index) =>
             t("documentEditor.slideLabel", { index: index + 1 })
           }
@@ -1582,6 +1632,7 @@ export function PptxEditor({
           <PptxSlideCanvas
             canvasRef={canvasRef}
             slide={slide}
+            slideAspectRatio={slideAspectRatio}
             selectionBoxBounds={selectionBoxBounds}
             snapGuides={snapGuides}
             showSnapGrid={Boolean(dragState)}
@@ -1613,166 +1664,21 @@ export function PptxEditor({
             onTableCellStyleChange={updateTableCellStyle}
             onAddSlide={addSlide}
           />
-          {activeChart && (
-            <PptxChartDataEditor
-              chart={activeChart}
-              onChartChange={updateActiveChart}
-              onSeriesNameChange={updateChartSeriesName}
-              onPointChange={updateChartSeriesPoint}
-              onAddSeries={addChartSeries}
-              onDeleteSeries={deleteChartSeries}
-              onAddPoint={addChartPoint}
-              onDeletePoint={deleteChartPoint}
-            />
-          )}
-          <div className="grid shrink-0 gap-2 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--text-muted)] md:grid-cols-[1fr_1fr_1fr_1fr_1fr_1fr]">
-            <label className="grid gap-1">
-              <span className="font-medium uppercase tracking-wide">Layout</span>
-              <div className="flex min-w-0 gap-1">
-                <select
-                  value={slide?.layoutPath ?? ""}
-                  onChange={(event) => updateSlideLayout(event.target.value)}
-                  disabled={!slide || (model.layouts?.length ?? 0) === 0}
-                  className="h-8 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <option value="">
-                    {model.layouts?.length ? "No layout" : "No layout metadata"}
-                  </option>
-                  {slide?.layoutPath &&
-                    !(model.layouts ?? []).some((layout) => layout.path === slide.layoutPath) && (
-                      <option value={slide.layoutPath}>
-                        {slide.layoutName ?? slide.layoutPath}
-                      </option>
-                    )}
-                  {(model.layouts ?? []).map((layout) => (
-                    <option key={layout.path} value={layout.path}>
-                      {[layout.name ?? layout.path, layout.themeName]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={resetSlideLayout}
-                  disabled={
-                    !slide?.layoutPath ||
-                    !model.layouts?.some(
-                      (layout) =>
-                        layout.path === slide.layoutPath &&
-                        (layout.placeholderTexts?.length ?? 0) > 0,
-                    )
-                  }
-                  className="h-8 shrink-0 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Reset
-                </button>
-              </div>
-            </label>
-            <label className="grid gap-1">
-              <span className="font-medium uppercase tracking-wide">Transition</span>
-              <select
-                value={slide?.transition?.type ?? "none"}
-                onChange={(event) =>
-                  updateSlideTransition({
-                    type: event.target.value as PptxTransition["type"],
-                  })
-                }
-                disabled={!slide}
-                className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {["none", "fade", "push", "wipe", "split", "cut", "cover", "uncover", "zoom"].map(
-                  (transition) => (
-                    <option key={transition} value={transition}>
-                      {transition}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-            <label className="grid gap-1">
-              <span className="font-medium uppercase tracking-wide">Speed</span>
-              <select
-                value={slide?.transition?.speed ?? "med"}
-                onChange={(event) =>
-                  updateSlideTransition({
-                    speed: event.target.value as PptxTransition["speed"],
-                  })
-                }
-                disabled={!slide || (slide.transition?.type ?? "none") === "none"}
-                className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {["fast", "med", "slow"].map((speed) => (
-                  <option key={speed} value={speed}>
-                    {speed}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="grid gap-1">
-              <span className="font-medium uppercase tracking-wide">Direction</span>
-              <select
-                value={slide?.transition?.direction ?? "l"}
-                onChange={(event) =>
-                  updateSlideTransition({ direction: event.target.value })
-                }
-                disabled={
-                  !slide ||
-                  !["push", "wipe", "split", "cover", "uncover", "zoom"].includes(
-                    slide.transition?.type ?? "none",
-                  )
-                }
-                className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {[
-                  ["l", "left"],
-                  ["r", "right"],
-                  ["u", "up"],
-                  ["d", "down"],
-                  ["in", "in"],
-                  ["out", "out"],
-                  ["horz", "horizontal"],
-                  ["vert", "vertical"],
-                ].map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-end gap-2 pb-1 text-xs text-[var(--text)]">
-              <input
-                type="checkbox"
-                checked={slide?.transition?.advanceOnClick ?? true}
-                onChange={(event) =>
-                  updateSlideTransition({ advanceOnClick: event.target.checked })
-                }
-                disabled={!slide || (slide.transition?.type ?? "none") === "none"}
-                className="h-4 w-4 rounded border-[var(--border)]"
-              />
-              On click
-            </label>
-            <label className="grid gap-1">
-              <span className="font-medium uppercase tracking-wide">Auto ms</span>
-              <input
-                type="number"
-                min={0}
-                max={600000}
-                step={500}
-                value={slide?.transition?.advanceAfterMs ?? 0}
-                onChange={(event) =>
-                  updateSlideTransition({
-                    advanceAfterMs: Math.max(0, Number(event.target.value) || 0),
-                  })
-                }
-                disabled={!slide || (slide.transition?.type ?? "none") === "none"}
-                className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-              />
-            </label>
-          </div>
-          <PptxThemeEditor
-            theme={activeTheme}
-            disabled={!activeTheme}
+          <PptxSlidePropertiesPanel
+            model={model}
+            slide={slide}
+            activeChart={activeChart}
+            activeTheme={activeTheme}
+            onChartChange={updateActiveChart}
+            onChartSeriesNameChange={updateChartSeriesName}
+            onChartPointChange={updateChartSeriesPoint}
+            onAddChartSeries={addChartSeries}
+            onDeleteChartSeries={deleteChartSeries}
+            onAddChartPoint={addChartPoint}
+            onDeleteChartPoint={deleteChartPoint}
+            onSlideLayoutChange={updateSlideLayout}
+            onResetSlideLayout={resetSlideLayout}
+            onSlideTransitionChange={updateSlideTransition}
             onThemeChange={(patch) => {
               if (!activeTheme) return;
               updateTheme(activeTheme.path, patch);
@@ -1781,30 +1687,13 @@ export function PptxEditor({
               if (!activeTheme) return;
               updateThemeColor(activeTheme.path, key, color);
             }}
+            onMasterChange={updateMaster}
+            onMasterPlaceholderChange={updateMasterPlaceholder}
+            onAnimationTimingChange={updateAnimationTiming}
+            onMoveAnimation={moveAnimation}
+            onMediaChange={updateMediaById}
+            onSlideNotesChange={updateSlideNotes}
           />
-          <PptxAnimationInspector
-            animations={slide?.animations ?? []}
-            disabled={!slide}
-            onTimingChange={updateAnimationTiming}
-            onMove={moveAnimation}
-          />
-          <PptxMediaInspector
-            media={slide?.media ?? []}
-            disabled={!slide}
-            onChange={updateMediaById}
-          />
-          <label className="block shrink-0 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2">
-            <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-              Speaker notes
-            </span>
-            <textarea
-              value={slide?.notes ?? ""}
-              onChange={(event) => updateSlideNotes(event.target.value)}
-              disabled={!slide}
-              placeholder="Notes for this slide"
-              className="h-24 w-full resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm leading-relaxed text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-            />
-          </label>
         </div>
         {slide && (
           <PptxObjectLayerPanel

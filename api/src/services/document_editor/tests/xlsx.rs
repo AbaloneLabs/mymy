@@ -55,6 +55,53 @@ fn xlsx_sheet_update_preserves_formula_cells() {
 }
 
 #[test]
+fn xlsx_sheet_update_preserves_formula_metadata() {
+    let xml = r#"<worksheet><dimension ref="A1:B2"/><sheetData><row r="1"><c r="A1"><f t="array" ref="A1:B2" si="0">TRANSPOSE(C1:D2)</f><v>1</v></c></row></sheetData></worksheet>"#;
+    let update = SheetUpdate {
+        cells: BTreeMap::from([(
+            "A1".to_string(),
+            SheetCellWrite {
+                value: "1".to_string(),
+                formula: Some("TRANSPOSE(C1:D2)".to_string()),
+                formula_type: Some("array".to_string()),
+                formula_ref: Some("A1:B2".to_string()),
+                formula_shared_index: Some("0".to_string()),
+                ..SheetCellWrite::default()
+            },
+        )]),
+        ..SheetUpdate::default()
+    };
+
+    let updated = update_xlsx_worksheet(xml, &update);
+
+    assert!(updated
+        .contains(r#"<c r="A1"><f t="array" ref="A1:B2" si="0">TRANSPOSE(C1:D2)</f><v>1</v></c>"#));
+}
+
+#[test]
+fn xlsx_sheet_update_filters_invalid_formula_metadata_from_model() {
+    let rows = vec![json!({
+        "index": "1",
+        "cells": [{
+            "ref": "A1",
+            "value": "1",
+            "formula": "A2",
+            "formulaType": "unsafe",
+            "formulaRef": "../bad",
+            "formulaSharedIndex": "x1"
+        }]
+    })];
+
+    let writes = sheet_cell_writes(&rows);
+    let cell = writes.get("A1").expect("cell write");
+
+    assert_eq!(cell.formula.as_deref(), Some("A2"));
+    assert_eq!(cell.formula_type, None);
+    assert_eq!(cell.formula_ref, None);
+    assert_eq!(cell.formula_shared_index, None);
+}
+
+#[test]
 fn xlsx_sheet_update_skips_generated_spill_cells() {
     let rows = vec![json!({
         "index": "1",
@@ -924,6 +971,18 @@ fn xlsx_parser_exposes_formula_cells() {
 
     assert_eq!(rows[0]["cells"][0]["formula"], "A1+B1");
     assert_eq!(rows[0]["cells"][0]["value"], "3");
+}
+
+#[test]
+fn xlsx_parser_exposes_formula_metadata() {
+    let xml = r#"<worksheet><sheetData><row r="1"><c r="A1"><f t="array" ref="A1:B2" si="0">TRANSPOSE(C1:D2)</f><v>1</v></c></row></sheetData></worksheet>"#;
+
+    let rows = parse_sheet_rows(xml, &[], None);
+
+    assert_eq!(rows[0]["cells"][0]["formula"], "TRANSPOSE(C1:D2)");
+    assert_eq!(rows[0]["cells"][0]["formulaType"], "array");
+    assert_eq!(rows[0]["cells"][0]["formulaRef"], "A1:B2");
+    assert_eq!(rows[0]["cells"][0]["formulaSharedIndex"], "0");
 }
 
 #[test]

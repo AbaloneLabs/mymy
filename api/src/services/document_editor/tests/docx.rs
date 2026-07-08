@@ -21,6 +21,8 @@ fn docx_paragraph_builder_writes_basic_wordprocessor_formatting() {
         "spacingAfter": 240,
         "lineSpacing": 360,
         "pageBreakBefore": true,
+        "keepWithNext": true,
+        "keepLinesTogether": true,
     });
 
     let xml = build_docx_paragraph(&block);
@@ -32,6 +34,8 @@ fn docx_paragraph_builder_writes_basic_wordprocessor_formatting() {
         xml.contains(r#"<w:spacing w:before="120" w:after="240" w:line="360" w:lineRule="auto"/>"#)
     );
     assert!(xml.contains("<w:pageBreakBefore/>"));
+    assert!(xml.contains("<w:keepNext/>"));
+    assert!(xml.contains("<w:keepLines/>"));
     assert!(xml.contains("<w:b/>"));
     assert!(xml.contains("<w:i/>"));
     assert!(xml.contains(r#"<w:u w:val="single"/>"#));
@@ -52,6 +56,76 @@ fn docx_paragraph_builder_writes_line_breaks() {
     assert!(xml.contains(
         r#"<w:t xml:space="preserve">Line one</w:t><w:br/><w:t xml:space="preserve">Line two</w:t>"#
     ));
+}
+
+#[test]
+fn docx_paragraph_builder_writes_run_level_formatting() {
+    let xml = build_docx_paragraph(&json!({
+        "type": "paragraph",
+        "text": "Alpha Beta",
+        "runs": [
+            {
+                "text": "Alpha ",
+                "bold": true,
+                "fontFamily": "Noto Sans",
+                "fontSize": "14",
+                "color": "#FF0000"
+            },
+            {
+                "text": "Beta",
+                "italic": true,
+                "underline": true,
+                "highlight": "yellow"
+            }
+        ]
+    }));
+
+    assert!(xml.contains(r#"<w:t xml:space="preserve">Alpha </w:t>"#));
+    assert!(xml.contains(r#"<w:t xml:space="preserve">Beta</w:t>"#));
+    assert!(xml.contains("<w:b/>"));
+    assert!(xml.contains(r#"<w:rFonts w:ascii="Noto Sans""#));
+    assert!(xml.contains(r#"<w:sz w:val="28"/>"#));
+    assert!(xml.contains(r#"<w:color w:val="FF0000"/>"#));
+    assert!(xml.contains("<w:i/>"));
+    assert!(xml.contains(r#"<w:u w:val="single"/>"#));
+    assert!(xml.contains(r#"<w:highlight w:val="yellow"/>"#));
+}
+
+#[test]
+fn docx_paragraph_builder_ignores_stale_run_ranges() {
+    let xml = build_docx_paragraph(&json!({
+        "type": "paragraph",
+        "text": "Full text",
+        "runs": [
+            { "text": "Old", "bold": true }
+        ]
+    }));
+
+    assert!(xml.contains(r#"<w:t xml:space="preserve">Full text</w:t>"#));
+    assert!(!xml.contains(r#"<w:t xml:space="preserve">Old</w:t>"#));
+    assert!(!xml.contains("<w:b/>"));
+}
+
+#[test]
+fn docx_paragraph_builder_writes_run_level_false_overrides() {
+    let xml = build_docx_paragraph(&json!({
+        "type": "paragraph",
+        "text": "Plain",
+        "runs": [
+            {
+                "text": "Plain",
+                "bold": false,
+                "italic": false,
+                "underline": false,
+                "strikethrough": false
+            }
+        ]
+    }));
+
+    assert!(xml.contains(r#"<w:b w:val="false"/>"#));
+    assert!(xml.contains(r#"<w:i w:val="false"/>"#));
+    assert!(xml.contains(r#"<w:u w:val="none"/>"#));
+    assert!(xml.contains(r#"<w:strike w:val="false"/>"#));
 }
 
 #[test]
@@ -112,6 +186,119 @@ fn docx_model_exposes_bookmarks() {
 }
 
 #[test]
+fn docx_model_exposes_paragraph_pagination_properties() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:pPr><w:pageBreakBefore/><w:keepNext/><w:keepLines/></w:pPr><w:r><w:t>Stable paragraph</w:t></w:r></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX pagination should parse");
+
+    assert_eq!(model["blocks"][0]["pageBreakBefore"], true);
+    assert_eq!(model["blocks"][0]["keepWithNext"], true);
+    assert_eq!(model["blocks"][0]["keepLinesTogether"], true);
+}
+
+#[test]
+fn docx_model_exposes_simple_and_complex_fields() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:r><w:t>Figure </w:t></w:r><w:fldSimple w:instr=" SEQ Figure \* ARABIC "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF _Ref1 \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Heading</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX fields should parse");
+
+    assert_eq!(model["blocks"][0]["fields"][0]["source"], "simple");
+    assert_eq!(model["blocks"][0]["fields"][0]["kind"], "SEQ");
+    assert_eq!(
+        model["blocks"][0]["fields"][0]["instruction"],
+        "SEQ Figure \\* ARABIC"
+    );
+    assert_eq!(model["blocks"][0]["fields"][0]["resultText"], "1");
+    assert_eq!(model["blocks"][1]["fields"][0]["source"], "complex");
+    assert_eq!(model["blocks"][1]["fields"][0]["kind"], "REF");
+    assert_eq!(
+        model["blocks"][1]["fields"][0]["instruction"],
+        "REF _Ref1 \\h"
+    );
+}
+
+#[test]
+fn docx_update_rewrites_simple_field_instruction_without_rebuilding_field() {
+    let original = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:r><w:t>Figure </w:t></w:r><w:fldSimple w:instr=" SEQ Figure \* ARABIC "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:body></w:document>"#,
+    )]);
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "Figure 1",
+                "fields": [{
+                    "id": "simple1",
+                    "source": "simple",
+                    "kind": "SEQ",
+                    "instruction": "SEQ Table \\* ARABIC",
+                    "resultText": "1"
+                }]
+            }]
+        }),
+    )
+    .expect("DOCX simple field instruction should update");
+
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+
+    assert!(document.contains(r#"<w:fldSimple w:instr="SEQ Table \* ARABIC">"#));
+    assert!(document.contains("</w:fldSimple>"));
+}
+
+#[test]
+fn docx_model_exposes_paragraph_style_catalog_and_block_style() {
+    let bytes = test_ooxml_package(&[
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:pPr><w:pStyle w:val="QuoteStyle"/></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "word/styles.xml",
+            r##"<w:styles><w:style w:type="paragraph" w:styleId="QuoteStyle" w:customStyle="1"><w:name w:val="Quote Style"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:rFonts w:ascii="Noto Serif"/><w:sz w:val="30"/><w:b/><w:i/><w:color w:val="1F2937"/></w:rPr></w:style></w:styles>"##,
+        ),
+    ]);
+
+    let model = docx_model(&bytes).expect("DOCX paragraph styles should parse");
+    let block = &model["blocks"][0];
+    let style = &model["styles"][0];
+
+    assert_eq!(block["paragraphStyleId"], "QuoteStyle");
+    assert_eq!(block["paragraphStyleName"], "Quote Style");
+    assert_eq!(style["id"], "QuoteStyle");
+    assert_eq!(style["name"], "Quote Style");
+    assert_eq!(style["custom"], true);
+    assert_eq!(style["quickFormat"], true);
+    assert_eq!(style["basedOn"], "Normal");
+    assert_eq!(style["next"], "Normal");
+    assert_eq!(style["fontFamily"], "Noto Serif");
+    assert_eq!(style["fontSize"], "15");
+    assert_eq!(style["bold"], true);
+    assert_eq!(style["italic"], true);
+    assert_eq!(style["color"], "#1F2937");
+    assert_eq!(style["align"], "center");
+}
+
+#[test]
+fn docx_paragraph_builder_writes_custom_paragraph_style() {
+    let xml = build_docx_paragraph(&json!({
+        "type": "paragraph",
+        "text": "Styled",
+        "paragraphStyleId": "QuoteStyle"
+    }));
+
+    assert!(xml.contains(r#"<w:pStyle w:val="QuoteStyle"/>"#));
+    assert!(xml.contains(r#"<w:t xml:space="preserve">Styled</w:t>"#));
+}
+
+#[test]
 fn docx_update_assigns_new_bookmark_ids() {
     let original = test_ooxml_package(&[(
         "word/document.xml",
@@ -143,6 +330,48 @@ fn docx_model_exposes_superscript_and_subscript() {
 
     assert_eq!(model["blocks"][0]["verticalAlign"], "superscript");
     assert_eq!(model["blocks"][1]["verticalAlign"], "subscript");
+}
+
+#[test]
+fn docx_model_exposes_run_level_formatting() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:r><w:rPr><w:b/><w:rFonts w:ascii="Noto Sans"/><w:sz w:val="28"/><w:color w:val="FF0000"/></w:rPr><w:t>Alpha </w:t></w:r><w:r><w:rPr><w:i/><w:u w:val="single"/><w:highlight w:val="yellow"/></w:rPr><w:t>Beta</w:t></w:r></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX run model should parse");
+    let block = &model["blocks"][0];
+
+    assert_eq!(block["text"], "Alpha Beta");
+    assert_eq!(block["runs"][0]["text"], "Alpha ");
+    assert_eq!(block["runs"][0]["bold"], true);
+    assert_eq!(block["runs"][0]["fontFamily"], "Noto Sans");
+    assert_eq!(block["runs"][0]["fontSize"], "14");
+    assert_eq!(block["runs"][0]["color"], "#FF0000");
+    assert_eq!(block["runs"][1]["text"], "Beta");
+    assert_eq!(block["runs"][1]["italic"], true);
+    assert_eq!(block["runs"][1]["underline"], true);
+    assert_eq!(block["runs"][1]["highlight"], "yellow");
+}
+
+#[test]
+fn docx_model_reads_run_level_false_overrides() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:r><w:rPr><w:b w:val="false"/><w:i w:val="false"/><w:u w:val="none"/><w:strike w:val="false"/></w:rPr><w:t>Plain</w:t></w:r></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX false run overrides should parse");
+    let block = &model["blocks"][0];
+
+    assert_eq!(block["bold"], false);
+    assert_eq!(block["italic"], false);
+    assert_eq!(block["underline"], false);
+    assert_eq!(block["strikethrough"], false);
+    assert_eq!(block["runs"][0]["bold"], false);
+    assert_eq!(block["runs"][0]["italic"], false);
+    assert_eq!(block["runs"][0]["underline"], false);
+    assert_eq!(block["runs"][0]["strikethrough"], false);
 }
 
 #[test]
@@ -775,12 +1004,15 @@ fn docx_update_adds_footnotes_part_relationship_and_content_type() {
 
 #[test]
 fn docx_page_settings_read_and_update_section_properties() {
-    let document = r#"<w:document><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>"#;
+    let document = r#"<w:document><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/><w:cols w:num="2" w:space="720" w:equalWidth="0"><w:col w:w="5000"/><w:col w:w="5000"/></w:cols></w:sectPr></w:body></w:document>"#;
     let page = docx_page_settings(document);
 
     assert_eq!(page["width"], 12240);
     assert_eq!(page["height"], 15840);
     assert_eq!(page["marginTop"], 1440);
+    assert_eq!(page["columnCount"], 2);
+    assert_eq!(page["columnSpacing"], 720);
+    assert_eq!(page["columnEqualWidth"], false);
 
     let updated = update_docx_page_settings(
         document,
@@ -791,7 +1023,9 @@ fn docx_page_settings_read_and_update_section_properties() {
             "marginTop": 720,
             "marginRight": 1080,
             "marginBottom": 720,
-            "marginLeft": 1080
+            "marginLeft": 1080,
+            "columnCount": 3,
+            "columnSpacing": 540
         })),
     );
 
@@ -799,6 +1033,7 @@ fn docx_page_settings_read_and_update_section_properties() {
     assert!(
         updated.contains(r#"<w:pgMar w:top="720" w:right="1080" w:bottom="720" w:left="1080"/>"#)
     );
+    assert!(updated.contains(r#"<w:cols w:num="3" w:space="540"/>"#));
 }
 
 #[test]
@@ -816,6 +1051,20 @@ fn docx_paragraph_builder_writes_basic_lists() {
 
     assert!(bullet.contains(&format!(r#"<w:numId w:val="{DOCX_BULLET_NUM_ID}"/>"#)));
     assert!(numbered.contains(&format!(r#"<w:numId w:val="{DOCX_NUMBER_NUM_ID}"/>"#)));
+}
+
+#[test]
+fn docx_paragraph_builder_writes_list_level_and_numbering_id() {
+    let numbered = build_docx_paragraph(&json!({
+        "type": "paragraph",
+        "text": "Nested item",
+        "listKind": "number",
+        "listLevel": 2,
+        "listNumberingId": "42"
+    }));
+
+    assert!(numbered.contains(r#"<w:ilvl w:val="2"/>"#));
+    assert!(numbered.contains(r#"<w:numId w:val="42"/>"#));
 }
 
 #[test]
@@ -853,6 +1102,70 @@ fn docx_list_save_adds_numbering_part_relationship_and_content_type() {
     assert!(numbering.contains(r#"<w:numFmt w:val="bullet"/>"#));
     assert!(rels.contains("relationships/numbering"));
     assert!(content_types.contains(r#"PartName="/word/numbering.xml""#));
+}
+
+#[test]
+fn docx_model_exposes_list_numbering_metadata_and_restart_start() {
+    let bytes = test_ooxml_package(&[
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="2"/><w:numId w:val="17"/></w:numPr></w:pPr><w:r><w:t>Nested</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "word/numbering.xml",
+            r#"<w:numbering><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="2"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum><w:num w:numId="17"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="2"><w:startOverride w:val="4"/></w:lvlOverride></w:num></w:numbering>"#,
+        ),
+    ]);
+
+    let model = docx_model(&bytes).expect("DOCX list metadata should parse");
+    let block = &model["blocks"][0];
+
+    assert_eq!(block["listKind"], "number");
+    assert_eq!(block["listNumberingId"], "17");
+    assert_eq!(block["listLevel"], 2);
+    assert_eq!(block["listStart"], 4);
+}
+
+#[test]
+fn docx_list_start_saves_restart_numbering_override() {
+    let original = test_ooxml_package(&[
+        (
+            "[Content_Types].xml",
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#,
+        ),
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+    ]);
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [
+                {
+                    "type": "paragraph",
+                    "text": "Restarted",
+                    "listKind": "number",
+                    "listLevel": 1,
+                    "listStart": 3
+                }
+            ]
+        }),
+    )
+    .expect("DOCX restarted list should save");
+
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+    let numbering = read_zip_text(&updated, "word/numbering.xml").unwrap();
+
+    assert!(document.contains(r#"<w:ilvl w:val="1"/>"#));
+    assert!(document.contains(r#"<w:numId w:val="9100"/>"#));
+    assert!(numbering.contains(r#"<w:num w:numId="9100">"#));
+    assert!(numbering.contains(r#"<w:lvlOverride w:ilvl="1">"#));
+    assert!(numbering.contains(r#"<w:startOverride w:val="3"/>"#));
 }
 
 #[test]
@@ -898,6 +1211,132 @@ fn docx_complex_paragraph_preserves_non_text_markup_when_replacing_text() {
     assert!(updated.contains(r#"<w:hyperlink r:id="rId1">"#));
     assert!(updated.contains("<w:t>New</w:t>"));
     assert!(!updated.contains("<w:b/>"));
+}
+
+#[test]
+fn docx_complex_paragraph_preserves_content_control_when_replacing_text() {
+    let document = r#"<w:document><w:body><w:p><w:sdt><w:sdtPr><w:tag w:val="ClientName"/></w:sdtPr><w:sdtContent><w:r><w:t>Old</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#;
+    let blocks = vec![json!({ "text": "New", "italic": true })];
+
+    let updated = replace_docx_blocks(document, &blocks);
+
+    assert!(updated.contains(r#"<w:sdtPr><w:tag w:val="ClientName"/></w:sdtPr>"#));
+    assert!(updated.contains("<w:sdtContent>"));
+    assert!(updated.contains("<w:t>New</w:t>"));
+    assert!(!updated.contains("<w:i/>"));
+}
+
+#[test]
+fn docx_model_exposes_content_controls() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:sdt><w:sdtPr><w:alias w:val="Approval"/><w:tag w:val="ApprovalTag"/><w:id w:val="42"/><w14:checkbox><w14:checked w14:val="0"/></w14:checkbox></w:sdtPr><w:sdtContent><w:r><w:t>No</w:t></w:r></w:sdtContent></w:sdt></w:p><w:p><w:sdt><w:sdtPr><w:dropDownList><w:listItem w:displayText="One" w:value="1"/><w:listItem w:displayText="Two" w:value="2"/></w:dropDownList></w:sdtPr><w:sdtContent><w:r><w:t>One</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX content controls should parse");
+    let checkbox = &model["blocks"][0]["contentControls"][0];
+    let dropdown = &model["blocks"][1]["contentControls"][0];
+
+    assert_eq!(checkbox["kind"], "checkbox");
+    assert_eq!(checkbox["alias"], "Approval");
+    assert_eq!(checkbox["tag"], "ApprovalTag");
+    assert_eq!(checkbox["controlId"], "42");
+    assert_eq!(checkbox["checked"], false);
+    assert_eq!(checkbox["text"], "No");
+    assert_eq!(dropdown["kind"], "dropdown");
+    assert_eq!(dropdown["items"][0]["displayText"], "One");
+    assert_eq!(dropdown["items"][1]["value"], "2");
+}
+
+#[test]
+fn docx_update_rewrites_content_control_checkbox_state() {
+    let original = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:sdt><w:sdtPr><w14:checkbox><w14:checked w14:val="0"/></w14:checkbox></w:sdtPr><w:sdtContent><w:r><w:t>No</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#,
+    )]);
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "No",
+                "contentControls": [{
+                    "id": "control1",
+                    "kind": "checkbox",
+                    "text": "No",
+                    "checked": true
+                }]
+            }]
+        }),
+    )
+    .expect("DOCX content control checkbox should update");
+
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+
+    assert!(document.contains(r#"<w14:checked w14:val="1"/>"#));
+    assert!(document.contains("<w:sdtContent>"));
+}
+
+#[test]
+fn docx_model_exposes_tracked_revisions() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:ins w:id="1" w:author="Elena" w:date="2026-07-08T00:00:00Z"><w:r><w:t>New</w:t></w:r></w:ins><w:del w:id="2" w:author="Elena"><w:r><w:delText>Old</w:delText></w:r></w:del></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX tracked revisions should parse");
+    let insertion = &model["blocks"][0]["revisions"][0];
+    let deletion = &model["blocks"][0]["revisions"][1];
+
+    assert_eq!(model["blocks"][0]["text"], "New");
+    assert_eq!(insertion["kind"], "insertion");
+    assert_eq!(insertion["revisionId"], "1");
+    assert_eq!(insertion["author"], "Elena");
+    assert_eq!(insertion["date"], "2026-07-08T00:00:00Z");
+    assert_eq!(insertion["text"], "New");
+    assert_eq!(deletion["kind"], "deletion");
+    assert_eq!(deletion["text"], "Old");
+}
+
+#[test]
+fn docx_update_applies_tracked_revision_actions() {
+    let original = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:ins w:id="1"><w:r><w:t>New</w:t></w:r></w:ins><w:del w:id="2"><w:r><w:delText>Old</w:delText></w:r></w:del></w:p></w:body></w:document>"#,
+    )]);
+    let updated = update_docx(
+        &original,
+        &json!({
+            "blocks": [{
+                "type": "paragraph",
+                "text": "New",
+                "revisions": [
+                    { "id": "revision1", "kind": "insertion", "text": "New", "action": "reject" },
+                    { "id": "revision2", "kind": "deletion", "text": "Old", "action": "reject" }
+                ]
+            }]
+        }),
+    )
+    .expect("DOCX tracked revision actions should update");
+
+    let document = read_zip_text(&updated, "word/document.xml").unwrap();
+
+    assert!(!document.contains("<w:ins"));
+    assert!(!document.contains("<w:del"));
+    assert!(document.contains("<w:t>Old</w:t>"));
+    assert!(!document.contains("New"));
+}
+
+#[test]
+fn docx_complex_paragraph_preserves_move_tracking_when_replacing_text() {
+    let document = r#"<w:document><w:body><w:p><w:moveTo w:id="2"><w:r><w:t>Old</w:t></w:r></w:moveTo></w:p></w:body></w:document>"#;
+    let blocks = vec![json!({ "text": "New", "underline": true })];
+
+    let updated = replace_docx_blocks(document, &blocks);
+
+    assert!(updated.contains(r#"<w:moveTo w:id="2">"#));
+    assert!(updated.contains("<w:t>New</w:t>"));
+    assert!(!updated.contains("<w:u"));
 }
 
 #[test]

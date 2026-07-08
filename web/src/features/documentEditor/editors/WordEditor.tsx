@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils";
 import type { EditorCommandRequest } from "../commands";
 import {
   DOCX_PAGE_PRESETS,
-  allocateDocxBlockId,
   docxPageStyle,
   focusDocxBlock,
   headingFontSize,
@@ -18,16 +17,29 @@ import {
   pickDocxFormatting,
   readImageDisplaySize,
   sectionBreakLabel,
+  textSelectionOffsetsWithin,
   textOffsetWithin,
-  twipsToCssPixels,
 } from "../docxEditorUtils";
 import type { DocxFormatClipboard } from "../docxEditorUtils";
+import { buildDocxPasteResult } from "../docxRichPaste";
+import {
+  applyDocxInlineStyleRange,
+  docxRenderableRuns,
+  docxRunStyle,
+  docxStyleForBlock,
+  docxTextBlockStyle,
+  docxTextEditPatch,
+  isDocxInlineStylePatch,
+  toggleDocxInlineBooleanRange,
+} from "../docxTextRuns";
 import { builtInFontFamilies } from "../fonts";
 import type {
   DocxBlock,
   DocxComment,
+  DocxContentControl,
   DocxModel,
   DocxPageSettings,
+  DocxRevision,
 } from "../models";
 import {
   DocxImageBlock,
@@ -79,6 +91,7 @@ export function DocxEditor({
     useState<DocxFormatClipboard | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
+  const composingBlockIdRef = useRef<string | null>(null);
   const activeBlock =
     model.blocks.find((block) => block.id === activeBlockId) ?? model.blocks[0];
   const page = model.page;
@@ -87,7 +100,13 @@ export function DocxEditor({
       model.footers?.length ||
       model.comments?.length ||
       model.footnotes?.length ||
-      model.endnotes?.length,
+      model.endnotes?.length ||
+      model.blocks.some(
+        (block) =>
+          block.fields?.length ||
+          block.contentControls?.length ||
+          block.revisions?.length,
+      ),
   );
   const outlineItems = model.blocks
     .map((block, index) => {
@@ -98,7 +117,7 @@ export function DocxEditor({
           label:
             block.bookmarkName ??
             (block.text.trim() || `Heading ${block.headingLevel ?? 1}`),
-          kind: `H${block.headingLevel ?? 1}`,
+          kind: `Heading ${block.headingLevel ?? 1}`,
           level: block.headingLevel ?? 1,
         };
       }
@@ -176,9 +195,104 @@ export function DocxEditor({
     });
   }
 
+  function updateFieldInstruction(
+    blockIndex: number,
+    fieldIndex: number,
+    instruction: string,
+  ) {
+    const block = model.blocks[blockIndex];
+    const field = block?.fields?.[fieldIndex];
+    if (!block || !field || field.source !== "simple") return;
+    updateBlock(blockIndex, {
+      fields: block.fields?.map((item, index) =>
+        index === fieldIndex ? { ...item, instruction } : item,
+      ),
+    });
+  }
+
+  function updateContentControl(
+    blockIndex: number,
+    controlIndex: number,
+    patch: Partial<DocxContentControl>,
+  ) {
+    const block = model.blocks[blockIndex];
+    const control = block?.contentControls?.[controlIndex];
+    if (!block || !control) return;
+    updateBlock(blockIndex, {
+      contentControls: block.contentControls?.map((item, index) =>
+        index === controlIndex ? { ...item, ...patch } : item,
+      ),
+    });
+  }
+
+  function updateRevisionAction(
+    blockIndex: number,
+    revisionIndex: number,
+    action: DocxRevision["action"],
+  ) {
+    const block = model.blocks[blockIndex];
+    const revision = block?.revisions?.[revisionIndex];
+    if (!block || !revision) return;
+    updateBlock(blockIndex, {
+      revisions: block.revisions?.map((item, index) =>
+        index === revisionIndex ? { ...item, action } : item,
+      ),
+    });
+  }
+
+  function applyInlineStyleToSelection(
+    index: number,
+    patch: Partial<DocxBlock>,
+  ) {
+    const block = model.blocks[index];
+    if (!isDocxTextBlock(block) || !isDocxInlineStylePatch(patch)) return false;
+    const element = document.querySelector<HTMLElement>(
+      `[data-docx-block="${CSS.escape(block.id)}"]`,
+    );
+    if (!element) return false;
+    const range = textSelectionOffsetsWithin(element);
+    if (!range || range.start === range.end) return false;
+    const nextBlock = applyDocxInlineStyleRange(
+      block,
+      range.start,
+      range.end,
+      patch,
+    );
+    if (!nextBlock) return false;
+    updateBlock(index, nextBlock);
+    return true;
+  }
+
+  function toggleInlineBooleanOrBlock(
+    index: number,
+    key: "bold" | "italic" | "underline" | "strikethrough",
+  ) {
+    const block = model.blocks[index];
+    if (!isDocxTextBlock(block)) return;
+    const element = document.querySelector<HTMLElement>(
+      `[data-docx-block="${CSS.escape(block.id)}"]`,
+    );
+    const range = element ? textSelectionOffsetsWithin(element) : null;
+    if (range && range.start !== range.end) {
+      const nextBlock = toggleDocxInlineBooleanRange(
+        block,
+        range.start,
+        range.end,
+        key,
+      );
+      if (nextBlock) {
+        updateBlock(index, nextBlock);
+        return;
+      }
+    }
+    updateBlock(index, { [key]: !block[key] });
+  }
+
   function updateActive(patch: Partial<DocxBlock>) {
     const index = model.blocks.findIndex((block) => block.id === activeBlock?.id);
-    if (index >= 0) updateBlock(index, patch);
+    if (index >= 0 && !applyInlineStyleToSelection(index, patch)) {
+      updateBlock(index, patch);
+    }
   }
 
   function openLinkEditor() {
@@ -378,18 +492,16 @@ export function DocxEditor({
     const key = event.key.toLowerCase();
     if (key === "b") {
       event.preventDefault();
-      updateBlock(index, { bold: !model.blocks[index]?.bold });
+      toggleInlineBooleanOrBlock(index, "bold");
     } else if (key === "i") {
       event.preventDefault();
-      updateBlock(index, { italic: !model.blocks[index]?.italic });
+      toggleInlineBooleanOrBlock(index, "italic");
     } else if (key === "u") {
       event.preventDefault();
-      updateBlock(index, { underline: !model.blocks[index]?.underline });
+      toggleInlineBooleanOrBlock(index, "underline");
     } else if (event.shiftKey && key === "x") {
       event.preventDefault();
-      updateBlock(index, {
-        strikethrough: !model.blocks[index]?.strikethrough,
-      });
+      toggleInlineBooleanOrBlock(index, "strikethrough");
     } else if (event.altKey && /^[1-6]$/.test(key)) {
       event.preventDefault();
       const headingLevel = Number(key);
@@ -455,11 +567,15 @@ export function DocxEditor({
   function toggleBlockList(index: number, listKind: "bullet" | "number") {
     const current = model.blocks[index];
     if (!isDocxTextBlock(current)) return;
+    const nextEnabled = current.listKind !== listKind;
     updateBlock(index, {
       type: "paragraph",
       headingLevel: undefined,
       fontSize: current.type === "heading" ? "14" : current.fontSize,
-      listKind: current.listKind === listKind ? undefined : listKind,
+      listKind: nextEnabled ? listKind : undefined,
+      listLevel: nextEnabled ? current.listLevel ?? 0 : undefined,
+      listNumberingId: nextEnabled ? current.listNumberingId : undefined,
+      listStart: nextEnabled && listKind === "number" ? current.listStart : undefined,
     });
   }
 
@@ -469,8 +585,31 @@ export function DocxEditor({
   }
 
   function adjustActiveIndent(delta: number) {
+    if (activeBlock?.listKind) {
+      const current = activeBlock.listLevel ?? 0;
+      updateActive({ listLevel: Math.max(0, Math.min(8, current + Math.sign(delta))) });
+      return;
+    }
     const current = activeBlock?.indentLeft ?? 0;
     updateActive({ indentLeft: Math.max(0, current + delta) });
+  }
+
+  function continueActiveList() {
+    const index = model.blocks.findIndex((block) => block.id === activeBlock?.id);
+    const block = model.blocks[index];
+    if (index < 0 || block?.listKind !== "number") return;
+    const previousNumbered = model.blocks
+      .slice(0, index)
+      .reverse()
+      .find(
+        (item) =>
+          item.listKind === "number" &&
+          (item.listLevel ?? 0) === (block.listLevel ?? 0),
+      );
+    updateBlock(index, {
+      listNumberingId: previousNumbered?.listNumberingId,
+      listStart: undefined,
+    });
   }
 
   function toggleActiveVerticalAlign(verticalAlign: NonNullable<DocxBlock["verticalAlign"]>) {
@@ -492,12 +631,13 @@ export function DocxEditor({
       id: nextDocxBlockId(model.blocks, "p"),
       type: block.type === "heading" ? "paragraph" : block.type,
       text: after,
+      runs: undefined,
       headingLevel: undefined,
       fontSize: block.type === "heading" ? "14" : block.fontSize,
     };
     replaceBlocks(
       model.blocks.flatMap((item, blockIndex) =>
-        blockIndex === index ? [{ ...item, text: before }, next] : [item],
+        blockIndex === index ? [{ ...item, text: before, runs: undefined }, next] : [item],
       ),
       next.id,
     );
@@ -514,7 +654,9 @@ export function DocxEditor({
     replaceBlocks(
       model.blocks
         .map((block, blockIndex) =>
-          blockIndex === index - 1 ? { ...block, text: mergedText } : block,
+          blockIndex === index - 1
+            ? { ...block, text: mergedText, runs: undefined }
+            : block,
         )
         .filter((_, blockIndex) => blockIndex !== index),
       previous.id,
@@ -526,17 +668,21 @@ export function DocxEditor({
     (commandId: EditorCommandRequest["id"]) => {
     if (!activeBlock) return false;
     if (commandId === "bold") {
-      updateActive({ bold: !activeBlock.bold });
+      const index = model.blocks.findIndex((block) => block.id === activeBlock.id);
+      if (index >= 0) toggleInlineBooleanOrBlock(index, "bold");
     } else if (commandId === "italic") {
-      updateActive({ italic: !activeBlock.italic });
+      const index = model.blocks.findIndex((block) => block.id === activeBlock.id);
+      if (index >= 0) toggleInlineBooleanOrBlock(index, "italic");
     } else if (commandId === "underline") {
-      updateActive({ underline: !activeBlock.underline });
+      const index = model.blocks.findIndex((block) => block.id === activeBlock.id);
+      if (index >= 0) toggleInlineBooleanOrBlock(index, "underline");
     } else if (commandId === "link") {
       openLinkEditor();
     } else if (commandId === "normalStyle") {
       applyNormalStyle();
     } else if (commandId === "strikethrough") {
-      updateActive({ strikethrough: !activeBlock.strikethrough });
+      const index = model.blocks.findIndex((block) => block.id === activeBlock.id);
+      if (index >= 0) toggleInlineBooleanOrBlock(index, "strikethrough");
     } else if (commandId === "heading1") {
       updateActive({
         type: "heading",
@@ -620,48 +766,20 @@ export function DocxEditor({
     }, 0);
   }, [commandRequest, onCommandHandled]);
 
-  function pasteTextIntoBlock(
+  function pasteClipboardIntoBlock(
     index: number,
     element: HTMLElement,
-    pastedText: string,
+    clipboardData: Pick<DataTransfer, "getData">,
   ) {
-    const block = model.blocks[index];
-    if (!isDocxTextBlock(block)) return;
-    const normalized = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    if (!normalized.includes("\n")) return;
-    const currentText = element.textContent ?? block.text;
-    const offset = textOffsetWithin(element);
-    const before = currentText.slice(0, offset);
-    const after = currentText.slice(offset);
-    const parts = normalized.split("\n");
-    const usedIds = new Set(model.blocks.map((item) => item.id));
-    const inserted = parts.map((part, partIndex): DocxBlock => ({
-      ...block,
-      id: partIndex === 0 ? block.id : allocateDocxBlockId(usedIds, "p"),
-      type: partIndex === 0 && block.type === "heading" ? "heading" : "paragraph",
-      headingLevel:
-        partIndex === 0 && block.type === "heading"
-          ? block.headingLevel ?? 1
-          : undefined,
-      fontSize:
-        partIndex === 0 && block.type === "heading"
-          ? block.fontSize
-          : block.type === "heading"
-            ? "14"
-            : block.fontSize,
-      text:
-        partIndex === 0
-          ? `${before}${part}`
-          : partIndex === parts.length - 1
-            ? `${part}${after}`
-            : part,
-    }));
-    replaceBlocks(
-      model.blocks.flatMap((item, blockIndex) =>
-        blockIndex === index ? inserted : [item],
-      ),
-      inserted.at(-1)?.id,
-    );
+    const result = buildDocxPasteResult({
+      blocks: model.blocks,
+      blockIndex: index,
+      element,
+      clipboardData,
+    });
+    if (!result) return false;
+    replaceBlocks(result.blocks, result.nextActiveId);
+    return true;
   }
 
   function updateTableCell(
@@ -896,6 +1014,7 @@ export function DocxEditor({
         textPartsOpen={textPartsOpen}
         outlineOpen={outlineOpen}
         imageInputRef={imageInputRef}
+        paragraphStyles={model.styles ?? []}
         onUpdateActive={updateActive}
         onOpenLinkEditor={openLinkEditor}
         onApplyLinkDraft={applyLinkDraft}
@@ -906,6 +1025,7 @@ export function DocxEditor({
         onToggleActiveVerticalAlign={toggleActiveVerticalAlign}
         onAdjustActiveIndent={adjustActiveIndent}
         onToggleActiveList={toggleActiveList}
+        onContinueActiveList={continueActiveList}
         onInsertCommentReference={insertCommentReference}
         onInsertNoteReference={insertNoteReference}
         onUpdatePagePreset={updatePagePreset}
@@ -927,6 +1047,7 @@ export function DocxEditor({
           comments={model.comments ?? []}
           footnotes={model.footnotes ?? []}
           endnotes={model.endnotes ?? []}
+          blocks={model.blocks}
           onHeaderChange={(index, text) => updateTextPart("headers", index, text)}
           onFooterChange={(index, text) => updateTextPart("footers", index, text)}
           onCommentChange={updateComment}
@@ -935,6 +1056,9 @@ export function DocxEditor({
           onFootnoteDelete={(index) => deleteNote("footnotes", index)}
           onEndnoteChange={(index, text) => updateNote("endnotes", index, text)}
           onEndnoteDelete={(index) => deleteNote("endnotes", index)}
+          onFieldInstructionChange={updateFieldInstruction}
+          onContentControlChange={updateContentControl}
+          onRevisionActionChange={updateRevisionAction}
         />
       )}
       <div className="flex min-h-0 flex-1">
@@ -1104,12 +1228,27 @@ export function DocxEditor({
                 />
               );
             }
+            const runs = docxRenderableRuns(block);
+            const paragraphStyle = docxStyleForBlock(model.styles, block);
             return (
               <div key={block.id} className="relative">
                 <div
                   contentEditable
                   suppressContentEditableWarning
                   onFocus={() => setActiveBlockId(block.id)}
+                  onCompositionStart={() => {
+                    composingBlockIdRef.current = block.id;
+                  }}
+                  onCompositionEnd={(event) => {
+                    composingBlockIdRef.current = null;
+                    updateBlock(
+                      index,
+                      docxTextEditPatch(
+                        block,
+                        event.currentTarget.textContent ?? "",
+                      ),
+                    );
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                       event.preventDefault();
@@ -1128,15 +1267,26 @@ export function DocxEditor({
                     handleBlockShortcut(event, index);
                   }}
                   onPaste={(event) => {
-                    const text = event.clipboardData.getData("text/plain");
-                    if (text.includes("\n") || text.includes("\r")) {
+                    if (
+                      pasteClipboardIntoBlock(
+                        index,
+                        event.currentTarget,
+                        event.clipboardData,
+                      )
+                    ) {
                       event.preventDefault();
-                      pasteTextIntoBlock(index, event.currentTarget, text);
                     }
                   }}
-                  onInput={(event) =>
-                    updateBlock(index, { text: event.currentTarget.textContent ?? "" })
-                  }
+                  onInput={(event) => {
+                    if (composingBlockIdRef.current === block.id) return;
+                    updateBlock(
+                      index,
+                      docxTextEditPatch(
+                        block,
+                        event.currentTarget.textContent ?? "",
+                      ),
+                    );
+                  }}
                   data-docx-block={block.id}
                   className={cn(
                     "min-h-7 rounded-sm px-1 py-1 outline-none",
@@ -1145,50 +1295,15 @@ export function DocxEditor({
                     block.pageBreakBefore &&
                       "mt-8 border-t border-dashed border-neutral-300 pt-4",
                   )}
-                  style={{
-                    fontFamily: block.fontFamily || builtInFontFamilies[0],
-                    fontSize: `${block.fontSize ?? (block.type === "heading" ? headingFontSize(block.headingLevel ?? 1) : "14")}px`,
-                    fontWeight: block.bold || block.type === "heading" ? 700 : 400,
-                    fontStyle: block.italic ? "italic" : undefined,
-                    verticalAlign:
-                      block.verticalAlign === "superscript"
-                        ? "super"
-                        : block.verticalAlign === "subscript"
-                          ? "sub"
-                          : undefined,
-                    textDecorationLine: [
-                      block.underline || block.target ? "underline" : "",
-                      block.strikethrough ? "line-through" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" "),
-                    color: block.target ? (block.color ?? "#2563eb") : block.color,
-                    textAlign: block.align ?? "left",
-                    display: block.listKind ? "list-item" : undefined,
-                    listStyleType:
-                      block.listKind === "bullet"
-                        ? "disc"
-                        : block.listKind === "number"
-                          ? "decimal"
-                          : undefined,
-                    listStylePosition: block.listKind ? "outside" : undefined,
-                    marginLeft: block.listKind ? "1.5rem" : undefined,
-                    paddingLeft: block.indentLeft
-                      ? `${twipsToCssPixels(block.indentLeft)}px`
-                      : undefined,
-                    lineHeight: block.lineSpacing
-                      ? String(block.lineSpacing / 240)
-                      : undefined,
-                    marginTop: block.spacingBefore
-                      ? `${twipsToCssPixels(block.spacingBefore)}px`
-                      : undefined,
-                    marginBottom: block.spacingAfter
-                      ? `${twipsToCssPixels(block.spacingAfter)}px`
-                      : undefined,
-                    backgroundColor: block.highlight,
-                  }}
+                  style={docxTextBlockStyle(block, paragraphStyle)}
                 >
-                  {block.text}
+                  {runs
+                    ? runs.map((run, runIndex) => (
+                        <span key={`${block.id}-run-${runIndex}`} style={docxRunStyle(run)}>
+                          {run.text}
+                        </span>
+                      ))
+                    : block.text}
                 </div>
                 {block.footnoteId && (
                   <button

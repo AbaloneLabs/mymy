@@ -1,3 +1,19 @@
+import { parseFrontmatter } from "./markdownFrontmatter";
+export {
+  addFrontmatterFieldBody,
+  deleteFrontmatterFieldBody,
+  formatFrontmatterField,
+  parseFrontmatter,
+  parseFrontmatterFields,
+  replaceFrontmatterBody,
+  updateFrontmatterFieldBody,
+} from "./markdownFrontmatter";
+export type {
+  FrontmatterField,
+  MarkdownFrontmatter,
+  MarkdownFrontmatterFormat,
+} from "./markdownFrontmatter";
+
 /**
  * Markdown editing combines source transformations, document metadata, and
  * lightweight navigation features. This module keeps those text-level rules
@@ -31,21 +47,6 @@ export interface MarkdownReference {
   labelEnd?: number;
   targetStart?: number;
   targetEnd?: number;
-}
-
-export interface MarkdownFrontmatter {
-  marker: "---" | "+++";
-  start: number;
-  contentStart: number;
-  contentEnd: number;
-  end: number;
-  content: string;
-}
-
-export interface FrontmatterField {
-  lineIndex: number;
-  key: string;
-  value: string;
 }
 
 export type MarkdownTableAlignment = "default" | "left" | "center" | "right";
@@ -537,56 +538,6 @@ export function markdownStats(content: string, headings: number) {
 function stripFrontmatter(content: string) {
   const frontmatter = parseFrontmatter(content);
   return frontmatter ? content.slice(frontmatter.end) : content;
-}
-
-export function parseFrontmatter(content: string): MarkdownFrontmatter | null {
-  const opening = /^(---|\+\+\+)[ \t]*\r?\n/.exec(content);
-  if (!opening) return null;
-  const marker = opening[1] as "---" | "+++";
-  const contentStart = opening[0].length;
-  const afterOpening = content.slice(contentStart);
-  const closing = new RegExp(`(^|\\r?\\n)${escapeRegExp(marker)}[ \\t]*(?:\\r?\\n|$)`).exec(afterOpening);
-  if (!closing) return null;
-  const contentEnd = contentStart + closing.index;
-  const end = contentStart + closing.index + closing[0].length;
-  return {
-    marker,
-    start: 0,
-    contentStart,
-    contentEnd,
-    end,
-    content: content.slice(contentStart, contentEnd),
-  };
-}
-
-export function replaceFrontmatterBody(content: string, body: string) {
-  const frontmatter = parseFrontmatter(content);
-  if (!frontmatter) return null;
-  const normalizedBody = body.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const bodyWithLineBreak = normalizedBody.endsWith("\n")
-    ? normalizedBody
-    : `${normalizedBody}\n`;
-  return `${content.slice(0, frontmatter.contentStart)}${bodyWithLineBreak}${frontmatter.marker}\n${content.slice(frontmatter.end)}`;
-}
-
-export function parseFrontmatterFields(content: string, marker: "---" | "+++") {
-  const separator = marker === "+++" ? "=" : ":";
-  return content
-    .split(/\r?\n/)
-    .map((line, lineIndex): FrontmatterField | null => {
-      const match = new RegExp(`^\\s*([A-Za-z0-9_.-]+)\\s*${separator}\\s*(.*?)\\s*$`).exec(line);
-      if (!match) return null;
-      return {
-        lineIndex,
-        key: match[1],
-        value: match[2],
-      };
-    })
-    .filter((field): field is FrontmatterField => Boolean(field));
-}
-
-export function formatFrontmatterField(key: string, value: string, marker: "---" | "+++") {
-  return marker === "+++" ? `${key} = ${value}` : `${key}: ${value}`;
 }
 
 export function indentMarkdownLine(line: string) {

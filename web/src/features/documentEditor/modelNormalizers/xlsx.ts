@@ -165,6 +165,18 @@ export function normalizeXlsxModel(model: unknown): XlsxModel {
                   typeof cellItem.formula === "string"
                     ? cellItem.formula
                     : undefined,
+                formulaType:
+                  typeof cellItem.formulaType === "string"
+                    ? cellItem.formulaType
+                    : undefined,
+                formulaRef:
+                  typeof cellItem.formulaRef === "string"
+                    ? cellItem.formulaRef
+                    : undefined,
+                formulaSharedIndex:
+                  typeof cellItem.formulaSharedIndex === "string"
+                    ? cellItem.formulaSharedIndex
+                    : undefined,
                 generated: cellItem.generated === "spill" ? "spill" : undefined,
                 spillParent:
                   typeof cellItem.spillParent === "string"

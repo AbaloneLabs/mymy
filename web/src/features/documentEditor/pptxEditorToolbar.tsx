@@ -52,7 +52,15 @@ import type {
   PptxTable,
   PptxText,
 } from "./models";
-import { isPptxLineShape, normalizeRotation } from "./pptxEditorUtils";
+import {
+  PPTX_SLIDE_SIZE_PRESETS,
+  isPptxLineShape,
+  normalizeRotation,
+  pptxEmuToInches,
+  pptxInchesToEmu,
+  pptxSlideSizePreset,
+} from "./pptxEditorUtils";
+import type { PptxSlideSizePreset } from "./pptxEditorUtils";
 import type { PptxGeometryPatch, PptxObject } from "./pptxSelection";
 import { FontFamilySelect, ToolbarButton } from "./shared";
 import { PercentInput } from "./pptxPercentInput";
@@ -144,6 +152,7 @@ export function PptxEditorToolbar({
   onMoveActiveObjectLayer,
   onAlignActiveObject,
   onDistributeSelectedObjects,
+  onUpdateModel,
   onUpdateSlide,
   onUpdateActiveText,
   onUpdateActiveShape,
@@ -187,6 +196,7 @@ export function PptxEditorToolbar({
     alignment: "left" | "center" | "right" | "top" | "middle" | "bottom",
   ) => void;
   onDistributeSelectedObjects: (axis: "horizontal" | "vertical") => void;
+  onUpdateModel: (patch: Partial<PptxModel>) => void;
   onUpdateSlide: (patch: Partial<PptxSlide>) => void;
   onUpdateActiveText: (patch: Partial<PptxText>) => void;
   onUpdateActiveShape: (patch: Partial<PptxShape>) => void;
@@ -275,6 +285,50 @@ export function PptxEditorToolbar({
   }
 
   const tableStyleOptions = buildPptxTableStyleOptions(model, activeTable);
+  const slideSizePreset = pptxSlideSizePreset(model);
+  const slideWidthInches = pptxEmuToInches(
+    model.slideWidthEmu,
+    PPTX_SLIDE_SIZE_PRESETS.widescreen.widthEmu,
+  );
+  const slideHeightInches = pptxEmuToInches(
+    model.slideHeightEmu,
+    PPTX_SLIDE_SIZE_PRESETS.widescreen.heightEmu,
+  );
+
+  function updateSlideSizePreset(preset: PptxSlideSizePreset) {
+    if (preset === "custom") {
+      onUpdateModel({
+        slideWidthEmu:
+          model.slideWidthEmu ?? PPTX_SLIDE_SIZE_PRESETS.widescreen.widthEmu,
+        slideHeightEmu:
+          model.slideHeightEmu ?? PPTX_SLIDE_SIZE_PRESETS.widescreen.heightEmu,
+        slideSizeType: "custom",
+      });
+      return;
+    }
+    const size = PPTX_SLIDE_SIZE_PRESETS[preset];
+    onUpdateModel({
+      slideWidthEmu: size.widthEmu,
+      slideHeightEmu: size.heightEmu,
+      slideSizeType: size.type,
+    });
+  }
+
+  function updateCustomSlideSize(axis: "width" | "height", value: string) {
+    const inches = Number(value);
+    const nextEmu = pptxInchesToEmu(inches);
+    onUpdateModel({
+      slideWidthEmu:
+        axis === "width"
+          ? nextEmu
+          : model.slideWidthEmu ?? PPTX_SLIDE_SIZE_PRESETS.widescreen.widthEmu,
+      slideHeightEmu:
+        axis === "height"
+          ? nextEmu
+          : model.slideHeightEmu ?? PPTX_SLIDE_SIZE_PRESETS.widescreen.heightEmu,
+      slideSizeType: "custom",
+    });
+  }
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] px-3 py-2">
@@ -355,6 +409,44 @@ export function PptxEditorToolbar({
         <Play className="h-3.5 w-3.5" strokeWidth={1.75} />
         Current
       </button>
+      <div className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-1.5 text-xs text-[var(--text-muted)]">
+        <select
+          value={slideSizePreset}
+          onChange={(event) =>
+            updateSlideSizePreset(event.target.value as PptxSlideSizePreset)
+          }
+          className="h-6 rounded border border-transparent bg-[var(--bg)] px-1 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          title="Slide size"
+        >
+          {Object.entries(PPTX_SLIDE_SIZE_PRESETS).map(([key, preset]) => (
+            <option key={key} value={key}>
+              {preset.label}
+            </option>
+          ))}
+          <option value="custom">Custom</option>
+        </select>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          step={0.01}
+          value={slideWidthInches.toFixed(2)}
+          onChange={(event) => updateCustomSlideSize("width", event.target.value)}
+          className="h-6 w-14 rounded border border-[var(--border)] bg-[var(--bg)] px-1 text-right text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          title="Slide width in inches"
+        />
+        <span className="text-[10px] text-[var(--text-faint)]">x</span>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          step={0.01}
+          value={slideHeightInches.toFixed(2)}
+          onChange={(event) => updateCustomSlideSize("height", event.target.value)}
+          className="h-6 w-14 rounded border border-[var(--border)] bg-[var(--bg)] px-1 text-right text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          title="Slide height in inches"
+        />
+      </div>
       <button
         type="button"
         onClick={onAddTextBox}

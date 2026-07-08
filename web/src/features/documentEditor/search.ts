@@ -110,8 +110,22 @@ function transformTextFields(
           }
           if (mode === "count" || result.replacements === 0) return cell;
           return result.value.startsWith("=")
-            ? { ...cell, value: "", formula: result.value.slice(1) }
-            : { ...cell, value: result.value, formula: undefined };
+            ? {
+                ...cell,
+                value: "",
+                formula: result.value.slice(1),
+                formulaType: undefined,
+                formulaRef: undefined,
+                formulaSharedIndex: undefined,
+              }
+            : {
+                ...cell,
+                value: result.value,
+                formula: undefined,
+                formulaType: undefined,
+                formulaRef: undefined,
+                formulaSharedIndex: undefined,
+              };
         }),
       })),
     }));

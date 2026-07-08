@@ -203,6 +203,14 @@ export function XlsxEditor({
     showFormulas,
     viewport,
   });
+  const activeModelCell =
+    sheet && activeCell
+      ? normalizeXlsxCells(
+          sheet.rows[activeCell.row]?.cells ?? [],
+          columnCount,
+          sheet.rows[activeCell.row]?.index || String(activeCell.row + 1),
+        )[activeCell.column]
+      : undefined;
 
   function commitXlsxModel(next: XlsxModel) {
     onChange(
@@ -241,7 +249,44 @@ export function XlsxEditor({
                         row.index || String(currentRowIndex + 1),
                       ).map((cell, currentCellIndex) =>
                         currentCellIndex === cellIndex
-                          ? { ...cell, ...xlsxCellFromInput(value) }
+                          ? xlsxCellFromInputWithPreservedFormulaMetadata(cell, value)
+                          : cell,
+                      ),
+                    }
+                  : row,
+              ),
+            }
+          : item,
+      ),
+    });
+  }
+
+  function updateCellFormulaMetadata(
+    rowIndex: number,
+    cellIndex: number,
+    patch: Pick<XlsxCell, "formulaType" | "formulaRef" | "formulaSharedIndex">,
+  ) {
+    if (!sheet) return;
+    commitXlsxModel({
+      sheets: model.sheets.map((item) =>
+        item.id === sheet.id
+          ? {
+              ...item,
+              rows: ensureXlsxRows(
+                item,
+                rowIndex + 1,
+                Math.max(columnCount, cellIndex + 1),
+              ).map((row, currentRowIndex) =>
+                currentRowIndex === rowIndex
+                  ? {
+                      ...row,
+                      cells: normalizeXlsxCells(
+                        row.cells,
+                        columnCount,
+                        row.index || String(currentRowIndex + 1),
+                      ).map((cell, currentCellIndex) =>
+                        currentCellIndex === cellIndex
+                          ? { ...cell, ...patch }
                           : cell,
                       ),
                     }
@@ -1605,11 +1650,16 @@ export function XlsxEditor({
               : "-"
         }
         activeCellValue={activeCellValue}
+        activeCellFormulaMetadata={activeModelCell}
         activeCellDisabled={!activeCell}
         onActiveCellLabelChange={selectReference}
         onActiveCellChange={(value) => {
           if (!activeCell) return;
           updateCell(activeCell.row, activeCell.column, value);
+        }}
+        onActiveCellFormulaMetadataChange={(patch) => {
+          if (!activeCell) return;
+          updateCellFormulaMetadata(activeCell.row, activeCell.column, patch);
         }}
         onAddRow={addRow}
         onAddColumn={addColumn}
@@ -1771,4 +1821,19 @@ export function XlsxEditor({
       <SpreadsheetStatusBar summary={selectionSummary} />
     </div>
   );
+}
+
+function xlsxCellFromInputWithPreservedFormulaMetadata(
+  cell: XlsxCell,
+  input: string,
+): XlsxCell {
+  const next = xlsxCellFromInput(input);
+  if (next.formula === undefined) return { ...cell, ...next };
+  return {
+    ...cell,
+    ...next,
+    formulaType: cell.formulaType,
+    formulaRef: cell.formulaRef,
+    formulaSharedIndex: cell.formulaSharedIndex,
+  };
 }

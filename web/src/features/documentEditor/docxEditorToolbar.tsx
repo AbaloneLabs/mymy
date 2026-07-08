@@ -22,6 +22,7 @@ import {
   List,
   ListTree,
   ListOrdered,
+  ListRestart,
   Palette,
   Plus,
   Strikethrough,
@@ -46,7 +47,7 @@ import {
 } from "./docxEditorUtils";
 import { FontFamilySelect, ToolbarButton } from "./shared";
 import { DocxMarginInput } from "./docxEditorBlocks";
-import type { DocxBlock, DocxPageSettings } from "./models";
+import type { DocxBlock, DocxPageSettings, DocxStyle } from "./models";
 
 type DocxInsertableBlockType = Exclude<
   DocxBlock["type"],
@@ -63,6 +64,7 @@ export function DocxEditorToolbar({
   textPartsOpen,
   outlineOpen,
   imageInputRef,
+  paragraphStyles,
   onUpdateActive,
   onOpenLinkEditor,
   onApplyLinkDraft,
@@ -73,6 +75,7 @@ export function DocxEditorToolbar({
   onToggleActiveVerticalAlign,
   onAdjustActiveIndent,
   onToggleActiveList,
+  onContinueActiveList,
   onInsertCommentReference,
   onInsertNoteReference,
   onUpdatePagePreset,
@@ -96,6 +99,7 @@ export function DocxEditorToolbar({
   textPartsOpen: boolean;
   outlineOpen: boolean;
   imageInputRef: RefObject<HTMLInputElement | null>;
+  paragraphStyles: DocxStyle[];
   onUpdateActive: (patch: Partial<DocxBlock>) => void;
   onOpenLinkEditor: () => void;
   onApplyLinkDraft: () => void;
@@ -108,6 +112,7 @@ export function DocxEditorToolbar({
   ) => void;
   onAdjustActiveIndent: (delta: number) => void;
   onToggleActiveList: (listKind: "bullet" | "number") => void;
+  onContinueActiveList: () => void;
   onInsertCommentReference: () => void;
   onInsertNoteReference: (kind: "footnote" | "endnote") => void;
   onUpdatePagePreset: (value: string) => void;
@@ -125,6 +130,27 @@ export function DocxEditorToolbar({
   const { t } = useTranslation();
 
   function updateBlockType(value: string) {
+    const styleMatch = /^style:(.+)$/.exec(value);
+    if (styleMatch) {
+      const style = paragraphStyles.find((item) => item.id === styleMatch[1]);
+      if (!style) return;
+      const headingLevel = headingLevelFromStyleId(style.id);
+      onUpdateActive({
+        type: headingLevel ? "heading" : "paragraph",
+        headingLevel,
+        paragraphStyleId: style.id,
+        paragraphStyleName: style.name,
+        fontFamily: undefined,
+        fontSize: undefined,
+        bold: undefined,
+        italic: undefined,
+        underline: undefined,
+        strikethrough: undefined,
+        color: undefined,
+        highlight: undefined,
+      });
+      return;
+    }
     if (value === "image") return;
     if (value === "pageBreak") {
       onUpdateActive({
@@ -179,6 +205,8 @@ export function DocxEditorToolbar({
     onUpdateActive({
       type,
       headingLevel,
+      paragraphStyleId: type === "heading" ? `Heading${headingLevel ?? 1}` : undefined,
+      paragraphStyleName: undefined,
       text: type === "table" ? "" : activeBlock?.text ?? "",
       rows: type === "table" ? tableRows : undefined,
       tableColumnWidths:
@@ -216,7 +244,9 @@ export function DocxEditorToolbar({
     <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-2">
       <select
         value={
-          activeBlock?.type === "heading"
+          activeBlock?.paragraphStyleId && activeBlock.type !== "heading"
+            ? `style:${activeBlock.paragraphStyleId}`
+            : activeBlock?.type === "heading"
             ? `heading:${activeBlock.headingLevel ?? 1}`
             : activeBlock?.type ?? "paragraph"
         }
@@ -234,6 +264,15 @@ export function DocxEditorToolbar({
         <option value="pageBreak">Page break</option>
         <option value="sectionBreak">Section break</option>
         {activeBlock?.type === "image" && <option value="image">Image</option>}
+        {documentParagraphStyles(paragraphStyles).length > 0 && (
+          <optgroup label="Document styles">
+            {documentParagraphStyles(paragraphStyles).map((style) => (
+              <option key={style.id} value={`style:${style.id}`}>
+                {style.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
       </select>
       {activeBlock?.type === "sectionBreak" && (
         <select
@@ -460,6 +499,51 @@ export function DocxEditorToolbar({
         active={activeBlock?.listKind === "number"}
         disabled={!activeBlock || activeBlock.type === "table"}
       />
+      {activeBlock?.listKind && (
+        <>
+          <select
+            value={activeBlock.listLevel ?? 0}
+            onChange={(event) =>
+              onUpdateActive({ listLevel: Number(event.target.value) })
+            }
+            className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            title="List level"
+          >
+            {Array.from({ length: 9 }, (_, index) => (
+              <option key={index} value={index}>
+                Level {index + 1}
+              </option>
+            ))}
+          </select>
+          {activeBlock.listKind === "number" && (
+            <>
+              <label className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]">
+                Start
+                <input
+                  type="number"
+                  min={1}
+                  max={100000}
+                  value={activeBlock.listStart ?? ""}
+                  onChange={(event) =>
+                    onUpdateActive({
+                      listStart: event.target.value
+                        ? Number(event.target.value)
+                        : undefined,
+                    })
+                  }
+                  className="w-14 bg-transparent text-xs text-[var(--text)] outline-none"
+                />
+              </label>
+              <ToolbarButton
+                icon={ListRestart}
+                label="Continue list"
+                onClick={onContinueActiveList}
+                disabled={!activeBlock}
+              />
+            </>
+          )}
+        </>
+      )}
       <select
         value={activeBlock?.lineSpacing ?? 276}
         onChange={(event) => onUpdateActive({ lineSpacing: Number(event.target.value) })}
@@ -508,6 +592,24 @@ export function DocxEditorToolbar({
           onUpdateActive({ pageBreakBefore: !activeBlock?.pageBreakBefore })
         }
         active={activeBlock?.pageBreakBefore}
+        disabled={!isDocxTextBlock(activeBlock)}
+      />
+      <ToolbarButton
+        icon={FileText}
+        label="Keep with next"
+        onClick={() => onUpdateActive({ keepWithNext: !activeBlock?.keepWithNext })}
+        active={activeBlock?.keepWithNext}
+        disabled={!isDocxTextBlock(activeBlock)}
+      />
+      <ToolbarButton
+        icon={FileText}
+        label="Keep lines together"
+        onClick={() =>
+          onUpdateActive({
+            keepLinesTogether: !activeBlock?.keepLinesTogether,
+          })
+        }
+        active={activeBlock?.keepLinesTogether}
         disabled={!isDocxTextBlock(activeBlock)}
       />
       <ToolbarButton
@@ -562,6 +664,39 @@ export function DocxEditorToolbar({
         <option value="portrait">Portrait</option>
         <option value="landscape">Landscape</option>
       </select>
+      <select
+        value={page?.columnCount ?? 1}
+        onChange={(event) =>
+          onUpdatePage({
+            columnCount: Number(event.target.value),
+            columnEqualWidth: true,
+          })
+        }
+        className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+        title="Columns"
+      >
+        {Array.from({ length: 6 }, (_, index) => index + 1).map((count) => (
+          <option key={count} value={count}>
+            {count} column{count === 1 ? "" : "s"}
+          </option>
+        ))}
+      </select>
+      <label className="inline-flex h-8 items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--text-muted)]">
+        Gap
+        <input
+          type="number"
+          min={0}
+          max={144}
+          value={twipsToPoints(page?.columnSpacing ?? 720)}
+          onChange={(event) =>
+            onUpdatePage({
+              columnSpacing: pointsToTwips(Number(event.target.value)),
+              columnEqualWidth: true,
+            })
+          }
+          className="w-12 bg-transparent text-xs text-[var(--text)] outline-none"
+        />
+      </label>
       <DocxMarginInput
         label="Top"
         value={page?.marginTop}
@@ -683,4 +818,21 @@ export function DocxEditorToolbar({
       </div>
     </div>
   );
+}
+
+function documentParagraphStyles(styles: DocxStyle[]) {
+  return styles.filter(
+    (style) =>
+      style.type === "paragraph" &&
+      !headingLevelFromStyleId(style.id) &&
+      style.id !== "Normal",
+  );
+}
+
+function headingLevelFromStyleId(styleId: string) {
+  const normalized = styleId
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  const level = Number(normalized.replace(/^heading/, ""));
+  return Number.isInteger(level) && level >= 1 && level <= 6 ? level : undefined;
 }
