@@ -18,6 +18,19 @@ const DOCX_INLINE_STYLE_KEYS: DocxInlineStyleKey[] = [
   "highlight",
 ];
 
+const DOCX_STYLE_INHERITED_KEYS = [
+  "bold",
+  "italic",
+  "underline",
+  "strikethrough",
+  "verticalAlign",
+  "fontFamily",
+  "fontSize",
+  "color",
+  "highlight",
+  "align",
+] as const;
+
 /**
  * DOCX run metadata is preserved only while the visible text still matches the
  * original run sequence. Once a contenteditable edit changes the text, the
@@ -112,6 +125,17 @@ export function replaceDocxRunRange(
   };
 }
 
+export function docxRunTextInputPatch(
+  block: DocxBlock,
+  start: number,
+  end: number,
+  text: string,
+) {
+  if (!isDocxTextBlock(block)) return null;
+  const replacementRuns = text ? [docxInsertionRun(block, start, text)] : [];
+  return replaceDocxRunRange(block, start, end, replacementRuns);
+}
+
 export function splitDocxRunsAroundRange(
   block: DocxBlock,
   start: number,
@@ -176,7 +200,26 @@ export function docxStyleForBlock(
     block.paragraphStyleId ??
     (block.type === "heading" ? `Heading${block.headingLevel ?? 1}` : undefined);
   if (!styleId) return undefined;
-  return styles?.find((style) => style.id === styleId);
+  return resolveDocxStyle(styles, styleId);
+}
+
+export function resolveDocxStyle(
+  styles: DocxStyle[] | undefined,
+  styleId: string,
+  visited = new Set<string>(),
+): DocxStyle | undefined {
+  const style = styles?.find((item) => item.id === styleId);
+  if (!style || !style.basedOn || visited.has(style.id)) return style;
+  visited.add(style.id);
+  const base = resolveDocxStyle(styles, style.basedOn, visited);
+  if (!base) return style;
+  const merged: DocxStyle = { ...base, ...style };
+  for (const key of DOCX_STYLE_INHERITED_KEYS) {
+    if (style[key] === undefined && base[key] !== undefined) {
+      merged[key] = base[key] as never;
+    }
+  }
+  return merged;
 }
 
 export function docxTextBlockStyle(
@@ -281,6 +324,24 @@ function baseDocxRun(block: DocxBlock, text: string): DocxRun {
     }
   }
   return run;
+}
+
+function docxInsertionRun(block: DocxBlock, offset: number, text: string) {
+  const safeOffset = Math.max(0, Math.min(block.text.length, offset));
+  const runs = splitDocxRuns(block);
+  let cursor = 0;
+  let fallback = runs[0] ?? baseDocxRun(block, "");
+  for (const run of runs) {
+    const runStart = cursor;
+    const runEnd = runStart + run.text.length;
+    if (safeOffset >= runStart && safeOffset <= runEnd) {
+      fallback = run;
+      break;
+    }
+    fallback = run;
+    cursor = runEnd;
+  }
+  return { ...fallback, text };
 }
 
 function runsIntersectingRange(block: DocxBlock, start: number, end: number) {

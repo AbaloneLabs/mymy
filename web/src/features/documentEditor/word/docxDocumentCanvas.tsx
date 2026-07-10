@@ -1,13 +1,20 @@
-import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
+import type {
+  FormEvent as ReactFormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import {
   docxPageStyle,
   sectionBreakLabel,
+  setTextSelectionOffsetsWithin,
+  textSelectionOffsetsWithin,
 } from "./docxEditorUtils";
 import {
   docxRenderableRuns,
   docxRunStyle,
+  docxRunTextInputPatch,
   docxStyleForBlock,
   docxTextBlockStyle,
   docxTextEditPatch,
@@ -151,6 +158,29 @@ export function DocxDocumentCanvas({
   onUpdateTableStyle,
 }: DocxDocumentCanvasProps) {
   const { t } = useTranslation();
+
+  function handleTextBlockBeforeInput(
+    event: ReactFormEvent<HTMLDivElement>,
+    block: DocxBlock,
+    blockIndex: number,
+  ) {
+    const inputEvent = event.nativeEvent as InputEvent;
+    if (inputEvent.isComposing || composingBlockIdRef.current === block.id) return;
+    const selection = textSelectionOffsetsWithin(event.currentTarget);
+    if (!selection) return;
+    const result = docxRunPatchForInput(block, selection, inputEvent);
+    if (!result) return;
+    event.preventDefault();
+    onUpdateBlock(blockIndex, result.patch);
+    requestAnimationFrame(() => {
+      const element = document.querySelector<HTMLElement>(
+        `[data-docx-block="${CSS.escape(block.id)}"]`,
+      );
+      if (!element) return;
+      element.focus();
+      setTextSelectionOffsetsWithin(element, result.nextOffset);
+    });
+  }
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] p-6">
       <DocxRuler page={model.page} onChange={onUpdatePage} />
@@ -295,6 +325,12 @@ export function DocxDocumentCanvas({
                   );
                 }}
                 onKeyDown={(event) => {
+                  if (
+                    event.nativeEvent.isComposing ||
+                    composingBlockIdRef.current === block.id
+                  ) {
+                    return;
+                  }
                   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                     event.preventDefault();
                     onInsertPageBreak();
@@ -314,6 +350,9 @@ export function DocxDocumentCanvas({
                   }
                   onHandleBlockShortcut(event, index);
                 }}
+                onBeforeInput={(event) =>
+                  handleTextBlockBeforeInput(event, block, index)
+                }
                 onPaste={(event) => {
                   if (
                     onPasteClipboardIntoBlock(
@@ -379,4 +418,46 @@ export function DocxDocumentCanvas({
       </div>
     </div>
   );
+}
+
+function docxRunPatchForInput(
+  block: DocxBlock,
+  selection: { start: number; end: number },
+  event: InputEvent,
+) {
+  const inputType = event.inputType;
+  const selectedStart = selection.start;
+  const selectedEnd = selection.end;
+  if (inputType === "insertText" && event.data) {
+    const nextBlock = docxRunTextInputPatch(
+      block,
+      selectedStart,
+      selectedEnd,
+      event.data,
+    );
+    return nextBlock
+      ? { patch: nextBlock, nextOffset: selectedStart + event.data.length }
+      : null;
+  }
+  if (inputType === "insertLineBreak") {
+    const nextBlock = docxRunTextInputPatch(block, selectedStart, selectedEnd, "\n");
+    return nextBlock ? { patch: nextBlock, nextOffset: selectedStart + 1 } : null;
+  }
+  if (inputType === "deleteContentBackward") {
+    const start =
+      selectedStart === selectedEnd ? Math.max(0, selectedStart - 1) : selectedStart;
+    if (start === selectedEnd) return null;
+    const nextBlock = docxRunTextInputPatch(block, start, selectedEnd, "");
+    return nextBlock ? { patch: nextBlock, nextOffset: start } : null;
+  }
+  if (inputType === "deleteContentForward") {
+    const end =
+      selectedStart === selectedEnd
+        ? Math.min(block.text.length, selectedEnd + 1)
+        : selectedEnd;
+    if (selectedStart === end) return null;
+    const nextBlock = docxRunTextInputPatch(block, selectedStart, end, "");
+    return nextBlock ? { patch: nextBlock, nextOffset: selectedStart } : null;
+  }
+  return null;
 }

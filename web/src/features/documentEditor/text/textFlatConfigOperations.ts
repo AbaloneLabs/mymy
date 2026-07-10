@@ -191,6 +191,9 @@ export function appendFlatConfigEntry(
   while (insertAt < lines.length && !tomlSectionHeader(lines[insertAt])) {
     insertAt += 1;
   }
+  while (insertAt > sectionIndex + 1 && !lines[insertAt - 1].trim()) {
+    insertAt -= 1;
+  }
   lines.splice(insertAt, 0, `${entry.key} = ${entry.value}`);
   return joinStructuredTextLines(lines, content);
 }

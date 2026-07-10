@@ -348,6 +348,21 @@ export function textSelectionOffsetsWithin(element: HTMLElement) {
   };
 }
 
+export function setTextSelectionOffsetsWithin(
+  element: HTMLElement,
+  start: number,
+  end = start,
+) {
+  const startPosition = textNodePositionForOffset(element, start);
+  const endPosition = textNodePositionForOffset(element, end);
+  const range = document.createRange();
+  range.setStart(startPosition.node, startPosition.offset);
+  range.setEnd(endPosition.node, endPosition.offset);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
 export function focusDocxBlock(id: string) {
   const element = document.querySelector<HTMLElement>(
     `[data-docx-block="${CSS.escape(id)}"]`,
@@ -360,4 +375,26 @@ export function focusDocxBlock(id: string) {
   const selection = window.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);
+}
+
+function textNodePositionForOffset(element: HTMLElement, offset: number) {
+  const targetOffset = Math.max(0, offset);
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.textContent?.length ?? 0;
+    if (targetOffset <= consumed + length) {
+      return {
+        node,
+        offset: Math.max(0, Math.min(length, targetOffset - consumed)),
+      };
+    }
+    consumed += length;
+    node = walker.nextNode();
+  }
+  return {
+    node: element,
+    offset: element.childNodes.length,
+  };
 }
