@@ -16,6 +16,7 @@ import { ViewToggleButton } from "@/features/tasks/components/ViewToggleButton";
 import { findStatusDef } from "@/features/tasks/utils";
 import type { TaskStatus } from "@/types/task-statuses";
 import type { Task } from "@/types/tasks";
+import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/WorkspaceScopeToggle";
 
 /**
  * Tasks page — full-width workspace with a view toggle between
@@ -45,6 +46,7 @@ export default function TasksPage() {
   const setView = useTasksViewStore((s) => s.setView);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [listScope, setListScope] = useState<WorkspaceListScope>("all");
   const [newTitle, setNewTitle] = useState("");
   const [newStatus, setNewStatus] = useState<TaskStatus>("");
   const [creating, setCreating] = useState(false);
@@ -53,7 +55,12 @@ export default function TasksPage() {
 
   // Fetch ALL tasks (no status filter) so the board can group by status.
   // The list view filters client-side via statusFilter.
-  const { data, isLoading } = useTasks(selectedProjectId ?? undefined);
+  const effectiveScope = selectedProjectId ? "project" : listScope;
+  const { data, isLoading } = useTasks(
+    selectedProjectId ?? undefined,
+    undefined,
+    effectiveScope,
+  );
   const allTasks = data?.tasks ?? [];
 
   // Dynamic status definitions.
@@ -181,6 +188,10 @@ export default function TasksPage() {
             <span className="text-xs text-[var(--status-error)]">
               {t("tasks.createError")}
             </span>
+          )}
+
+          {!selectedProjectId && (
+            <WorkspaceScopeToggle value={listScope} onChange={setListScope} />
           )}
 
           {/* View toggle */}

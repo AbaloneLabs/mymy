@@ -35,11 +35,19 @@ export function handleStreamEvent(
   },
 ) {
   switch (event.type) {
+    case "run_status":
+      break;
+    case "outcome_unknown":
+      break;
     case "user_message":
       setters.setStreamUserMessage(event.message);
       break;
     case "text_delta":
       setters.setStreamAssistantText((current) => current + event.content);
+      break;
+    case "model_turn_started":
+    case "checklist_changed":
+    case "checkpoint_created":
       break;
     case "tool_call_start":
       setters.setToolEvents((current) => [
@@ -51,6 +59,8 @@ export function handleStreamEvent(
           status: "running",
           arguments: event.arguments,
           detail: event.arguments,
+          resourceKey: event.resource_key ?? undefined,
+          cancellation: event.capability?.cancellation,
         },
       ]);
       break;

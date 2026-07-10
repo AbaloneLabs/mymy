@@ -16,17 +16,17 @@ import type {
   InvestmentWatchlistResponse,
 } from "@/types/investments";
 
-export function useInvestmentSummary() {
+export function useInvestmentSummary(projectId?: string, scope = "all") {
   return useQuery({
-    queryKey: ["investments", "summary"],
-    queryFn: () => api.get<InvestmentSummaryResponse>("/investments/summary"),
+    queryKey: ["investments", "summary", projectId, scope],
+    queryFn: () => api.get<InvestmentSummaryResponse>(`/investments/summary?${scopeQuery(projectId, scope)}`),
   });
 }
 
-export function useInvestmentAccounts() {
+export function useInvestmentAccounts(projectId?: string, scope = "all") {
   return useQuery({
-    queryKey: ["investments", "accounts"],
-    queryFn: () => api.get<InvestmentAccountsResponse>("/investments/accounts"),
+    queryKey: ["investments", "accounts", projectId, scope],
+    queryFn: () => api.get<InvestmentAccountsResponse>(`/investments/accounts?${scopeQuery(projectId, scope)}`),
   });
 }
 
@@ -37,10 +37,10 @@ export function useInvestmentAssets() {
   });
 }
 
-export function useInvestmentPositions() {
+export function useInvestmentPositions(projectId?: string, scope = "all") {
   return useQuery({
-    queryKey: ["investments", "positions"],
-    queryFn: () => api.get<InvestmentPositionsResponse>("/investments/positions"),
+    queryKey: ["investments", "positions", projectId, scope],
+    queryFn: () => api.get<InvestmentPositionsResponse>(`/investments/positions?${scopeQuery(projectId, scope)}`),
   });
 }
 
@@ -55,11 +55,11 @@ export function useInvestmentValuationSnapshots(positionId?: string | null) {
   });
 }
 
-export function useInvestmentCashflows() {
+export function useInvestmentCashflows(projectId?: string, scope = "all") {
   return useQuery({
-    queryKey: ["investments", "cashflows"],
+    queryKey: ["investments", "cashflows", projectId, scope],
     queryFn: () =>
-      api.get<InvestmentCashflowsResponse>("/investments/cashflows"),
+      api.get<InvestmentCashflowsResponse>(`/investments/cashflows?${scopeQuery(projectId, scope)}`),
   });
 }
 
@@ -170,4 +170,15 @@ function useInvestmentInvalidator() {
   return () => {
     qc.invalidateQueries({ queryKey: ["investments"] });
   };
+}
+
+function scopeQuery(projectId: string | undefined, scope: string) {
+  const params = new URLSearchParams();
+  if (projectId) {
+    params.set("scope", "project");
+    params.set("projectId", projectId);
+  } else {
+    params.set("scope", scope);
+  }
+  return params.toString();
 }

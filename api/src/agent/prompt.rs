@@ -11,6 +11,10 @@ use crate::agent::runtime::apply_cache_breakpoint;
 use crate::agent::security::{scan_for_threats, ThreatScope};
 use crate::services::sandbox_runner::logical_path_for_runner;
 
+/// Version the behavioral contract independently from provider/model names so
+/// persisted runs can explain which stable guidance shaped their execution.
+pub const PROMPT_VERSION: &str = "agent-workspace-v1";
+
 #[derive(Debug, Clone)]
 pub struct PromptConfig {
     pub soul_md_path: Option<PathBuf>,
@@ -38,7 +42,7 @@ the available tools, explain blockers concretely, and avoid inventing facts or \
 data that are not present in the workspace or returned by tools.";
 
 pub fn build_system_prompt_parts(config: &PromptConfig) -> PromptParts {
-    let mut stable_parts = vec![load_identity(config)];
+    let mut stable_parts = vec![load_identity(config), build_execution_guidance()];
     let guidance = build_tool_guidance(&config.available_tool_names);
     if !guidance.is_empty() {
         stable_parts.push(guidance);
@@ -107,8 +111,10 @@ fn build_tool_guidance(tool_names: &[String]) -> String {
         return String::new();
     }
     let mut parts = vec![
-        "Complete tasks fully when the available tools make completion possible. Use tools for current workspace facts instead of guessing.",
-        "When calling tools, provide valid JSON arguments and use the returned tool output as the source of truth.",
+        "[Tool Call Style]",
+        "Use tools for current workspace facts instead of guessing. Before a mutating call, inspect the target and preserve the user's concurrent changes.",
+        "Provide valid JSON arguments. Treat returned data as evidence, check errors explicitly, and verify the resulting state after mutations.",
+        "Do not repeat a non-idempotent call when its outcome is unknown. Report the uncertainty and request reconciliation instead.",
     ];
     if tool_names
         .iter()
@@ -123,6 +129,12 @@ fn build_tool_guidance(tool_names: &[String]) -> String {
         parts.push("Use web tools only when current external information is required.");
     }
     parts.join("\n")
+}
+
+fn build_execution_guidance() -> String {
+    format!(
+        "[Execution]\nPrompt version: {PROMPT_VERSION}\nComplete the user's requested outcome when the available capabilities make it possible. Keep working through verification; do not stop merely after describing a plan or making an unverified change.\nUse a focused clarification only when a missing decision materially changes the result or authority. Otherwise make a bounded, reversible assumption and state it in the result.\n\n[Run Progress]\nFor work with three or more dependent steps, keep the runtime todo checklist current and mark only one item in progress. The runtime todo checklist is private execution state, not a workspace Task. Create or modify a workspace Task only when the user requested durable task tracking or the workflow explicitly requires a lasting work item.\nBefore claiming completion, verify the requested outcome and relevant checks. If blocked, preserve completed work and report the concrete unresolved condition."
+    )
 }
 
 fn load_context_files(config: &PromptConfig) -> String {
@@ -228,6 +240,10 @@ mod tests {
         });
 
         assert!(parts.stable.contains("read_file"));
+        assert!(parts.stable.contains(PROMPT_VERSION));
+        assert!(parts.stable.contains("[Execution]"));
+        assert!(parts.stable.contains("[Tool Call Style]"));
+        assert!(parts.stable.contains("[Run Progress]"));
         assert!(parts.context.contains("stable context"));
         assert!(!parts.stable.contains("UTC timestamp"));
         assert!(parts.volatile.contains("UTC timestamp"));
@@ -242,5 +258,67 @@ mod tests {
             ThreatScope::Strict,
         );
         assert!(sanitized.contains("Blocked MEMORY.md"));
+    }
+
+    #[test]
+    fn tool_guidance_is_excluded_without_available_tools() {
+        let parts = build_system_prompt_parts(&PromptConfig {
+            soul_md_path: None,
+            agents_md_path: None,
+            working_dir: std::env::current_dir().unwrap(),
+            memory_md_path: None,
+            user_md_path: None,
+            available_tool_names: Vec::new(),
+            model: "test-model".to_string(),
+            system_message: None,
+            volatile_system_message: None,
+        });
+
+        assert!(parts.stable.contains("[Execution]"));
+        assert!(!parts.stable.contains("[Tool Call Style]"));
+    }
+
+    #[test]
+    fn runtime_todo_and_workspace_task_are_distinct() {
+        let guidance = build_execution_guidance();
+
+        assert!(guidance.contains("runtime todo checklist is private execution state"));
+        assert!(guidance.contains("not a workspace Task"));
+        assert!(guidance.contains("only when the user requested durable task tracking"));
+    }
+
+    #[test]
+    fn behavior_baseline_defines_at_least_ten_unique_scenarios() {
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            prompt_version: String,
+            scenarios: Vec<Scenario>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Scenario {
+            id: String,
+            category: String,
+            required_behaviors: Vec<String>,
+            prohibited_behaviors: Vec<String>,
+        }
+
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../tests/fixtures/agent_behavior_scenarios.json"
+        ))
+        .unwrap();
+        let ids = fixture
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(fixture.prompt_version, PROMPT_VERSION);
+        assert!(fixture.scenarios.len() >= 10);
+        assert_eq!(ids.len(), fixture.scenarios.len());
+        assert!(fixture.scenarios.iter().all(|scenario| {
+            !scenario.category.trim().is_empty()
+                && !scenario.required_behaviors.is_empty()
+                && !scenario.prohibited_behaviors.is_empty()
+        }));
     }
 }

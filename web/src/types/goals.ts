@@ -9,6 +9,17 @@ export type GoalStatus = "active" | "completed" | "archived";
 
 export type KpiType = "manual" | "task_completion" | "finance";
 
+export interface FinanceKpiDefinition {
+  metric: "income" | "expense" | "net";
+  currency: string;
+  scope: "all" | "general" | "project";
+  projectId?: string;
+  status: "all" | "cleared" | "pending";
+  from?: string;
+  to?: string;
+  category?: string;
+}
+
 
 export interface KeyResult {
   id: string;
@@ -26,6 +37,10 @@ export interface KeyResult {
   unit: string;
 
   progress: number;
+
+  financeDefinition?: FinanceKpiDefinition;
+
+  calculationStatus: "ready" | "no_assignment" | "unconfigured" | "broken_scope";
 
   createdAt: string;
 
@@ -49,6 +64,12 @@ export interface Goal {
   progress: number;
 
   keyResults?: KeyResult[];
+
+  taskAssignment: {
+    assigned: number;
+    completed: number;
+    hasAssignment: boolean;
+  };
 
   createdAt: string;
 
@@ -80,6 +101,7 @@ export interface CreateKeyResultInput {
   targetValue?: number;
   currentValue?: number;
   unit?: string;
+  financeDefinition?: FinanceKpiDefinition;
 }
 
 
@@ -89,4 +111,5 @@ export interface UpdateKeyResultInput {
   targetValue?: number;
   currentValue?: number;
   unit?: string;
+  financeDefinition?: FinanceKpiDefinition | null;
 }

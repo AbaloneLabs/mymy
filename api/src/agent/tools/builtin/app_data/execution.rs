@@ -5,16 +5,23 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agent::tools::{tool_result, ToolError, ToolHandler};
+use crate::agent::execution::ToolExecutionContext;
+use crate::agent::tools::{
+    tool_result, DataSensitivity, ToolCapability, ToolEffect, ToolError, ToolHandler,
+};
 use crate::error::AppError;
 use crate::models::drive::{CreateDriveFolderRequest, WriteDriveFileRequest};
-use crate::models::knowledge::KnowledgeTreeQuery;
+use crate::models::knowledge::{AttachKnowledgeResourceRequest, KnowledgeTreeQuery};
 use crate::models::sandbox::StartSandboxProcessRequest;
 use crate::services::agent_prompts::AgentPromptQuery;
 use crate::services::agents as agents_service;
 use crate::services::calendar::{self as calendar_service, EventQuery};
 use crate::services::chat::{self, SessionQuery};
 use crate::services::drive as drive_service;
+use crate::services::file_observations::{
+    ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
+    FileObservationSource,
+};
 use crate::services::goals::{self as goals_service, GoalQuery};
 use crate::services::investments::{self as investments_service, InvestmentListQuery};
 use crate::services::knowledge as knowledge_service;
@@ -45,6 +52,7 @@ pub(super) enum AppAction {
     TaskCreate,
     TaskUpdate,
     TaskDelete,
+    TaskLink,
     KnowledgeTree,
     KnowledgeSearch,
     KnowledgeGet,
@@ -53,6 +61,9 @@ pub(super) enum AppAction {
     KnowledgeUpdate,
     KnowledgeMove,
     KnowledgeDelete,
+    KnowledgeResourceList,
+    KnowledgeResourceAttach,
+    KnowledgeResourceDetach,
     NoteList,
     NoteSearch,
     NoteCreate,
@@ -103,6 +114,111 @@ pub(super) enum AppAction {
     AgentDelete,
 }
 
+impl AppAction {
+    pub(super) fn capability(&self) -> ToolCapability {
+        use AppAction::*;
+
+        match self {
+            GetAgentPrompts { .. } => ToolCapability::read("agent_prompt"),
+            UpdateAgentPrompts { .. } => {
+                ToolCapability::mutation(ToolEffect::Update, "agent_prompt")
+            }
+            SessionList | SessionRead => ToolCapability::read("session"),
+            GoalList | GoalGet => ToolCapability::read("goal"),
+            GoalCreate | KeyResultCreate => ToolCapability::mutation(ToolEffect::Create, "goal"),
+            GoalUpdate | KeyResultUpdate => ToolCapability::mutation(ToolEffect::Update, "goal"),
+            GoalDelete | KeyResultDelete => ToolCapability::mutation(ToolEffect::Delete, "goal"),
+            CalendarList => ToolCapability::read("calendar"),
+            CalendarCreate => ToolCapability::mutation(ToolEffect::Create, "calendar"),
+            CalendarUpdate => ToolCapability::mutation(ToolEffect::Update, "calendar"),
+            CalendarDelete => ToolCapability::mutation(ToolEffect::Delete, "calendar"),
+            TaskList => ToolCapability::read("task"),
+            TaskCreate => ToolCapability::mutation(ToolEffect::Create, "task"),
+            TaskUpdate | TaskLink => ToolCapability::mutation(ToolEffect::Update, "task"),
+            TaskDelete => ToolCapability::mutation(ToolEffect::Delete, "task"),
+            KnowledgeTree | KnowledgeSearch | KnowledgeGet | KnowledgeList => {
+                ToolCapability::read("knowledge")
+            }
+            KnowledgeCreate => ToolCapability::mutation(ToolEffect::Create, "knowledge"),
+            KnowledgeUpdate | KnowledgeMove => {
+                ToolCapability::mutation(ToolEffect::Update, "knowledge")
+            }
+            KnowledgeDelete => ToolCapability::mutation(ToolEffect::Delete, "knowledge"),
+            KnowledgeResourceList => {
+                ToolCapability::read("knowledge_resource").with_resource_argument("knowledgeId")
+            }
+            KnowledgeResourceAttach => {
+                ToolCapability::mutation(ToolEffect::Create, "knowledge_resource")
+                    .with_resource_argument("knowledgeId")
+            }
+            KnowledgeResourceDetach => {
+                ToolCapability::mutation(ToolEffect::Delete, "knowledge_resource")
+                    .with_resource_argument("resourceId")
+            }
+            NoteList | NoteSearch => ToolCapability::read("note"),
+            NoteCreate => ToolCapability::mutation(ToolEffect::Create, "note"),
+            NoteUpdate => ToolCapability::mutation(ToolEffect::Update, "note"),
+            NoteDelete => ToolCapability::mutation(ToolEffect::Delete, "note"),
+            DriveList | DriveRead => ToolCapability::read("file").with_resource_argument("path"),
+            DriveWrite | DriveMkdir | DriveRestore => {
+                ToolCapability::mutation(ToolEffect::Update, "file").with_resource_argument("path")
+            }
+            DriveDelete => {
+                ToolCapability::mutation(ToolEffect::Delete, "file").with_resource_argument("path")
+            }
+            ProcessList { .. } | ProcessLogs => ToolCapability::read("process"),
+            ProcessStart { .. } | ProcessStop | ProcessKill => ToolCapability::process(),
+            TransactionList | TransactionSummary => {
+                ToolCapability::read("finance").with_sensitivity(DataSensitivity::Financial)
+            }
+            TransactionCreate => ToolCapability::mutation(ToolEffect::Create, "finance")
+                .with_sensitivity(DataSensitivity::Financial),
+            TransactionUpdate => ToolCapability::mutation(ToolEffect::Update, "finance")
+                .with_sensitivity(DataSensitivity::Financial),
+            TransactionDelete => ToolCapability::mutation(ToolEffect::Delete, "finance")
+                .with_sensitivity(DataSensitivity::Financial),
+            InvestmentSummary
+            | InvestmentAccountList
+            | InvestmentAssetList
+            | InvestmentPositionList
+            | InvestmentValuationList
+            | InvestmentCashflowList
+            | InvestmentWatchlistList => {
+                ToolCapability::read("investment").with_sensitivity(DataSensitivity::Financial)
+            }
+            InvestmentAccountCreate
+            | InvestmentAssetCreate
+            | InvestmentPositionCreate
+            | InvestmentValuationCreate
+            | InvestmentCashflowCreate
+            | InvestmentWatchlistCreate => {
+                ToolCapability::mutation(ToolEffect::Create, "investment")
+                    .with_sensitivity(DataSensitivity::Financial)
+            }
+            InvestmentAccountUpdate
+            | InvestmentAssetUpdate
+            | InvestmentPositionUpdate
+            | InvestmentCashflowUpdate => {
+                ToolCapability::mutation(ToolEffect::Update, "investment")
+                    .with_sensitivity(DataSensitivity::Financial)
+            }
+            InvestmentAccountDelete
+            | InvestmentAssetDelete
+            | InvestmentPositionDelete
+            | InvestmentValuationDelete
+            | InvestmentCashflowDelete
+            | InvestmentWatchlistDelete => {
+                ToolCapability::mutation(ToolEffect::Delete, "investment")
+                    .with_sensitivity(DataSensitivity::Financial)
+            }
+            AgentList => ToolCapability::read("agent"),
+            AgentCreate => ToolCapability::mutation(ToolEffect::Create, "agent"),
+            AgentUpdate => ToolCapability::mutation(ToolEffect::Update, "agent"),
+            AgentDelete => ToolCapability::mutation(ToolEffect::Delete, "agent"),
+        }
+    }
+}
+
 pub(super) struct AppDataTool {
     pub(super) state: Arc<AppState>,
     pub(super) action: AppAction,
@@ -116,6 +232,152 @@ impl ToolHandler for AppDataTool {
             "success": true,
             "data": value,
         })))
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        if matches!(self.action, AppAction::TaskLink) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let task_id = uuid_arg(args, "id")?;
+                crate::services::work_graph::link_task_explicit(&self.state, context, task_id)
+                    .await
+                    .map_err(app_error_to_tool)?;
+                Ok(tool_result(&serde_json::json!({
+                    "success": true,
+                    "data": { "taskId": task_id, "linked": true },
+                })))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::SessionList) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let query = SessionQuery {
+                    project_id: context.project_id.map(|id| id.to_string()),
+                    scope: Some(if context.project_id.is_some() {
+                        "project".to_string()
+                    } else {
+                        "general".to_string()
+                    }),
+                    profile: Some(context.agent_profile.clone()),
+                };
+                let value = chat::list_sessions(&self.state, query)
+                    .await
+                    .map_err(app_error_to_tool)?;
+                Ok(tool_result(&serde_json::json!({
+                    "success": true,
+                    "data": value,
+                })))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::SessionRead) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let session_id = uuid_arg(args, "id")?;
+                let allowed = sqlx::query_scalar::<_, bool>(
+                    r#"SELECT EXISTS(
+                         SELECT 1 FROM chat_sessions
+                         WHERE id = $1 AND profile = $2
+                           AND project_id IS NOT DISTINCT FROM $3
+                       )"#,
+                )
+                .bind(session_id)
+                .bind(&context.agent_profile)
+                .bind(context.project_id)
+                .fetch_one(&self.state.db)
+                .await
+                .map_err(|err| ToolError::Execution(err.to_string()))?;
+                if !allowed {
+                    return Err(ToolError::Execution(
+                        "session is outside the current agent/project scope".to_string(),
+                    ));
+                }
+                let value = chat::get_messages(&self.state, session_id)
+                    .await
+                    .map_err(app_error_to_tool)?;
+                Ok(tool_result(&serde_json::json!({
+                    "success": true,
+                    "data": value,
+                })))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::DriveRead) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let path = required_str(args, "path")?;
+                let resolved =
+                    drive_service::resolve_drive_path(&self.state.config.agent_data_dir, path)
+                        .map_err(app_error_to_tool)?;
+                let response = drive_service::read_file(&self.state, path)
+                    .await
+                    .map_err(app_error_to_tool)?;
+                let fingerprint = fingerprint_path(&resolved.physical_path)
+                    .await
+                    .map_err(ToolError::Execution)?;
+                record_file_observation(
+                    Some(&self.state.db),
+                    Some(&context.agent_profile),
+                    &resolved.logical_path,
+                    &resolved.physical_path,
+                    FileObservationSource::Read,
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+                Ok(tool_result(&serde_json::json!({
+                    "success": true,
+                    "data": response,
+                    "fingerprint": fingerprint.hash,
+                })))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::DriveWrite) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let req: WriteDriveFileRequest = typed(args)?;
+                let resolved =
+                    drive_service::resolve_drive_path(&self.state.config.agent_data_dir, &req.path)
+                        .map_err(app_error_to_tool)?;
+                ensure_file_not_changed_since_observed(
+                    Some(&self.state.db),
+                    Some(&context.agent_profile),
+                    &resolved.logical_path,
+                    &resolved.physical_path,
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+                if resolved.physical_path.exists() {
+                    let expected = required_str(args, "expectedFingerprint")?;
+                    let current = fingerprint_path(&resolved.physical_path)
+                        .await
+                        .map_err(ToolError::Execution)?;
+                    if expected != current.hash {
+                        return Err(ToolError::Execution(
+                            "Drive file fingerprint changed before overwrite".to_string(),
+                        ));
+                    }
+                }
+                drive_service::write_file(&self.state, &req.path, &req.content)
+                    .await
+                    .map_err(app_error_to_tool)?;
+                record_file_observation(
+                    Some(&self.state.db),
+                    Some(&context.agent_profile),
+                    &resolved.logical_path,
+                    &resolved.physical_path,
+                    FileObservationSource::Write,
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+                Ok(tool_result(&serde_json::json!({
+                    "success": true,
+                    "data": { "path": resolved.logical_path },
+                })))
+            })
+            .await;
+        }
+        crate::services::audit::with_agent_audit_actor(context, self.execute(args)).await
     }
 }
 
@@ -209,7 +471,11 @@ impl AppDataTool {
             }
             AppAction::TaskList => {
                 let filter = TaskFilter {
-                    project_id: optional_uuid_field(args, "projectId")?,
+                    scope: crate::models::scope::ScopeFilter::parse(
+                        string_field(args, "scope").as_deref(),
+                        string_field(args, "projectId").as_deref(),
+                    )
+                    .map_err(app_error_to_tool)?,
                     status: string_field(args, "status"),
                 };
                 json_result(
@@ -231,6 +497,9 @@ impl AppDataTool {
             AppAction::TaskDelete => {
                 json_bool(tasks_service::delete_task(&state.db, uuid_arg(args, "id")?).await)
             }
+            AppAction::TaskLink => Err(ToolError::Execution(
+                "task_link_run requires a durable run context".to_string(),
+            )),
             AppAction::KnowledgeTree => json_result(
                 knowledge_service::list_tree(state, typed_knowledge_tree_query(args)?).await,
             ),
@@ -255,6 +524,33 @@ impl AppDataTool {
             AppAction::KnowledgeDelete => {
                 json_bool(knowledge_service::delete(state, uuid_arg(args, "id")?).await)
             }
+            AppAction::KnowledgeResourceList => json_result(
+                knowledge_service::list_resources(state, uuid_arg(args, "knowledgeId")?).await,
+            ),
+            AppAction::KnowledgeResourceAttach => json_result(
+                knowledge_service::attach_resource(
+                    state,
+                    uuid_arg(args, "knowledgeId")?,
+                    AttachKnowledgeResourceRequest {
+                        resource_ref: required_str(args, "resourceRef")?.to_string(),
+                        title: string_field(args, "title"),
+                        sort_order: args
+                            .get("sortOrder")
+                            .and_then(Value::as_i64)
+                            .and_then(|value| i32::try_from(value).ok())
+                            .unwrap_or(0),
+                    },
+                )
+                .await,
+            ),
+            AppAction::KnowledgeResourceDetach => json_bool(
+                knowledge_service::detach_resource(
+                    state,
+                    uuid_arg(args, "knowledgeId")?,
+                    uuid_arg(args, "resourceId")?,
+                )
+                .await,
+            ),
             AppAction::NoteList => {
                 json_result(notes_service::list_notes(state, typed_note_query(args)?).await)
             }
@@ -276,14 +572,9 @@ impl AppDataTool {
             AppAction::DriveRead => {
                 json_result(drive_service::read_file(state, required_str(args, "path")?).await)
             }
-            AppAction::DriveWrite => {
-                let req: WriteDriveFileRequest = typed(args)?;
-                json_result(
-                    drive_service::write_file(state, &req.path, &req.content)
-                        .await
-                        .map(|_| serde_json::json!({"success": true, "path": req.path})),
-                )
-            }
+            AppAction::DriveWrite => Err(ToolError::Execution(
+                "drive_write requires durable run execution context".to_string(),
+            )),
             AppAction::DriveMkdir => {
                 let req: CreateDriveFolderRequest = typed(args)?;
                 json_result(
@@ -345,9 +636,11 @@ impl AppDataTool {
             AppAction::TransactionDelete => json_bool(
                 transactions_service::delete_transaction(state, uuid_arg(args, "id")?).await,
             ),
-            AppAction::InvestmentSummary => json_result(investments_service::summary(state).await),
+            AppAction::InvestmentSummary => {
+                json_result(investments_service::summary(state, typed(args)?).await)
+            }
             AppAction::InvestmentAccountList => {
-                json_result(investments_service::list_accounts(state).await)
+                json_result(investments_service::list_accounts(state, typed(args)?).await)
             }
             AppAction::InvestmentAccountCreate => {
                 json_result(investments_service::create_account(state, typed(args)?).await)
@@ -377,7 +670,7 @@ impl AppDataTool {
                 json_bool(investments_service::delete_asset(state, uuid_arg(args, "id")?).await)
             }
             AppAction::InvestmentPositionList => {
-                json_result(investments_service::list_positions(state).await)
+                json_result(investments_service::list_positions(state, typed(args)?).await)
             }
             AppAction::InvestmentPositionCreate => {
                 json_result(investments_service::create_position(state, typed(args)?).await)
@@ -464,6 +757,7 @@ fn typed_data<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
 fn typed_session_query(args: &Value) -> Result<SessionQuery, ToolError> {
     Ok(SessionQuery {
         project_id: string_field(args, "projectId"),
+        scope: string_field(args, "scope"),
         profile: string_field(args, "profile"),
     })
 }
@@ -487,6 +781,7 @@ fn typed_event_query(args: &Value) -> Result<EventQuery, ToolError> {
 fn typed_note_query(args: &Value) -> Result<NoteQuery, ToolError> {
     Ok(NoteQuery {
         project_id: string_field(args, "projectId"),
+        scope: string_field(args, "scope"),
     })
 }
 
@@ -499,6 +794,7 @@ fn typed_knowledge_tree_query(args: &Value) -> Result<KnowledgeTreeQuery, ToolEr
 fn typed_transaction_query(args: &Value) -> Result<TransactionQuery, ToolError> {
     Ok(TransactionQuery {
         project_id: string_field(args, "projectId"),
+        scope: string_field(args, "scope"),
         r#type: string_field(args, "type"),
         from: string_field(args, "from"),
         to: string_field(args, "to"),
@@ -510,21 +806,14 @@ fn typed_transaction_query(args: &Value) -> Result<TransactionQuery, ToolError> 
 fn typed_investment_list_query(args: &Value) -> Result<InvestmentListQuery, ToolError> {
     Ok(InvestmentListQuery {
         limit: args.get("limit").and_then(Value::as_i64),
+        scope: string_field(args, "scope"),
+        project_id: string_field(args, "projectId"),
     })
 }
 
 fn uuid_arg(args: &Value, key: &str) -> Result<Uuid, ToolError> {
     Uuid::parse_str(required_str(args, key)?)
         .map_err(|err| ToolError::InvalidArgs(format!("invalid {key}: {err}")))
-}
-
-fn optional_uuid_field(args: &Value, key: &str) -> Result<Option<Uuid>, ToolError> {
-    string_field(args, key)
-        .map(|value| {
-            Uuid::parse_str(&value)
-                .map_err(|err| ToolError::InvalidArgs(format!("invalid {key}: {err}")))
-        })
-        .transpose()
 }
 
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {

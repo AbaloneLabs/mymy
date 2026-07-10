@@ -80,6 +80,7 @@ export function useCreateKeyResult() {
           targetValue: vars.body.targetValue ?? null,
           currentValue: vars.body.currentValue ?? null,
           unit: vars.body.unit ?? null,
+          financeDefinition: vars.body.financeDefinition ?? null,
         },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goals"] }),

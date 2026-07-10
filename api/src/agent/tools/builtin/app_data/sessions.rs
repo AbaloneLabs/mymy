@@ -10,6 +10,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
             "type":"object",
             "properties":{
                 "profile":{"type":"string"},
+                "scope":{"type":"string","enum":["all","general","project"]},
                 "projectId":{"type":"string"}
             }
         }),

@@ -27,11 +27,13 @@ export function SummaryCard({
   amount,
   icon,
   tone,
+  currency,
 }: {
   label: string;
   amount: number;
   icon: ReactNode;
   tone: "success" | "error";
+  currency: string;
 }) {
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -51,7 +53,7 @@ export function SummaryCard({
           tone === "success" ? "text-[var(--status-success)]" : "text-[var(--status-error)]",
         )}
       >
-        {formatAmount(amount)}
+        {formatAmount(amount, currency)}
       </p>
     </div>
   );
@@ -149,7 +151,7 @@ export function TransactionRow({
           )}
         >
           {isIncome ? "+" : "−"}
-          {formatAmount(tx.amount)}
+          {formatAmount(tx.amount, tx.currency)}
         </span>
 
         {/* Delete */}
@@ -187,17 +189,17 @@ function EditPanel({
   const { t } = useTranslation();
   const [description, setDescription] = useState(tx.description);
   const [category, setCategory] = useState(tx.category);
-  const [amount, setAmount] = useState(String(tx.amount));
+  const [amount, setAmount] = useState(String(fromMinorUnits(tx.amount, tx.currency)));
   const [type, setType] = useState<TransactionType>(tx.type);
   const [date, setDate] = useState(format(parseDate(tx.date), "yyyy-MM-dd"));
 
   function handleSave() {
-    const amt = parseInt(amount, 10);
-    if (!Number.isFinite(amt) || amt <= 0) return;
+    const enteredAmount = Number(amount);
+    if (!Number.isFinite(enteredAmount) || enteredAmount <= 0) return;
     onUpdate({
       description,
       category,
-      amount: amt,
+      amount: toMinorUnits(enteredAmount, tx.currency),
       type,
       date: new Date(date).toISOString(),
     });
@@ -288,17 +290,33 @@ function EditPanel({
 /* ------------------------------------------------------------------ */
 
 /**
- * Format an amount (minimum currency unit integer) for display.
- * v1 assumes KRW — no decimals, thousands separators.
- * TODO(backend): localize currency formatting once multi-currency lands.
+ * Format a stored minor-unit integer using the ISO currency exponent exposed
+ * by Intl. This keeps USD cents and zero-decimal currencies distinct without
+ * ever converting or combining currencies.
  */
-function formatAmount(amount: number): string {
-  const abs = Math.abs(amount);
+function formatAmount(amount: number, currency: string): string {
+  const formatter = currencyFormatter(currency);
+  return formatter.format(Math.abs(fromMinorUnits(amount, currency)));
+}
+
+function currencyFormatter(currency: string) {
   return new Intl.NumberFormat("ko-KR", {
     style: "currency",
-    currency: "KRW",
-    maximumFractionDigits: 0,
-  }).format(abs);
+    currency,
+  });
+}
+
+function currencyScale(currency: string) {
+  const digits = currencyFormatter(currency).resolvedOptions().maximumFractionDigits ?? 0;
+  return 10 ** digits;
+}
+
+function fromMinorUnits(amount: number, currency: string) {
+  return amount / currencyScale(currency);
+}
+
+function toMinorUnits(amount: number, currency: string) {
+  return Math.round(amount * currencyScale(currency));
 }
 
 /** Parse an ISO date string into a Date, guarding against invalid input. */

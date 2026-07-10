@@ -3,7 +3,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { CreateKnowledgeArticleInput, KnowledgeArticle, KnowledgeBreadcrumbItem, KnowledgeTreeNode, MoveKnowledgeArticleInput, UpdateKnowledgeArticleInput } from "@/types/knowledge";
+import type { CreateKnowledgeArticleInput, KnowledgeArticle, KnowledgeBreadcrumbItem, KnowledgeResource, KnowledgeTreeNode, MoveKnowledgeArticleInput, UpdateKnowledgeArticleInput } from "@/types/knowledge";
 
 /* -------------------------------------------------- Knowledge Base */
 
@@ -146,5 +146,60 @@ export function useDeleteKnowledgeArticle() {
     mutationFn: (id: string) =>
       api.delete<{ success: boolean }>(`/knowledge/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["knowledge"] }),
+  });
+}
+
+export function useKnowledgeResources(id: string | null) {
+  return useQuery({
+    queryKey: ["knowledge", "resources", id],
+    queryFn: () =>
+      api.get<{ resources: KnowledgeResource[] }>(
+        `/knowledge/${id}/resources`,
+      ),
+    enabled: Boolean(id),
+  });
+}
+
+export function useAttachKnowledgeResource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      knowledgeId,
+      resourceRef,
+    }: {
+      knowledgeId: string;
+      resourceRef: string;
+    }) =>
+      api.post<KnowledgeResource>(`/knowledge/${knowledgeId}/resources`, {
+        resourceRef,
+      }),
+    onSuccess: (_resource, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["knowledge", "tree"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["knowledge", "resources", variables.knowledgeId],
+      });
+    },
+  });
+}
+
+export function useDetachKnowledgeResource() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      knowledgeId,
+      resourceId,
+    }: {
+      knowledgeId: string;
+      resourceId: string;
+    }) =>
+      api.delete<{ success: boolean }>(
+        `/knowledge/${knowledgeId}/resources/${resourceId}`,
+      ),
+    onSuccess: (_response, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["knowledge", "tree"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["knowledge", "resources", variables.knowledgeId],
+      });
+    },
   });
 }

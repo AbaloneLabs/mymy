@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::models::document_editor::DocumentEditorKind;
+
 /// Deserialize helper that distinguishes "key absent" from "key present but
 /// null", returning `Option<Option<T>>`:
 /// - key absent → `None`        (leave the DB value unchanged)
@@ -59,6 +61,37 @@ pub struct KnowledgeTreeNode {
     #[serde(flatten)]
     pub article: KnowledgeArticle,
     pub children: Vec<KnowledgeTreeNode>,
+    pub resources: Vec<KnowledgeResource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeResource {
+    pub id: String,
+    pub knowledge_id: String,
+    pub resource_type: String,
+    pub resource_ref: String,
+    pub title: String,
+    pub sort_order: i32,
+    pub status: String,
+    pub editor_kind: DocumentEditorKind,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeResourcesResponse {
+    pub resources: Vec<KnowledgeResource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachKnowledgeResourceRequest {
+    pub resource_ref: String,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub sort_order: i32,
 }
 
 /// A breadcrumb path entry (root → current). Lightweight: only the fields

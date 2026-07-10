@@ -19,6 +19,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", patch(update_task).delete(delete_task))
+        .route("/api/tasks/{id}/runtime", get(task_runtime))
 }
 
 /// Query params for GET /api/tasks.
@@ -27,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 pub struct TaskQuery {
     /// Filter by project (null/absent = all tasks including general).
     pub project_id: Option<String>,
+    pub scope: Option<String>,
     /// Filter by status (null/absent = all statuses).
     pub status: Option<String>,
 }
@@ -39,16 +41,12 @@ pub async fn list_tasks(
     State(state): State<Arc<AppState>>,
     Query(q): Query<TaskQuery>,
 ) -> AppResult<Json<TasksResponse>> {
-    let project_id = q
-        .project_id
-        .as_deref()
-        .map(Uuid::parse_str)
-        .transpose()
-        .map_err(|e| crate::error::AppError::BadRequest(format!("invalid projectId: {e}")))?;
+    let scope =
+        crate::models::scope::ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
     let tasks = task_service::list_tasks(
         &state.db,
         task_service::TaskFilter {
-            project_id,
+            scope,
             status: q.status,
         },
     )
@@ -89,4 +87,13 @@ pub async fn delete_task(
 ) -> AppResult<Json<DeleteResponse>> {
     let success = task_service::delete_task(&state.db, id).await?;
     Ok(Json(DeleteResponse { success }))
+}
+
+pub async fn task_runtime(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::models::work_graph::TaskRuntimeResponse>> {
+    Ok(Json(
+        crate::services::work_graph::task_runtime(&state, id).await?,
+    ))
 }

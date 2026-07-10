@@ -37,38 +37,48 @@ use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
 use self::provider::{parse_runtime_provider_id, DbRotatingProvider};
 pub use self::repository::{
     create_session, delete_session, fetch_session_response, get_messages, list_sessions,
-    save_agent_messages, SessionQuery,
+    save_agent_messages_for_run, SessionQuery,
 };
 use self::repository::{
-    derive_title, fetch_message_rows, fetch_session, insert_user_message, row_to_agent_message,
+    derive_title, fetch_message_rows, fetch_session, insert_user_message,
+    insert_user_message_for_input, row_to_agent_message,
 };
 use self::skill_invocation::resolve_skill_invocation;
 
 pub struct PreparedNativeTurn {
-    pub session_id: Uuid,
     pub messages: Vec<Message>,
     pub agent_message_start: usize,
     pub execution: PreparedExecution,
     pub system_prompt: String,
     pub user_message: ChatMessage,
+    pub tool_schema_fingerprint: String,
+    pub tool_count: usize,
 }
 
 pub enum PreparedExecution {
-    Agent(AgentLoop),
+    Agent(Box<AgentLoop>),
     Moa(PreparedMoaTurn),
 }
 
 pub struct PreparedMoaTurn {
-    pub preset_id: Uuid,
-    pub preset_name: String,
     pub proposers: Vec<MoaParticipant>,
     pub aggregator: MoaParticipant,
     pub config: MoaConfig,
 }
 
-pub async fn prepare_native_turn(
+pub async fn prepare_native_turn_for_input(
     state: &AppState,
     id: Uuid,
+    run_input_id: Uuid,
+    req: SendMessageRequest,
+) -> AppResult<PreparedNativeTurn> {
+    prepare_native_turn_internal(state, id, Some(run_input_id), req).await
+}
+
+async fn prepare_native_turn_internal(
+    state: &AppState,
+    id: Uuid,
+    run_input_id: Option<Uuid>,
     req: SendMessageRequest,
 ) -> AppResult<PreparedNativeTurn> {
     let text = req.text.trim().to_string();
@@ -129,7 +139,15 @@ pub async fn prepare_native_turn(
         .iter()
         .map(|schema| schema.function.name.clone())
         .collect::<Vec<_>>();
-    let tool_schema_fingerprint = fingerprint_tool_schemas(&tool_schemas_for_prompt)?;
+    let tool_capabilities_for_prompt = if use_moa {
+        Vec::new()
+    } else {
+        registry.capability_snapshot()
+    };
+    let tool_capability_summary = (!use_moa).then(|| registry.capability_prompt_summary());
+    let tool_schema_fingerprint =
+        fingerprint_tool_schemas(&tool_schemas_for_prompt, &tool_capabilities_for_prompt)?;
+    let tool_count = tool_schemas_for_prompt.len();
     let registry = Arc::new(registry);
     let memory_dir = state.config.agent_data_dir.join("memory");
     let memory_snapshot = MemoryStore::load(memory_dir)
@@ -152,6 +170,11 @@ pub async fn prepare_native_turn(
         "Available app data domains:\n{}",
         permission_policy.capability_summary()
     ));
+    if let Some(summary) = tool_capability_summary.filter(|value| !value.is_empty()) {
+        context_blocks.push(format!(
+            "Tool capability policy (runtime-enforced metadata):\n{summary}"
+        ));
+    }
 
     let mut volatile_blocks = Vec::new();
     if let Some(snapshot) = memory_snapshot {
@@ -198,22 +221,29 @@ pub async fn prepare_native_turn(
     let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
     let agent_user_text = resolve_skill_invocation(state, &text, id).await?;
 
-    let user_message = insert_user_message(state, id, &text).await?;
-    messages.push(Message::user(agent_user_text));
+    let (user_message, inserted) = match run_input_id {
+        Some(input_id) => insert_user_message_for_input(state, id, input_id, &text).await?,
+        None => (insert_user_message(state, id, &text).await?, true),
+    };
+    if inserted {
+        messages.push(Message::user(agent_user_text));
+    }
     let agent_message_start = messages.len();
 
-    let title = derive_title(&text);
-    sqlx::query!(
-        r#"UPDATE chat_sessions SET
-             message_count = message_count + 1,
-             title = COALESCE(NULLIF(title, ''), $2),
-             updated_at = now()
-           WHERE id = $1"#,
-        id,
-        title,
-    )
-    .execute(&state.db)
-    .await?;
+    if inserted {
+        let title = derive_title(&text);
+        sqlx::query!(
+            r#"UPDATE chat_sessions SET
+                 message_count = message_count + 1,
+                 title = COALESCE(NULLIF(title, ''), $2),
+                 updated_at = now()
+               WHERE id = $1"#,
+            id,
+            title,
+        )
+        .execute(&state.db)
+        .await?;
+    }
 
     let execution = if let Some(runtime) = moa_runtime {
         let proposers = runtime
@@ -240,8 +270,6 @@ pub async fn prepare_native_turn(
             }),
         };
         PreparedExecution::Moa(PreparedMoaTurn {
-            preset_id: runtime.id,
-            preset_name: runtime.name,
             proposers,
             aggregator,
             config: MoaConfig {
@@ -272,7 +300,7 @@ pub async fn prepare_native_turn(
                 .join("todos")
                 .join(format!("{id}.json")),
         );
-        PreparedExecution::Agent(agent_loop)
+        PreparedExecution::Agent(Box::new(agent_loop))
     };
 
     tracing::info!(
@@ -283,11 +311,12 @@ pub async fn prepare_native_turn(
     );
 
     Ok(PreparedNativeTurn {
-        session_id: id,
         messages,
         agent_message_start,
         execution,
         system_prompt,
         user_message,
+        tool_schema_fingerprint,
+        tool_count,
     })
 }

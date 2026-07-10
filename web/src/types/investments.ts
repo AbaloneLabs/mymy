@@ -1,5 +1,6 @@
 export interface InvestmentAccount {
   id: string;
+  projectId?: string;
   name: string;
   institution: string;
   currency: string;
@@ -24,6 +25,7 @@ export interface InvestmentAsset {
 export interface InvestmentPosition {
   id: string;
   accountId?: string;
+  projectId?: string;
   assetId: string;
   quantityMicro: number;
   costBasisAmount: number;
@@ -39,7 +41,8 @@ export interface InvestmentPosition {
   latestMarketValueAmount?: number;
   latestUnitPriceAmount?: number;
   latestValuedAt?: string;
-  unrealizedPlAmount: number;
+  latestValuationCurrency?: string;
+  unrealizedPlAmount?: number;
 }
 
 export interface InvestmentValuationSnapshot {
@@ -55,6 +58,7 @@ export interface InvestmentValuationSnapshot {
 export interface InvestmentCashflow {
   id: string;
   accountId?: string;
+  projectId?: string;
   assetId?: string;
   flowType: string;
   amount: number;
@@ -81,20 +85,35 @@ export interface InvestmentWatchlistItem {
 
 export interface InvestmentAllocation {
   label: string;
+  currency: string;
   amount: number;
 }
 
-export interface InvestmentSummary {
+export interface InvestmentCurrencySummary {
+  currency: string;
   costBasisAmount: number;
   marketValueAmount: number;
-  unrealizedPlAmount: number;
+  unrealizedPlAmount?: number;
   incomeAmount: number;
   expenseAmount: number;
   netCashflowAmount: number;
+  hasCurrencyMismatch: boolean;
+}
+
+export interface InvestmentSummary {
+  currency?: string;
+  costBasisAmount?: number;
+  marketValueAmount?: number;
+  unrealizedPlAmount?: number;
+  incomeAmount?: number;
+  expenseAmount?: number;
+  netCashflowAmount?: number;
   positionCount: number;
   accountCount: number;
   watchlistCount: number;
   allocations: InvestmentAllocation[];
+  totalsByCurrency: InvestmentCurrencySummary[];
+  hasCurrencyMismatch: boolean;
 }
 
 export interface InvestmentSummaryResponse {
@@ -126,6 +145,7 @@ export interface InvestmentWatchlistResponse {
 }
 
 export interface CreateInvestmentAccountInput {
+  projectId?: string;
   name: string;
   institution?: string;
   currency?: string;

@@ -13,6 +13,8 @@ import {
   SandboxProcessesTab,
 } from "@/features/agents/components/AgentsNativePanels";
 import { CronTab } from "@/features/agents/components/AgentsCronTab";
+import { DecisionsTab } from "@/features/agents/components/AgentsDecisionsTab";
+import { MemoryTab } from "@/features/agents/components/AgentsMemoryTab";
 import { TabButton } from "@/features/agents/components/AgentsNativeShared";
 import {
   ALL_AGENT_TABS,
@@ -151,6 +153,10 @@ export default function AgentsPage() {
                 <AllAgentsTab agents={agents} onSelectAgent={selectAgent} />
               ) : activeTab === "sessions" ? (
                 <NativeSessionsTab profile={null} agents={agents} />
+              ) : activeTab === "decisions" ? (
+                <DecisionsTab profile={null} />
+              ) : activeTab === "memory" ? (
+                <MemoryTab profile={null} />
               ) : (
                 <div className="space-y-6">
                   <SandboxProcessesTab profile={null} agents={agents} />
@@ -169,6 +175,10 @@ export default function AgentsPage() {
               />
             ) : activeTab === "prompt" ? (
               <PromptTab profile={activeAgentProfile} />
+            ) : activeTab === "decisions" ? (
+              <DecisionsTab profile={activeAgentProfile} />
+            ) : activeTab === "memory" ? (
+              <MemoryTab profile={activeAgentProfile} />
             ) : (
               <div className="space-y-6">
                 <SandboxProcessesTab

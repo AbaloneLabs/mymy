@@ -9,7 +9,7 @@ use crate::models::knowledge::{
 use crate::state::AppState;
 
 use super::repository::{fetch_article, row_to_article};
-use super::tree::{build_tree, parse_project_filter};
+use super::tree::{attach_resources, build_tree, parse_project_filter};
 
 /// GET /api/knowledge
 pub async fn list_tree(
@@ -27,7 +27,9 @@ pub async fn list_tree(
     .await?;
 
     let project_filter = parse_project_filter(q.project_id.as_deref())?;
-    let tree = build_tree(rows, project_filter);
+    let mut tree = build_tree(rows, project_filter);
+    let mut resources = super::resources::resource_map(state).await?;
+    attach_resources(&mut tree, &mut resources);
     Ok(KnowledgeTreeResponse { tree })
 }
 

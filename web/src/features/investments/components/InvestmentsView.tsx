@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { Loader2, RefreshCw, WalletCards } from "lucide-react";
+import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/WorkspaceScopeToggle";
 import {
   useCreateInvestmentAccount,
   useCreateInvestmentAsset,
@@ -36,13 +38,18 @@ import {
   WatchlistGrid,
 } from "@/features/investments/components/InvestmentPanels";
 import { money } from "@/features/investments/format";
+import { useProjectContext } from "@/store/projectContext";
 
 export function InvestmentsView() {
-  const summary = useInvestmentSummary();
-  const accounts = useInvestmentAccounts();
+  const selectedProjectId = useProjectContext((state) => state.selectedProjectId);
+  const [listScope, setListScope] = useState<WorkspaceListScope>("all");
+  const effectiveScope = selectedProjectId ? "project" : listScope;
+  const projectId = selectedProjectId ?? undefined;
+  const summary = useInvestmentSummary(projectId, effectiveScope);
+  const accounts = useInvestmentAccounts(projectId, effectiveScope);
   const assets = useInvestmentAssets();
-  const positions = useInvestmentPositions();
-  const cashflows = useInvestmentCashflows();
+  const positions = useInvestmentPositions(projectId, effectiveScope);
+  const cashflows = useInvestmentCashflows(projectId, effectiveScope);
   const watchlist = useInvestmentWatchlist();
   const createAccount = useCreateInvestmentAccount();
   const createAsset = useCreateInvestmentAsset();
@@ -84,6 +91,9 @@ export function InvestmentsView() {
       <header className="flex items-center gap-3 border-b border-[var(--border)] px-6 py-4">
         <WalletCards className="h-5 w-5 text-[var(--text-secondary)]" strokeWidth={1.5} />
         <h1 className="text-lg font-semibold">투자</h1>
+        {!selectedProjectId && (
+          <WorkspaceScopeToggle value={listScope} onChange={setListScope} />
+        )}
         <div className="flex-1" />
         <button
           type="button"
@@ -103,19 +113,32 @@ export function InvestmentsView() {
           </div>
         )}
 
-        <section className="grid gap-3 xl:grid-cols-5">
-          <Metric label="평가액" value={money(summaryValue?.marketValueAmount)} />
-          <Metric label="기준 금액" value={money(summaryValue?.costBasisAmount)} />
-          <Metric
-            label="평가 손익"
-            value={money(summaryValue?.unrealizedPlAmount)}
-            tone={(summaryValue?.unrealizedPlAmount ?? 0) >= 0 ? "good" : "bad"}
-          />
-          <Metric label="현금흐름" value={money(summaryValue?.netCashflowAmount)} />
-          <Metric
-            label="보유/관심"
-            value={`${summaryValue?.positionCount ?? 0}/${summaryValue?.watchlistCount ?? 0}`}
-          />
+        <section className="space-y-3">
+          {(summaryValue?.totalsByCurrency ?? []).map((total) => (
+            <div key={total.currency} className="grid gap-3 xl:grid-cols-4">
+              <Metric label={`평가액 · ${total.currency}`} value={money(total.marketValueAmount, total.currency)} />
+              <Metric label={`기준 금액 · ${total.currency}`} value={money(total.costBasisAmount, total.currency)} />
+              <Metric
+                label={`평가 손익 · ${total.currency}`}
+                value={
+                  total.unrealizedPlAmount === undefined
+                    ? "통화 불일치"
+                    : money(total.unrealizedPlAmount, total.currency)
+                }
+                tone={
+                  total.unrealizedPlAmount === undefined
+                    ? undefined
+                    : total.unrealizedPlAmount >= 0
+                      ? "good"
+                      : "bad"
+                }
+              />
+              <Metric label={`현금흐름 · ${total.currency}`} value={money(total.netCashflowAmount, total.currency)} />
+            </div>
+          ))}
+          <div className="text-xs text-[var(--text-muted)]">
+            보유/관심 {summaryValue?.positionCount ?? 0}/{summaryValue?.watchlistCount ?? 0}
+          </div>
         </section>
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -144,14 +167,15 @@ export function InvestmentsView() {
             <Panel title="자산군 비중" count={summaryValue?.allocations.length ?? 0}>
               <AllocationList
                 allocations={summaryValue?.allocations ?? []}
-                marketValueAmount={summaryValue?.marketValueAmount}
               />
             </Panel>
           </section>
 
           <aside className="space-y-4">
             <AccountForm
-              onSubmit={(body) => createAccount.mutate(body)}
+              onSubmit={(body) =>
+                createAccount.mutate({ ...body, projectId: projectId })
+              }
               pending={createAccount.isPending}
             />
             <AssetForm

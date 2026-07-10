@@ -63,12 +63,7 @@ impl ClarifyGate {
             return false;
         };
         if pending.session_id != session_id {
-            tracing::warn!(
-                expected_session_id = %pending.session_id,
-                actual_session_id = %session_id,
-                request_id,
-                "clarify answer session mismatch"
-            );
+            tracing::warn!("clarify answer session mismatch");
             return false;
         }
         pending.sender.send(answer).is_ok()

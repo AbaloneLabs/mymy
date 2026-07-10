@@ -28,6 +28,7 @@ export function useTransactions(
   to?: string,
   type?: TransactionType,
   projectId?: string,
+  scope: "all" | "general" | "project" = projectId ? "project" : "all",
 ) {
   return useQuery({
     queryKey: [
@@ -36,9 +37,11 @@ export function useTransactions(
       to ?? "any",
       type ?? "all",
       projectId ?? "all",
+      scope,
     ],
     queryFn: () => {
       const params = new URLSearchParams();
+      params.set("scope", scope);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (type) params.set("type", type);
@@ -57,6 +60,7 @@ export function useTransactionsSummary(
   from?: string,
   to?: string,
   projectId?: string,
+  scope: "all" | "general" | "project" = projectId ? "project" : "all",
 ) {
   return useQuery({
     queryKey: [
@@ -65,9 +69,11 @@ export function useTransactionsSummary(
       from ?? "any",
       to ?? "any",
       projectId ?? "all",
+      scope,
     ],
     queryFn: () => {
       const params = new URLSearchParams();
+      params.set("scope", scope);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       if (projectId) params.set("projectId", projectId);

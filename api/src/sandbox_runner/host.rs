@@ -126,3 +126,26 @@ pub(crate) async fn terminate_pid(pid: u32) {
         let _ = wait_for_pid_exit(pid).await;
     }
 }
+
+pub(crate) async fn terminate_process_group(pid: u32) {
+    let group = format!("-{pid}");
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(&group)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+    if !wait_for_pid_exit(pid).await {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg("--")
+            .arg(&group)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await;
+        let _ = wait_for_pid_exit(pid).await;
+    }
+}

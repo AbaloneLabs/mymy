@@ -13,7 +13,7 @@ mod workspace;
 
 pub use content::{document_package, mime_type_for_path};
 pub use operations::{
-    blob_path, create_folder, list, read_file, upload_file, write_file, write_file_bytes,
+    blob_path, create_folder, list, move_path, read_file, upload_file, write_file, write_file_bytes,
 };
 pub use paths::{
     agent_agents_md_path, agent_soul_md_path, logical_agent_file_path, logical_agent_path,

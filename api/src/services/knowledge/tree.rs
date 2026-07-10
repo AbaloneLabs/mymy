@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
-use crate::models::knowledge::KnowledgeTreeNode;
+use crate::models::knowledge::{KnowledgeResource, KnowledgeTreeNode};
 
 use super::repository::{row_to_article, KnowledgeArticleRow};
 
@@ -36,6 +36,7 @@ pub(super) fn build_tree(
             KnowledgeTreeNode {
                 article: row_to_article(row),
                 children: Vec::new(),
+                resources: Vec::new(),
             },
         );
     }
@@ -56,6 +57,18 @@ pub(super) fn parse_project_filter(raw: Option<&str>) -> AppResult<Option<Option
                 .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?;
             Ok(Some(Some(uuid)))
         }
+    }
+}
+
+pub(super) fn attach_resources(
+    nodes: &mut [KnowledgeTreeNode],
+    resources: &mut HashMap<Uuid, Vec<KnowledgeResource>>,
+) {
+    for node in nodes {
+        if let Ok(id) = Uuid::parse_str(&node.article.id) {
+            node.resources = resources.remove(&id).unwrap_or_default();
+        }
+        attach_resources(&mut node.children, resources);
     }
 }
 

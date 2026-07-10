@@ -21,11 +21,15 @@ interface UpdateNoteRequest {
   projectId?: string;
 }
 
-export function useNotes(projectId?: string) {
+export function useNotes(
+  projectId?: string,
+  scope: "all" | "general" | "project" = projectId ? "project" : "all",
+) {
   return useQuery({
-    queryKey: ["notes", projectId ?? "all"],
+    queryKey: ["notes", scope, projectId ?? "none"],
     queryFn: () => {
       const params = new URLSearchParams();
+      params.set("scope", scope);
       if (projectId) params.set("projectId", projectId);
       const qs = params.toString() ? `?${params.toString()}` : "";
       return api.get<NotesResponse>(`/notes${qs}`);
@@ -33,12 +37,20 @@ export function useNotes(projectId?: string) {
   });
 }
 
-export function useSearchNotes(query: string) {
+export function useSearchNotes(
+  query: string,
+  projectId?: string,
+  scope: "all" | "general" | "project" = projectId ? "project" : "all",
+) {
   return useQuery({
-    queryKey: ["notes", "search", query],
+    queryKey: ["notes", "search", scope, projectId ?? "none", query],
     queryFn: () =>
       api.get<NotesResponse>(
-        `/notes/search?${new URLSearchParams({ q: query }).toString()}`,
+        `/notes/search?${new URLSearchParams({
+          q: query,
+          scope,
+          ...(projectId ? { projectId } : {}),
+        }).toString()}`,
       ),
     enabled: query.trim().length > 0,
   });

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use super::BuiltinToolConfig;
-use crate::agent::tools::{tool_schema, ToolEntry, ToolRegistry};
+use crate::agent::tools::{tool_schema, ToolCapability, ToolEntry, ToolRegistry};
 
 mod command;
 mod process_tools;
@@ -54,6 +54,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["command"]
             }),
         ),
+        capability: ToolCapability::process(),
         handler: Arc::new(TerminalTool {
             working_dir: config.working_dir.clone(),
             allowed_roots: allowed_roots(&config.working_dir, &config.allowed_roots),
@@ -78,6 +79,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 }
             }),
         ),
+        capability: ToolCapability::read("process"),
         handler: Arc::new(ListProcessesTool {
             context: process_context.clone(),
         }),
@@ -97,6 +99,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["id"]
             }),
         ),
+        capability: ToolCapability::read("process").with_resource_argument("id"),
         handler: Arc::new(ReadProcessLogsTool {
             context: process_context.clone(),
         }),
@@ -116,6 +119,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["id"]
             }),
         ),
+        capability: ToolCapability::process(),
         handler: Arc::new(StopProcessTool {
             context: process_context.clone(),
         }),
@@ -135,6 +139,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["id"]
             }),
         ),
+        capability: ToolCapability::process(),
         handler: Arc::new(KillProcessTool {
             context: process_context.clone(),
         }),

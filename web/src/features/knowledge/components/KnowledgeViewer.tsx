@@ -8,6 +8,7 @@ import type {
   KnowledgeNodeType,
 } from "@/types/knowledge";
 import { Breadcrumb } from "./KnowledgeBreadcrumb";
+import { KnowledgeResourcesPanel } from "./KnowledgeResourcesPanel";
 
 export function Viewer({
   article,
@@ -86,7 +87,7 @@ export function Viewer({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         {isCategory ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-[var(--text-dim)]">
+          <div className="flex min-h-64 flex-col items-center justify-center gap-1 text-sm text-[var(--text-dim)]">
             <FolderOpen size={28} className="mb-2 text-[var(--text-faint)]" />
             <span className="font-medium text-[var(--text-muted)]">{article.title}</span>
             <span>{t("knowledge.folderSelected")}</span>
@@ -100,6 +101,7 @@ export function Viewer({
             {t("knowledge.noContent")}
           </div>
         )}
+        <KnowledgeResourcesPanel knowledgeId={article.id} />
       </div>
     </>
   );

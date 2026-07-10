@@ -8,8 +8,10 @@ use super::slugs::slugify;
 use super::tree::build_tree;
 use crate::error::AppError;
 use crate::models::knowledge::{
-    CreateKnowledgeArticleRequest, MoveKnowledgeArticleRequest, UpdateKnowledgeArticleRequest,
+    AttachKnowledgeResourceRequest, CreateKnowledgeArticleRequest, MoveKnowledgeArticleRequest,
+    UpdateKnowledgeArticleRequest,
 };
+use crate::services::drive;
 
 fn article_row(id: Uuid, parent_id: Option<Uuid>, title: &str) -> KnowledgeArticleRow {
     let now = Utc::now();
@@ -257,6 +259,67 @@ async fn move_node_rejects_article_parent(pool: sqlx::PgPool) {
     .expect_err("moving under an article should be rejected");
 
     assert!(matches!(err, AppError::BadRequest(_)));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn drive_resource_link_survives_move_and_exposes_trash_breakage(pool: sqlx::PgPool) {
+    let node = Uuid::new_v4();
+    seed_node(&pool, node, None, "article", "Linked Doc").await;
+    let agent_data_dir =
+        std::env::temp_dir().join(format!("mymy-knowledge-resource-test-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(agent_data_dir.join("drive/shared"))
+        .expect("Drive test directory should be created");
+    std::fs::write(agent_data_dir.join("drive/shared/report.md"), "# Report\n")
+        .expect("Drive test file should be created");
+    let mut config = test_config();
+    config.agent_data_dir = agent_data_dir.clone();
+    let state = AppState::new(pool, config);
+
+    super::resources::attach_resource(
+        &state,
+        node,
+        AttachKnowledgeResourceRequest {
+            resource_ref: "/drive/shared/report.md".to_string(),
+            title: None,
+            sort_order: 0,
+        },
+    )
+    .await
+    .expect("supported Drive document should attach");
+    drive::move_path(
+        &state,
+        "/drive/shared/report.md",
+        "/drive/shared/renamed.md",
+    )
+    .await
+    .expect("Drive move should reconcile Wiki links");
+    let moved = super::resources::list_resources(&state, node)
+        .await
+        .expect("resources should list after move");
+    assert_eq!(moved.resources[0].resource_ref, "/drive/shared/renamed.md");
+    assert_eq!(moved.resources[0].status, "linked");
+
+    drive::delete_path(&state, "/drive/shared/renamed.md")
+        .await
+        .expect("Drive delete should move the file to trash");
+    let broken = super::resources::list_resources(&state, node)
+        .await
+        .expect("broken resource should remain visible");
+    assert_eq!(broken.resources[0].status, "broken");
+
+    let trash = drive::list_trash(&state)
+        .await
+        .expect("trash entry should be visible");
+    let trash_id = Uuid::parse_str(&trash.entries[0].id).expect("trash id should be valid");
+    drive::restore_trash(&state, trash_id)
+        .await
+        .expect("restoring should reconcile Wiki links");
+    let restored = super::resources::list_resources(&state, node)
+        .await
+        .expect("restored resource should list");
+    assert_eq!(restored.resources[0].status, "linked");
+
+    let _ = std::fs::remove_dir_all(agent_data_dir);
 }
 
 fn test_config() -> Config {

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import {
   useCreateDriveFolder,
   useDeleteDrivePath,
@@ -23,8 +24,13 @@ export function DriveView() {
   const { t } = useTranslation();
   const selectedAgentProfile = useProjectContext((s) => s.selectedAgentProfile);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [path, setPath] = useState(ROOT_PATH);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const linkedFile = searchParams.get("file");
+  const initialFile = linkedFile?.startsWith("/drive/") ? linkedFile : null;
+  const [path, setPath] = useState(() =>
+    initialFile ? parentPath(initialFile) : ROOT_PATH,
+  );
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(initialFile);
   const [editorDirty, setEditorDirty] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
 

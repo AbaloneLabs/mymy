@@ -3,22 +3,27 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::investment::{
     CreateInvestmentPositionRequest, InvestmentPositionResponse, InvestmentPositionsResponse,
-    UpdateInvestmentPositionRequest,
+    InvestmentScopeQuery, UpdateInvestmentPositionRequest,
 };
+use crate::models::scope::ScopeFilter;
 use crate::state::AppState;
 
 use super::audit;
 use super::records::{
     ensure_account_exists, ensure_asset_exists, ensure_position_exists, fetch_position,
-    fetch_positions_for_pool,
+    fetch_positions_for_pool_scoped,
 };
 use super::validation::{
     clean_optional, normalize_currency, parse_optional_uuid, parse_ts, parse_uuid,
     validate_nonnegative,
 };
 
-pub async fn list_positions(state: &AppState) -> AppResult<InvestmentPositionsResponse> {
-    let positions = fetch_positions_for_pool(&state.db, None).await?;
+pub async fn list_positions(
+    state: &AppState,
+    query: InvestmentScopeQuery,
+) -> AppResult<InvestmentPositionsResponse> {
+    let scope = ScopeFilter::parse(query.scope.as_deref(), query.project_id.as_deref())?;
+    let positions = fetch_positions_for_pool_scoped(&state.db, None, scope).await?;
     Ok(InvestmentPositionsResponse { positions })
 }
 

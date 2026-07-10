@@ -25,9 +25,18 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 use crate::state::AppState;
 
+type BackgroundWorkers = (
+    JoinHandle<()>,
+    JoinHandle<()>,
+    JoinHandle<()>,
+    JoinHandle<()>,
+    Option<JoinHandle<()>>,
+);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    services::runtime_metrics::install()?;
 
     let cfg = Config::from_env();
     run(cfg).await
@@ -79,9 +88,12 @@ async fn apply_migrations(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_background_workers(state: Arc<AppState>) -> (JoinHandle<()>, Option<JoinHandle<()>>) {
+fn start_background_workers(state: Arc<AppState>) -> BackgroundWorkers {
     (
         services::cron::start_cron_ticker(state.clone()),
+        services::agent_runs::start_agent_run_worker(state.clone()),
+        services::proactive::start_proactive_coordinator(state.clone()),
+        services::runtime_metrics::start_runtime_metrics_collector(state.clone()),
         services::drive_sync::start_drive_sync_worker(state),
     )
 }
@@ -149,6 +161,7 @@ fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
 
     Router::new()
         .merge(handlers::routes())
+        .merge(handlers::metrics_routes())
         .layer(from_fn_with_state(state.clone(), middleware::require_auth))
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -170,7 +183,6 @@ mod tests {
     async fn auth_session_cookie_allows_and_revokes_protected_access(pool: sqlx::PgPool) {
         let pin = "2468";
         seed_pin(&pool, pin).await;
-
         let cfg = test_config();
         let state = Arc::new(AppState::new(pool, cfg.clone()));
         let app = build_router(state, &cfg);
@@ -321,6 +333,15 @@ mod tests {
     async fn authenticated_http_cannot_create_or_update_a_removed_no_agent_job(pool: sqlx::PgPool) {
         let pin = "2468";
         seed_pin(&pool, pin).await;
+        sqlx::query(
+            r#"INSERT INTO native_agents
+                 (profile, name, drive_path, sandbox_status)
+               VALUES ('cron-security-test', 'Cron security test',
+                       '/drive/agents/cron-security-test', 'ready')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let mut cfg = test_config();
         let agent_data_dir =
@@ -358,7 +379,7 @@ mod tests {
                     .header(CONTENT_TYPE, "application/json")
                     .header(COOKIE, &session_cookie)
                     .body(Body::from(
-                        r#"{"title":"Blocked","prompt":"hidden","schedule":"every 1h","mode":"no_agent"}"#,
+                        r#"{"title":"Blocked","prompt":"hidden","schedule":"every 1h","agentProfile":"cron-security-test","mode":"no_agent"}"#,
                     ))
                     .expect("request should build"),
             )
@@ -375,7 +396,7 @@ mod tests {
                     .header(CONTENT_TYPE, "application/json")
                     .header(COOKIE, &session_cookie)
                     .body(Body::from(
-                        r#"{"title":"Agent job","prompt":"Review tasks","schedule":"every 1h"}"#,
+                        r#"{"title":"Agent job","prompt":"Review tasks","schedule":"every 1h","agentProfile":"cron-security-test"}"#,
                     ))
                     .expect("request should build"),
             )
@@ -411,8 +432,18 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(audit_count, 1);
-        let raw = std::fs::read_to_string(agent_data_dir.join("cron/jobs.json")).unwrap();
-        assert!(!raw.contains("\"mode\""));
+        let stored = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, prompt FROM cron_jobs WHERE id = $1",
+        )
+        .bind(uuid::Uuid::parse_str(job_id).expect("job id should be a UUID"))
+        .fetch_one(&pool)
+        .await
+        .expect("accepted agent job should be stored in PostgreSQL");
+        assert_eq!(
+            stored,
+            ("Agent job".to_string(), "Review tasks".to_string())
+        );
+        assert!(!agent_data_dir.join("cron/jobs.json").exists());
         let _ = std::fs::remove_dir_all(agent_data_dir);
     }
 

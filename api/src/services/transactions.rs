@@ -6,9 +6,10 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::models::scope::{ScopeFilter, WorkspaceScope};
 use crate::models::transaction::{
-    CreateTransactionRequest, SummaryResponse, Transaction, TransactionResponse,
-    TransactionSummary, TransactionsResponse, UpdateTransactionRequest,
+    CreateTransactionRequest, CurrencyTransactionSummary, SummaryResponse, Transaction,
+    TransactionResponse, TransactionSummary, TransactionsResponse, UpdateTransactionRequest,
 };
 use crate::services::audit::log_audit_safe;
 use crate::state::AppState;
@@ -36,6 +37,7 @@ struct TransactionRow {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionQuery {
     pub project_id: Option<String>,
+    pub scope: Option<String>,
     pub r#type: Option<String>,
     /// Inclusive start (ISO 8601). Optional.
     pub from: Option<String>,
@@ -52,7 +54,7 @@ pub async fn list_transactions(
     state: &AppState,
     q: TransactionQuery,
 ) -> AppResult<TransactionsResponse> {
-    let project_uuid = parse_project_id(q.project_id.as_deref())?;
+    let scope = ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
     let from = parse_ts(q.from.as_deref(), "from")?;
     let to = parse_ts(q.to.as_deref(), "to")?;
 
@@ -72,14 +74,17 @@ pub async fn list_transactions(
         r#"SELECT id, project_id, type, amount, currency, category, date,
                   description, status, created_at, updated_at
            FROM transactions
-           WHERE ($1::uuid IS NULL OR project_id = $1)
-             AND ($2::text IS NULL OR type = $2)
-             AND ($3::timestamptz IS NULL OR date >= $3)
-             AND ($4::timestamptz IS NULL OR date < $4)
-             AND ($5::text IS NULL OR category = $5)
-             AND ($6::text IS NULL OR status = $6)
+           WHERE ($1::text = 'all'
+               OR ($1 = 'general' AND project_id IS NULL)
+               OR ($1 = 'project' AND project_id = $2))
+             AND ($3::text IS NULL OR type = $3)
+             AND ($4::timestamptz IS NULL OR date >= $4)
+             AND ($5::timestamptz IS NULL OR date < $5)
+             AND ($6::text IS NULL OR category = $6)
+             AND ($7::text IS NULL OR status = $7)
            ORDER BY date DESC, created_at DESC"#,
-        project_uuid,
+        scope.kind(),
+        scope.project_id(),
         q.r#type.as_deref() as Option<&str>,
         from,
         to,
@@ -108,7 +113,7 @@ pub async fn create_transaction(
     }
 
     // Coerce absent fields to DB defaults (NOT NULL columns reject NULL).
-    let currency = req.currency.unwrap_or_else(|| "KRW".to_string());
+    let currency = normalize_currency(req.currency.as_deref().unwrap_or("KRW"))?;
     let category = req.category.unwrap_or_else(|| "uncategorized".to_string());
     let description = req.description.unwrap_or_default();
     let status = req.status.unwrap_or_else(|| "cleared".to_string());
@@ -156,7 +161,12 @@ pub async fn update_transaction(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("transaction {id} not found")))?;
 
-    let project_uuid = parse_project_id(req.project_id.as_deref())?;
+    let project_scope = req.project_id.workspace_scope()?;
+    let project_present = project_scope.is_some();
+    let project_uuid = project_scope.and_then(|scope| match scope {
+        WorkspaceScope::General => None,
+        WorkspaceScope::Project(id) => Some(id),
+    });
 
     if let Some(ref t) = req.r#type {
         validate_type(t)?;
@@ -167,26 +177,32 @@ pub async fn update_transaction(
     if let Some(ref s) = req.status {
         validate_status(s)?;
     }
+    let currency = req
+        .currency
+        .as_deref()
+        .map(normalize_currency)
+        .transpose()?;
 
     let date = parse_ts(req.date.as_deref(), "date")?;
 
     sqlx::query!(
         r#"UPDATE transactions SET
-             project_id = COALESCE($2, project_id),
-             type = COALESCE($3, type),
-             amount = COALESCE($4, amount),
-             currency = COALESCE($5, currency),
-             category = COALESCE($6, category),
-             date = COALESCE($7, date),
-             description = COALESCE($8, description),
-             status = COALESCE($9, status),
+             project_id = CASE WHEN $2 THEN $3 ELSE project_id END,
+             type = COALESCE($4, type),
+             amount = COALESCE($5, amount),
+             currency = COALESCE($6, currency),
+             category = COALESCE($7, category),
+             date = COALESCE($8, date),
+             description = COALESCE($9, description),
+             status = COALESCE($10, status),
              updated_at = now()
            WHERE id = $1"#,
         id,
+        project_present,
         project_uuid,
         req.r#type.as_deref(),
         req.amount,
-        req.currency.as_deref(),
+        currency.as_deref(),
         req.category.as_deref(),
         date,
         req.description.as_deref(),
@@ -236,7 +252,7 @@ pub async fn transaction_summary(
     state: &AppState,
     q: TransactionQuery,
 ) -> AppResult<SummaryResponse> {
-    let project_uuid = parse_project_id(q.project_id.as_deref())?;
+    let scope = ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
     let from = parse_ts(q.from.as_deref(), "from")?;
     let to = parse_ts(q.to.as_deref(), "to")?;
 
@@ -250,38 +266,53 @@ pub async fn transaction_summary(
     // We compute the three SUMs in a single query with CASE expressions.
     // SUM() over bigint returns numeric in Postgres, which sqlx can't decode
     // into i64 directly — cast back to bigint. All filters are optional.
-    let row = sqlx::query!(
+    let rows = sqlx::query!(
         r#"SELECT
+             currency,
              COALESCE(SUM(CASE WHEN type = 'income'  THEN amount ELSE 0 END), 0)::bigint AS "income!: i64",
              COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0)::bigint AS "expense!: i64",
              COUNT(*)::bigint AS "count!: i64"
            FROM transactions
-           WHERE ($1::uuid IS NULL OR project_id = $1)
-             AND ($2::text IS NULL OR type = $2)
-             AND ($3::timestamptz IS NULL OR date >= $3)
-             AND ($4::timestamptz IS NULL OR date < $4)
-             AND ($5::text IS NULL OR category = $5)
-             AND ($6::text IS NULL OR status = $6)"#,
-        project_uuid,
+           WHERE ($1::text = 'all'
+               OR ($1 = 'general' AND project_id IS NULL)
+               OR ($1 = 'project' AND project_id = $2))
+             AND ($3::text IS NULL OR type = $3)
+             AND ($4::timestamptz IS NULL OR date >= $4)
+             AND ($5::timestamptz IS NULL OR date < $5)
+             AND ($6::text IS NULL OR category = $6)
+             AND ($7::text IS NULL OR status = $7)
+           GROUP BY currency ORDER BY currency"#,
+        scope.kind(),
+        scope.project_id(),
         q.r#type.as_deref() as Option<&str>,
         from,
         to,
         q.category.as_deref() as Option<&str>,
         q.status.as_deref() as Option<&str>,
     )
-    .fetch_one(&state.db)
+    .fetch_all(&state.db)
     .await?;
-
-    let income = row.income;
-    let expense = row.expense;
-    let net = income - expense;
+    let totals_by_currency = rows
+        .into_iter()
+        .map(|row| CurrencyTransactionSummary {
+            currency: row.currency,
+            income: row.income,
+            expense: row.expense,
+            net: row.income - row.expense,
+            count: row.count,
+        })
+        .collect::<Vec<_>>();
+    let count = totals_by_currency.iter().map(|row| row.count).sum();
+    let single = (totals_by_currency.len() == 1).then(|| &totals_by_currency[0]);
 
     Ok(SummaryResponse {
         summary: TransactionSummary {
-            income,
-            expense,
-            net,
-            count: row.count,
+            count,
+            currency: single.map(|row| row.currency.clone()),
+            income: single.map(|row| row.income),
+            expense: single.map(|row| row.expense),
+            net: single.map(|row| row.net),
+            totals_by_currency,
         },
     })
 }
@@ -339,6 +370,10 @@ fn validate_amount(a: i64) -> AppResult<()> {
     } else {
         Err(AppError::BadRequest("amount must be positive".to_string()))
     }
+}
+
+fn normalize_currency(value: &str) -> AppResult<String> {
+    crate::services::currency::normalize_iso_currency(value)
 }
 
 fn parse_project_id(pid: Option<&str>) -> AppResult<Option<Uuid>> {

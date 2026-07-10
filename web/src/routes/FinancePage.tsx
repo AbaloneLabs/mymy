@@ -27,6 +27,7 @@ import {
 } from "@/features/finance/periods";
 import { cn } from "@/lib/utils";
 import type { CreateTransactionInput, TransactionType } from "@/types/finance";
+import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/WorkspaceScopeToggle";
 
 
 export default function FinancePage() {
@@ -34,6 +35,7 @@ export default function FinancePage() {
   const { selectedProjectId } = useProjectContext();
 
   const [period, setPeriod] = useState<PeriodFilter>("month");
+  const [listScope, setListScope] = useState<WorkspaceListScope>("all");
   const [newTitle, setNewTitle] = useState("");
   const [newType, setNewType] = useState<TransactionType>("expense");
   const [newAmount, setNewAmount] = useState("");
@@ -43,10 +45,22 @@ export default function FinancePage() {
   // Compute the [from, to] window from the selected period.
   const { from, to } = useMemo(() => computePeriod(period), [period]);
 
-  const { data, isLoading } = useTransactions(from, to, undefined, selectedProjectId ?? undefined);
-  const { data: summaryData } = useTransactionsSummary(from, to, selectedProjectId ?? undefined);
+  const effectiveScope = selectedProjectId ? "project" : listScope;
+  const { data, isLoading } = useTransactions(
+    from,
+    to,
+    undefined,
+    selectedProjectId ?? undefined,
+    effectiveScope,
+  );
+  const { data: summaryData } = useTransactionsSummary(
+    from,
+    to,
+    selectedProjectId ?? undefined,
+    effectiveScope,
+  );
   const transactions = data?.transactions ?? [];
-  const summary = summaryData?.summary ?? { income: 0, expense: 0, net: 0, count: 0 };
+  const summary = summaryData?.summary ?? { count: 0, totalsByCurrency: [] };
 
   const createTx = useCreateTransaction();
   const updateTx = useUpdateTransaction();
@@ -171,6 +185,9 @@ export default function FinancePage() {
           </div>
 
           {/* Period selector */}
+          {!selectedProjectId && (
+            <WorkspaceScopeToggle value={listScope} onChange={setListScope} />
+          )}
           <div className="flex items-center gap-1 rounded-md border border-[var(--border)] p-0.5">
             {PERIODS.map((p) => (
               <button
@@ -191,25 +208,32 @@ export default function FinancePage() {
         </header>
 
         {/* Summary cards */}
-        <section className="grid grid-cols-1 gap-4 px-6 py-4 sm:grid-cols-3">
-          <SummaryCard
-            label={t("finance.income")}
-            amount={summary.income}
-            icon={<TrendingUp className="h-4 w-4" />}
-            tone="success"
-          />
-          <SummaryCard
-            label={t("finance.expense")}
-            amount={summary.expense}
-            icon={<TrendingDown className="h-4 w-4" />}
-            tone="error"
-          />
-          <SummaryCard
-            label={t("finance.net")}
-            amount={summary.net}
-            icon={<Wallet className="h-4 w-4" />}
-            tone={summary.net >= 0 ? "success" : "error"}
-          />
+        <section className="space-y-4 px-6 py-4">
+          {summary.totalsByCurrency.map((total) => (
+            <div key={total.currency} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <SummaryCard
+                label={`${t("finance.income")} · ${total.currency}`}
+                amount={total.income}
+                currency={total.currency}
+                icon={<TrendingUp className="h-4 w-4" />}
+                tone="success"
+              />
+              <SummaryCard
+                label={`${t("finance.expense")} · ${total.currency}`}
+                amount={total.expense}
+                currency={total.currency}
+                icon={<TrendingDown className="h-4 w-4" />}
+                tone="error"
+              />
+              <SummaryCard
+                label={`${t("finance.net")} · ${total.currency}`}
+                amount={total.net}
+                currency={total.currency}
+                icon={<Wallet className="h-4 w-4" />}
+                tone={total.net >= 0 ? "success" : "error"}
+              />
+            </div>
+          ))}
         </section>
 
         {/* Transactions list */}

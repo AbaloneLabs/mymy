@@ -15,7 +15,6 @@ use std::time::Duration;
 use axum::extract::{Path as AxumPath, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use tokio::process::Command;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -33,14 +32,14 @@ mod state;
 mod types;
 
 use error::RunnerError;
-use host::wait_for_pid_exit;
+use host::{terminate_pid, terminate_process_group};
 use logs::append_stream;
 use path_policy::writable_root_paths;
 use state::RunnerState;
 use types::{
-    ExecuteRequest, ExecuteResponse, ListProcessesResponse, ProcessLogsResponse, ProcessRecord,
-    ProcessStatus, RunnerMode, RuntimeStatus, StartProcessRequest, StartProcessResponse,
-    StopProcessResponse,
+    ExecuteRequest, ExecuteResponse, ExecutionProcess, ListProcessesResponse, ProcessLogsResponse,
+    ProcessRecord, ProcessStatus, RunnerMode, RuntimeStatus, StartProcessRequest,
+    StartProcessResponse, StopProcessResponse,
 };
 
 pub async fn run() -> anyhow::Result<()> {
@@ -60,6 +59,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/runtime/status", get(runtime_status))
         .route("/execute", post(execute))
+        .route("/executions/{id}/cancel", post(cancel_execution))
         .route("/processes", get(list_processes).post(start_process))
         .route("/processes/{id}/stop", post(stop_process))
         .route("/processes/{id}/kill", post(kill_process))
@@ -92,15 +92,51 @@ async fn execute(
         ));
     }
     let timeout_secs = req.timeout_secs.unwrap_or(60).clamp(1, 900);
+    if execution_cancelled(&state, req.execution_id.as_deref()).await {
+        finish_execution(&state, req.execution_id.as_deref()).await;
+        return Err(RunnerError::Execution(
+            "execution was cancelled before process start".to_string(),
+        ));
+    }
     match state.mode {
         RunnerMode::Bubblewrap => {
             let mut command = state.build_bubblewrap_command(&prepared, &req.command)?;
-            let output = tokio::time::timeout(Duration::from_secs(timeout_secs), command.output())
-                .await
-                .map_err(|_| {
-                    RunnerError::Execution(format!("command timed out after {timeout_secs}s"))
-                })?
+            command
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            command.process_group(0);
+            let child = command
+                .spawn()
                 .map_err(|err| RunnerError::Execution(format!("command failed to start: {err}")))?;
+            let pid = child
+                .id()
+                .ok_or_else(|| RunnerError::Execution("runner process has no pid".to_string()))?;
+            register_execution(
+                &state,
+                req.execution_id.as_deref(),
+                ExecutionProcess {
+                    pid,
+                    process_group: true,
+                },
+            )
+            .await;
+            if execution_cancelled(&state, req.execution_id.as_deref()).await {
+                terminate_process_group(pid).await;
+            }
+            let wait = child.wait_with_output();
+            tokio::pin!(wait);
+            let output = tokio::select! {
+                result = &mut wait => result.map_err(|err| RunnerError::Execution(format!("command wait failed: {err}")))?,
+                _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                    terminate_process_group(pid).await;
+                    let _ = (&mut wait).await;
+                    finish_execution(&state, req.execution_id.as_deref()).await;
+                    state.repair_ownership(&prepared.roots).await;
+                    return Err(RunnerError::Execution(format!("command timed out after {timeout_secs}s")));
+                }
+            };
+            finish_execution(&state, req.execution_id.as_deref()).await;
             state.repair_ownership(&prepared.roots).await;
 
             Ok(Json(ExecuteResponse {
@@ -112,9 +148,74 @@ async fn execute(
             }))
         }
         RunnerMode::Firecracker => state
-            .execute_firecracker(&prepared, &req.command, timeout_secs)
+            .execute_firecracker(
+                &prepared,
+                &req.command,
+                timeout_secs,
+                req.execution_id.as_deref(),
+            )
             .await
             .map(Json),
+    }
+}
+
+async fn cancel_execution(
+    State(state): State<Arc<RunnerState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<StopProcessResponse>, RunnerError> {
+    let id = id.trim();
+    if id.is_empty() || id.chars().count() > 256 || id.chars().any(char::is_whitespace) {
+        return Err(RunnerError::BadRequest("invalid execution id".to_string()));
+    }
+    state
+        .cancelled_executions
+        .write()
+        .await
+        .insert(id.to_string());
+    let process = { state.executions.read().await.get(id).copied() };
+    if let Some(process) = process {
+        if process.process_group {
+            terminate_process_group(process.pid).await;
+        } else {
+            terminate_pid(process.pid).await;
+        }
+    }
+    Ok(Json(StopProcessResponse { success: true }))
+}
+
+async fn execution_cancelled(state: &RunnerState, execution_id: Option<&str>) -> bool {
+    let Some(execution_id) = execution_id else {
+        return false;
+    };
+    state
+        .cancelled_executions
+        .read()
+        .await
+        .contains(execution_id)
+}
+
+async fn register_execution(
+    state: &RunnerState,
+    execution_id: Option<&str>,
+    process: ExecutionProcess,
+) {
+    if let Some(execution_id) = execution_id {
+        state
+            .executions
+            .write()
+            .await
+            .insert(execution_id.to_string(), process);
+    }
+}
+
+async fn finish_execution(state: &RunnerState, execution_id: Option<&str>) {
+    if let Some(execution_id) = execution_id {
+        state.executions.write().await.remove(execution_id);
+        state
+            .cancelled_executions
+            .write()
+            .await
+            .remove(execution_id);
     }
 }
 
@@ -139,13 +240,20 @@ async fn start_process(
     Json(req): Json<StartProcessRequest>,
 ) -> Result<Json<StartProcessResponse>, RunnerError> {
     let prepared = state.prepare_request(&req.execution)?;
+    let execution_id = req.execution.execution_id.clone();
+    if execution_cancelled(&state, execution_id.as_deref()).await {
+        finish_execution(&state, execution_id.as_deref()).await;
+        return Err(RunnerError::Execution(
+            "process start was cancelled before spawn".to_string(),
+        ));
+    }
     if state.mode == RunnerMode::Firecracker && !state.firecracker_ready() {
         return Err(RunnerError::Unavailable(
             "firecracker mode requires Firecracker binary, kernel, rootfs, and SSH key assets"
                 .to_string(),
         ));
     }
-    let id = Uuid::new_v4();
+    let id = req.process_id.unwrap_or_else(Uuid::new_v4);
     let log_path = state.log_dir.join(format!("{id}.log"));
     if state.mode == RunnerMode::Firecracker {
         return state
@@ -155,6 +263,7 @@ async fn start_process(
     }
 
     let mut command = state.build_bubblewrap_command(&prepared, &req.execution.command)?;
+    command.process_group(0);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
     let mut child = command
@@ -164,6 +273,27 @@ async fn start_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let writable_roots = writable_root_paths(&prepared.roots);
+
+    if let Some(pid) = pid {
+        register_execution(
+            &state,
+            execution_id.as_deref(),
+            ExecutionProcess {
+                pid,
+                process_group: true,
+            },
+        )
+        .await;
+        if execution_cancelled(&state, execution_id.as_deref()).await {
+            terminate_process_group(pid).await;
+            let _ = child.wait().await;
+            finish_execution(&state, execution_id.as_deref()).await;
+            state.repair_ownership_paths(&writable_roots).await;
+            return Err(RunnerError::Execution(
+                "process start was cancelled".to_string(),
+            ));
+        }
+    }
 
     let mut processes = state.processes.write().await;
     processes.insert(
@@ -202,6 +332,7 @@ async fn start_process(
             };
         }
     });
+    finish_execution(&state, execution_id.as_deref()).await;
 
     Ok(Json(StartProcessResponse {
         id,
@@ -234,22 +365,10 @@ async fn stop_process(
         let _ = shutdown.send(true);
     }
     if let Some(pid) = pid {
-        let _ = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await;
-        if !wait_for_pid_exit(pid).await {
-            let _ = Command::new("kill")
-                .arg("-KILL")
-                .arg(pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await;
-            let _ = wait_for_pid_exit(pid).await;
+        if firecracker.is_some() {
+            terminate_pid(pid).await;
+        } else {
+            terminate_process_group(pid).await;
         }
     }
     if let Some(runtime) = firecracker {
@@ -281,14 +400,11 @@ async fn kill_process(
         let _ = shutdown.send(true);
     }
     if let Some(pid) = pid {
-        let _ = Command::new("kill")
-            .arg("-KILL")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await;
-        let _ = wait_for_pid_exit(pid).await;
+        if firecracker.is_some() {
+            terminate_pid(pid).await;
+        } else {
+            terminate_process_group(pid).await;
+        }
     }
     if let Some(runtime) = firecracker {
         let _ = state.sync_firecracker_writable_roots(&runtime).await;

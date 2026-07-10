@@ -1,8 +1,9 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::agent::prompt::PromptParts;
+use crate::agent::prompt::{PromptParts, PROMPT_VERSION};
 use crate::agent::providers::ToolSchema;
+use crate::agent::tools::ToolCapability;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -57,10 +58,13 @@ pub(super) async fn resolve_prompt_snapshot(
     Ok(current.clone())
 }
 
-pub(super) fn fingerprint_tool_schemas(schemas: &[ToolSchema]) -> AppResult<String> {
-    let json = serde_json::to_string(schemas)
+pub(super) fn fingerprint_tool_schemas(
+    schemas: &[ToolSchema],
+    capabilities: &[(String, ToolCapability)],
+) -> AppResult<String> {
+    let json = serde_json::to_string(&(schemas, capabilities))
         .map_err(|err| AppError::Internal(format!("tool schema fingerprint failed: {err}")))?;
-    Ok(hash_segments(["tool-schema-v1", &json]))
+    Ok(hash_segments(["tool-schema-v2", &json]))
 }
 
 fn prompt_snapshot_fingerprint(
@@ -72,7 +76,8 @@ fn prompt_snapshot_fingerprint(
 ) -> String {
     let project = project_id.map(|id| id.to_string()).unwrap_or_default();
     hash_segments([
-        "chat-prompt-v1",
+        "chat-prompt-v2",
+        PROMPT_VERSION,
         profile,
         &project,
         stable,

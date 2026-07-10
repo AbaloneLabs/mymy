@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
-  streamChatMessage,
+  cancelAgentRun,
+  cancelQueuedChatInput,
+  enqueueChatMessage,
+  observeAgentRun,
   submitChatClarifyAnswer,
+  updateQueuedChatInput,
   useChatMessages,
+  useSessionRuntime,
+  useRunChecklist,
+  type AgentRunStatus,
   type ChatClarifyRequest,
 } from "@/features/chat/api";
 import { useNativeSkills, useSkillBundles } from "@/features/skills/api";
@@ -26,10 +33,8 @@ import {
   handleStreamEvent,
   makeStreamingAssistantMessage,
 } from "@/components/chat/shared/stream";
-import {
-  createQueuedTurnId,
-  useQueuedChatTurns,
-} from "@/components/chat/queue/useQueuedChatTurns";
+import { createQueuedTurnId } from "@/components/chat/queue/useQueuedChatTurns";
+import { RunStatusCard } from "@/components/chat/runtime/runStatusCard";
 import { useChatAttachments } from "@/components/chat/attachments/useChatAttachments";
 import type {
   QueuedChatTurn,
@@ -69,6 +74,12 @@ export function ChatPanel({
   const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [clarifyError, setClarifyError] = useState(false);
   const [clarifySubmitting, setClarifySubmitting] = useState(false);
+  const [observedRunId, setObservedRunId] = useState<string | null>(null);
+  const [observedRunStatus, setObservedRunStatus] = useState<AgentRunStatus | null>(null);
+  const [cancelRequested, setCancelRequested] = useState(false);
+  const [outcomeUnknown, setOutcomeUnknown] = useState(false);
+  const [editingQueuedTurnId, setEditingQueuedTurnId] = useState<string | null>(null);
+  const [queuedEditText, setQueuedEditText] = useState("");
   const [useMoa, setUseMoa] = useState(false);
   const [selectedMoaPresetId, setSelectedMoaPresetId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -76,8 +87,10 @@ export function ChatPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const stickToBottomRef = useRef(true);
   const isStreamingRef = useRef(false);
+  const observedRunIdRef = useRef<string | null>(null);
+  const runObserverRef = useRef<AbortController | null>(null);
+  const runCursorsRef = useRef(new Map<string, number>());
   const qc = useQueryClient();
-  const queuedTurnsState = useQueuedChatTurns();
   const attachmentState = useChatAttachments({
     sessionId,
     inputRef,
@@ -85,6 +98,8 @@ export function ChatPanel({
   });
 
   const { data, isLoading, isError } = useChatMessages(sessionId ?? undefined);
+  const { data: runtimeData } = useSessionRuntime(sessionId ?? undefined);
+  const { data: checklistData } = useRunChecklist(observedRunId ?? undefined);
   const { data: nativeSkillsData } = useNativeSkills();
   const { data: skillBundlesData } = useSkillBundles();
   const { data: moaPresetsData } = useMoaPresets();
@@ -143,35 +158,60 @@ export function ChatPanel({
     () => buildToolCallById(visibleMessages),
     [visibleMessages],
   );
-  const activeQueuedTurns = queuedTurnsState.queuedTurns.filter(
-    (turn) => turn.sessionId === sessionId,
+  const activeQueuedTurns = useMemo(
+    () =>
+      (runtimeData?.queuedInputs ?? [])
+        .filter(
+          (input) =>
+            input.sessionId === sessionId &&
+            input.status === "queued" &&
+            input.targetRunId !== observedRunId,
+        )
+        .map((input): QueuedChatTurn => {
+          const options = input.options as {
+            useMoa?: unknown;
+            moaPresetId?: unknown;
+          };
+          return {
+            id: input.id,
+            sessionId: input.sessionId,
+            content: input.content,
+            options: {
+              useMoa: options.useMoa === true,
+              moaPresetId:
+                typeof options.moaPresetId === "string"
+                  ? options.moaPresetId
+                  : null,
+            },
+            createdAt: input.createdAt,
+          };
+        }),
+    [observedRunId, runtimeData?.queuedInputs, sessionId],
   );
-  function startQueuedTurnsIfIdle() {
-    if (isStreamingRef.current) return;
-    const nextTurn = queuedTurnsState.dequeueNextMergedTurn();
-    if (nextTurn) {
-      void runChatTurn(nextTurn);
-    }
-  }
 
   function beginQueuedTurnEdit(turn: QueuedChatTurn) {
-    queuedTurnsState.beginQueuedTurnEdit(turn);
+    setEditingQueuedTurnId(turn.id);
+    setQueuedEditText(turn.content);
   }
 
-  function saveQueuedTurnEdit() {
-    if (queuedTurnsState.saveQueuedTurnEdit()) {
-      startQueuedTurnsIfIdle();
-    }
+  async function saveQueuedTurnEdit() {
+    const content = queuedEditText.trim();
+    if (!editingQueuedTurnId || !content) return;
+    await updateQueuedChatInput(editingQueuedTurnId, content);
+    setEditingQueuedTurnId(null);
+    setQueuedEditText("");
+    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
   }
 
   function cancelQueuedTurnEdit() {
-    queuedTurnsState.cancelQueuedTurnEdit();
-    startQueuedTurnsIfIdle();
+    setEditingQueuedTurnId(null);
+    setQueuedEditText("");
   }
 
-  function cancelQueuedTurn(turnId: string) {
-    queuedTurnsState.cancelQueuedTurn(turnId);
-    startQueuedTurnsIfIdle();
+  async function cancelQueuedTurn(turnId: string) {
+    await cancelQueuedChatInput(turnId);
+    if (editingQueuedTurnId === turnId) cancelQueuedTurnEdit();
+    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
   }
 
   function updateScrollStickiness() {
@@ -180,15 +220,18 @@ export function ChatPanel({
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
   }
 
-  async function runChatTurn(turn: QueuedChatTurn) {
-    if (isStreamingRef.current) {
-      queuedTurnsState.enqueueTurn(turn);
-      return;
-    }
-
+  const observeRun = useCallback(async (runId: string, runSessionId: string) => {
+    if (isStreamingRef.current || observedRunIdRef.current === runId) return;
     isStreamingRef.current = true;
+    observedRunIdRef.current = runId;
+    const controller = new AbortController();
+    runObserverRef.current = controller;
     setIsStreaming(true);
-    setStreamSessionId(turn.sessionId);
+    setStreamSessionId(runSessionId);
+    setObservedRunId(runId);
+    setObservedRunStatus("queued");
+    setCancelRequested(false);
+    setOutcomeUnknown(false);
     setStreamError(false);
     setStreamErrorMessage("");
     setStreamUserMessage(null);
@@ -200,34 +243,48 @@ export function ChatPanel({
     setClarifySubmitting(false);
 
     try {
-      await streamChatMessage(
-        turn.sessionId,
-        turn.content,
-        turn.options,
+      const result = await observeAgentRun(
+        runId,
+        runCursorsRef.current.get(runId) ?? 0,
         (event) => {
-          handleStreamEvent(event, turn.sessionId, {
+          if (event.type === "run_status") {
+            setObservedRunStatus(event.status);
+            setCancelRequested(event.cancel_requested);
+          }
+          if (event.type === "outcome_unknown") {
+            setOutcomeUnknown(true);
+          }
+          handleStreamEvent(event, runSessionId, {
             setStreamUserMessage,
             setStreamAssistantText,
             setToolEvents,
             setPendingClarify,
           });
         },
+        controller.signal,
       );
-      await qc.invalidateQueries({ queryKey: ["chat", "messages", turn.sessionId] });
+      runCursorsRef.current.set(runId, result.cursor);
+      setObservedRunStatus(result.run.status);
+      await qc.invalidateQueries({ queryKey: ["chat", "messages", runSessionId] });
       await qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+      await qc.invalidateQueries({ queryKey: ["chat", "runtime", runSessionId] });
       setStreamUserMessage(null);
       setStreamAssistantText("");
-      setStreamSessionId(null);
       setToolEvents([]);
     } catch (error) {
-      setStreamError(true);
-      setStreamErrorMessage(error instanceof Error ? error.message : "");
+      if (!controller.signal.aborted) {
+        setStreamError(true);
+        setStreamErrorMessage(error instanceof Error ? error.message : "");
+      }
     } finally {
-      isStreamingRef.current = false;
-      setIsStreaming(false);
-      startQueuedTurnsIfIdle();
+      if (observedRunIdRef.current === runId) {
+        observedRunIdRef.current = null;
+        runObserverRef.current = null;
+        isStreamingRef.current = false;
+        setIsStreaming(false);
+      }
     }
-  }
+  }, [qc]);
 
   // Auto-scroll to bottom on new messages.
   useEffect(() => {
@@ -253,6 +310,25 @@ export function ChatPanel({
     }
   }, [sessionId]);
 
+  useEffect(() => {
+    runObserverRef.current?.abort();
+    runObserverRef.current = null;
+    observedRunIdRef.current = null;
+    isStreamingRef.current = false;
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || isStreamingRef.current) return;
+    const candidateRunId =
+      runtimeData?.activeRun?.id ??
+      runtimeData?.queuedInputs.find(
+        (input) => input.status !== "cancelled" && Boolean(input.targetRunId),
+      )?.targetRunId;
+    if (candidateRunId) {
+      void observeRun(candidateRunId, sessionId);
+    }
+  }, [observeRun, runtimeData?.activeRun?.id, runtimeData?.queuedInputs, sessionId]);
+
   async function submitCurrentMessage() {
     const trimmed = text.trim();
     if (
@@ -266,26 +342,35 @@ export function ChatPanel({
       trimmed,
       attachmentState.activeAttachments,
     );
-    const turn: QueuedChatTurn = {
-      id: createQueuedTurnId(),
-      sessionId,
-      content: outgoingText,
-      options: {
-        useMoa: useMoa && Boolean(selectedMoaPreset),
-        moaPresetId: selectedMoaPreset?.id ?? null,
-      },
-      createdAt: new Date().toISOString(),
-    };
-
     setText("");
     attachmentState.clearAttachments();
-
-    if (isStreamingRef.current) {
-      queuedTurnsState.enqueueTurn(turn);
-      return;
+    try {
+      const enqueued = await enqueueChatMessage(
+        sessionId,
+        createQueuedTurnId(),
+        outgoingText,
+        {
+          useMoa: useMoa && Boolean(selectedMoaPreset),
+          moaPresetId: selectedMoaPreset?.id ?? null,
+        },
+      );
+      await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
+      if (!isStreamingRef.current && enqueued.run) {
+        void observeRun(enqueued.run.id, sessionId);
+      }
+    } catch (error) {
+      setText(outgoingText);
+      setStreamError(true);
+      setStreamSessionId(sessionId);
+      setStreamErrorMessage(error instanceof Error ? error.message : "");
     }
+  }
 
-    await runChatTurn(turn);
+  async function stopObservedRun() {
+    if (!observedRunId) return;
+    const response = await cancelAgentRun(observedRunId);
+    if (response.accepted) setCancelRequested(true);
+    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
   }
 
   const submitClarify = async (answer: string) => {
@@ -354,6 +439,16 @@ export function ChatPanel({
         onScroll={updateScrollStickiness}
         className="flex-1 space-y-4 overflow-y-auto px-6 py-4"
       >
+        {observedRunId && observedRunStatus && streamSessionId === sessionId && (
+          <RunStatusCard
+            runId={observedRunId}
+            status={observedRunStatus}
+            cancelling={cancelRequested}
+            outcomeUnknown={outcomeUnknown}
+            checklist={checklistData?.items ?? []}
+            onStop={() => void stopObservedRun()}
+          />
+        )}
         <ChatTranscript
           isLoading={isLoading}
           isError={isError}
@@ -367,15 +462,15 @@ export function ChatPanel({
           activeStreamErrorMessage={activeStreamErrorMessage}
           activeToolEvents={activeToolEvents}
           activeQueuedTurns={activeQueuedTurns}
-          editingQueuedTurnId={queuedTurnsState.editingQueuedTurnId}
-          queuedEditText={queuedTurnsState.queuedEditText}
+          editingQueuedTurnId={editingQueuedTurnId}
+          queuedEditText={queuedEditText}
           onOpenDocument={onOpenDocument}
           onOpenPreview={onOpenPreview}
-          onQueuedEditTextChange={queuedTurnsState.setQueuedEditText}
+          onQueuedEditTextChange={setQueuedEditText}
           onBeginQueuedTurnEdit={beginQueuedTurnEdit}
-          onSaveQueuedTurnEdit={saveQueuedTurnEdit}
+          onSaveQueuedTurnEdit={() => void saveQueuedTurnEdit()}
           onCancelQueuedTurnEdit={cancelQueuedTurnEdit}
-          onCancelQueuedTurn={cancelQueuedTurn}
+          onCancelQueuedTurn={(turnId) => void cancelQueuedTurn(turnId)}
         />
       </div>
 

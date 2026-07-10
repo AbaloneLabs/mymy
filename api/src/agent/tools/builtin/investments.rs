@@ -13,7 +13,8 @@ use sqlx::PgPool;
 
 use super::BuiltinToolConfig;
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, DataSensitivity, ToolCapability, ToolEntry, ToolError, ToolHandler,
+    ToolRegistry,
 };
 use crate::services::investments;
 
@@ -33,6 +34,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {}
             }),
         ),
+        capability: ToolCapability::read("investment")
+            .with_sensitivity(DataSensitivity::Financial),
         handler: Arc::new(InvestmentSnapshotTool { db }),
     });
 }

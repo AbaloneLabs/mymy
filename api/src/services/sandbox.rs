@@ -211,12 +211,14 @@ pub async fn start_process(
     let runner_response = RunnerClient::new(runner_url)
         .start_process(&RunnerStartProcessRequest {
             execution: RunnerExecuteRequest {
+                execution_id: None,
                 command: command.clone(),
                 cwd: cwd.display().to_string(),
                 roots: roots_for_runner(&workspace.working_dir, &workspace.allowed_roots),
                 timeout_secs: None,
                 env: None,
             },
+            process_id: None,
             port,
         })
         .await?;

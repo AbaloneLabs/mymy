@@ -5,6 +5,7 @@
 //! All id/timestamp fields are `String` (serialized from DB `Uuid`/`timestamptz`
 //! in the handler's `row_to_note`), matching the calendar pattern.
 
+use crate::models::scope::PatchField;
 use serde::{Deserialize, Serialize};
 
 /// A note as exposed over the API.
@@ -54,7 +55,8 @@ pub struct CreateNoteRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNoteRequest {
-    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_id: PatchField<String>,
     pub title: Option<String>,
     pub content: Option<String>,
     pub tags: Option<Vec<String>>,

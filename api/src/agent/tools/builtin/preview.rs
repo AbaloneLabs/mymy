@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use super::BuiltinToolConfig;
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
+    ToolRegistry,
 };
 
 const MIN_PREVIEW_PORT: u64 = 1024;
@@ -35,6 +36,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["port", "label"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Create, "preview"),
         handler: Arc::new(RegisterPreviewTool {
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),

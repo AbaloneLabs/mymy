@@ -54,6 +54,8 @@ import {
 } from "./toolResultProcessParsers";
 import { CodeExecutionEvent } from "./toolResultCodeExecution";
 import { JsonToolResultPanel } from "./toolResultJson";
+import { DelegateResultPanel } from "./toolResultDelegate";
+import { parseDelegateResult } from "./toolResultDelegateParser";
 
 export function ToolEventRow({
   event,
@@ -65,14 +67,21 @@ export function ToolEventRow({
   onOpenPreview?: (source: LightweightBrowserSource) => void;
 }) {
   return (
-    <ToolResultView
-      name={event.name}
-      status={event.status}
-      argumentsText={event.arguments}
-      detail={event.detail}
-      onOpenDocument={onOpenDocument}
-      onOpenPreview={onOpenPreview}
-    />
+    <div>
+      <ToolResultView
+        name={event.name}
+        status={event.status}
+        argumentsText={event.arguments}
+        detail={event.detail}
+        onOpenDocument={onOpenDocument}
+        onOpenPreview={onOpenPreview}
+      />
+      {event.status === "running" && event.cancellation === "non_interruptible" && (
+        <p className="mt-1 text-[10px] text-[var(--status-warning)]">
+          이 작업은 즉시 중단되지 않으며 현재 단계와 정리가 끝날 때까지 실행 상태가 유지됩니다.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -97,6 +106,13 @@ export function ToolResultView({
         event={{ id: name, sessionId: "", name, status, arguments: argumentsText, detail }}
       />
     );
+  }
+
+  if (name === "delegate_task") {
+    const delegateResult = parseDelegateResult(detail);
+    if (delegateResult) {
+      return <DelegateResultPanel result={delegateResult} />;
+    }
   }
 
   if (name === "web_search") {

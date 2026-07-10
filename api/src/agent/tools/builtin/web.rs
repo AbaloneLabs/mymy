@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::truncate_chars;
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 
 const MAX_EXTRACT_CHARS: usize = 20_000;
@@ -39,6 +39,7 @@ pub fn register(registry: &mut ToolRegistry) {
                 "required": ["url"]
             }),
         ),
+        capability: ToolCapability::read("web").with_resource_argument("url"),
         handler: Arc::new(WebExtractTool { http: http.clone() }),
     });
 
@@ -57,6 +58,7 @@ pub fn register(registry: &mut ToolRegistry) {
                 "required": ["query"]
             }),
         ),
+        capability: ToolCapability::external("web_search"),
         handler: Arc::new(WebSearchTool { http }),
     });
 }

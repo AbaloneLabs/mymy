@@ -38,6 +38,8 @@ pub struct FileFingerprint {
 
 const STALE_WRITE_MESSAGE: &str =
     "File changed since your last read/write. Call read_file(path) before modifying it again.";
+const UNOBSERVED_WRITE_MESSAGE: &str =
+    "Existing files must be read before overwrite. Call read_file(path) and use its fingerprint.";
 
 pub async fn fingerprint_path(path: &Path) -> Result<FileFingerprint, String> {
     let bytes = fs::read(path)
@@ -107,7 +109,7 @@ pub async fn ensure_file_not_changed_since_observed(
     }
     let Some(row) = sqlx::query_as::<_, ObservationRow>(
         r#"
-        SELECT last_seen_hash, last_seen_size, last_seen_modified_at
+        SELECT last_seen_hash, last_seen_size
           FROM agent_file_observations
          WHERE agent_profile = $1 AND logical_path = $2
         "#,
@@ -118,14 +120,15 @@ pub async fn ensure_file_not_changed_since_observed(
     .await
     .map_err(|err| format!("file observation lookup failed: {err}"))?
     else {
-        return Ok(());
+        return Err(UNOBSERVED_WRITE_MESSAGE.to_string());
     };
 
     let fingerprint = fingerprint_path(physical_path).await?;
-    if row.last_seen_hash != fingerprint.hash
-        || row.last_seen_size != fingerprint.size as i64
-        || row.last_seen_modified_at != fingerprint.modified_at
-    {
+    // PostgreSQL timestamps have lower precision than several filesystems.
+    // Content hash and size are the optimistic-concurrency identity; mtime is
+    // retained for diagnostics but must not cause a false stale-write result
+    // merely because a nanosecond value was rounded during persistence.
+    if row.last_seen_hash != fingerprint.hash || row.last_seen_size != fingerprint.size as i64 {
         return Err(STALE_WRITE_MESSAGE.to_string());
     }
     Ok(())
@@ -135,5 +138,67 @@ pub async fn ensure_file_not_changed_since_observed(
 struct ObservationRow {
     last_seen_hash: String,
     last_seen_size: i64,
-    last_seen_modified_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn existing_file_requires_observation_and_rejects_stale_content(pool: PgPool) {
+        sqlx::query(
+            r#"INSERT INTO native_agents
+                 (profile, name, drive_path, sandbox_status)
+               VALUES ('observation-test', 'Observation test',
+                       '/drive/agents/observation-test', 'ready')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("mymy-observation-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let path = directory.join("state.md");
+        tokio::fs::write(&path, "first").await.unwrap();
+
+        let unobserved = ensure_file_not_changed_since_observed(
+            Some(&pool),
+            Some("observation-test"),
+            "/drive/agents/observation-test/state.md",
+            &path,
+        )
+        .await;
+        assert_eq!(unobserved.unwrap_err(), UNOBSERVED_WRITE_MESSAGE);
+
+        record_file_observation(
+            Some(&pool),
+            Some("observation-test"),
+            "/drive/agents/observation-test/state.md",
+            &path,
+            FileObservationSource::Read,
+        )
+        .await
+        .unwrap();
+        ensure_file_not_changed_since_observed(
+            Some(&pool),
+            Some("observation-test"),
+            "/drive/agents/observation-test/state.md",
+            &path,
+        )
+        .await
+        .unwrap();
+
+        tokio::fs::write(&path, "changed by another actor")
+            .await
+            .unwrap();
+        let stale = ensure_file_not_changed_since_observed(
+            Some(&pool),
+            Some("observation-test"),
+            "/drive/agents/observation-test/state.md",
+            &path,
+        )
+        .await;
+        assert_eq!(stale.unwrap_err(), STALE_WRITE_MESSAGE);
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
 }

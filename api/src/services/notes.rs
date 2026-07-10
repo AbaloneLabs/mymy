@@ -9,6 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::note::{
     CreateNoteRequest, Note, NoteResponse, NotesResponse, UpdateNoteRequest,
 };
+use crate::models::scope::{ScopeFilter, WorkspaceScope};
 use crate::services::audit::log_audit_safe;
 use crate::services::versions::{
     compute_note_change_summary, create_version_checkpoint, delete_entity_versions,
@@ -38,44 +39,26 @@ struct NoteRow {
 pub struct NoteQuery {
     /// Filter by project (null/absent = all notes including general).
     pub project_id: Option<String>,
+    pub scope: Option<String>,
 }
 
 /// GET /api/notes
 pub async fn list_notes(state: &AppState, q: NoteQuery) -> AppResult<NotesResponse> {
-    let project_uuid = match q.project_id.as_deref() {
-        Some(pid) => Some(
-            Uuid::parse_str(pid)
-                .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?,
-        ),
-        None => None,
-    };
-
-    let rows = match project_uuid {
-        Some(pid) => {
-            sqlx::query_as!(
-                NoteRow,
-                r#"SELECT id, project_id, title, content, tags, pinned,
-                          created_at, updated_at
-                   FROM notes
-                   WHERE project_id = $1
-                   ORDER BY pinned DESC, updated_at DESC"#,
-                pid,
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-        None => {
-            sqlx::query_as!(
-                NoteRow,
-                r#"SELECT id, project_id, title, content, tags, pinned,
-                          created_at, updated_at
-                   FROM notes
-                   ORDER BY pinned DESC, updated_at DESC"#
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-    };
+    let scope = ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
+    let rows = sqlx::query_as!(
+        NoteRow,
+        r#"SELECT id, project_id, title, content, tags, pinned,
+                  created_at, updated_at
+           FROM notes
+           WHERE ($1::text = 'all'
+              OR ($1 = 'general' AND project_id IS NULL)
+              OR ($1 = 'project' AND project_id = $2))
+           ORDER BY pinned DESC, updated_at DESC"#,
+        scope.kind(),
+        scope.project_id(),
+    )
+    .fetch_all(&state.db)
+    .await?;
 
     let notes = rows.into_iter().map(row_to_note).collect();
     Ok(NotesResponse { notes })
@@ -92,6 +75,7 @@ pub async fn search_notes(state: &AppState, q: SearchQuery) -> AppResult<NotesRe
         return Ok(NotesResponse { notes: vec![] });
     }
 
+    let scope = ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
     // Build a websearch query (supports quoted phrases, OR, negation).
     let rows = sqlx::query_as!(
         NoteRow,
@@ -99,9 +83,14 @@ pub async fn search_notes(state: &AppState, q: SearchQuery) -> AppResult<NotesRe
                   created_at, updated_at
            FROM notes
            WHERE search_tsv @@ websearch_to_tsquery('simple', $1)
+             AND ($2::text = 'all'
+               OR ($2 = 'general' AND project_id IS NULL)
+               OR ($2 = 'project' AND project_id = $3))
            ORDER BY ts_rank(search_tsv, websearch_to_tsquery('simple', $1)) DESC,
                     pinned DESC, updated_at DESC"#,
         term,
+        scope.kind(),
+        scope.project_id(),
     )
     .fetch_all(&state.db)
     .await?;
@@ -113,18 +102,19 @@ pub async fn search_notes(state: &AppState, q: SearchQuery) -> AppResult<NotesRe
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
+    pub project_id: Option<String>,
+    pub scope: Option<String>,
 }
 
 /// POST /api/notes
 pub async fn create_note(state: &AppState, req: CreateNoteRequest) -> AppResult<NoteResponse> {
     let id = Uuid::new_v4();
-    let project_uuid = match req.project_id.as_deref() {
-        Some(pid) => Some(
-            Uuid::parse_str(pid)
-                .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?,
-        ),
-        None => None,
-    };
+    let project_uuid = req
+        .project_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|err| AppError::BadRequest(format!("invalid projectId: {err}")))?;
 
     // content is NOT NULL in DB (default ''). Coerce absent content to an
     // empty string so a create request without content doesn't violate the
@@ -181,13 +171,12 @@ pub async fn update_note(
     // Read the pre-update state (for change summary + version checkpoint).
     let old_note = fetch_note(state, id).await?;
 
-    let project_uuid = match req.project_id.as_deref() {
-        Some(pid) => Some(
-            Uuid::parse_str(pid)
-                .map_err(|e| AppError::BadRequest(format!("invalid projectId: {e}")))?,
-        ),
-        None => None,
-    };
+    let project_scope = req.project_id.workspace_scope()?;
+    let project_present = project_scope.is_some();
+    let project_uuid = project_scope.and_then(|scope| match scope {
+        WorkspaceScope::General => None,
+        WorkspaceScope::Project(id) => Some(id),
+    });
 
     // COALESCE PATCH. tags and pinned use a sentinel approach: since
     // COALESCE can't distinguish "not provided" from "null/empty", we
@@ -195,14 +184,15 @@ pub async fn update_note(
     if let Some(tags) = &req.tags {
         sqlx::query!(
             r#"UPDATE notes SET
-                 project_id = COALESCE($2, project_id),
-                 title = COALESCE($3, title),
-                 content = COALESCE($4, content),
-                 tags = $5,
-                 pinned = COALESCE($6, pinned),
+                 project_id = CASE WHEN $2 THEN $3 ELSE project_id END,
+                 title = COALESCE($4, title),
+                 content = COALESCE($5, content),
+                 tags = $6,
+                 pinned = COALESCE($7, pinned),
                  updated_at = now()
                WHERE id = $1"#,
             id,
+            project_present,
             project_uuid,
             req.title.as_deref(),
             req.content.as_deref(),
@@ -214,13 +204,14 @@ pub async fn update_note(
     } else {
         sqlx::query!(
             r#"UPDATE notes SET
-                 project_id = COALESCE($2, project_id),
-                 title = COALESCE($3, title),
-                 content = COALESCE($4, content),
-                 pinned = COALESCE($5, pinned),
+                 project_id = CASE WHEN $2 THEN $3 ELSE project_id END,
+                 title = COALESCE($4, title),
+                 content = COALESCE($5, content),
+                 pinned = COALESCE($6, pinned),
                  updated_at = now()
                WHERE id = $1"#,
             id,
+            project_present,
             project_uuid,
             req.title.as_deref(),
             req.content.as_deref(),

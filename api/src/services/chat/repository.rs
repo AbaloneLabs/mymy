@@ -47,83 +47,33 @@ pub(super) struct ChatMessageRow {
 #[serde(rename_all = "camelCase")]
 pub struct SessionQuery {
     pub project_id: Option<String>,
+    pub scope: Option<String>,
     pub profile: Option<String>,
 }
 
 pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatSessionsResponse> {
-    let project_uuid = match q.project_id.as_deref() {
-        Some(pid) => Some(
-            Uuid::parse_str(pid)
-                .map_err(|err| AppError::BadRequest(format!("invalid projectId: {err}")))?,
-        ),
-        None => None,
-    };
-
-    let rows = match (project_uuid, q.profile.as_deref()) {
-        (Some(pid), Some(profile)) => {
-            sqlx::query_as!(
-                ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.system_prompt_stable,
-                          s.system_prompt_context, s.system_prompt_fingerprint,
-                          s.tool_schema_fingerprint, s.created_at, s.updated_at
-                   FROM chat_sessions s
-                   INNER JOIN native_agents a ON a.profile = s.profile
-                   WHERE s.project_id = $1 AND s.profile = $2
-                   ORDER BY s.created_at DESC"#,
-                pid,
-                profile,
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-        (Some(pid), None) => {
-            sqlx::query_as!(
-                ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.system_prompt_stable,
-                          s.system_prompt_context, s.system_prompt_fingerprint,
-                          s.tool_schema_fingerprint, s.created_at, s.updated_at
-                   FROM chat_sessions s
-                   INNER JOIN native_agents a ON a.profile = s.profile
-                   WHERE s.project_id = $1
-                   ORDER BY s.created_at DESC"#,
-                pid,
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-        (None, Some(profile)) => {
-            sqlx::query_as!(
-                ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.system_prompt_stable,
-                          s.system_prompt_context, s.system_prompt_fingerprint,
-                          s.tool_schema_fingerprint, s.created_at, s.updated_at
-                   FROM chat_sessions s
-                   INNER JOIN native_agents a ON a.profile = s.profile
-                   WHERE s.profile = $1
-                   ORDER BY s.created_at DESC"#,
-                profile,
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-        (None, None) => {
-            sqlx::query_as!(
-                ChatSessionRow,
-                r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
-                          s.status, s.message_count, s.system_prompt_stable,
-                          s.system_prompt_context, s.system_prompt_fingerprint,
-                          s.tool_schema_fingerprint, s.created_at, s.updated_at
-                   FROM chat_sessions s
-                   INNER JOIN native_agents a ON a.profile = s.profile
-                   ORDER BY s.created_at DESC"#
-            )
-            .fetch_all(&state.db)
-            .await?
-        }
-    };
+    let scope =
+        crate::models::scope::ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
+    let rows = sqlx::query_as!(
+        ChatSessionRow,
+        r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
+                  s.status, s.message_count, s.system_prompt_stable,
+                  s.system_prompt_context, s.system_prompt_fingerprint,
+                  s.tool_schema_fingerprint, s.created_at, s.updated_at
+           FROM chat_sessions s
+           INNER JOIN native_agents a ON a.profile = s.profile
+           WHERE ($1::text = 'all'
+               OR ($1 = 'general' AND s.project_id IS NULL)
+               OR ($1 = 'project' AND s.project_id = $2))
+             AND ($3::text IS NULL OR s.profile = $3)
+             AND NOT s.automation_result_only
+           ORDER BY s.created_at DESC"#,
+        scope.kind(),
+        scope.project_id(),
+        q.profile.as_deref() as Option<&str>,
+    )
+    .fetch_all(&state.db)
+    .await?;
 
     Ok(ChatSessionsResponse {
         sessions: rows.into_iter().map(row_to_session).collect(),
@@ -212,26 +162,62 @@ pub async fn get_messages(state: &AppState, id: Uuid) -> AppResult<ChatMessagesR
     })
 }
 
-pub async fn save_agent_messages(
+pub async fn save_agent_messages_for_run(
     state: &AppState,
+    run_id: Uuid,
     session_id: Uuid,
     messages: &[Message],
 ) -> AppResult<Option<ChatMessage>> {
     let mut last_assistant = None;
+    let mut last_assistant_inserted = false;
     let mut saved_count = 0_i32;
 
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
         let role = match message.role {
             AgentMessageRole::Assistant => MessageRole::Assistant,
             AgentMessageRole::Tool => MessageRole::Tool,
             AgentMessageRole::System => MessageRole::System,
             AgentMessageRole::User => continue,
         };
-        let saved = insert_agent_message(state, session_id, role, message).await?;
-        if role == MessageRole::Assistant {
-            last_assistant = Some(saved.clone());
+        let id = Uuid::new_v4();
+        let content = redact_sensitive_text(&message.content.clone().unwrap_or_default());
+        let tool_calls = serialize_tool_calls(message)?;
+        let inserted = sqlx::query(
+            r#"INSERT INTO chat_messages
+                 (id, session_id, role, content, tool_calls, tool_call_id,
+                  agent_run_id, run_message_index)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (agent_run_id, run_message_index) DO NOTHING"#,
+        )
+        .bind(id)
+        .bind(session_id)
+        .bind(role_to_db(role))
+        .bind(content)
+        .bind(tool_calls)
+        .bind(message.tool_call_id.as_deref())
+        .bind(run_id)
+        .bind(index as i32)
+        .execute(&state.db)
+        .await?
+        .rows_affected()
+            == 1;
+        let row = sqlx::query_as::<_, ChatMessageRow>(
+            r#"SELECT id, session_id, role, content, tool_calls, tool_call_id,
+                      metadata, created_at
+               FROM chat_messages
+               WHERE agent_run_id = $1 AND run_message_index = $2"#,
+        )
+        .bind(run_id)
+        .bind(index as i32)
+        .fetch_one(&state.db)
+        .await?;
+        if inserted {
+            saved_count += 1;
         }
-        saved_count += 1;
+        if role == MessageRole::Assistant {
+            last_assistant = Some(row_to_message(row));
+            last_assistant_inserted = inserted;
+        }
     }
 
     if saved_count > 0 {
@@ -247,17 +233,25 @@ pub async fn save_agent_messages(
         .await?;
     }
 
-    if let Some(ref assistant) = last_assistant {
-        log_audit_safe(
-            &state.db,
-            "agent",
-            "agent:native",
-            "create",
-            "chat_message",
-            Some(&assistant.id),
-            Some(serde_json::json!({ "after": { "sessionId": session_id.to_string(), "role": "assistant" } })),
-        )
-        .await;
+    if last_assistant_inserted {
+        if let Some(ref assistant) = last_assistant {
+            log_audit_safe(
+                &state.db,
+                "agent",
+                "agent:native",
+                "create",
+                "chat_message",
+                Some(&assistant.id),
+                Some(serde_json::json!({
+                    "after": {
+                        "sessionId": session_id.to_string(),
+                        "role": "assistant",
+                        "runId": run_id.to_string(),
+                    }
+                })),
+            )
+            .await;
+        }
     }
 
     Ok(last_assistant)
@@ -346,57 +340,55 @@ pub(super) async fn insert_user_message(
     Ok(row_to_message(row))
 }
 
-async fn insert_agent_message(
+pub(super) async fn insert_user_message_for_input(
     state: &AppState,
     session_id: Uuid,
-    role: MessageRole,
-    message: &Message,
-) -> AppResult<ChatMessage> {
+    run_input_id: Uuid,
+    text: &str,
+) -> AppResult<(ChatMessage, bool)> {
     let id = Uuid::new_v4();
-    let content = redact_sensitive_text(&message.content.clone().unwrap_or_default());
-    let tool_calls = if message.tool_calls.is_empty() {
-        None
-    } else {
-        Some(
-            serde_json::to_value(
-                message
-                    .tool_calls
-                    .iter()
-                    .map(|call| ToolCallDto {
-                        id: redact_sensitive_text(&call.id),
-                        name: call.name.clone(),
-                        arguments: redact_sensitive_text(&call.arguments),
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(|err| AppError::Internal(format!("tool call serialization failed: {err}")))?,
-        )
-    };
-    let role_str = role_to_db(role);
-
-    sqlx::query!(
-        r#"INSERT INTO chat_messages
-             (id, session_id, role, content, tool_calls, tool_call_id)
-           VALUES ($1, $2, $3, $4, $5, $6)"#,
-        id,
-        session_id,
-        role_str,
-        content,
-        tool_calls,
-        message.tool_call_id.as_deref(),
+    let inserted = sqlx::query(
+        r#"INSERT INTO chat_messages (id, session_id, role, content, run_input_id)
+           VALUES ($1, $2, 'user', $3, $4)
+           ON CONFLICT (run_input_id) DO NOTHING"#,
     )
+    .bind(id)
+    .bind(session_id)
+    .bind(text)
+    .bind(run_input_id)
     .execute(&state.db)
-    .await?;
+    .await?
+    .rows_affected()
+        == 1;
 
-    let row = sqlx::query_as!(
-        ChatMessageRow,
-        r#"SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at
-           FROM chat_messages WHERE id = $1"#,
-        id
+    let row = sqlx::query_as::<_, ChatMessageRow>(
+        r#"SELECT id, session_id, role, content, tool_calls, tool_call_id,
+                  metadata, created_at
+           FROM chat_messages WHERE run_input_id = $1"#,
     )
+    .bind(run_input_id)
     .fetch_one(&state.db)
     .await?;
-    Ok(row_to_message(row))
+    Ok((row_to_message(row), inserted))
+}
+
+fn serialize_tool_calls(message: &Message) -> AppResult<Option<serde_json::Value>> {
+    if message.tool_calls.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_value(
+        message
+            .tool_calls
+            .iter()
+            .map(|call| ToolCallDto {
+                id: redact_sensitive_text(&call.id),
+                name: call.name.clone(),
+                arguments: redact_sensitive_text(&call.arguments),
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map(Some)
+    .map_err(|err| AppError::Internal(format!("tool call serialization failed: {err}")))
 }
 
 fn row_to_session(row: ChatSessionRow) -> ChatSession {

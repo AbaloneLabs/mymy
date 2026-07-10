@@ -9,6 +9,8 @@ import {
   AgentStatusDot,
   SummaryTile,
 } from "./AgentsNativeShared";
+import { ProactivePanel } from "./AgentsProactivePanel";
+import { RunActivity } from "./AgentsRunActivity";
 
 export function AgentOverviewTab({
   agent,
@@ -74,6 +76,9 @@ export function AgentOverviewTab({
         </div>
         <CompactSessionList sessions={sessions.slice(0, 5)} showProfile={false} />
       </section>
+
+      <ProactivePanel profile={profile} />
+      <RunActivity agents={agent ? [agent] : []} profile={profile} />
     </div>
   );
 }

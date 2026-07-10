@@ -9,6 +9,7 @@
 //! USD: 1 cent) and is always positive; the sign is derived from `type`.
 //! This avoids floating-point errors entirely (same approach as Stripe).
 
+use crate::models::scope::PatchField;
 use serde::{Deserialize, Serialize};
 
 /// A transaction as exposed over the API.
@@ -52,6 +53,18 @@ pub struct TransactionResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionSummary {
+    pub count: i64,
+    pub totals_by_currency: Vec<CurrencyTransactionSummary>,
+    pub currency: Option<String>,
+    pub income: Option<i64>,
+    pub expense: Option<i64>,
+    pub net: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencyTransactionSummary {
+    pub currency: String,
     pub income: i64,
     pub expense: i64,
     pub net: i64,
@@ -83,7 +96,8 @@ pub struct CreateTransactionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTransactionRequest {
-    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_id: PatchField<String>,
     pub r#type: Option<String>,
     pub amount: Option<i64>,
     pub currency: Option<String>,

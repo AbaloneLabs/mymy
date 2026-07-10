@@ -7,11 +7,13 @@ use crate::models::investment::{
     InvestmentAccount, InvestmentAsset, InvestmentCashflow, InvestmentPosition,
     InvestmentValuationSnapshot, InvestmentWatchlistItem,
 };
+use crate::models::scope::ScopeFilter;
 use crate::state::AppState;
 
 #[derive(Debug, FromRow)]
 pub(super) struct AccountRow {
     id: Uuid,
+    project_id: Option<Uuid>,
     name: String,
     institution: String,
     currency: String,
@@ -38,6 +40,7 @@ pub(super) struct AssetRow {
 pub(super) struct PositionRow {
     id: Uuid,
     account_id: Option<Uuid>,
+    project_id: Option<Uuid>,
     asset_id: Uuid,
     quantity_micro: i64,
     cost_basis_amount: i64,
@@ -53,6 +56,7 @@ pub(super) struct PositionRow {
     latest_market_value_amount: Option<i64>,
     latest_unit_price_amount: Option<i64>,
     latest_valued_at: Option<DateTime<Utc>>,
+    latest_valuation_currency: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -70,6 +74,7 @@ pub(super) struct SnapshotRow {
 pub(super) struct CashflowRow {
     id: Uuid,
     account_id: Option<Uuid>,
+    project_id: Option<Uuid>,
     asset_id: Option<Uuid>,
     flow_type: String,
     amount: i64,
@@ -97,7 +102,7 @@ pub(super) struct WatchlistRow {
 
 pub(super) async fn fetch_account(state: &AppState, id: Uuid) -> AppResult<InvestmentAccount> {
     let row = sqlx::query_as::<_, AccountRow>(
-        r#"SELECT id, name, institution, currency, notes, created_at, updated_at
+        r#"SELECT id, project_id, name, institution, currency, notes, created_at, updated_at
            FROM investment_accounts
            WHERE id = $1"#,
     )
@@ -133,14 +138,22 @@ pub(super) async fn fetch_positions_for_pool(
     db: &PgPool,
     id: Option<Uuid>,
 ) -> AppResult<Vec<InvestmentPosition>> {
+    fetch_positions_for_pool_scoped(db, id, ScopeFilter::All).await
+}
+
+pub(super) async fn fetch_positions_for_pool_scoped(
+    db: &PgPool,
+    id: Option<Uuid>,
+    scope: ScopeFilter,
+) -> AppResult<Vec<InvestmentPosition>> {
     let rows = sqlx::query_as::<_, PositionRow>(
         r#"WITH latest_values AS (
              SELECT DISTINCT ON (position_id)
-                    position_id, unit_price_amount, market_value_amount, recorded_at
+                    position_id, unit_price_amount, market_value_amount, currency, recorded_at
              FROM investment_valuation_snapshots
              ORDER BY position_id, recorded_at DESC
            )
-           SELECT p.id, p.account_id, p.asset_id, p.quantity_micro, p.cost_basis_amount,
+           SELECT p.id, p.account_id, acc.project_id, p.asset_id, p.quantity_micro, p.cost_basis_amount,
                   p.currency, p.opened_at, p.notes, p.created_at, p.updated_at,
                   acc.name AS account_name,
                   asset.symbol AS asset_symbol,
@@ -148,15 +161,21 @@ pub(super) async fn fetch_positions_for_pool(
                   asset.asset_type AS asset_type,
                   v.market_value_amount AS latest_market_value_amount,
                   v.unit_price_amount AS latest_unit_price_amount,
-                  v.recorded_at AS latest_valued_at
+                  v.recorded_at AS latest_valued_at,
+                  v.currency AS latest_valuation_currency
            FROM investment_positions p
            JOIN investment_assets asset ON asset.id = p.asset_id
            LEFT JOIN investment_accounts acc ON acc.id = p.account_id
            LEFT JOIN latest_values v ON v.position_id = p.id
            WHERE ($1::uuid IS NULL OR p.id = $1)
+             AND ($2 = 'all'
+                  OR ($2 = 'general' AND acc.project_id IS NULL)
+                  OR ($2 = 'project' AND acc.project_id = $3))
            ORDER BY p.updated_at DESC, p.created_at DESC"#,
     )
     .bind(id)
+    .bind(scope.kind())
+    .bind(scope.project_id())
     .fetch_all(db)
     .await?;
     Ok(rows.into_iter().map(row_to_position).collect())
@@ -180,7 +199,7 @@ pub(super) async fn fetch_snapshot(
 
 pub(super) async fn fetch_cashflow(state: &AppState, id: Uuid) -> AppResult<InvestmentCashflow> {
     let row = sqlx::query_as::<_, CashflowRow>(
-        r#"SELECT c.id, c.account_id, c.asset_id, c.flow_type, c.amount, c.currency,
+        r#"SELECT c.id, c.account_id, a.project_id, c.asset_id, c.flow_type, c.amount, c.currency,
                   c.recorded_at, c.notes, c.created_at, c.updated_at,
                   a.name AS account_name,
                   asset.symbol AS asset_symbol
@@ -272,6 +291,7 @@ pub(super) async fn ensure_cashflow_exists(state: &AppState, id: Uuid) -> AppRes
 pub(super) fn row_to_account(row: AccountRow) -> InvestmentAccount {
     InvestmentAccount {
         id: row.id.to_string(),
+        project_id: row.project_id.map(|id| id.to_string()),
         name: row.name,
         institution: row.institution,
         currency: row.currency,
@@ -300,9 +320,14 @@ fn row_to_position(row: PositionRow) -> InvestmentPosition {
     let market_value = row
         .latest_market_value_amount
         .unwrap_or(row.cost_basis_amount);
+    let currencies_match = row
+        .latest_valuation_currency
+        .as_deref()
+        .is_none_or(|currency| currency == row.currency);
     InvestmentPosition {
         id: row.id.to_string(),
         account_id: row.account_id.map(|id| id.to_string()),
+        project_id: row.project_id.map(|id| id.to_string()),
         asset_id: row.asset_id.to_string(),
         quantity_micro: row.quantity_micro,
         cost_basis_amount: row.cost_basis_amount,
@@ -318,7 +343,8 @@ fn row_to_position(row: PositionRow) -> InvestmentPosition {
         latest_market_value_amount: row.latest_market_value_amount,
         latest_unit_price_amount: row.latest_unit_price_amount,
         latest_valued_at: row.latest_valued_at.map(|value| value.to_rfc3339()),
-        unrealized_pl_amount: market_value - row.cost_basis_amount,
+        latest_valuation_currency: row.latest_valuation_currency,
+        unrealized_pl_amount: currencies_match.then_some(market_value - row.cost_basis_amount),
     }
 }
 
@@ -338,6 +364,7 @@ pub(super) fn row_to_cashflow(row: CashflowRow) -> InvestmentCashflow {
     InvestmentCashflow {
         id: row.id.to_string(),
         account_id: row.account_id.map(|id| id.to_string()),
+        project_id: row.project_id.map(|id| id.to_string()),
         asset_id: row.asset_id.map(|id| id.to_string()),
         flow_type: row.flow_type,
         amount: row.amount,

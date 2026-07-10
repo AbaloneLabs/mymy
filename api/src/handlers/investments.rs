@@ -14,7 +14,7 @@ use crate::models::investment::{
     CreateInvestmentWatchlistItemRequest, InvestmentAccountResponse, InvestmentAccountsResponse,
     InvestmentAssetResponse, InvestmentAssetsResponse, InvestmentCashflowResponse,
     InvestmentCashflowsResponse, InvestmentPositionResponse, InvestmentPositionsResponse,
-    InvestmentSummaryResponse, InvestmentValuationSnapshotQuery,
+    InvestmentScopeQuery, InvestmentSummaryResponse, InvestmentValuationSnapshotQuery,
     InvestmentValuationSnapshotResponse, InvestmentValuationSnapshotsResponse,
     InvestmentWatchlistItemResponse, InvestmentWatchlistResponse, UpdateInvestmentAccountRequest,
     UpdateInvestmentAssetRequest, UpdateInvestmentCashflowRequest, UpdateInvestmentPositionRequest,
@@ -78,14 +78,18 @@ pub fn routes() -> Router<Arc<AppState>> {
 
 pub async fn summary(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<InvestmentScopeQuery>,
 ) -> AppResult<Json<InvestmentSummaryResponse>> {
-    Ok(Json(investment_service::summary(&state).await?))
+    Ok(Json(investment_service::summary(&state, query).await?))
 }
 
 pub async fn list_accounts(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<InvestmentScopeQuery>,
 ) -> AppResult<Json<InvestmentAccountsResponse>> {
-    Ok(Json(investment_service::list_accounts(&state).await?))
+    Ok(Json(
+        investment_service::list_accounts(&state, query).await?,
+    ))
 }
 
 pub async fn create_account(
@@ -148,8 +152,11 @@ pub async fn delete_asset(
 
 pub async fn list_positions(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<InvestmentScopeQuery>,
 ) -> AppResult<Json<InvestmentPositionsResponse>> {
-    Ok(Json(investment_service::list_positions(&state).await?))
+    Ok(Json(
+        investment_service::list_positions(&state, query).await?,
+    ))
 }
 
 pub async fn create_position(

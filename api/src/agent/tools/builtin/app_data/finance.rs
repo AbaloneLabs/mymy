@@ -6,7 +6,15 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "transaction_list",
         "finance_read",
         "List manual finance transactions.",
-        filter_schema(&["projectId", "type", "from", "to", "category", "status"]),
+        filter_schema(&[
+            "scope",
+            "projectId",
+            "type",
+            "from",
+            "to",
+            "category",
+            "status",
+        ]),
         state,
         AppAction::TransactionList,
     );
@@ -15,7 +23,15 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "transaction_summary",
         "finance_read",
         "Summarize manual finance transactions.",
-        filter_schema(&["projectId", "type", "from", "to", "category", "status"]),
+        filter_schema(&[
+            "scope",
+            "projectId",
+            "type",
+            "from",
+            "to",
+            "category",
+            "status",
+        ]),
         state,
         AppAction::TransactionSummary,
     );

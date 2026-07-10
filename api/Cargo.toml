@@ -16,6 +16,7 @@ path = "src/sandbox_runner_main.rs"
 # Web framework
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
@@ -48,6 +49,7 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
+iso_currency = "0.5.3"
 regex = "1"
 dotenvy = "0.15"
 hex = "0.4"
@@ -60,6 +62,8 @@ urlencoding = "2"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 
 # HTTP client for LLM providers, Drive sync, and runtime integrations.
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }

@@ -5,9 +5,55 @@
 //! `tracing::warn!` but never propagates the error, so audit-log write
 //! failures never break business logic.
 
+use std::future::Future;
+
 use sqlx::PgPool;
 
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::security::redact_sensitive_text;
+
+#[derive(Clone)]
+struct RuntimeAuditActor {
+    actor_id: String,
+    run_id: String,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeMutationOrigin {
+    pub run_id: uuid::Uuid,
+}
+
+tokio::task_local! {
+    static RUNTIME_AUDIT_ACTOR: RuntimeAuditActor;
+}
+
+pub async fn with_agent_audit_actor<F>(context: &ToolExecutionContext, future: F) -> F::Output
+where
+    F: Future,
+{
+    RUNTIME_AUDIT_ACTOR
+        .scope(
+            RuntimeAuditActor {
+                actor_id: format!("agent:{}", context.agent_profile),
+                run_id: context.run_id.to_string(),
+                session_id: context.session_id.map(|id| id.to_string()),
+            },
+            future,
+        )
+        .await
+}
+
+pub fn current_runtime_origin() -> Option<RuntimeMutationOrigin> {
+    RUNTIME_AUDIT_ACTOR
+        .try_with(|actor| {
+            Some(RuntimeMutationOrigin {
+                run_id: uuid::Uuid::parse_str(&actor.run_id).ok()?,
+            })
+        })
+        .ok()
+        .flatten()
+}
 
 /// Record a single audit log entry.
 ///
@@ -52,10 +98,31 @@ pub async fn log_audit_safe(
     entity_id: Option<&str>,
     changes: Option<serde_json::Value>,
 ) {
+    let runtime_actor = RUNTIME_AUDIT_ACTOR.try_with(Clone::clone).ok();
+    let (effective_actor_type, effective_actor_id) = match runtime_actor.as_ref() {
+        Some(runtime) if actor_type == "user" && actor_id == "user" => {
+            ("agent".to_string(), runtime.actor_id.clone())
+        }
+        _ => (actor_type.to_string(), actor_id.to_string()),
+    };
+    let changes = match (changes, runtime_actor) {
+        (Some(serde_json::Value::Object(mut object)), Some(runtime)) => {
+            object.insert("agentRunId".to_string(), runtime.run_id.into());
+            if let Some(session_id) = runtime.session_id {
+                object.insert("sessionId".to_string(), session_id.into());
+            }
+            Some(serde_json::Value::Object(object))
+        }
+        (None, Some(runtime)) => Some(serde_json::json!({
+            "agentRunId": runtime.run_id,
+            "sessionId": runtime.session_id,
+        })),
+        (changes, None) | (changes, Some(_)) => changes,
+    };
     if let Err(e) = log_audit(
         db,
-        actor_type,
-        actor_id,
+        &effective_actor_type,
+        &effective_actor_id,
         action,
         entity_type,
         entity_id,

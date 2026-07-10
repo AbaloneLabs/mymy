@@ -5,6 +5,7 @@
 //! All id/timestamp fields are `String` (serialized from DB `Uuid`/`timestamptz`
 //! in the handler's `row_to_task`), matching the notes pattern.
 
+use crate::models::scope::PatchField;
 use serde::{Deserialize, Serialize};
 
 /// A task as exposed over the API.
@@ -57,7 +58,8 @@ pub struct CreateTaskRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTaskRequest {
-    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_id: PatchField<String>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,

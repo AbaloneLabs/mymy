@@ -8,6 +8,7 @@ import {
 } from "@/features/goals/api";
 import { KPI_TYPES } from "@/features/goals/constants";
 import { cn } from "@/lib/utils";
+import { useProjectContext } from "@/store/projectContext";
 import type {
   CreateKeyResultInput,
   Goal,
@@ -153,9 +154,21 @@ function KeyResultRow({ goalId, kr }: { goalId: string; kr: KeyResult }) {
       </div>
 
       {kr.kpiType === "finance" && (
-        <p className="mt-1 text-[10px] text-[var(--text-faint)]">
-          {t("goals.financeHint")}
-        </p>
+        <div className="mt-1 space-y-0.5 text-[10px] text-[var(--text-faint)]">
+          {kr.financeDefinition ? (
+            <p>
+              {t("goals.financeDefinition", {
+                metric: t(`goals.finance${capitalize(kr.financeDefinition.metric)}`),
+                currency: kr.financeDefinition.currency,
+                scope: t(`goals.financeScope${capitalize(kr.financeDefinition.scope)}`),
+                status: t(`goals.financeStatus${capitalize(kr.financeDefinition.status)}`),
+              })}
+            </p>
+          ) : null}
+          <p className={kr.calculationStatus === "ready" ? "" : "text-[var(--status-warning)]"}>
+            {t(`goals.calculationStatus.${kr.calculationStatus}`)}
+          </p>
+        </div>
       )}
     </div>
   );
@@ -174,6 +187,16 @@ function KeyResultAddForm({
   const [kpiType, setKpiType] = useState<KpiType>("manual");
   const [target, setTarget] = useState("100");
   const [unit, setUnit] = useState("%");
+  const selectedProjectId = useProjectContext((state) => state.selectedProjectId);
+  const [financeMetric, setFinanceMetric] = useState<"income" | "expense" | "net">("net");
+  const [financeCurrency, setFinanceCurrency] = useState("KRW");
+  const [financeScope, setFinanceScope] = useState<"all" | "general" | "project">(
+    selectedProjectId ? "project" : "general",
+  );
+  const [financeStatus, setFinanceStatus] = useState<"all" | "cleared" | "pending">("cleared");
+  const [financeFrom, setFinanceFrom] = useState("");
+  const [financeTo, setFinanceTo] = useState("");
+  const [financeCategory, setFinanceCategory] = useState("");
 
   function handleAdd() {
     const targetVal = parseFloat(target);
@@ -182,7 +205,20 @@ function KeyResultAddForm({
       title: title.trim(),
       kpiType,
       targetValue: targetVal,
-      unit: unit.trim() || "%",
+      unit: kpiType === "finance" ? financeCurrency.trim().toUpperCase() : (unit.trim() || "%"),
+      financeDefinition:
+        kpiType === "finance"
+          ? {
+              metric: financeMetric,
+              currency: financeCurrency.trim().toUpperCase(),
+              scope: financeScope,
+              projectId: financeScope === "project" ? (selectedProjectId ?? undefined) : undefined,
+              status: financeStatus,
+              from: financeFrom ? `${financeFrom}T00:00:00Z` : undefined,
+              to: financeTo ? `${financeTo}T00:00:00Z` : undefined,
+              category: financeCategory.trim() || undefined,
+            }
+          : undefined,
     };
     createKr.mutate(
       { goalId, body },
@@ -224,6 +260,51 @@ function KeyResultAddForm({
           ))}
         </select>
       </label>
+      {kpiType === "finance" && (
+        <div className="basis-full grid gap-2 md:grid-cols-4">
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeMetric")}
+            <select value={financeMetric} onChange={(event) => setFinanceMetric(event.target.value as typeof financeMetric)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm">
+              <option value="income">{t("goals.financeIncome")}</option>
+              <option value="expense">{t("goals.financeExpense")}</option>
+              <option value="net">{t("goals.financeNet")}</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeCurrency")}
+            <input value={financeCurrency} maxLength={3} onChange={(event) => setFinanceCurrency(event.target.value.toUpperCase())} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm uppercase" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeScope")}
+            <select value={financeScope} onChange={(event) => setFinanceScope(event.target.value as typeof financeScope)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm">
+              <option value="general">{t("workspaceScope.general")}</option>
+              <option value="all">{t("workspaceScope.all")}</option>
+              {selectedProjectId && <option value="project">{t("goals.financeCurrentProject")}</option>}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeStatus")}
+            <select value={financeStatus} onChange={(event) => setFinanceStatus(event.target.value as typeof financeStatus)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm">
+              <option value="cleared">{t("goals.financeCleared")}</option>
+              <option value="pending">{t("goals.financePending")}</option>
+              <option value="all">{t("workspaceScope.all")}</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeFrom")}
+            <input type="date" value={financeFrom} onChange={(event) => setFinanceFrom(event.target.value)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
+            {t("goals.financeTo")}
+            <input type="date" value={financeTo} onChange={(event) => setFinanceTo(event.target.value)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)] md:col-span-2">
+            {t("goals.financeCategory")}
+            <input value={financeCategory} onChange={(event) => setFinanceCategory(event.target.value)} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-sm" />
+          </label>
+          <p className="text-[10px] text-[var(--text-faint)] md:col-span-4">{t("goals.financeUnitHint")}</p>
+        </div>
+      )}
       <label className="flex flex-col gap-1 text-xs text-[var(--text-secondary)]">
         {t("goals.targetValue")}
         <input
@@ -247,7 +328,14 @@ function KeyResultAddForm({
       <button
         type="button"
         onClick={handleAdd}
-        disabled={createKr.isPending || !title.trim()}
+        disabled={
+          createKr.isPending ||
+          !title.trim() ||
+          (kpiType === "finance" &&
+            (financeCurrency.trim().length !== 3 ||
+              (financeScope === "project" && !selectedProjectId) ||
+              Boolean(financeFrom && financeTo && financeFrom >= financeTo)))
+        }
         className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
       >
         {createKr.isPending ? (

@@ -1,11 +1,10 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,33 +56,6 @@ fn heartbeat_path(state: &AppState) -> PathBuf {
         .agent_data_dir
         .join("cron")
         .join("heartbeat.json")
-}
-
-pub(super) struct TickLock {
-    path: PathBuf,
-}
-
-impl TickLock {
-    pub(super) fn try_acquire(state: &AppState) -> AppResult<Option<Self>> {
-        let path = state.config.agent_data_dir.join("cron").join("tick.lock");
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| AppError::Internal(format!("cron lock dir create failed: {err}")))?;
-        }
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => Ok(Some(Self { path })),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-            Err(err) => Err(AppError::Internal(format!(
-                "cron tick lock acquire failed: {err}"
-            ))),
-        }
-    }
-}
-
-impl Drop for TickLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 pub(super) fn write_file_atomic(path: &Path, content: &str) -> std::io::Result<()> {

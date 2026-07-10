@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::scheduler::CronJob;
+use crate::agent::scheduler::{
+    default_max_runtime_seconds, default_max_tool_calls, default_max_total_tokens, CronJob,
+};
 
 use super::blueprints::CronBlueprint;
 
@@ -49,6 +51,10 @@ pub struct InstantiateBlueprintRequest {
     pub schedule: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub agent_profile: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +87,22 @@ pub struct CreateCronJobRequest {
     pub context_from: Option<Vec<String>>,
     #[serde(default = "default_wake_agent")]
     pub wake_agent: bool,
+    #[serde(default)]
+    pub agent_profile: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default = "default_session_policy")]
+    pub session_policy: String,
+    #[serde(default = "default_catch_up_policy")]
+    pub catch_up_policy: String,
+    #[serde(default = "default_retry_policy")]
+    pub retry_policy: String,
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: u32,
+    #[serde(default = "default_max_runtime_seconds")]
+    pub max_runtime_seconds: u32,
+    #[serde(default = "default_max_total_tokens")]
+    pub max_total_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +117,14 @@ pub struct UpdateCronJobRequest {
     pub skills: Option<Vec<String>>,
     pub context_from: Option<Option<Vec<String>>>,
     pub wake_agent: Option<bool>,
+    pub agent_profile: Option<Option<String>>,
+    pub project_id: Option<Option<String>>,
+    pub session_policy: Option<String>,
+    pub catch_up_policy: Option<String>,
+    pub retry_policy: Option<String>,
+    pub max_tool_calls: Option<u32>,
+    pub max_runtime_seconds: Option<u32>,
+    pub max_total_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +177,18 @@ fn default_wake_agent() -> bool {
     true
 }
 
+fn default_session_policy() -> String {
+    "new".to_string()
+}
+
+fn default_catch_up_policy() -> String {
+    "latest".to_string()
+}
+
+fn default_retry_policy() -> String {
+    "safe".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +224,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(request.title, "Job");
+        assert_eq!(request.max_tool_calls, 100);
+        assert_eq!(request.max_runtime_seconds, 1_800);
+        assert_eq!(request.max_total_tokens, 200_000);
     }
 }

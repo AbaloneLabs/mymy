@@ -12,6 +12,7 @@ use super::validation::{
     check_redirected_paths, ensure_directory, parse_preview_port, validate_label,
 };
 use super::{DEFAULT_TIMEOUT_SECS, MAX_OUTPUT_CHARS, MAX_TIMEOUT_SECS};
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::security::{detect_dangerous_command, redact_terminal_output, Severity};
 use crate::agent::tools::{tool_result, ToolError, ToolHandler};
 use crate::services::sandbox_processes::{self, NewRunningProcess};
@@ -33,12 +34,24 @@ pub(super) struct TerminalTool {
 #[async_trait]
 impl ToolHandler for TerminalTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        self.run(args).await
+        self.run(args, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        self.run(args, Some(context)).await
     }
 }
 
 impl TerminalTool {
-    async fn run(&self, args: &Value) -> Result<String, ToolError> {
+    async fn run(
+        &self,
+        args: &Value,
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let command = args
             .get("command")
             .and_then(Value::as_str)
@@ -78,21 +91,33 @@ impl TerminalTool {
                 .map(|value| validate_label(value, "process label"))
                 .transpose()?;
             return self
-                .start_background_process(command, &workdir, port, label)
+                .start_background_process(command, &workdir, port, label, context)
                 .await;
         }
 
         if let Some(runner_url) = &self.runner_url {
-            let response = RunnerClient::new(runner_url.clone())
-                .execute(&RunnerExecuteRequest {
-                    command: command.to_string(),
-                    cwd: workdir.display().to_string(),
-                    roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
-                    timeout_secs: Some(timeout_secs),
-                    env: None,
-                })
-                .await
-                .map_err(|err| ToolError::Execution(format!("runner execution failed: {err}")))?;
+            let client = RunnerClient::new(runner_url.clone());
+            let request = RunnerExecuteRequest {
+                execution_id: context.map(|value| value.invocation_id.clone()),
+                command: command.to_string(),
+                cwd: workdir.display().to_string(),
+                roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
+                timeout_secs: Some(timeout_secs),
+                env: None,
+            };
+            let response = if let Some(context) = context {
+                tokio::select! {
+                    biased;
+                    _ = context.cancellation.cancelled() => {
+                        let _ = client.cancel_execution(&context.invocation_id).await;
+                        return Err(ToolError::Execution("command cancelled".to_string()));
+                    }
+                    result = client.execute(&request) => result,
+                }
+            } else {
+                client.execute(&request).await
+            }
+            .map_err(|err| ToolError::Execution(format!("runner execution failed: {err}")))?;
             return Ok(tool_result(&serde_json::json!({
                 "stdout": truncate_chars(&redact_terminal_output(&response.stdout), MAX_OUTPUT_CHARS),
                 "stderr": truncate_chars(&redact_terminal_output(&response.stderr), MAX_OUTPUT_CHARS),
@@ -102,16 +127,50 @@ impl TerminalTool {
             })));
         }
 
-        let child = Command::new("bash")
+        let mut command_process = Command::new("bash");
+        command_process
             .arg("-c")
             .arg(command)
             .current_dir(&workdir)
-            .output();
-
-        let output = tokio::time::timeout(Duration::from_secs(timeout_secs), child)
-            .await
-            .map_err(|_| ToolError::Execution(format!("command timed out after {timeout_secs}s")))?
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        command_process.process_group(0);
+        let child = command_process
+            .spawn()
             .map_err(|err| ToolError::Execution(format!("failed to run command: {err}")))?;
+        let pid = child
+            .id()
+            .ok_or_else(|| ToolError::Execution("command process has no pid".to_string()))?;
+        let output = child.wait_with_output();
+        tokio::pin!(output);
+        let result = if let Some(context) = context {
+            tokio::select! {
+                biased;
+                _ = context.cancellation.cancelled() => {
+                    terminate_local_process_group(pid).await;
+                    let _ = (&mut output).await;
+                    return Err(ToolError::Execution("command cancelled".to_string()));
+                }
+                result = &mut output => result,
+                _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                    terminate_local_process_group(pid).await;
+                    let _ = (&mut output).await;
+                    return Err(ToolError::Execution(format!("command timed out after {timeout_secs}s")));
+                }
+            }
+        } else {
+            tokio::select! {
+                result = &mut output => result,
+                _ = tokio::time::sleep(Duration::from_secs(timeout_secs)) => {
+                    terminate_local_process_group(pid).await;
+                    let _ = (&mut output).await;
+                    return Err(ToolError::Execution(format!("command timed out after {timeout_secs}s")));
+                }
+            }
+        };
+        let output =
+            result.map_err(|err| ToolError::Execution(format!("command wait failed: {err}")))?;
 
         Ok(tool_result(&serde_json::json!({
             "stdout": truncate_chars(&redact_terminal_output(&String::from_utf8_lossy(&output.stdout)), MAX_OUTPUT_CHARS),
@@ -127,6 +186,7 @@ impl TerminalTool {
         workdir: &Path,
         port: Option<u16>,
         label: Option<String>,
+        execution_context: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
         let runner_url = self.runner_url.as_ref().ok_or_else(|| {
             ToolError::Unavailable("sandbox runner is not configured".to_string())
@@ -140,19 +200,34 @@ impl TerminalTool {
             .as_ref()
             .ok_or_else(|| ToolError::Unavailable("agent profile is not configured".to_string()))?;
 
-        let response = RunnerClient::new(runner_url.clone())
-            .start_process(&RunnerStartProcessRequest {
-                execution: RunnerExecuteRequest {
-                    command: command.to_string(),
-                    cwd: workdir.display().to_string(),
-                    roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
-                    timeout_secs: None,
-                    env: None,
-                },
-                port,
-            })
-            .await
-            .map_err(|err| ToolError::Execution(format!("runner process failed: {err}")))?;
+        let client = RunnerClient::new(runner_url.clone());
+        let process_id = Uuid::new_v4();
+        let request = RunnerStartProcessRequest {
+            execution: RunnerExecuteRequest {
+                execution_id: execution_context.map(|context| context.invocation_id.clone()),
+                command: command.to_string(),
+                cwd: workdir.display().to_string(),
+                roots: roots_for_runner(&self.working_dir, &self.allowed_roots),
+                timeout_secs: None,
+                env: None,
+            },
+            process_id: Some(process_id),
+            port,
+        };
+        let response = if let Some(context) = execution_context {
+            tokio::select! {
+                biased;
+                _ = context.cancellation.cancelled() => {
+                    let _ = client.cancel_execution(&context.invocation_id).await;
+                    let _ = client.kill_process(process_id).await;
+                    return Err(ToolError::Execution("background process start cancelled".to_string()));
+                }
+                result = client.start_process(&request) => result,
+            }
+        } else {
+            client.start_process(&request).await
+        }
+        .map_err(|err| ToolError::Execution(format!("runner process failed: {err}")))?;
         let pid = response.pid.map(|value| value as i32);
         let logical_cwd = logical_path_for_runner(workdir);
         let metadata = serde_json::json!({
@@ -209,4 +284,21 @@ impl TerminalTool {
             "forwarded_url": response.forwarded_url,
         })))
     }
+}
+
+async fn terminate_local_process_group(pid: u32) {
+    let group = format!("-{pid}");
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(&group)
+        .status()
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg("--")
+        .arg(group)
+        .status()
+        .await;
 }

@@ -6,7 +6,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "note_list",
         "notes_read",
         "List notes.",
-        filter_schema(&["projectId"]),
+        filter_schema(&["scope", "projectId"]),
         state,
         AppAction::NoteList,
     );
@@ -15,7 +15,15 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "note_search",
         "notes_read",
         "Search notes.",
-        serde_json::json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}),
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "q":{"type":"string"},
+                "scope":{"type":"string","enum":["all","general","project"]},
+                "projectId":{"type":"string"}
+            },
+            "required":["q"]
+        }),
         state,
         AppAction::NoteSearch,
     );

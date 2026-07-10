@@ -67,6 +67,15 @@ export function GoalCard({ goal }: { goal: Goal }) {
                 <span className="truncate">{goal.description}</span>
               </>
             )}
+            <span>·</span>
+            <span>
+              {goal.taskAssignment.hasAssignment
+                ? t("goals.taskAssignment", {
+                    completed: goal.taskAssignment.completed,
+                    assigned: goal.taskAssignment.assigned,
+                  })
+                : t("goals.noTaskAssignment")}
+            </span>
           </div>
         </div>
 

@@ -60,11 +60,42 @@ export function useChatMessages(sessionId: string | undefined) {
 }
 
 export type ChatSseEvent =
+  | {
+      type: "run_status";
+      run_id: string;
+      status: AgentRunStatus;
+      cancel_requested: boolean;
+    }
+  | { type: "outcome_unknown"; run_id: string; message: string }
   | { type: "user_message"; message: ChatMessage }
   | { type: "text_delta"; content: string }
-  | { type: "reasoning_delta"; content: string }
-  | { type: "tool_call_start"; call_id: string; tool_name: string; arguments: string }
-  | { type: "tool_call_finish"; call_id: string; result: string; error?: string | null }
+  | { type: "model_turn_started"; iteration: number }
+  | { type: "checklist_changed"; items: RunChecklistItem[] }
+  | { type: "checkpoint_created"; checkpoint_id: string; sequence: number }
+  | {
+      type: "tool_call_start";
+      call_id: string;
+      tool_name: string;
+      arguments: string;
+      resource_key?: string | null;
+      capability?: {
+        effect: string;
+        risk: string;
+        idempotency: string;
+        parallelPolicy: string;
+        resourceKind: string;
+        approvalPolicy: string;
+        dataSensitivity: string;
+        cancellation: "cooperative" | "process_group" | "non_interruptible";
+      } | null;
+    }
+  | {
+      type: "tool_call_finish";
+      call_id: string;
+      result: string;
+      error?: string | null;
+      duration_ms: number;
+    }
   | { type: "clarify"; request: ChatClarifyRequest }
   | { type: "turn_completed"; finish_reason: string; usage: unknown }
   | { type: "context_compressing" }
@@ -76,6 +107,95 @@ export type ChatSseEvent =
       total_tool_calls: number;
     }
   | { type: "error"; message: string };
+
+export type AgentRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_decision"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AgentRun {
+  id: string;
+  sessionId?: string;
+  agentProfile: string;
+  triggerType: "chat" | "cron" | "wake" | "delegate";
+  triggerRef?: string;
+  parentRunId?: string;
+  parentEventId?: string;
+  delegateIndex?: number;
+  projectId?: string;
+  status: AgentRunStatus;
+  objective: string;
+  promptVersion: string;
+  leaseEpoch: number;
+  latestSequence: number;
+  leaseExpiresAt?: string;
+  cancelRequestedAt?: string;
+  startedAt?: string;
+  heartbeatAt?: string;
+  completedAt?: string;
+  errorCode?: string;
+  usage: unknown;
+  createdAt: string;
+}
+
+export interface AgentRunEvent {
+  id: string;
+  runId: string;
+  sequence: number;
+  eventType: string;
+  payloadVersion: number;
+  visibility: "user";
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface SessionRunInput {
+  id: string;
+  sessionId: string;
+  clientRequestId: string;
+  targetRunId?: string;
+  kind: "message" | "follow_up";
+  content: string;
+  options: unknown;
+  status: "queued" | "claimed" | "applied" | "cancelled";
+  sequence: number;
+  createdAt: string;
+  appliedAt?: string;
+}
+
+export interface RunChecklistItem {
+  id: string;
+  runId: string;
+  itemKey: string;
+  content: string;
+  status: "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+  position: number;
+  blockedDecisionId?: string;
+  verificationEventId?: string;
+}
+
+export interface EnqueueChatRunResponse {
+  input: SessionRunInput;
+  run?: AgentRun;
+  deduplicated: boolean;
+}
+
+interface AgentRunResponse {
+  run: AgentRun;
+}
+
+export interface SessionRuntimeResponse {
+  activeRun?: AgentRun;
+  queuedInputs: SessionRunInput[];
+  latestSequence: number;
+}
+
+interface SessionRunInputResponse {
+  input: SessionRunInput;
+}
 
 export interface ChatClarifyRequest {
   requestId: string;
@@ -96,37 +216,197 @@ export function submitChatClarifyAnswer(
   );
 }
 
+export function useSessionRuntime(sessionId: string | undefined) {
+  return useQuery({
+    queryKey: ["chat", "runtime", sessionId],
+    queryFn: () =>
+      api.get<SessionRuntimeResponse>(`/chat/sessions/${sessionId}/runtime`),
+    enabled: Boolean(sessionId),
+    refetchInterval: 1_000,
+  });
+}
+
+export function useAgentRuns(filters?: {
+  status?: AgentRunStatus;
+  triggerType?: AgentRun["triggerType"];
+  projectId?: string;
+  agentProfile?: string;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["agent-runs", filters ?? {}],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.set("status", filters.status);
+      if (filters?.triggerType) params.set("triggerType", filters.triggerType);
+      if (filters?.projectId) params.set("projectId", filters.projectId);
+      if (filters?.agentProfile) params.set("agentProfile", filters.agentProfile);
+      params.set("limit", String(filters?.limit ?? 50));
+      return api.get<{ runs: AgentRun[] }>(`/agent-runs?${params.toString()}`);
+    },
+    refetchInterval: 5_000,
+  });
+}
+
+export function useRunEventLog(runId: string | undefined) {
+  return useQuery({
+    queryKey: ["agent-runs", runId, "event-log"],
+    queryFn: () =>
+      api.get<{
+        run: AgentRun;
+        events: AgentRunEvent[];
+        latestSequence: number;
+      }>(`/agent-runs/${runId}/event-log`),
+    enabled: Boolean(runId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.run.status;
+      return status === "queued" ||
+        status === "running" ||
+        status === "waiting_decision"
+        ? 2_000
+        : false;
+    },
+  });
+}
+
+export function useRunChecklist(runId: string | undefined) {
+  return useQuery({
+    queryKey: ["agent-runs", runId, "checklist"],
+    queryFn: () =>
+      api.get<{ items: RunChecklistItem[] }>(`/agent-runs/${runId}/checklist`),
+    enabled: Boolean(runId),
+    refetchInterval: 1_000,
+  });
+}
+
+export function enqueueChatMessage(
+  sessionId: string,
+  clientRequestId: string,
+  text: string,
+  options: { useMoa?: boolean; moaPresetId?: string | null },
+) {
+  return enqueueChatRun(sessionId, clientRequestId, text, options);
+}
+
+export function updateQueuedChatInput(inputId: string, text: string) {
+  return api.patch<SessionRunInputResponse>(`/session-run-inputs/${inputId}`, {
+    text,
+  });
+}
+
+export function cancelQueuedChatInput(inputId: string) {
+  return api.delete<SessionRunInputResponse>(`/session-run-inputs/${inputId}`);
+}
+
+export function cancelAgentRun(runId: string) {
+  return api.post<{ accepted: boolean; terminal: boolean; status: AgentRunStatus }>(
+    `/agent-runs/${runId}/cancel`,
+  );
+}
+
 export async function streamChatMessage(
   sessionId: string,
+  clientRequestId: string,
   text: string,
   options: { useMoa?: boolean; moaPresetId?: string | null },
   onEvent: (event: ChatSseEvent) => void,
 ) {
-  const response = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`, {
-    method: "POST",
+  const enqueued = await enqueueChatRun(sessionId, clientRequestId, text, options);
+  if (!enqueued.run) {
+    throw new Error("queued message has no target run");
+  }
+  let cursor = 0;
+  let reconnectDelay = 250;
+  while (true) {
+    try {
+      cursor = await readRunEvents(enqueued.run.id, cursor, onEvent);
+      const current = await api.get<AgentRunResponse>(
+        `/agent-runs/${enqueued.run.id}`,
+      );
+      if (isTerminalRun(current.run.status)) return;
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      const current = await api.get<AgentRunResponse>(
+        `/agent-runs/${enqueued.run.id}`,
+      );
+      if (isTerminalRun(current.run.status)) return;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, reconnectDelay));
+    reconnectDelay = Math.min(reconnectDelay * 2, 2_000);
+  }
+}
+
+export async function observeAgentRun(
+  runId: string,
+  afterSequence: number,
+  onEvent: (event: ChatSseEvent) => void,
+  signal?: AbortSignal,
+) {
+  let cursor = afterSequence;
+  let reconnectDelay = 250;
+  while (true) {
+    try {
+      cursor = await readRunEvents(runId, cursor, onEvent, signal);
+      const current = await api.get<AgentRunResponse>(`/agent-runs/${runId}`);
+      if (isTerminalRun(current.run.status)) {
+        return { cursor, run: current.run };
+      }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (!(error instanceof TypeError)) throw error;
+      const current = await api.get<AgentRunResponse>(`/agent-runs/${runId}`);
+      if (isTerminalRun(current.run.status)) {
+        return { cursor, run: current.run };
+      }
+    }
+    await abortableDelay(reconnectDelay, signal);
+    reconnectDelay = Math.min(reconnectDelay * 2, 2_000);
+  }
+}
+
+async function enqueueChatRun(
+  sessionId: string,
+  clientRequestId: string,
+  text: string,
+  options: { useMoa?: boolean; moaPresetId?: string | null },
+) {
+  const path = `/chat/sessions/${sessionId}/messages`;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await api.post<EnqueueChatRunResponse>(path, {
+        clientRequestId,
+        text,
+        useMoa: options.useMoa ?? false,
+        moaPresetId: options.moaPresetId ?? null,
+      });
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof TypeError) || attempt === 2) throw error;
+    }
+  }
+  throw lastError;
+}
+
+async function readRunEvents(
+  runId: string,
+  afterSequence: number,
+  onEvent: (event: ChatSseEvent) => void,
+  signal?: AbortSignal,
+) {
+  const path = `/agent-runs/${runId}/events?afterSequence=${afterSequence}`;
+  const response = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      useMoa: options.useMoa ?? false,
-      moaPresetId: options.moaPresetId ?? null,
-    }),
+    signal,
   });
-
   if (!response.ok) {
-    throw await apiErrorFromResponse(
-      response,
-      `/chat/sessions/${sessionId}/messages`,
-    );
+    throw await apiErrorFromResponse(response, path);
   }
-
   const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("stream response body is not readable");
-  }
-
+  if (!reader) throw new Error("run event stream body is not readable");
   const decoder = new TextDecoder();
   let buffer = "";
+  let cursor = afterSequence;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -134,24 +414,56 @@ export async function streamChatMessage(
     const frames = buffer.split("\n\n");
     buffer = frames.pop() ?? "";
     for (const frame of frames) {
-      const event = parseSseFrame(frame);
-      if (event) onEvent(event);
+      const parsed = parseSseFrame(frame);
+      if (!parsed) continue;
+      cursor = Math.max(cursor, parsed.sequence);
+      onEvent(parsed.event);
     }
   }
-
   if (buffer.trim()) {
-    const event = parseSseFrame(buffer);
-    if (event) onEvent(event);
+    const parsed = parseSseFrame(buffer);
+    if (parsed) {
+      cursor = Math.max(cursor, parsed.sequence);
+      onEvent(parsed.event);
+    }
   }
+  return cursor;
 }
 
-function parseSseFrame(frame: string): ChatSseEvent | null {
+function abortableDelay(delay: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(resolve, delay);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timeout);
+        reject(new DOMException("Run observation aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
+function parseSseFrame(
+  frame: string,
+): { sequence: number; event: ChatSseEvent } | null {
+  const idLine = frame
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("id:"));
   const dataLines = frame
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart());
   if (dataLines.length === 0) return null;
-  return JSON.parse(dataLines.join("\n")) as ChatSseEvent;
+  const sequence = Number(idLine?.slice(3).trim() ?? 0);
+  return {
+    sequence: Number.isFinite(sequence) ? sequence : 0,
+    event: JSON.parse(dataLines.join("\n")) as ChatSseEvent,
+  };
+}
+
+function isTerminalRun(status: AgentRunStatus) {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 export function useDeleteChatSession(projectId?: string) {

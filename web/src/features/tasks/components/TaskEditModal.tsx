@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Check, Trash2, X } from "lucide-react";
+import { Activity, Check, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PRIORITY_ORDER, findStatusDef, statusBgClass } from "@/features/tasks/utils";
 import { cn } from "@/lib/utils";
 import type { TaskStatusDef } from "@/types/task-statuses";
 import type { Task, TaskPriority } from "@/types/tasks";
 import type { TaskStatus } from "@/types/task-statuses";
+import { useTaskRuntime } from "@/features/tasks/api";
 
 export function TaskEditModal({
   task,
@@ -29,6 +30,7 @@ export function TaskEditModal({
   }) => void;
 }) {
   const { t } = useTranslation();
+  const runtime = useTaskRuntime(task.id);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [status, setStatus] = useState<TaskStatus>(task.status);
@@ -185,6 +187,44 @@ export function TaskEditModal({
                 className="rounded-md border border-[var(--border)] bg-[var(--surface-hover)] px-2 py-1 text-xs text-[var(--text)] focus:border-[var(--accent)] focus:outline-none"
               />
             </label>
+          </div>
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-hover)] p-3">
+            <div className="flex items-center justify-between text-xs font-medium text-[var(--text)]">
+              <span className="flex items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5" />
+                {t("tasks.relatedRuns")}
+              </span>
+              {(runtime.data?.activeRunCount ?? 0) > 0 && (
+                <span className="text-[var(--status-warning)]">
+                  {t("tasks.activeAgents", {
+                    count: runtime.data?.activeRunCount ?? 0,
+                  })}
+                </span>
+              )}
+            </div>
+            {runtime.isLoading ? (
+              <p className="mt-2 text-xs text-[var(--text-faint)]">
+                {t("common.loading")}
+              </p>
+            ) : (runtime.data?.runs.length ?? 0) === 0 ? (
+              <p className="mt-2 text-xs text-[var(--text-faint)]">
+                {t("tasks.noRelatedRuns")}
+              </p>
+            ) : (
+              <div className="mt-2 max-h-28 space-y-1 overflow-y-auto">
+                {runtime.data?.runs.map((run) => (
+                  <div
+                    key={`${run.runId}:${run.linkKind}:${run.operation ?? ""}`}
+                    className="flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]"
+                  >
+                    <span className="truncate">
+                      {run.agentProfile} · {run.triggerType} · {run.linkKind}
+                    </span>
+                    <span className="shrink-0">{run.outcome ?? run.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

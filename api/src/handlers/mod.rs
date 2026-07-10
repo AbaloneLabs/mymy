@@ -1,12 +1,14 @@
 //! Route handlers module.
 
 pub mod agent_prompts;
+pub mod agent_runs;
 pub mod agents;
 pub mod audit;
 pub mod auth;
 pub mod calendar;
 pub mod chat;
 pub mod cron;
+pub mod decisions;
 pub mod document_editor;
 pub mod drive;
 pub mod editor_settings;
@@ -21,7 +23,9 @@ pub mod media;
 pub mod moa;
 pub mod notes;
 pub mod previews;
+pub mod proactive;
 pub mod projects;
+pub mod runtime_memory;
 pub mod sandbox;
 pub mod search;
 pub mod settings;
@@ -34,6 +38,8 @@ pub mod web_viewer;
 
 use std::sync::Arc;
 
+use axum::http::header::CONTENT_TYPE;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 
@@ -49,6 +55,19 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(finance_routes())
 }
 
+/// Prometheus output is aggregate and low-cardinality, while still remaining
+/// inside the normal API authentication boundary.
+pub fn metrics_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/metrics", get(metrics))
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        crate::services::runtime_metrics::render(),
+    )
+}
+
 fn system_routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(auth::routes())
@@ -62,13 +81,17 @@ fn system_routes() -> Router<Arc<AppState>> {
 fn agent_routes() -> Router<Arc<AppState>> {
     Router::new()
         .merge(agent_prompts::routes())
+        .merge(agent_runs::routes())
         .merge(agents::routes())
         .merge(chat::routes())
         .merge(cron::routes())
+        .merge(decisions::routes())
         .merge(extensions::routes())
         .merge(llm_providers::routes())
         .merge(mcp::routes())
         .merge(moa::routes())
+        .merge(proactive::routes())
+        .merge(runtime_memory::routes())
         .merge(skills::routes())
 }
 

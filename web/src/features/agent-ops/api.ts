@@ -4,11 +4,14 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type {
+  AgentMemory,
   CronJob,
   CronResultsResponse,
   CronResponse,
   QuarantinedCronJobDetailResponse,
   QuarantinedCronJobsResponse,
+  RunSummary,
+  MemoryEmbeddingSettings,
 } from "@/types/agent-ops";
 
 const NATIVE_CRON_QUERY_KEY = ["agent-ops", "cron", "native"] as const;
@@ -17,6 +20,83 @@ const QUARANTINED_CRON_QUERY_KEY = [
   "cron",
   "quarantined",
 ] as const;
+
+export function useRuntimeMemories(profile: string | null, query: string) {
+  return useQuery({
+    queryKey: ["agent-ops", "runtime-memory", profile, query],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "100", scope: "all" });
+      if (profile) params.set("agentProfile", profile);
+      if (query.trim()) params.set("q", query.trim());
+      return api.get<{ memories: AgentMemory[] }>(
+        `/runtime-memory?${params.toString()}`,
+      );
+    },
+  });
+}
+
+export function useRunSummaries(profile: string | null, query: string) {
+  return useQuery({
+    queryKey: ["agent-ops", "run-summaries", profile, query],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "25", scope: "all" });
+      if (profile) params.set("agentProfile", profile);
+      if (query.trim()) params.set("q", query.trim());
+      return api.get<{ summaries: RunSummary[] }>(
+        `/run-summaries?${params.toString()}`,
+      );
+    },
+  });
+}
+
+export function useReviewRuntimeMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      action,
+    }: {
+      id: string;
+      action: "approve" | "stale" | "delete";
+    }) =>
+      api.post<AgentMemory>(`/runtime-memory/${id}/review`, { action }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["agent-ops", "runtime-memory"],
+      }),
+  });
+}
+
+export function useMemoryEmbeddingSettings(profile: string | null) {
+  return useQuery({
+    queryKey: ["agent-ops", "runtime-memory", "settings", profile],
+    queryFn: () =>
+      api.get<MemoryEmbeddingSettings>(
+        `/runtime-memory/settings/${encodeURIComponent(profile ?? "")}`,
+      ),
+    enabled: Boolean(profile),
+  });
+}
+
+export function useUpdateMemoryEmbeddingSettings(profile: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      enabled: boolean;
+      includePrivate: boolean;
+      includeFinancial: boolean;
+    }) =>
+      api.put<MemoryEmbeddingSettings>(
+        `/runtime-memory/settings/${encodeURIComponent(profile)}`,
+        body,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-ops", "runtime-memory"],
+      });
+    },
+  });
+}
 
 /* -------------------------------------------------- Agent Operations */
 
@@ -42,7 +122,9 @@ export function useCronJobs(
         api.get<NativeCronStatusResponse>("/cron/status"),
       ]);
       return {
-        jobs: jobsResponse.jobs.map(toCronJob),
+        jobs: jobsResponse.jobs
+          .map(toCronJob)
+          .filter((job) => !profile || job.agentProfile === profile),
         status: {
           schedulerRunning: status.schedulerRunning,
           activeJobs: status.activeJobs,
@@ -77,6 +159,14 @@ export interface SaveCronJobRequest {
   skills?: string[];
   contextFrom?: string[];
   wakeAgent?: boolean;
+  agentProfile?: string | null;
+  projectId?: string | null;
+  sessionPolicy?: "new" | "reuse" | "result_only";
+  catchUpPolicy?: "skip" | "latest" | "all";
+  retryPolicy?: "none" | "safe";
+  maxToolCalls?: number;
+  maxRuntimeSeconds?: number;
+  maxTotalTokens?: number;
 }
 
 export interface CronBlueprint {
@@ -131,12 +221,16 @@ export function useInstantiateCronBlueprint() {
       title?: string;
       schedule?: string;
       enabled?: boolean;
+      agentProfile: string;
+      projectId?: string | null;
     }) =>
       api.post<CronResponse>(`/cron/blueprints/${vars.key}/instantiate`, {
         values: vars.values,
         title: vars.title,
         schedule: vars.schedule,
         enabled: vars.enabled,
+        agentProfile: vars.agentProfile,
+        projectId: vars.projectId ?? null,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: NATIVE_CRON_QUERY_KEY }),
   });
@@ -230,6 +324,16 @@ interface NativeCronJob {
   run_count: number;
   max_runs?: number | null;
   skills?: string[];
+  agent_profile?: string;
+  project_id?: string;
+  session_policy?: "new" | "reuse" | "result_only";
+  catch_up_policy?: "skip" | "latest" | "all";
+  retry_policy?: "none" | "safe";
+  max_tool_calls?: number;
+  max_runtime_seconds?: number;
+  max_total_tokens?: number;
+  last_run_id?: string;
+  waiting_decision_id?: string;
 }
 
 type NativeSchedule =
@@ -257,6 +361,16 @@ function toCronJob(job: NativeCronJob): CronJob {
     skill: job.skills?.join(", "),
     nextRun: job.next_run_at,
     paused: !job.enabled,
+    agentProfile: job.agent_profile,
+    projectId: job.project_id,
+    sessionPolicy: job.session_policy ?? "new",
+    catchUpPolicy: job.catch_up_policy ?? "latest",
+    retryPolicy: job.retry_policy ?? "safe",
+    maxToolCalls: job.max_tool_calls ?? 100,
+    maxRuntimeSeconds: job.max_runtime_seconds ?? 1_800,
+    maxTotalTokens: job.max_total_tokens ?? 200_000,
+    lastRunId: job.last_run_id,
+    waitingDecisionId: job.waiting_decision_id,
   };
 }
 

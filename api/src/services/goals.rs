@@ -3,25 +3,28 @@
 //! Progress is computed on-demand:
 //!   * manual KR           — current_value / target_value * 100 (capped 100)
 //!   * task_completion KR  — completed linked tasks / total linked tasks * 100
-//!   * finance KR          — TODO(backend): aggregate from transactions table
+//!   * finance KR          — explicit single-currency transaction aggregate
 //!
 //! Goal progress = average of its key results' progress (0 if none).
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::goal::{
-    CreateGoalRequest, CreateKeyResultRequest, Goal, GoalResponse, GoalsResponse, KeyResult,
-    KeyResultResponse, UpdateGoalRequest, UpdateKeyResultRequest,
+    CreateGoalRequest, CreateKeyResultRequest, FinanceKpiDefinition, Goal, GoalResponse,
+    GoalsResponse, KeyResult, KeyResultResponse, TaskAssignmentSummary, UpdateGoalRequest,
+    UpdateKeyResultRequest,
 };
+use crate::models::scope::PatchField;
 use crate::services::audit::log_audit_safe;
 use crate::state::AppState;
 
 mod model;
 mod validation;
 
-use model::{average_progress, row_to_goal, row_to_key_result, KeyResultRow};
+use model::{average_progress, finance_definition, row_to_goal, row_to_key_result, KeyResultRow};
 use validation::{
     validate_current_value, validate_goal_status, validate_goal_type, validate_kpi_type,
     validate_target_value,
@@ -230,20 +233,42 @@ pub async fn create_key_result(
     validate_target_value(target_value)?;
     let current_value = req.current_value.unwrap_or(0.0);
     validate_current_value(current_value)?;
-    let unit = req.unit.unwrap_or_else(|| "%".to_string());
+    let finance = normalize_finance_definition(state, &kpi_type, req.finance_definition).await?;
+    let unit = req.unit.unwrap_or_else(|| {
+        finance
+            .as_ref()
+            .map(|definition| definition.currency.clone())
+            .unwrap_or_else(|| "%".to_string())
+    });
 
-    sqlx::query!(
+    sqlx::query(
         r#"INSERT INTO key_results
-             (id, goal_id, title, kpi_type, target_value, current_value, unit)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-        kr_id,
-        id,
-        req.title,
-        kpi_type,
-        target_value,
-        current_value,
-        unit,
+             (id, goal_id, title, kpi_type, target_value, current_value, unit,
+              finance_metric, finance_currency, finance_scope,
+              finance_project_id, finance_status, finance_from, finance_to,
+              finance_category)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                   $11, $12, $13, $14, $15)"#,
     )
+    .bind(kr_id)
+    .bind(id)
+    .bind(req.title)
+    .bind(&kpi_type)
+    .bind(target_value)
+    .bind(if kpi_type == "manual" {
+        current_value
+    } else {
+        0.0
+    })
+    .bind(unit)
+    .bind(finance.as_ref().map(|value| value.metric.as_str()))
+    .bind(finance.as_ref().map(|value| value.currency.as_str()))
+    .bind(finance.as_ref().map(|value| value.scope.as_str()))
+    .bind(finance.as_ref().and_then(|value| value.project_id))
+    .bind(finance.as_ref().map(|value| value.status.as_str()))
+    .bind(finance.as_ref().and_then(|value| value.from))
+    .bind(finance.as_ref().and_then(|value| value.to))
+    .bind(finance.as_ref().and_then(|value| value.category.as_deref()))
     .execute(&state.db)
     .await?;
 
@@ -272,15 +297,7 @@ pub async fn update_key_result(
     kr_id: Uuid,
     req: UpdateKeyResultRequest,
 ) -> AppResult<KeyResultResponse> {
-    // Verify existence and ownership.
-    sqlx::query!(
-        r#"SELECT 1 AS x FROM key_results WHERE id = $1 AND goal_id = $2"#,
-        kr_id,
-        id,
-    )
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("key_result {kr_id} not found")))?;
+    let existing = fetch_key_result_row(state, kr_id, Some(id)).await?;
 
     if let Some(ref k) = req.kpi_type {
         validate_kpi_type(k)?;
@@ -291,23 +308,64 @@ pub async fn update_key_result(
     if let Some(v) = req.current_value {
         validate_current_value(v)?;
     }
+    let kpi_type = req
+        .kpi_type
+        .clone()
+        .unwrap_or_else(|| existing.kpi_type.clone());
+    if req.current_value.is_some() && kpi_type != "manual" {
+        return Err(AppError::BadRequest(
+            "currentValue is only writable for manual key results".to_string(),
+        ));
+    }
+    let requested_finance = match req.finance_definition {
+        PatchField::Missing => finance_definition(&existing),
+        PatchField::Null => None,
+        PatchField::Value(definition) => Some(definition),
+    };
+    let finance = normalize_finance_definition(state, &kpi_type, requested_finance).await?;
+    let unit = req.unit.unwrap_or_else(|| {
+        if kpi_type == "finance" && existing.kpi_type != "finance" {
+            finance
+                .as_ref()
+                .map(|definition| definition.currency.clone())
+                .unwrap_or_else(|| existing.unit.clone())
+        } else {
+            existing.unit.clone()
+        }
+    });
 
-    sqlx::query!(
+    sqlx::query(
         r#"UPDATE key_results SET
              title = COALESCE($2, title),
-             kpi_type = COALESCE($3, kpi_type),
+             kpi_type = $3,
              target_value = COALESCE($4, target_value),
              current_value = COALESCE($5, current_value),
-             unit = COALESCE($6, unit),
+             unit = $6,
+             finance_metric = $7, finance_currency = $8,
+             finance_scope = $9, finance_project_id = $10,
+             finance_status = $11, finance_from = $12,
+             finance_to = $13, finance_category = $14,
              updated_at = now()
            WHERE id = $1"#,
-        kr_id,
-        req.title.as_deref(),
-        req.kpi_type.as_deref(),
-        req.target_value,
-        req.current_value,
-        req.unit.as_deref(),
     )
+    .bind(kr_id)
+    .bind(req.title.as_deref())
+    .bind(&kpi_type)
+    .bind(req.target_value)
+    .bind(
+        (kpi_type == "manual")
+            .then_some(req.current_value)
+            .flatten(),
+    )
+    .bind(unit)
+    .bind(finance.as_ref().map(|value| value.metric.as_str()))
+    .bind(finance.as_ref().map(|value| value.currency.as_str()))
+    .bind(finance.as_ref().map(|value| value.scope.as_str()))
+    .bind(finance.as_ref().and_then(|value| value.project_id))
+    .bind(finance.as_ref().map(|value| value.status.as_str()))
+    .bind(finance.as_ref().and_then(|value| value.from))
+    .bind(finance.as_ref().and_then(|value| value.to))
+    .bind(finance.as_ref().and_then(|value| value.category.as_deref()))
     .execute(&state.db)
     .await?;
 
@@ -368,7 +426,8 @@ async fn fetch_goal(state: &AppState, id: Uuid) -> AppResult<Goal> {
 
     let krs = fetch_key_results_for_goal(state, id).await?;
     let progress = average_progress(&krs);
-    Ok(row_to_goal(row, progress, Some(krs)))
+    let assignment = task_assignment_summary(state, id).await?;
+    Ok(row_to_goal(row, progress, Some(krs), assignment))
 }
 
 /// Fetch all key results for a goal, with progress computed per KR.
@@ -376,7 +435,10 @@ async fn fetch_key_results_for_goal(state: &AppState, goal_id: Uuid) -> AppResul
     let rows = sqlx::query_as!(
         KeyResultRow,
         r#"SELECT id, goal_id, title, kpi_type, target_value,
-                  current_value, unit, created_at, updated_at
+                  current_value, unit, finance_metric, finance_currency,
+                  finance_scope, finance_project_id, finance_status,
+                  finance_from, finance_to, finance_category,
+                  created_at, updated_at
            FROM key_results WHERE goal_id = $1
            ORDER BY created_at ASC"#,
         goal_id,
@@ -386,66 +448,260 @@ async fn fetch_key_results_for_goal(state: &AppState, goal_id: Uuid) -> AppResul
 
     let mut krs = Vec::with_capacity(rows.len());
     for row in rows {
-        let current_value = resolve_current_value(state, &row).await;
-        krs.push(row_to_key_result(row, current_value));
+        let resolved = resolve_current_value(state, &row).await?;
+        krs.push(row_to_key_result(row, resolved.value, resolved.status));
     }
     Ok(krs)
 }
 
 /// Fetch a single key result with computed progress.
 async fn fetch_key_result(state: &AppState, id: Uuid) -> AppResult<KeyResult> {
-    let row = sqlx::query_as!(
-        KeyResultRow,
-        r#"SELECT id, goal_id, title, kpi_type, target_value,
-                  current_value, unit, created_at, updated_at
-           FROM key_results WHERE id = $1"#,
-        id,
-    )
-    .fetch_one(&state.db)
-    .await?;
+    let row = fetch_key_result_row(state, id, None).await?;
 
-    let current_value = resolve_current_value(state, &row).await;
-    Ok(row_to_key_result(row, current_value))
+    let resolved = resolve_current_value(state, &row).await?;
+    Ok(row_to_key_result(row, resolved.value, resolved.status))
 }
 
 /// Resolve the effective current_value for a KR based on its kpi_type.
 ///
 /// * `manual` — use the stored value as-is.
 /// * `task_completion` — count linked tasks done / total (recomputed on read).
-/// * `finance` — TODO(backend): aggregate from transactions. Until then the
-///   stored value is returned.
-async fn resolve_current_value(state: &AppState, kr: &KeyResultRow) -> f64 {
+/// * `finance` — aggregate one explicit currency and scope only.
+async fn resolve_current_value(state: &AppState, kr: &KeyResultRow) -> AppResult<KpiResolution> {
     match kr.kpi_type.as_str() {
         "task_completion" => {
             // Count linked tasks and how many are done.
             let row = sqlx::query!(
                 r#"SELECT
                      COUNT(*)::bigint AS "total!: i64",
-                     COUNT(*) FILTER (WHERE t.status = 'done')::bigint AS "done!: i64"
+                     COUNT(*) FILTER (WHERE ts.is_done)::bigint AS "done!: i64"
                    FROM goal_tasks gt
                    JOIN tasks t ON t.id = gt.task_id
-                   WHERE gt.goal_id = $1"#,
+                   JOIN task_statuses ts ON ts.slug = t.status
+                   WHERE gt.goal_id = $1 AND t.deleted_at IS NULL"#,
                 kr.goal_id,
             )
             .fetch_one(&state.db)
             .await;
 
-            match row {
-                Ok(r) => {
-                    if r.total == 0 {
-                        0.0
-                    } else {
-                        r.done as f64 / r.total as f64 * 100.0
-                    }
-                }
-                // On error, fall back to the stored value rather than failing
-                // the read — progress is a derived display field.
-                Err(_) => kr.current_value,
-            }
+            let r = row?;
+            Ok(if r.total == 0 {
+                KpiResolution::new(0.0, "no_assignment")
+            } else {
+                KpiResolution::new(r.done as f64 / r.total as f64 * 100.0, "ready")
+            })
         }
-        // finance: TODO(backend) — once transactions are wired, sum by period.
-        _ => kr.current_value,
+        "finance" => {
+            let Some(definition) = persisted_finance_definition(kr) else {
+                return Ok(KpiResolution::new(0.0, "unconfigured"));
+            };
+            if definition.scope == "project" && definition.project_id.is_none() {
+                return Ok(KpiResolution::new(0.0, "broken_scope"));
+            }
+            let value = sqlx::query_scalar::<_, i64>(
+                r#"SELECT COALESCE(SUM(CASE
+                       WHEN $1 = 'income' AND type = 'income' THEN amount
+                       WHEN $1 = 'expense' AND type = 'expense' THEN amount
+                       WHEN $1 = 'net' AND type = 'income' THEN amount
+                       WHEN $1 = 'net' AND type = 'expense' THEN -amount
+                       ELSE 0 END), 0)::bigint
+                   FROM transactions
+                   WHERE currency = $2
+                     AND ($3 = 'all'
+                       OR ($3 = 'general' AND project_id IS NULL)
+                       OR ($3 = 'project' AND project_id = $4))
+                     AND ($5 = 'all' OR status = $5)
+                     AND ($6::timestamptz IS NULL OR date >= $6)
+                     AND ($7::timestamptz IS NULL OR date < $7)
+                     AND ($8::text IS NULL OR category = $8)"#,
+            )
+            .bind(&definition.metric)
+            .bind(&definition.currency)
+            .bind(&definition.scope)
+            .bind(definition.project_id)
+            .bind(&definition.status)
+            .bind(definition.from)
+            .bind(definition.to)
+            .bind(definition.category.as_deref())
+            .fetch_one(&state.db)
+            .await?;
+            Ok(KpiResolution::new(
+                crate::services::currency::minor_units_to_major(value, &definition.currency)?,
+                "ready",
+            ))
+        }
+        _ => Ok(KpiResolution::new(kr.current_value, "ready")),
     }
+}
+
+async fn fetch_key_result_row(
+    state: &AppState,
+    id: Uuid,
+    goal_id: Option<Uuid>,
+) -> AppResult<KeyResultRow> {
+    sqlx::query_as::<_, KeyResultRow>(
+        r#"SELECT id, goal_id, title, kpi_type, target_value,
+                  current_value, unit, finance_metric, finance_currency,
+                  finance_scope, finance_project_id, finance_status,
+                  finance_from, finance_to, finance_category,
+                  created_at, updated_at
+           FROM key_results
+           WHERE id = $1 AND ($2::uuid IS NULL OR goal_id = $2)"#,
+    )
+    .bind(id)
+    .bind(goal_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("key_result {id} not found")))
+}
+
+#[derive(Debug)]
+struct KpiResolution {
+    value: f64,
+    status: &'static str,
+}
+
+impl KpiResolution {
+    fn new(value: f64, status: &'static str) -> Self {
+        Self { value, status }
+    }
+}
+
+#[derive(Debug)]
+struct PersistedFinanceDefinition {
+    metric: String,
+    currency: String,
+    scope: String,
+    project_id: Option<Uuid>,
+    status: String,
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    category: Option<String>,
+}
+
+fn persisted_finance_definition(kr: &KeyResultRow) -> Option<PersistedFinanceDefinition> {
+    Some(PersistedFinanceDefinition {
+        metric: kr.finance_metric.clone()?,
+        currency: kr.finance_currency.clone()?,
+        scope: kr.finance_scope.clone()?,
+        project_id: kr.finance_project_id,
+        status: kr.finance_status.clone()?,
+        from: kr.finance_from,
+        to: kr.finance_to,
+        category: kr.finance_category.clone(),
+    })
+}
+
+async fn normalize_finance_definition(
+    state: &AppState,
+    kpi_type: &str,
+    definition: Option<FinanceKpiDefinition>,
+) -> AppResult<Option<PersistedFinanceDefinition>> {
+    if kpi_type != "finance" {
+        if definition.is_some() {
+            return Err(AppError::BadRequest(
+                "financeDefinition is only valid for finance key results".to_string(),
+            ));
+        }
+        return Ok(None);
+    }
+    let definition = definition.ok_or_else(|| {
+        AppError::BadRequest("finance key results require financeDefinition".to_string())
+    })?;
+    if !matches!(definition.metric.as_str(), "income" | "expense" | "net") {
+        return Err(AppError::BadRequest(
+            "invalid financeDefinition.metric".to_string(),
+        ));
+    }
+    let currency = crate::services::currency::normalize_iso_currency(&definition.currency)?;
+    if !matches!(definition.scope.as_str(), "all" | "general" | "project") {
+        return Err(AppError::BadRequest(
+            "invalid financeDefinition.scope".to_string(),
+        ));
+    }
+    if !matches!(definition.status.as_str(), "all" | "cleared" | "pending") {
+        return Err(AppError::BadRequest(
+            "invalid financeDefinition.status".to_string(),
+        ));
+    }
+    let project_id = definition
+        .project_id
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|err| AppError::BadRequest(format!("invalid finance projectId: {err}")))?;
+    if definition.scope == "project" && project_id.is_none() {
+        return Err(AppError::BadRequest(
+            "financeDefinition.scope=project requires projectId".to_string(),
+        ));
+    }
+    if definition.scope != "project" && project_id.is_some() {
+        return Err(AppError::BadRequest(
+            "finance projectId is only valid for project scope".to_string(),
+        ));
+    }
+    if let Some(project_id) = project_id {
+        let exists =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)")
+                .bind(project_id)
+                .fetch_one(&state.db)
+                .await?;
+        if !exists {
+            return Err(AppError::BadRequest(format!(
+                "finance project {project_id} not found"
+            )));
+        }
+    }
+    let from = parse_finance_date(definition.from.as_deref(), "from")?;
+    let to = parse_finance_date(definition.to.as_deref(), "to")?;
+    if from.zip(to).is_some_and(|(from, to)| from >= to) {
+        return Err(AppError::BadRequest(
+            "financeDefinition.from must be before to".to_string(),
+        ));
+    }
+    Ok(Some(PersistedFinanceDefinition {
+        metric: definition.metric,
+        currency,
+        scope: definition.scope,
+        project_id,
+        status: definition.status,
+        from,
+        to,
+        category: definition
+            .category
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    }))
+}
+
+fn parse_finance_date(value: Option<&str>, field: &str) -> AppResult<Option<DateTime<Utc>>> {
+    value
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .map(|value| value.map(|value| value.with_timezone(&Utc)))
+        .map_err(|err| AppError::BadRequest(format!("invalid financeDefinition.{field}: {err}")))
+}
+
+async fn task_assignment_summary(
+    state: &AppState,
+    goal_id: Uuid,
+) -> AppResult<TaskAssignmentSummary> {
+    let (assigned, completed) = sqlx::query_as::<_, (i64, i64)>(
+        r#"SELECT COUNT(*)::bigint,
+                  COUNT(*) FILTER (WHERE ts.is_done)::bigint
+           FROM goal_tasks gt
+           INNER JOIN tasks t ON t.id = gt.task_id AND t.deleted_at IS NULL
+           INNER JOIN task_statuses ts ON ts.slug = t.status
+           WHERE gt.goal_id = $1"#,
+    )
+    .bind(goal_id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(TaskAssignmentSummary {
+        assigned,
+        completed,
+        has_assignment: assigned > 0,
+    })
 }
 
 #[cfg(test)]
@@ -463,6 +719,14 @@ mod tests {
             target_value,
             current_value,
             unit: "%".to_string(),
+            finance_metric: None,
+            finance_currency: None,
+            finance_scope: None,
+            finance_project_id: None,
+            finance_status: None,
+            finance_from: None,
+            finance_to: None,
+            finance_category: None,
             created_at: now,
             updated_at: now,
         }
@@ -470,13 +734,13 @@ mod tests {
 
     #[test]
     fn row_to_key_result_caps_progress_at_one_hundred() {
-        let kr = row_to_key_result(key_result_row(10.0, 25.0), 25.0);
+        let kr = row_to_key_result(key_result_row(10.0, 25.0), 25.0, "ready");
         assert_eq!(kr.progress, 100.0);
     }
 
     #[test]
     fn row_to_key_result_uses_zero_progress_for_non_positive_target() {
-        let kr = row_to_key_result(key_result_row(0.0, 25.0), 25.0);
+        let kr = row_to_key_result(key_result_row(0.0, 25.0), 25.0, "ready");
         assert_eq!(kr.progress, 0.0);
     }
 
@@ -488,8 +752,8 @@ mod tests {
     #[test]
     fn average_progress_returns_mean_value() {
         let krs = vec![
-            row_to_key_result(key_result_row(100.0, 25.0), 25.0),
-            row_to_key_result(key_result_row(100.0, 75.0), 75.0),
+            row_to_key_result(key_result_row(100.0, 25.0), 25.0, "ready"),
+            row_to_key_result(key_result_row(100.0, 75.0), 75.0, "ready"),
         ];
         assert_eq!(average_progress(&krs), 50.0);
     }
@@ -501,5 +765,130 @@ mod tests {
         assert!(validate_kpi_type("custom").is_err());
         assert!(validate_target_value(0.0).is_err());
         assert!(validate_current_value(-1.0).is_err());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finance_kpi_aggregates_one_currency_and_keeps_deleted_scope_broken(
+        pool: sqlx::PgPool,
+    ) {
+        let state = AppState::new(pool.clone(), test_config());
+        let goal_id = sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO goals (title) VALUES ('Finance KPI') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let project_id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO projects (name, drive_slug, drive_path)
+               VALUES ('KPI project', 'kpi-project', '/drive/projects/kpi-project')
+               RETURNING id"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for (project, kind, amount, currency, status) in [
+            (None, "income", 1_000_i64, "USD", "cleared"),
+            (None, "expense", 250_i64, "USD", "cleared"),
+            (None, "income", 900_i64, "USD", "pending"),
+            (None, "income", 1_000_000_i64, "KRW", "cleared"),
+            (Some(project_id), "income", 500_i64, "USD", "cleared"),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO transactions
+                     (project_id, type, amount, currency, date, status)
+                   VALUES ($1, $2, $3, $4, now(), $5)"#,
+            )
+            .bind(project)
+            .bind(kind)
+            .bind(amount)
+            .bind(currency)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let general = create_key_result(
+            &state,
+            goal_id,
+            CreateKeyResultRequest {
+                title: "Cleared USD net".to_string(),
+                kpi_type: Some("finance".to_string()),
+                target_value: Some(1_000.0),
+                current_value: None,
+                unit: None,
+                finance_definition: Some(FinanceKpiDefinition {
+                    metric: "net".to_string(),
+                    currency: "usd".to_string(),
+                    scope: "general".to_string(),
+                    project_id: None,
+                    status: "cleared".to_string(),
+                    from: None,
+                    to: None,
+                    category: None,
+                }),
+            },
+        )
+        .await
+        .unwrap()
+        .key_result;
+        assert_eq!(general.current_value, 7.5);
+        assert_eq!(general.unit, "USD");
+        assert_eq!(general.calculation_status, "ready");
+
+        let project = create_key_result(
+            &state,
+            goal_id,
+            CreateKeyResultRequest {
+                title: "Project income".to_string(),
+                kpi_type: Some("finance".to_string()),
+                target_value: Some(1_000.0),
+                current_value: None,
+                unit: None,
+                finance_definition: Some(FinanceKpiDefinition {
+                    metric: "income".to_string(),
+                    currency: "USD".to_string(),
+                    scope: "project".to_string(),
+                    project_id: Some(project_id.to_string()),
+                    status: "cleared".to_string(),
+                    from: None,
+                    to: None,
+                    category: None,
+                }),
+            },
+        )
+        .await
+        .unwrap()
+        .key_result;
+        assert_eq!(project.current_value, 5.0);
+
+        sqlx::query("DELETE FROM projects WHERE id = $1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let broken = fetch_key_result(&state, Uuid::parse_str(&project.id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(broken.current_value, 0.0);
+        assert_eq!(broken.calculation_status, "broken_scope");
+    }
+
+    fn test_config() -> crate::config::Config {
+        crate::config::Config {
+            database_url: String::new(),
+            port: 0,
+            cors_origins: Vec::new(),
+            agent_data_dir: std::env::temp_dir(),
+            auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 10,
+            drive_s3_bucket: None,
+            drive_s3_region: None,
+            drive_s3_endpoint: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
+        }
     }
 }

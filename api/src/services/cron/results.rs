@@ -51,17 +51,23 @@ pub(super) async fn insert_result(
     status: &str,
     output: &str,
     output_path: Option<String>,
+    run_id: Option<Uuid>,
+    occurrence_id: Option<Uuid>,
 ) -> AppResult<()> {
+    let id = Uuid::new_v4();
     sqlx::query!(
         r#"INSERT INTO cron_results
-           (job_id, job_title, mode, status, output, output_path)
-           VALUES ($1, $2, $3, $4, $5, $6)"#,
+           (id, job_id, job_title, mode, status, output, output_path, run_id, occurrence_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+        id,
         job.id,
         job.title,
         "agent",
         status,
         output,
         output_path,
+        run_id,
+        occurrence_id,
     )
     .execute(&state.db)
     .await?;

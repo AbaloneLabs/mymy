@@ -15,7 +15,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::drive::{
     CreateDriveFolderRequest, DriveFileResponse, DriveListResponse, DriveMutationResponse,
     DrivePathQuery, DriveProvidersResponse, DriveRestoreResponse, DriveSyncJobsResponse,
-    DriveTrashResponse, DriveUploadResponse, WriteDriveFileRequest,
+    DriveTrashResponse, DriveUploadResponse, MoveDrivePathRequest, MoveDrivePathResponse,
+    WriteDriveFileRequest,
 };
 use crate::services::drive as drive_service;
 use crate::state::AppState;
@@ -23,6 +24,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/drive", get(list_drive).delete(delete_drive_path))
+        .route("/api/drive/move", axum::routing::post(move_drive_path))
         .route("/api/drive/providers", get(list_drive_providers))
         .route("/api/drive/sync-jobs", get(list_drive_sync_jobs))
         .route("/api/drive/upload", axum::routing::post(upload_drive_file))
@@ -193,6 +195,15 @@ pub async fn delete_drive_path(
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
     drive_service::delete_path(&state, &path).await?;
     Ok(Json(DriveMutationResponse { success: true }))
+}
+
+pub async fn move_drive_path(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<MoveDrivePathRequest>,
+) -> AppResult<Json<MoveDrivePathResponse>> {
+    Ok(Json(
+        drive_service::move_path(&state, &request.source_path, &request.destination_path).await?,
+    ))
 }
 
 pub async fn restore_drive_trash(

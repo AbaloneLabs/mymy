@@ -57,12 +57,21 @@ export interface UpdateTransactionInput {
 
 
 export interface TransactionSummary {
-
-  income: number;
-
-  expense: number;
-
-  net: number;
-
   count: number;
+
+  currency?: string;
+
+  income?: number;
+
+  expense?: number;
+
+  net?: number;
+
+  totalsByCurrency: Array<{
+    currency: string;
+    income: number;
+    expense: number;
+    net: number;
+    count: number;
+  }>;
 }

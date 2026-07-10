@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{AppError, AppResult};
 use crate::models::drive::{
     DriveEntry, DriveEntryKind, DriveFileResponse, DriveListResponse, DriveProviderKind,
-    DriveUploadResponse,
+    DriveUploadResponse, MoveDrivePathResponse,
 };
 use crate::services::document_editor::editor_kind_for_path;
 use crate::state::AppState;
@@ -165,6 +165,69 @@ pub async fn create_folder(state: &AppState, logical_path: &str) -> AppResult<()
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     fs::create_dir_all(resolved.physical_path)?;
     Ok(())
+}
+
+pub async fn move_path(
+    state: &AppState,
+    source_path: &str,
+    destination_path: &str,
+) -> AppResult<MoveDrivePathResponse> {
+    let source = resolve_drive_path(&state.config.agent_data_dir, source_path)?;
+    let destination = resolve_drive_path(&state.config.agent_data_dir, destination_path)?;
+    if source.logical_path == DRIVE_PREFIX {
+        return Err(AppError::BadRequest(
+            "Cannot move the Drive root".to_string(),
+        ));
+    }
+    if !source.physical_path.exists() {
+        return Err(AppError::NotFound(format!(
+            "Drive path {} not found",
+            source.logical_path
+        )));
+    }
+    if destination.physical_path.exists() {
+        return Err(AppError::Conflict(format!(
+            "Drive path {} already exists",
+            destination.logical_path
+        )));
+    }
+    if destination.physical_path.starts_with(&source.physical_path) {
+        return Err(AppError::BadRequest(
+            "Cannot move a Drive directory inside itself".to_string(),
+        ));
+    }
+    let Some(parent) = destination.physical_path.parent() else {
+        return Err(AppError::BadRequest(
+            "Invalid Drive destination path".to_string(),
+        ));
+    };
+    if !parent.is_dir() {
+        return Err(AppError::BadRequest(
+            "Drive destination parent must exist".to_string(),
+        ));
+    }
+    fs::rename(&source.physical_path, &destination.physical_path)?;
+    if let Err(err) = crate::services::knowledge::reconcile_drive_move(
+        state,
+        &source.logical_path,
+        &destination.logical_path,
+    )
+    .await
+    {
+        if let Err(rollback_err) = fs::rename(&destination.physical_path, &source.physical_path) {
+            return Err(AppError::Internal(format!(
+                "Drive move link reconciliation failed ({err}) and rollback failed ({rollback_err})"
+            )));
+        }
+        return Err(err);
+    }
+    enqueue_s3_sync_job(state, &source.logical_path, "delete").await?;
+    enqueue_s3_sync_job(state, &destination.logical_path, "upload").await?;
+    Ok(MoveDrivePathResponse {
+        success: true,
+        source_path: source.logical_path,
+        destination_path: destination.logical_path,
+    })
 }
 
 fn entry_for_path(

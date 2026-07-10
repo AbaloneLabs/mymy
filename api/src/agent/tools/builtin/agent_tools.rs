@@ -15,6 +15,7 @@ use serde_json::Value;
 use sqlx::Row;
 
 use super::{truncate_chars, BuiltinToolConfig};
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::types::{ModelInfo, StreamDelta};
 use crate::agent::providers::{LlmProvider, Message, ProviderError, ToolSchema};
 use crate::agent::runtime::{
@@ -25,10 +26,17 @@ use crate::agent::runtime::{
 use crate::agent::security::redact::mask_secret;
 use crate::agent::security::{redact_sensitive_text, SecretString};
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
+    ToolRegistry,
 };
 
-const VALID_STATUSES: &[&str] = &["pending", "in_progress", "completed", "cancelled"];
+const VALID_STATUSES: &[&str] = &[
+    "pending",
+    "in_progress",
+    "blocked",
+    "completed",
+    "cancelled",
+];
 const MAX_TODO_CONTENT_CHARS: usize = 4_000;
 const MAX_TODO_ITEMS: usize = 256;
 
@@ -58,8 +66,10 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 }
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "run_checklist"),
         handler: Arc::new(TodoTool {
             path: todo_path(config),
+            state: config.app_state.clone(),
         }),
     });
 
@@ -78,6 +88,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["question"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Create, "decision"),
         handler: Arc::new(ClarifyTool),
     });
 
@@ -107,10 +118,11 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["tasks"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Create, "delegate"),
         handler: Arc::new(DelegateTool),
     });
 
-    if let Some(db) = config.db.clone() {
+    if let (Some(db), Some(agent_profile)) = (config.db.clone(), config.agent_profile.clone()) {
         registry.register(ToolEntry {
             name: "session_search".to_string(),
             toolset: "sessions_read".to_string(),
@@ -127,7 +139,12 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                     }
                 }),
             ),
-            handler: Arc::new(SessionSearchTool { db }),
+            capability: ToolCapability::read("session"),
+            handler: Arc::new(SessionSearchTool {
+                db,
+                agent_profile,
+                project_id: config.project_id,
+            }),
         });
     }
 
@@ -139,6 +156,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             "Return native runtime capability status and redaction-safe diagnostic examples.",
             serde_json::json!({ "type": "object", "properties": {} }),
         ),
+        capability: ToolCapability::read("runtime"),
         handler: Arc::new(RuntimeStatusTool),
     });
 }
@@ -152,6 +170,7 @@ struct TodoItem {
 
 struct TodoTool {
     path: PathBuf,
+    state: Option<Arc<crate::state::AppState>>,
 }
 
 #[async_trait]
@@ -186,6 +205,48 @@ impl ToolHandler for TodoTool {
             "success": true,
             "todos": todos,
             "injection": format_todos_for_injection(&todos),
+        })))
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        let Some(state) = &self.state else {
+            return self.execute(args).await;
+        };
+        let incoming = args
+            .get("todos")
+            .map(|value| {
+                serde_json::from_value::<Vec<crate::services::run_progress::ChecklistInput>>(
+                    value.clone(),
+                )
+                .map_err(|err| ToolError::InvalidArgs(format!("invalid todos: {err}")))
+            })
+            .transpose()?;
+        let items = crate::services::run_progress::update_checklist(
+            state,
+            context,
+            incoming,
+            args.get("merge").and_then(Value::as_bool).unwrap_or(false),
+            &self.path,
+        )
+        .await
+        .map_err(|err| ToolError::Execution(err.to_string()))?;
+        let todos = items
+            .iter()
+            .map(|item| TodoItem {
+                id: item.item_key.clone(),
+                content: item.content.clone(),
+                status: item.status.clone(),
+            })
+            .collect::<Vec<_>>();
+        Ok(tool_result(&serde_json::json!({
+            "success": true,
+            "todos": todos,
+            "injection": format_todos_for_injection(&todos),
+            "source": "database",
         })))
     }
 }
@@ -287,6 +348,7 @@ impl ToolHandler for RuntimeStatusTool {
                 content: "proposal".to_string(),
             }],
             aggregated: "aggregate".to_string(),
+            usage: crate::agent::providers::types::Usage::default(),
         };
         Ok(tool_result(&serde_json::json!({
             "success": true,
@@ -329,6 +391,8 @@ impl LlmProvider for RuntimeDiagnosticProvider {
 
 struct SessionSearchTool {
     db: sqlx::PgPool,
+    agent_profile: String,
+    project_id: Option<uuid::Uuid>,
 }
 
 #[async_trait]
@@ -360,11 +424,16 @@ impl SessionSearchTool {
                FROM chat_messages cm
                JOIN chat_sessions cs ON cs.id = cm.session_id
                WHERE cm.search_tsv @@ plainto_tsquery('simple', $1)
+                 AND cs.profile = $2
+                 AND cs.project_id IS NOT DISTINCT FROM $3
+                 AND NOT cs.automation_result_only
                ORDER BY ts_rank(cm.search_tsv, plainto_tsquery('simple', $1)) DESC,
                         cm.created_at DESC
-               LIMIT $2"#,
+               LIMIT $4"#,
         )
         .bind(query)
+        .bind(&self.agent_profile)
+        .bind(self.project_id)
         .bind(limit)
         .fetch_all(&self.db)
         .await
@@ -400,6 +469,25 @@ impl SessionSearchTool {
             .map_err(|err| ToolError::InvalidArgs(format!("invalid session_id: {err}")))?;
         let message_id = uuid::Uuid::parse_str(message_id)
             .map_err(|err| ToolError::InvalidArgs(format!("invalid around_message_id: {err}")))?;
+        let allowed = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM chat_sessions
+                 WHERE id = $1 AND profile = $2
+                   AND project_id IS NOT DISTINCT FROM $3
+                   AND NOT automation_result_only
+               )"#,
+        )
+        .bind(session_id)
+        .bind(&self.agent_profile)
+        .bind(self.project_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|err| ToolError::Execution(format!("session scope check failed: {err}")))?;
+        if !allowed {
+            return Err(ToolError::Execution(
+                "session is outside the current agent/project scope".to_string(),
+            ));
+        }
         let rows = sqlx::query(
             r#"SELECT id, role, content, created_at
                FROM chat_messages
@@ -413,7 +501,11 @@ impl SessionSearchTool {
         let anchor = rows
             .iter()
             .position(|row| row.get::<uuid::Uuid, _>("id") == message_id)
-            .unwrap_or(0);
+            .ok_or_else(|| {
+                ToolError::InvalidArgs(
+                    "around_message_id does not belong to the scoped session".to_string(),
+                )
+            })?;
         let half = (limit as usize).saturating_div(2);
         let start = anchor.saturating_sub(half);
         let end = (start + limit as usize).min(rows.len());
@@ -439,9 +531,14 @@ impl SessionSearchTool {
                         LIMIT 1
                       ), '') AS preview
                FROM chat_sessions cs
+               WHERE cs.profile = $1
+                 AND cs.project_id IS NOT DISTINCT FROM $2
+                 AND NOT cs.automation_result_only
                ORDER BY cs.updated_at DESC
-               LIMIT $1"#,
+               LIMIT $3"#,
         )
+        .bind(&self.agent_profile)
+        .bind(self.project_id)
         .bind(limit)
         .fetch_all(&self.db)
         .await
@@ -535,6 +632,7 @@ fn format_todos_for_injection(todos: &[TodoItem]) -> Option<String> {
             "completed" => "[x]",
             "in_progress" => "[~]",
             "cancelled" => "[-]",
+            "blocked" => "[!]",
             _ => "[ ]",
         };
         out.push_str(&format!("- {mark} {} - {}\n", item.id, item.content));

@@ -26,6 +26,8 @@ export interface ToolEvent {
   status: "running" | "done";
   arguments: string;
   detail: string;
+  resourceKey?: string;
+  cancellation?: "cooperative" | "process_group" | "non_interruptible";
 }
 
 export interface ScopedStreamState {

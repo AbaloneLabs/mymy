@@ -45,6 +45,7 @@ async fn execute_agent_job(state: &AppState, job: &CronJob) -> AppResult<String>
     .await?;
 
     let mut output = String::new();
+    let new_messages;
     if let chat_service::PreparedExecution::Agent(agent_loop) = &mut turn.execution {
         let mut events = agent_loop.run(&turn.system_prompt, &mut turn.messages);
         while let Some(event) = events.next().await {
@@ -58,12 +59,12 @@ async fn execute_agent_job(state: &AppState, job: &CronJob) -> AppResult<String>
                 _ => {}
             }
         }
+        new_messages = agent_loop.generated_messages();
     } else {
         return Err(AppError::Internal(
             "cron job unexpectedly prepared a MoA chat turn".into(),
         ));
     }
-    let new_messages = turn.messages[turn.agent_message_start..].to_vec();
     chat_service::save_agent_messages(state, turn.session_id, &new_messages).await?;
     Ok(truncate_chars(&output, MAX_RESULT_CHARS))
 }

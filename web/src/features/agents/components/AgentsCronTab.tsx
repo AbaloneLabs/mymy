@@ -98,9 +98,9 @@ export function CronTab({
         </button>
       </div>
 
-      {adding && <CronJobForm onClose={() => setAdding(false)} />}
+      {adding && <CronJobForm defaultProfile={profile} onClose={() => setAdding(false)} />}
 
-      <CronBlueprintPanel blueprints={blueprintsData?.blueprints ?? []} />
+      <CronBlueprintPanel blueprints={blueprintsData?.blueprints ?? []} defaultProfile={profile} />
 
       {jobs.length === 0 ? (
         <div className="rounded-lg border border-dashed border-[var(--border)] p-8 text-center">

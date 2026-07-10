@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 
 use super::SandboxError;
+use crate::agent::execution::RunCancellation;
 
 #[derive(Debug, Clone)]
 pub struct ExecOptions {
@@ -19,6 +20,7 @@ pub struct ExecOptions {
     pub cwd: Option<PathBuf>,
     pub timeout_secs: u64,
     pub extra_env: BTreeMap<String, String>,
+    pub cancellation: Option<RunCancellation>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{truncate_chars, workspace_paths::WorkspacePathPolicy, BuiltinToolConfig};
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::sandbox::{ExecOptions, SandboxManager};
 use crate::agent::security::{detect_dangerous_command, redact_terminal_output, Severity};
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 
 mod rpc;
@@ -51,6 +52,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["code"]
             }),
         ),
+        capability: ToolCapability::process(),
         handler: Arc::new(CodeExecTool {
             working_dir: config.working_dir.clone(),
             allowed_roots: config.allowed_roots.clone(),
@@ -82,6 +84,24 @@ struct CodeExecTool {
 #[async_trait]
 impl ToolHandler for CodeExecTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        self.run(args, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        self.run(args, Some(context)).await
+    }
+}
+
+impl CodeExecTool {
+    async fn run(
+        &self,
+        args: &Value,
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let language = args
             .get("language")
             .and_then(Value::as_str)
@@ -150,6 +170,7 @@ impl ToolHandler for CodeExecTool {
             cwd,
             timeout_secs,
             extra_env,
+            cancellation: context.map(|value| value.cancellation.clone()),
         };
         let output = if let Some(runner_url) = self.runner_url.as_deref() {
             execute_python_with_runner(
@@ -158,6 +179,7 @@ impl ToolHandler for CodeExecTool {
                 &self.allowed_roots,
                 &self.scratch_dir,
                 options,
+                context.map(|value| value.invocation_id.as_str()),
             )
             .await
         } else {

@@ -7,6 +7,7 @@
 pub mod clarify;
 pub mod context;
 pub mod crypto;
+pub mod execution;
 pub mod loop_engine;
 pub mod memory;
 pub mod prompt;

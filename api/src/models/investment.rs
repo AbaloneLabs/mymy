@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct InvestmentAccount {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub name: String,
     pub institution: String,
     pub currency: String,
@@ -40,6 +42,8 @@ pub struct InvestmentPosition {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub asset_id: String,
     pub quantity_micro: i64,
     pub cost_basis_amount: i64,
@@ -60,7 +64,9 @@ pub struct InvestmentPosition {
     pub latest_unit_price_amount: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_valued_at: Option<String>,
-    pub unrealized_pl_amount: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_valuation_currency: Option<String>,
+    pub unrealized_pl_amount: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +88,8 @@ pub struct InvestmentCashflow {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<String>,
     pub flow_type: String,
@@ -115,22 +123,39 @@ pub struct InvestmentWatchlistItem {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvestmentSummary {
-    pub cost_basis_amount: i64,
-    pub market_value_amount: i64,
-    pub unrealized_pl_amount: i64,
-    pub income_amount: i64,
-    pub expense_amount: i64,
-    pub net_cashflow_amount: i64,
+    pub currency: Option<String>,
+    pub cost_basis_amount: Option<i64>,
+    pub market_value_amount: Option<i64>,
+    pub unrealized_pl_amount: Option<i64>,
+    pub income_amount: Option<i64>,
+    pub expense_amount: Option<i64>,
+    pub net_cashflow_amount: Option<i64>,
     pub position_count: i64,
     pub account_count: i64,
     pub watchlist_count: i64,
     pub allocations: Vec<InvestmentAllocation>,
+    pub totals_by_currency: Vec<InvestmentCurrencySummary>,
+    pub has_currency_mismatch: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvestmentCurrencySummary {
+    pub currency: String,
+    pub cost_basis_amount: i64,
+    pub market_value_amount: i64,
+    pub unrealized_pl_amount: Option<i64>,
+    pub income_amount: i64,
+    pub expense_amount: i64,
+    pub net_cashflow_amount: i64,
+    pub has_currency_mismatch: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvestmentAllocation {
     pub label: String,
+    pub currency: String,
     pub amount: i64,
 }
 
@@ -205,6 +230,7 @@ pub struct InvestmentSummaryResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInvestmentAccountRequest {
+    pub project_id: Option<String>,
     pub name: String,
     pub institution: Option<String>,
     pub currency: Option<String>,
@@ -214,10 +240,19 @@ pub struct CreateInvestmentAccountRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInvestmentAccountRequest {
+    #[serde(default)]
+    pub project_id: crate::models::scope::PatchField<String>,
     pub name: Option<String>,
     pub institution: Option<String>,
     pub currency: Option<String>,
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvestmentScopeQuery {
+    pub scope: Option<String>,
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

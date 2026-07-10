@@ -11,14 +11,19 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  FileSpreadsheet,
   FileText,
   Folder,
   FolderOpen,
+  Presentation,
+  Unlink,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import type {
   KnowledgeNodeType,
+  KnowledgeResource,
   KnowledgeTreeNode,
 } from "@/types/knowledge";
 
@@ -198,6 +203,57 @@ function TreeRow({
           ))}
         </ul>
       )}
+      {(!isCategory || isOpen) && node.resources.length > 0 && (
+        <ul className="space-y-0.5">
+          {node.resources.map((resource) => (
+            <ResourceRow
+              key={resource.id}
+              resource={resource}
+              depth={depth + 1}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function ResourceRow({
+  resource,
+  depth,
+}: {
+  resource: KnowledgeResource;
+  depth: number;
+}) {
+  const navigate = useNavigate();
+  const { t } = useTranslation();
+  const Icon =
+    resource.status === "broken"
+      ? Unlink
+      : resource.editorKind === "xlsx"
+        ? FileSpreadsheet
+        : resource.editorKind === "pptx"
+          ? Presentation
+          : FileText;
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={resource.status === "broken"}
+        onClick={() =>
+          navigate(`/drive?file=${encodeURIComponent(resource.resourceRef)}`)
+        }
+        style={{ paddingLeft: `${depth * 12 + 22}px` }}
+        className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:text-[var(--status-error)]"
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{resource.title}</span>
+        {resource.status === "broken" && (
+          <span className="text-[9px] uppercase">
+            {t("knowledge.resources.broken")}
+          </span>
+        )}
+      </button>
     </li>
   );
 }

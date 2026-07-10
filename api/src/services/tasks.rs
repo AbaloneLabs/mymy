@@ -9,8 +9,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::models::scope::{ScopeFilter, WorkspaceScope};
 use crate::models::task::{CreateTaskRequest, Task, UpdateTaskRequest};
 use crate::services::audit::log_audit_safe;
+use crate::services::{audit, work_graph};
 
 /// A task / to-do row.
 #[derive(Debug, FromRow)]
@@ -28,7 +30,7 @@ struct TaskRow {
 }
 
 pub struct TaskFilter {
-    pub project_id: Option<Uuid>,
+    pub scope: ScopeFilter,
     pub status: Option<String>,
 }
 
@@ -40,15 +42,15 @@ pub async fn list_tasks(db: &PgPool, filter: TaskFilter) -> AppResult<Vec<Task>>
 
     // ORDER BY: non-done tasks first (via join to task_statuses.is_done),
     // then priority weight, then due date, then newest.
-    let rows = match (filter.project_id, filter.status.as_deref()) {
-        (Some(pid), Some(status)) => {
+    let rows = match (filter.scope, filter.status.as_deref()) {
+        (ScopeFilter::Project(pid), Some(status)) => {
             sqlx::query_as!(
                 TaskRow,
                 r#"SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
                           t.due_date, t.completed_at, t.created_at, t.updated_at
                    FROM tasks t
                    JOIN task_statuses ts ON ts.slug = t.status
-                   WHERE t.project_id = $1 AND t.status = $2
+                   WHERE t.deleted_at IS NULL AND t.project_id = $1 AND t.status = $2
                    ORDER BY ts.is_done ASC,
                             CASE t.priority
                                 WHEN 'urgent' THEN 0
@@ -65,14 +67,14 @@ pub async fn list_tasks(db: &PgPool, filter: TaskFilter) -> AppResult<Vec<Task>>
             .fetch_all(db)
             .await?
         }
-        (Some(pid), None) => {
+        (ScopeFilter::Project(pid), None) => {
             sqlx::query_as!(
                 TaskRow,
                 r#"SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
                           t.due_date, t.completed_at, t.created_at, t.updated_at
                    FROM tasks t
                    JOIN task_statuses ts ON ts.slug = t.status
-                   WHERE t.project_id = $1
+                   WHERE t.deleted_at IS NULL AND t.project_id = $1
                    ORDER BY ts.is_done ASC,
                             CASE t.priority
                                 WHEN 'urgent' THEN 0
@@ -88,14 +90,15 @@ pub async fn list_tasks(db: &PgPool, filter: TaskFilter) -> AppResult<Vec<Task>>
             .fetch_all(db)
             .await?
         }
-        (None, Some(status)) => {
+        (scope, Some(status)) => {
             sqlx::query_as!(
                 TaskRow,
                 r#"SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
                           t.due_date, t.completed_at, t.created_at, t.updated_at
                    FROM tasks t
                    JOIN task_statuses ts ON ts.slug = t.status
-                   WHERE t.status = $1
+                   WHERE t.deleted_at IS NULL AND t.status = $1
+                     AND ($2::text = 'all' OR ($2 = 'general' AND t.project_id IS NULL))
                    ORDER BY ts.is_done ASC,
                             CASE t.priority
                                 WHEN 'urgent' THEN 0
@@ -107,17 +110,20 @@ pub async fn list_tasks(db: &PgPool, filter: TaskFilter) -> AppResult<Vec<Task>>
                             t.due_date ASC NULLS LAST,
                             t.created_at DESC"#,
                 status,
+                scope.kind(),
             )
             .fetch_all(db)
             .await?
         }
-        (None, None) => {
+        (scope, None) => {
             sqlx::query_as!(
                 TaskRow,
                 r#"SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
                           t.due_date, t.completed_at, t.created_at, t.updated_at
                    FROM tasks t
                    JOIN task_statuses ts ON ts.slug = t.status
+                   WHERE t.deleted_at IS NULL
+                     AND ($1::text = 'all' OR ($1 = 'general' AND t.project_id IS NULL))
                    ORDER BY ts.is_done ASC,
                             CASE t.priority
                                 WHEN 'urgent' THEN 0
@@ -127,7 +133,8 @@ pub async fn list_tasks(db: &PgPool, filter: TaskFilter) -> AppResult<Vec<Task>>
                                 ELSE 4
                             END ASC,
                             t.due_date ASC NULLS LAST,
-                            t.created_at DESC"#
+                            t.created_at DESC"#,
+                scope.kind(),
             )
             .fetch_all(db)
             .await?
@@ -153,9 +160,14 @@ pub async fn create_task(db: &PgPool, req: CreateTaskRequest) -> AppResult<Task>
 
     let due = parse_due_date(req.due_date.as_deref())?;
 
-    sqlx::query!(
+    let origin = audit::current_runtime_origin();
+    let mut tx = db.begin().await?;
+    let row = sqlx::query_as!(
+        TaskRow,
         r#"INSERT INTO tasks (id, project_id, title, description, status, priority, due_date)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id, project_id, title, description, status, priority,
+                     due_date, completed_at, created_at, updated_at"#,
         id,
         project_uuid,
         req.title,
@@ -164,10 +176,28 @@ pub async fn create_task(db: &PgPool, req: CreateTaskRequest) -> AppResult<Task>
         priority,
         due,
     )
-    .execute(db)
+    .fetch_one(&mut *tx)
     .await?;
-
-    let task = fetch_task(db, id).await?;
+    let task = row_to_task(row);
+    work_graph::link_task_mutation(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        &task.title,
+        project_uuid,
+        "create",
+    )
+    .await?;
+    work_graph::record_task_history(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        "create",
+        serde_json::to_value(&task)
+            .map_err(|err| AppError::Internal(format!("task snapshot failed: {err}")))?,
+    )
+    .await?;
+    tx.commit().await?;
     log_audit_safe(
         db,
         "user",
@@ -184,12 +214,7 @@ pub async fn create_task(db: &PgPool, req: CreateTaskRequest) -> AppResult<Task>
 
 /// Update a task and write an audit log entry.
 pub async fn update_task(db: &PgPool, id: Uuid, req: UpdateTaskRequest) -> AppResult<Task> {
-    sqlx::query!(r#"SELECT 1 AS x FROM tasks WHERE id = $1"#, id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("task {id} not found")))?;
-
-    let project_uuid = parse_optional_uuid(req.project_id.as_deref(), "projectId")?;
+    let project_scope = req.project_id.workspace_scope()?;
 
     if let Some(ref status) = req.status {
         validate_status(db, status).await?;
@@ -229,32 +254,91 @@ pub async fn update_task(db: &PgPool, id: Uuid, req: UpdateTaskRequest) -> AppRe
     let (due_clause, due_value): (&str, Option<DateTime<Utc>>) = match due {
         None => ("due_date = due_date", None),
         Some(None) => ("due_date = NULL", None),
-        Some(Some(dt)) => ("due_date = $7", Some(dt)),
+        Some(Some(dt)) => ("due_date = $8", Some(dt)),
     };
 
+    let origin = audit::current_runtime_origin();
+    let mut tx = db.begin().await?;
+    let before = sqlx::query_as!(
+        TaskRow,
+        r#"SELECT id, project_id, title, description, status, priority,
+                  due_date, completed_at, created_at, updated_at
+           FROM tasks WHERE id = $1 AND deleted_at IS NULL FOR UPDATE"#,
+        id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("task {id} not found")))?;
+    if project_scope.is_some() {
+        let active_run = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT rtl.run_id FROM run_task_links rtl
+               INNER JOIN agent_runs r ON r.id = rtl.run_id
+               WHERE rtl.task_identity = $1
+                 AND r.status IN ('queued', 'running', 'waiting_decision')
+               ORDER BY r.created_at DESC LIMIT 1"#,
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(run_id) = active_run {
+            return Err(AppError::Conflict(format!(
+                "task project scope cannot change while agent run {run_id} is active"
+            )));
+        }
+    }
+    work_graph::link_task_mutation(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        &before.title,
+        before.project_id,
+        "update",
+    )
+    .await?;
     sqlx::query(&format!(
         r#"UPDATE tasks SET
-             project_id = COALESCE($2, project_id),
-             title = COALESCE($3, title),
-             description = COALESCE($4, description),
-             status = COALESCE($5, status),
-             priority = COALESCE($6, priority),
+             project_id = CASE WHEN $2 THEN $3 ELSE project_id END,
+             title = COALESCE($4, title),
+             description = COALESCE($5, description),
+             status = COALESCE($6, status),
+             priority = COALESCE($7, priority),
              {due_clause},
              {completed_clause},
              updated_at = now()
-           WHERE id = $1"#,
+           WHERE id = $1 AND deleted_at IS NULL"#,
     ))
     .bind(id)
-    .bind(project_uuid)
+    .bind(project_scope.is_some())
+    .bind(project_scope.and_then(|scope| match scope {
+        WorkspaceScope::General => None,
+        WorkspaceScope::Project(id) => Some(id),
+    }))
     .bind(req.title.as_deref())
     .bind(req.description.as_deref())
     .bind(req.status.as_deref())
     .bind(req.priority.as_deref())
     .bind(due_value)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
-
-    let task = fetch_task(db, id).await?;
+    let row = sqlx::query_as!(
+        TaskRow,
+        r#"SELECT id, project_id, title, description, status, priority,
+                  due_date, completed_at, created_at, updated_at
+           FROM tasks WHERE id = $1 AND deleted_at IS NULL"#,
+        id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let task = row_to_task(row);
+    work_graph::record_task_history(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        "update",
+        serde_json::json!({ "before": row_to_task(before), "after": task }),
+    )
+    .await?;
+    tx.commit().await?;
     log_audit_safe(
         db,
         "user",
@@ -271,13 +355,60 @@ pub async fn update_task(db: &PgPool, id: Uuid, req: UpdateTaskRequest) -> AppRe
 
 /// Delete a task and write an audit log entry.
 pub async fn delete_task(db: &PgPool, id: Uuid) -> AppResult<bool> {
-    let result = sqlx::query!("DELETE FROM tasks WHERE id = $1", id)
-        .execute(db)
+    let origin = audit::current_runtime_origin();
+    let mut tx = db.begin().await?;
+    let before = sqlx::query_as!(
+        TaskRow,
+        r#"SELECT id, project_id, title, description, status, priority,
+                  due_date, completed_at, created_at, updated_at
+           FROM tasks WHERE id = $1 AND deleted_at IS NULL FOR UPDATE"#,
+        id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("task {id} not found")))?;
+    if origin.is_none() {
+        let active_run = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT rtl.run_id FROM run_task_links rtl
+               INNER JOIN agent_runs r ON r.id = rtl.run_id
+               WHERE rtl.task_identity = $1
+                 AND r.status IN ('queued', 'running', 'waiting_decision')
+               ORDER BY r.created_at DESC LIMIT 1"#,
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
         .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("task {id} not found")));
+        if let Some(run_id) = active_run {
+            return Err(AppError::Conflict(format!(
+                "task cannot be deleted while agent run {run_id} is active"
+            )));
+        }
     }
+    work_graph::link_task_mutation(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        &before.title,
+        before.project_id,
+        "delete",
+    )
+    .await?;
+    sqlx::query!(
+        "UPDATE tasks SET deleted_at = now(), updated_at = now() WHERE id = $1",
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    work_graph::record_task_history(
+        &mut tx,
+        origin.as_ref(),
+        id,
+        "delete",
+        serde_json::to_value(row_to_task(before))
+            .map_err(|err| AppError::Internal(format!("task snapshot failed: {err}")))?,
+    )
+    .await?;
+    tx.commit().await?;
 
     log_audit_safe(
         db,
@@ -291,19 +422,6 @@ pub async fn delete_task(db: &PgPool, id: Uuid) -> AppResult<bool> {
     .await;
 
     Ok(true)
-}
-
-async fn fetch_task(db: &PgPool, id: Uuid) -> AppResult<Task> {
-    let row = sqlx::query_as!(
-        TaskRow,
-        r#"SELECT id, project_id, title, description, status, priority,
-                  due_date, completed_at, created_at, updated_at
-           FROM tasks WHERE id = $1"#,
-        id
-    )
-    .fetch_one(db)
-    .await?;
-    Ok(row_to_task(row))
 }
 
 fn row_to_task(row: TaskRow) -> Task {

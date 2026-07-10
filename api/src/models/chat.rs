@@ -103,24 +103,36 @@ pub struct ChatMessagesResponse {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatSseEvent {
+    RunStatus {
+        run_id: String,
+        status: String,
+        cancel_requested: bool,
+    },
+    OutcomeUnknown {
+        run_id: String,
+        message: String,
+    },
     UserMessage {
         message: Box<ChatMessage>,
     },
     TextDelta {
         content: String,
     },
-    ReasoningDelta {
-        content: String,
+    ModelTurnStarted {
+        iteration: u32,
     },
     ToolCallStart {
         call_id: String,
         tool_name: String,
         arguments: String,
+        resource_key: Option<String>,
+        capability: Option<crate::agent::tools::ToolCapability>,
     },
     ToolCallFinish {
         call_id: String,
         result: String,
         error: Option<String>,
+        duration_ms: u64,
     },
     Clarify {
         request: ClarifyRequest,
@@ -158,7 +170,7 @@ pub struct CreateSessionRequest {
 }
 
 /// Payload for sending a message to a chat session.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub text: String,

@@ -24,8 +24,6 @@ const MAX_MOA_CONCURRENT: i32 = 8;
 
 #[derive(Debug, Clone)]
 pub struct MoaRuntimePreset {
-    pub id: Uuid,
-    pub name: String,
     pub proposer_providers: Vec<MoaProviderRef>,
     pub aggregator_provider: MoaProviderRef,
     pub max_concurrent: usize,
@@ -219,9 +217,6 @@ pub async fn resolve_runtime_preset(
         .ok_or_else(|| AppError::NotFound(format!("provider {aggregator_id} not found")))?;
 
     Ok(MoaRuntimePreset {
-        id: Uuid::parse_str(&preset.id)
-            .map_err(|err| AppError::Internal(format!("invalid stored MoA id: {err}")))?,
-        name: preset.name,
         proposer_providers,
         aggregator_provider,
         max_concurrent: preset.max_concurrent as usize,

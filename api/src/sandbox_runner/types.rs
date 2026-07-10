@@ -31,6 +31,7 @@ pub(crate) struct RuntimeStatus {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExecuteRequest {
+    pub(crate) execution_id: Option<String>,
     pub(crate) command: String,
     pub(crate) cwd: String,
     pub(crate) roots: Vec<RunnerRoot>,
@@ -43,6 +44,7 @@ pub(crate) struct ExecuteRequest {
 pub(crate) struct StartProcessRequest {
     #[serde(flatten)]
     pub(crate) execution: ExecuteRequest,
+    pub(crate) process_id: Option<Uuid>,
     pub(crate) port: Option<u16>,
 }
 
@@ -66,6 +68,12 @@ pub(crate) struct PreparedRoot {
     pub(crate) host_path: PathBuf,
     pub(crate) mount_path: PathBuf,
     pub(crate) writable: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExecutionProcess {
+    pub(crate) pid: u32,
+    pub(crate) process_group: bool,
 }
 
 #[derive(Debug, Serialize)]

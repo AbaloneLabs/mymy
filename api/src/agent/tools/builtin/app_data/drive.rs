@@ -24,7 +24,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "drive_write",
         "drive_write",
         "Write a text file to Drive by /drive/... path.",
-        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"A /drive/... logical path."},"content":{"type":"string"}},"required":["path","content"]}),
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"A /drive/... logical path."},"content":{"type":"string"},"expectedFingerprint":{"type":"string","description":"Fingerprint returned by drive_read; required for existing files."}},"required":["path","content"]}),
         state,
         AppAction::DriveWrite,
     );

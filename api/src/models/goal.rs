@@ -10,6 +10,25 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::scope::PatchField;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinanceKpiDefinition {
+    pub metric: String,
+    pub currency: String,
+    pub scope: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
 /// A key result (quantitative metric) belonging to a goal.
 ///
 /// Serialized as camelCase to match the frontend `KeyResult` interface.
@@ -26,6 +45,9 @@ pub struct KeyResult {
     pub unit: String,
     /// 0-100, computed from current/target. Capped at 100.
     pub progress: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finance_definition: Option<FinanceKpiDefinition>,
+    pub calculation_status: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -52,8 +74,17 @@ pub struct Goal {
     /// Present on detail fetches (GET /api/goals/{id}); omitted on list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_results: Option<Vec<KeyResult>>,
+    pub task_assignment: TaskAssignmentSummary,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAssignmentSummary {
+    pub assigned: i64,
+    pub completed: i64,
+    pub has_assignment: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +136,7 @@ pub struct CreateKeyResultRequest {
     pub target_value: Option<f64>,
     pub current_value: Option<f64>,
     pub unit: Option<String>,
+    pub finance_definition: Option<FinanceKpiDefinition>,
 }
 
 /// Payload for patching a key result (all fields optional, COALESCE patch).
@@ -116,4 +148,6 @@ pub struct UpdateKeyResultRequest {
     pub target_value: Option<f64>,
     pub current_value: Option<f64>,
     pub unit: Option<String>,
+    #[serde(default)]
+    pub finance_definition: PatchField<FinanceKpiDefinition>,
 }

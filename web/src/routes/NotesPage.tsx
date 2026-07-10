@@ -7,6 +7,7 @@ import { useProjectContext } from "@/store/projectContext";
 import { useNotes, useSearchNotes, useCreateNote, useUpdateNote, useDeleteNote } from "@/features/notes/api";
 import type { NoteSnapshot } from "@/types/versions";
 import { useTranslation } from "react-i18next";
+import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/WorkspaceScopeToggle";
 
 /**
  * Notes page — left: searchable note list, right: markdown editor.
@@ -20,6 +21,7 @@ export default function NotesPage() {
   const { selectedProjectId } = useProjectContext();
 
   const [search, setSearch] = useState("");
+  const [listScope, setListScope] = useState<WorkspaceListScope>("all");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
@@ -36,8 +38,16 @@ export default function NotesPage() {
   }, [search]);
 
   const isSearching = debouncedSearch.length > 0;
-  const { data: searchData } = useSearchNotes(debouncedSearch);
-  const { data: listData } = useNotes(selectedProjectId ?? undefined);
+  const effectiveScope = selectedProjectId ? "project" : listScope;
+  const { data: searchData } = useSearchNotes(
+    debouncedSearch,
+    selectedProjectId ?? undefined,
+    effectiveScope,
+  );
+  const { data: listData } = useNotes(
+    selectedProjectId ?? undefined,
+    effectiveScope,
+  );
   const notes = isSearching
     ? (searchData?.notes ?? [])
     : (listData?.notes ?? []);
@@ -164,6 +174,11 @@ export default function NotesPage() {
           {createError && (
             <div className="px-4 pb-2 text-xs text-[var(--status-error)]">
               {t("notes.createError")}
+            </div>
+          )}
+          {!selectedProjectId && (
+            <div className="px-4 pb-3">
+              <WorkspaceScopeToggle value={listScope} onChange={setListScope} />
             </div>
           )}
           <div className="px-4 pb-3">

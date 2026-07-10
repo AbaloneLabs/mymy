@@ -21,7 +21,7 @@ use crate::agent::security::{
     detect_dangerous_command, redact_sensitive_text, redact_terminal_output, SecretString, Severity,
 };
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -40,6 +40,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             "List enabled declarative extensions loaded into this runtime.",
             serde_json::json!({ "type": "object", "properties": {} }),
         ),
+        capability: ToolCapability::read("extension"),
         handler: Arc::new(ExtensionsStatusTool { path: path.clone() }),
     });
 
@@ -60,6 +61,7 @@ pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionCo
                     &extension.description,
                     extension.parameters.clone(),
                 ),
+                capability: ToolCapability::external("extension_webhook"),
                 handler: Arc::new(WebhookExtensionTool { extension }),
             }),
             ExtensionSettings::Script { .. } => registry.register(ToolEntry {
@@ -70,6 +72,7 @@ pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionCo
                     &extension.description,
                     extension.parameters.clone(),
                 ),
+                capability: ToolCapability::process(),
                 handler: Arc::new(ScriptExtensionTool { extension }),
             }),
             ExtensionSettings::McpServer { .. } => {}

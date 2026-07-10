@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
@@ -14,7 +14,8 @@ use super::path_policy::{
     writable_root_paths,
 };
 use super::types::{
-    PreparedRequest, PreparedRoot, ProcessRecord, ProcessSummary, RunnerMode, RuntimeStatus,
+    ExecutionProcess, PreparedRequest, PreparedRoot, ProcessRecord, ProcessSummary, RunnerMode,
+    RuntimeStatus,
 };
 
 #[derive(Debug)]
@@ -37,6 +38,8 @@ pub(super) struct RunnerState {
     pub(super) firecracker_mem_size_mib: u32,
     pub(super) firecracker_boot_timeout_secs: u64,
     pub(super) processes: RwLock<HashMap<Uuid, ProcessRecord>>,
+    pub(super) executions: RwLock<HashMap<String, ExecutionProcess>>,
+    pub(super) cancelled_executions: RwLock<HashSet<String>>,
 }
 
 impl RunnerState {
@@ -82,6 +85,8 @@ impl RunnerState {
             firecracker_boot_timeout_secs: config_env::u64("FIRECRACKER_BOOT_TIMEOUT_SECS")
                 .unwrap_or(30),
             processes: RwLock::new(HashMap::new()),
+            executions: RwLock::new(HashMap::new()),
+            cancelled_executions: RwLock::new(HashSet::new()),
         })
     }
 
@@ -147,6 +152,13 @@ impl RunnerState {
         &self,
         req: &super::types::ExecuteRequest,
     ) -> Result<PreparedRequest, RunnerError> {
+        if req.execution_id.as_ref().is_some_and(|id| {
+            id.trim().is_empty() || id.chars().count() > 256 || id.chars().any(char::is_whitespace)
+        }) {
+            return Err(RunnerError::BadRequest(
+                "executionId must contain 1 to 256 non-whitespace characters".to_string(),
+            ));
+        }
         if req.command.trim().is_empty() {
             return Err(RunnerError::BadRequest(
                 "command cannot be empty".to_string(),

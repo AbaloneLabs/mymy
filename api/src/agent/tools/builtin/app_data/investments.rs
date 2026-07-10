@@ -6,7 +6,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_summary",
         "investments_read",
         "Return manual investment summary.",
-        serde_json::json!({"type":"object","properties":{}}),
+        filter_schema(&["scope", "projectId"]),
         state,
         AppAction::InvestmentSummary,
     );
@@ -15,7 +15,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_account_list",
         "investments_read",
         "List investment accounts.",
-        empty_schema(),
+        filter_schema(&["scope", "projectId"]),
         state,
         AppAction::InvestmentAccountList,
     );
@@ -87,7 +87,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_position_list",
         "investments_read",
         "List investment positions.",
-        empty_schema(),
+        filter_schema(&["scope", "projectId"]),
         state,
         AppAction::InvestmentPositionList,
     );
@@ -150,7 +150,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_cashflow_list",
         "investments_read",
         "List investment cashflows.",
-        serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":500}}}),
+        serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":500},"scope":{"type":"string","enum":["all","general","project"]},"projectId":{"type":"string"}}}),
         state,
         AppAction::InvestmentCashflowList,
     );

@@ -1,9 +1,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Serialize;
+use uuid::Uuid;
 
+use crate::agent::execution::{RunCancellation, ToolExecutionContext};
 use crate::agent::providers::{LlmProvider, Message};
 use crate::agent::security::redact_sensitive_text;
 use crate::agent::tools::ToolRegistry;
@@ -16,24 +19,64 @@ const MAX_DELEGATE_TURNS: u32 = 10;
 const DELEGATE_BLOCKED_TOOLS: &[&str] = &["delegate_task", "clarify"];
 
 #[derive(Debug, Clone)]
-pub(super) struct DelegateTaskSpec {
-    pub(super) index: usize,
-    goal: String,
-    context: Option<String>,
-    tools: Vec<String>,
-    max_turns: u32,
+pub(crate) struct DelegateTaskSpec {
+    pub(crate) index: usize,
+    pub(crate) goal: String,
+    pub(crate) context: Option<String>,
+    pub(crate) tools: Vec<String>,
+    pub(crate) max_turns: u32,
+    pub(crate) max_tool_calls: Option<u32>,
+    pub(crate) max_total_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct DelegateTaskResult {
+pub(crate) struct DelegateTaskResult {
+    pub(crate) run_id: Option<String>,
     pub(super) index: usize,
-    goal: String,
-    pub(super) status: String,
-    result: String,
-    error: Option<String>,
-    total_api_calls: u32,
-    total_tool_calls: u32,
-    allowed_tools: Vec<String>,
+    pub(crate) goal: String,
+    pub(crate) status: String,
+    pub(crate) result: String,
+    pub(crate) error: Option<String>,
+    pub(crate) total_api_calls: u32,
+    pub(crate) total_tool_calls: u32,
+    pub(crate) total_tokens: u32,
+    pub(crate) allowed_tools: Vec<String>,
+    #[serde(skip_serializing)]
+    pub(crate) visible_events: Vec<DelegateVisibleEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DelegateVisibleEvent {
+    pub(crate) event_type: String,
+    pub(crate) payload: serde_json::Value,
+}
+
+#[derive(Clone)]
+pub(crate) struct DelegateRunHandle {
+    pub(crate) run_id: Uuid,
+    pub(crate) parent_event_id: Uuid,
+    pub(crate) delegate_index: usize,
+    pub(crate) lease_owner: String,
+    pub(crate) lease_epoch: i64,
+    pub(crate) cancellation: RunCancellation,
+}
+
+#[async_trait]
+pub(crate) trait DelegateRunCoordinator: Send + Sync {
+    async fn start_children(
+        &self,
+        parent: &ToolExecutionContext,
+        parent_invocation_id: &str,
+        tasks: &[DelegateTaskSpec],
+    ) -> Result<Vec<DelegateRunHandle>, String>;
+
+    async fn heartbeat_child(&self, handle: &DelegateRunHandle) -> Result<(), String>;
+
+    async fn finish_child(
+        &self,
+        handle: &DelegateRunHandle,
+        result: &DelegateTaskResult,
+    ) -> Result<(), String>;
 }
 
 pub(super) fn parse_delegate_tasks(
@@ -85,6 +128,8 @@ pub(super) fn parse_delegate_tasks(
                 context,
                 tools,
                 max_turns,
+                max_tool_calls: None,
+                max_total_tokens: None,
             })
         })
         .collect::<Vec<_>>();
@@ -104,10 +149,11 @@ pub(super) async fn run_delegate_child(
     parent_system_prompt: String,
     available_tools: HashSet<String>,
     task: DelegateTaskSpec,
+    execution_context: Option<ToolExecutionContext>,
 ) -> DelegateTaskResult {
-    let allowed_tools = resolve_delegate_tools(&task, &available_tools);
+    let allowed_tools = resolve_delegate_tools(&task, &available_tools, &registry);
     let mut messages = vec![Message::user(build_delegate_user_prompt(&task))];
-    let child_loop = AgentLoop::new(
+    let mut child_loop = AgentLoop::new(
         provider,
         registry,
         LoopConfig {
@@ -118,11 +164,16 @@ pub(super) async fn run_delegate_child(
         None,
     )
     .with_allowed_tools(allowed_tools.iter().cloned().collect());
+    if let Some(context) = execution_context {
+        child_loop.set_execution_context(context);
+    }
     let child_system_prompt = build_delegate_system_prompt(&parent_system_prompt);
     let mut result = String::new();
     let mut error = None;
     let mut total_api_calls = 0;
     let mut total_tool_calls = 0;
+    let mut total_tokens = 0_u32;
+    let mut visible_events = Vec::new();
     let mut events = child_loop.run(&child_system_prompt, &mut messages);
     while let Some(event) = events.next().await {
         match event {
@@ -130,12 +181,47 @@ pub(super) async fn run_delegate_child(
             AgentEvent::Error(message) => {
                 error = Some(message);
             }
+            AgentEvent::ToolCallStarted {
+                call_id,
+                tool_name,
+                arguments,
+                resource_key,
+                capability,
+            } => visible_events.push(DelegateVisibleEvent {
+                event_type: "tool_call_start".to_string(),
+                payload: serde_json::json!({
+                    "type": "tool_call_start",
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "resource_key": resource_key,
+                    "capability": capability,
+                }),
+            }),
+            AgentEvent::ToolCallFinished {
+                call_id,
+                result,
+                error,
+                duration_ms,
+            } => visible_events.push(DelegateVisibleEvent {
+                event_type: "tool_call_finish".to_string(),
+                payload: serde_json::json!({
+                    "type": "tool_call_finish",
+                    "call_id": call_id,
+                    "result": result,
+                    "error": error,
+                    "duration_ms": duration_ms,
+                }),
+            }),
             AgentEvent::Done {
                 total_api_calls: api_calls,
                 total_tool_calls: tool_calls,
             } => {
                 total_api_calls = api_calls;
                 total_tool_calls = tool_calls;
+            }
+            AgentEvent::TurnCompleted { usage, .. } => {
+                total_tokens = total_tokens.saturating_add(usage.total_tokens);
             }
             _ => {}
         }
@@ -146,6 +232,7 @@ pub(super) async fn run_delegate_child(
         "completed"
     };
     DelegateTaskResult {
+        run_id: execution_context_run_id(&child_loop),
         index: task.index,
         goal: task.goal,
         status: status.to_string(),
@@ -153,13 +240,23 @@ pub(super) async fn run_delegate_child(
         error,
         total_api_calls,
         total_tool_calls,
+        total_tokens,
         allowed_tools,
+        visible_events,
     }
+}
+
+fn execution_context_run_id(child_loop: &AgentLoop) -> Option<String> {
+    child_loop
+        .execution_context
+        .as_ref()
+        .map(|context| context.run_id.to_string())
 }
 
 fn resolve_delegate_tools(
     task: &DelegateTaskSpec,
     available_tools: &HashSet<String>,
+    registry: &ToolRegistry,
 ) -> Vec<String> {
     let requested = if task.tools.is_empty() {
         available_tools.iter().cloned().collect::<Vec<_>>()
@@ -170,6 +267,11 @@ fn resolve_delegate_tools(
         .into_iter()
         .filter(|tool| available_tools.contains(tool))
         .filter(|tool| !is_delegate_tool_blocked(tool.as_str()))
+        .filter(|tool| {
+            registry.capability(tool).is_some_and(|capability| {
+                capability.effect == crate::agent::tools::ToolEffect::Read
+            })
+        })
         .collect::<Vec<_>>();
     tools.sort();
     tools.dedup();

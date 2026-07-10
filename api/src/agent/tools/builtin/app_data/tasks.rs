@@ -6,7 +6,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "task_list",
         "tasks_read",
         "List tasks.",
-        filter_schema(&["projectId", "status"]),
+        filter_schema(&["scope", "projectId", "status"]),
         state,
         AppAction::TaskList,
     );
@@ -36,5 +36,14 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         id_schema("Task id."),
         state,
         AppAction::TaskDelete,
+    );
+    register_tool(
+        registry,
+        "task_link_run",
+        "tasks_write",
+        "Explicitly associate the current durable run with a task before working on it.",
+        id_schema("Task id."),
+        state,
+        AppAction::TaskLink,
     );
 }

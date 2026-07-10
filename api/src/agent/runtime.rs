@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use futures::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::providers::types::StreamDelta;
+use crate::agent::providers::types::{StreamDelta, Usage};
 use crate::agent::providers::{LlmProvider, Message, ProviderError, ToolSchema};
 use crate::agent::security::SecretString;
 
@@ -210,6 +210,7 @@ pub struct MoaProposerOutput {
 pub struct MoaResult {
     pub proposer_outputs: Vec<MoaProposerOutput>,
     pub aggregated: String,
+    pub usage: Usage,
 }
 
 pub async fn run_moa_turn(
@@ -225,44 +226,58 @@ pub async fn run_moa_turn(
     let messages = messages.to_vec();
     let tools = tools.to_vec();
 
-    let proposer_outputs = stream::iter(proposers.into_iter().map(|participant| {
+    let proposer_results = stream::iter(proposers.into_iter().map(|participant| {
         let system_prompt = system_prompt.clone();
         let messages = messages.clone();
         let tools = tools.clone();
         async move {
-            let content = collect_text(
+            let (content, usage) = collect_text(
                 participant.provider.as_ref(),
                 &system_prompt,
                 &messages,
                 &tools,
             )
             .await?;
-            Ok::<_, ProviderError>(MoaProposerOutput {
-                label: participant.label,
-                content,
-            })
+            Ok::<_, ProviderError>((
+                MoaProposerOutput {
+                    label: participant.label,
+                    content,
+                },
+                usage,
+            ))
         }
     }))
     .buffer_unordered(max_concurrent)
     .try_collect::<Vec<_>>()
     .await?;
 
+    let mut usage = Usage::default();
+    let proposer_outputs = proposer_results
+        .into_iter()
+        .map(|(output, proposer_usage)| {
+            add_usage(&mut usage, &proposer_usage);
+            output
+        })
+        .collect::<Vec<_>>();
+
     let mut aggregate_messages = messages;
     aggregate_messages.push(Message::user(build_aggregation_prompt(
         &config.aggregation_prompt,
         &proposer_outputs,
     )));
-    let aggregated = collect_text(
+    let (aggregated, aggregator_usage) = collect_text(
         aggregator.provider.as_ref(),
         &system_prompt,
         &aggregate_messages,
         &[],
     )
     .await?;
+    add_usage(&mut usage, &aggregator_usage);
 
     Ok(MoaResult {
         proposer_outputs,
         aggregated,
+        usage,
     })
 }
 
@@ -271,19 +286,30 @@ async fn collect_text(
     system_prompt: &str,
     messages: &[Message],
     tools: &[ToolSchema],
-) -> Result<String, ProviderError> {
+) -> Result<(String, Usage), ProviderError> {
     let mut stream = provider.stream(system_prompt, messages, tools).await?;
     let mut text = String::new();
+    let mut usage = Usage::default();
     while let Some(delta) = stream.next().await {
         match delta? {
             StreamDelta::Text(fragment) => text.push_str(&fragment),
+            StreamDelta::Finish {
+                usage: final_usage, ..
+            } => usage = final_usage,
             StreamDelta::Reasoning(_)
             | StreamDelta::ToolCallStart { .. }
-            | StreamDelta::ToolCallArguments { .. }
-            | StreamDelta::Finish { .. } => {}
+            | StreamDelta::ToolCallArguments { .. } => {}
         }
     }
-    Ok(scrub_thinking_blocks(&text))
+    Ok((scrub_thinking_blocks(&text), usage))
+}
+
+fn add_usage(total: &mut Usage, usage: &Usage) {
+    total.prompt_tokens = total.prompt_tokens.saturating_add(usage.prompt_tokens);
+    total.completion_tokens = total
+        .completion_tokens
+        .saturating_add(usage.completion_tokens);
+    total.total_tokens = total.total_tokens.saturating_add(usage.total_tokens);
 }
 
 fn build_aggregation_prompt(instruction: &str, proposer_outputs: &[MoaProposerOutput]) -> String {
@@ -435,7 +461,11 @@ mod tests {
                 active.fetch_sub(1, Ordering::SeqCst);
                 yield Ok(StreamDelta::Finish {
                     reason: FinishReason::Stop,
-                    usage: Usage::default(),
+                    usage: Usage {
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                        total_tokens: 2,
+                    },
                 });
             }))
         }
@@ -489,6 +519,7 @@ mod tests {
         assert!(result.aggregated.contains("alpha"));
         assert!(result.aggregated.contains("beta"));
         assert!(result.aggregated.contains("gamma"));
+        assert_eq!(result.usage.total_tokens, 8);
     }
 
     #[tokio::test]

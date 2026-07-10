@@ -41,6 +41,38 @@ pub struct CronJob {
     pub context_from: Option<Vec<String>>,
     #[serde(default = "default_wake_agent")]
     pub wake_agent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default = "default_session_policy")]
+    pub session_policy: String,
+    #[serde(default = "default_catch_up_policy")]
+    pub catch_up_policy: String,
+    #[serde(default = "default_retry_policy")]
+    pub retry_policy: String,
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: u32,
+    #[serde(default = "default_max_runtime_seconds")]
+    pub max_runtime_seconds: u32,
+    #[serde(default = "default_max_total_tokens")]
+    pub max_total_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_decision_id: Option<String>,
+}
+
+pub fn default_max_tool_calls() -> u32 {
+    100
+}
+
+pub fn default_max_runtime_seconds() -> u32 {
+    1_800
+}
+
+pub fn default_max_total_tokens() -> u32 {
+    200_000
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +131,7 @@ impl CronStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn upsert(&self, mut job: CronJob) -> std::io::Result<()> {
         let mut jobs = self.load()?;
         if job.id.is_empty() {
@@ -112,6 +145,7 @@ impl CronStore {
         self.save(&jobs)
     }
 
+    #[cfg(test)]
     pub fn due_jobs(&self, now: DateTime<Utc>) -> std::io::Result<Vec<CronJob>> {
         Ok(self
             .load()?
@@ -122,10 +156,12 @@ impl CronStore {
             .collect())
     }
 
+    #[cfg(test)]
     pub fn mark_run(&self, id: &str, now: DateTime<Utc>) -> std::io::Result<()> {
         self.mark_run_with_timezone(id, now, "UTC")
     }
 
+    #[cfg(test)]
     pub fn mark_run_with_timezone(
         &self,
         id: &str,
@@ -176,6 +212,7 @@ pub fn parse_schedule(input: &str, now: DateTime<Utc>) -> Option<Schedule> {
         })
 }
 
+#[cfg(test)]
 pub fn compute_next_run(schedule: &Schedule, last_run_at: DateTime<Utc>) -> DateTime<Utc> {
     compute_next_run_in_timezone(schedule, last_run_at, "UTC")
 }
@@ -317,6 +354,18 @@ fn default_wake_agent() -> bool {
     true
 }
 
+fn default_session_policy() -> String {
+    "new".to_string()
+}
+
+fn default_catch_up_policy() -> String {
+    "latest".to_string()
+}
+
+fn default_retry_policy() -> String {
+    "safe".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +441,16 @@ mod tests {
             skills: Vec::new(),
             context_from: None,
             wake_agent: true,
+            agent_profile: None,
+            project_id: None,
+            session_policy: "new".to_string(),
+            catch_up_policy: "latest".to_string(),
+            retry_policy: "safe".to_string(),
+            max_tool_calls: default_max_tool_calls(),
+            max_runtime_seconds: default_max_runtime_seconds(),
+            max_total_tokens: default_max_total_tokens(),
+            last_run_id: None,
+            waiting_decision_id: None,
         };
         store.upsert(job).unwrap();
         assert_eq!(store.due_jobs(now).unwrap().len(), 1);

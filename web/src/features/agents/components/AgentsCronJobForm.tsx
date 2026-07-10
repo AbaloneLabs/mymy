@@ -6,21 +6,40 @@ import {
   useUpdateCronJob,
 } from "@/features/agent-ops/api";
 import type { CronJob } from "@/types/agent-ops";
+import { useProjectContext } from "@/store/projectContext";
+import { useAgents } from "@/features/agents/api";
 
 export function CronJobForm({
   job,
+  defaultProfile,
   onClose,
 }: {
   job?: CronJob;
+  defaultProfile?: string | null;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
   const createMutation = useCreateCronJob();
   const updateMutation = useUpdateCronJob();
+  const { data: agentsData } = useAgents();
   const [title, setTitle] = useState(job?.name ?? "");
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
   const [schedule, setSchedule] = useState(job?.schedule ?? "");
   const [skills, setSkills] = useState(job?.skill ?? "");
+  const [sessionPolicy, setSessionPolicy] = useState(job?.sessionPolicy ?? "new");
+  const [catchUpPolicy, setCatchUpPolicy] = useState(job?.catchUpPolicy ?? "latest");
+  const [retryPolicy, setRetryPolicy] = useState(job?.retryPolicy ?? "safe");
+  const [agentProfile, setAgentProfile] = useState(
+    job?.agentProfile ?? defaultProfile ?? "",
+  );
+  const [maxToolCalls, setMaxToolCalls] = useState(job?.maxToolCalls ?? 100);
+  const [maxRuntimeSeconds, setMaxRuntimeSeconds] = useState(
+    job?.maxRuntimeSeconds ?? 1_800,
+  );
+  const [maxTotalTokens, setMaxTotalTokens] = useState(
+    job?.maxTotalTokens ?? 200_000,
+  );
+  const selectedProjectId = useProjectContext((state) => state.selectedProjectId);
   const busy = createMutation.isPending || updateMutation.isPending;
 
   function save() {
@@ -30,6 +49,14 @@ export function CronJobForm({
       schedule,
       enabled: !job?.paused,
       skills: splitNames(skills),
+      agentProfile,
+      projectId: job ? (job.projectId ?? null) : selectedProjectId,
+      sessionPolicy,
+      catchUpPolicy,
+      retryPolicy,
+      maxToolCalls,
+      maxRuntimeSeconds,
+      maxTotalTokens,
     };
     if (job) {
       updateMutation.mutate({ id: job.id, body }, { onSuccess: onClose });
@@ -71,12 +98,83 @@ export function CronJobForm({
       </label>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.agent")}
+          <select
+            value={agentProfile}
+            onChange={(event) => setAgentProfile(event.target.value)}
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]"
+          >
+            <option value="">{t("agents.cron.selectAgent")}</option>
+            {(agentsData?.agents ?? []).map((agent) => (
+              <option key={agent.profile} value={agent.profile}>
+                {agent.name} ({agent.profile})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
           {t("agents.cron.skills")}
           <input
             value={skills}
             onChange={(event) => setSkills(event.target.value)}
             placeholder="skill-one, skill-two"
             className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]"
+          />
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.sessionPolicy")}
+          <select value={sessionPolicy} onChange={(event) => setSessionPolicy(event.target.value as typeof sessionPolicy)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]">
+            <option value="new">{t("agents.cron.sessionNew")}</option>
+            <option value="reuse">{t("agents.cron.sessionReuse")}</option>
+            <option value="result_only">{t("agents.cron.sessionResultOnly")}</option>
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.catchUpPolicy")}
+          <select value={catchUpPolicy} onChange={(event) => setCatchUpPolicy(event.target.value as typeof catchUpPolicy)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]">
+            <option value="skip">{t("agents.cron.catchUpSkip")}</option>
+            <option value="latest">{t("agents.cron.catchUpLatest")}</option>
+            <option value="all">{t("agents.cron.catchUpAll")}</option>
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.retryPolicy")}
+          <select value={retryPolicy} onChange={(event) => setRetryPolicy(event.target.value as typeof retryPolicy)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]">
+            <option value="safe">{t("agents.cron.retrySafe")}</option>
+            <option value="none">{t("agents.cron.retryNone")}</option>
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.maxToolCalls")}
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            value={maxToolCalls}
+            onChange={(event) => setMaxToolCalls(Number(event.target.value))}
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]"
+          />
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.maxRuntimeSeconds")}
+          <input
+            type="number"
+            min={1}
+            max={86400}
+            value={maxRuntimeSeconds}
+            onChange={(event) => setMaxRuntimeSeconds(Number(event.target.value))}
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]"
+          />
+        </label>
+        <label className="space-y-1 text-xs text-[var(--text-muted)]">
+          {t("agents.cron.maxTotalTokens")}
+          <input
+            type="number"
+            min={1000}
+            max={2000000}
+            value={maxTotalTokens}
+            onChange={(event) => setMaxTotalTokens(Number(event.target.value))}
+            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]"
           />
         </label>
       </div>
@@ -98,7 +196,22 @@ export function CronJobForm({
         <button
           type="button"
           onClick={save}
-          disabled={busy || !title.trim() || !prompt.trim() || !schedule.trim()}
+          disabled={
+            busy ||
+            !title.trim() ||
+            !prompt.trim() ||
+            !schedule.trim() ||
+            !agentProfile ||
+            !Number.isInteger(maxToolCalls) ||
+            maxToolCalls < 1 ||
+            maxToolCalls > 1000 ||
+            !Number.isInteger(maxRuntimeSeconds) ||
+            maxRuntimeSeconds < 1 ||
+            maxRuntimeSeconds > 86400 ||
+            !Number.isInteger(maxTotalTokens) ||
+            maxTotalTokens < 1000 ||
+            maxTotalTokens > 2000000
+          }
           className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (

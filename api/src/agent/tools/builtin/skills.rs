@@ -16,7 +16,8 @@ use crate::agent::skills::{
     SkillsConfig,
 };
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
+    ToolRegistry,
 };
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
@@ -36,6 +37,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 }
             }),
         ),
+        capability: ToolCapability::read("skill"),
         handler: Arc::new(SkillsListTool {
             skills: Arc::clone(&skills),
         }),
@@ -56,6 +58,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["name"]
             }),
         ),
+        capability: ToolCapability::read("skill").with_resource_argument("name"),
         handler: Arc::new(SkillViewTool {
             skills: Arc::clone(&skills),
         }),
@@ -84,6 +87,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["action"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "skill")
+            .with_resource_argument("name"),
         handler: Arc::new(SkillManageTool {
             skills,
             cron_store: CronStore::new(jobs_path(&config.agent_data_dir)),
@@ -111,6 +116,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["action"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "skill_bundle")
+            .with_resource_argument("name"),
         handler: Arc::new(SkillBundleTool {
             bundles: BundleRegistry::new(
                 config.agent_data_dir.join("skill-bundles"),

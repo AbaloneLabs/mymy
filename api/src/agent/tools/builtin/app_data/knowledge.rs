@@ -73,4 +73,51 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         state,
         AppAction::KnowledgeDelete,
     );
+    register_tool(
+        registry,
+        "knowledge_resource_list",
+        "knowledge_read",
+        "List Drive documents attached to a knowledge node, including broken-link state.",
+        serde_json::json!({
+            "type":"object",
+            "properties":{"knowledgeId":{"type":"string"}},
+            "required":["knowledgeId"]
+        }),
+        state,
+        AppAction::KnowledgeResourceList,
+    );
+    register_tool(
+        registry,
+        "knowledge_resource_attach",
+        "knowledge_write",
+        "Attach an existing markdown, docx, xlsx, or pptx Drive file to a knowledge node without copying it.",
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "knowledgeId":{"type":"string"},
+                "resourceRef":{"type":"string","description":"Existing /drive/... file path."},
+                "title":{"type":"string"},
+                "sortOrder":{"type":"integer"}
+            },
+            "required":["knowledgeId","resourceRef"]
+        }),
+        state,
+        AppAction::KnowledgeResourceAttach,
+    );
+    register_tool(
+        registry,
+        "knowledge_resource_detach",
+        "knowledge_write",
+        "Detach a Drive document reference from a knowledge node without deleting the file.",
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "knowledgeId":{"type":"string"},
+                "resourceId":{"type":"string"}
+            },
+            "required":["knowledgeId","resourceId"]
+        }),
+        state,
+        AppAction::KnowledgeResourceDetach,
+    );
 }

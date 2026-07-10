@@ -57,10 +57,12 @@ fn register_tool(
     state: &Arc<AppState>,
     action: AppAction,
 ) {
+    let capability = action.capability();
     registry.register(ToolEntry {
         name: name.to_string(),
         toolset: toolset.to_string(),
         schema: tool_schema(name, description, parameters),
+        capability,
         handler: Arc::new(AppDataTool {
             state: state.clone(),
             action,

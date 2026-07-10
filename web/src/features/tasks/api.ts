@@ -11,11 +11,44 @@ interface TasksResponse {
   tasks: Task[];
 }
 
-export function useTasks(projectId?: string, status?: string) {
+export interface RelatedTaskRun {
+  runId: string;
+  sessionId?: string;
+  agentProfile: string;
+  status: string;
+  triggerType: string;
+  linkKind: string;
+  operation?: string;
+  outcome?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+interface TaskRuntimeResponse {
+  taskId: string;
+  taskDeleted: boolean;
+  activeRunCount: number;
+  runs: RelatedTaskRun[];
+}
+
+export function useTaskRuntime(taskId: string) {
   return useQuery({
-    queryKey: ["tasks", projectId ?? "all", status ?? "all"],
+    queryKey: ["tasks", taskId, "runtime"],
+    queryFn: () => api.get<TaskRuntimeResponse>(`/tasks/${taskId}/runtime`),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useTasks(
+  projectId?: string,
+  status?: string,
+  scope: "all" | "general" | "project" = projectId ? "project" : "all",
+) {
+  return useQuery({
+    queryKey: ["tasks", scope, projectId ?? "none", status ?? "all"],
     queryFn: () => {
       const params = new URLSearchParams();
+      params.set("scope", scope);
       if (projectId) params.set("projectId", projectId);
       if (status) params.set("status", status);
       const qs = params.toString() ? `?${params.toString()}` : "";

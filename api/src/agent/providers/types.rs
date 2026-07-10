@@ -81,7 +81,7 @@ pub struct ToolCall {
 /// All providers report at least prompt + completion tokens. Some
 /// (OpenAI o-series, Anthropic) report cached/reasoning tokens — those
 /// are tracked here but are informational only.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

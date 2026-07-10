@@ -14,10 +14,10 @@ use super::host::{remote_command, run_host_shell, sh_quote, terminate_pid, wait_
 use super::logs::append_stream;
 use super::path_policy::writable_root_paths;
 use super::types::{
-    ExecuteResponse, FirecrackerRuntime, PreparedRequest, PreparedRootSnapshot, ProcessRecord,
-    ProcessStatus, StartProcessRequest, StartProcessResponse,
+    ExecuteResponse, ExecutionProcess, FirecrackerRuntime, PreparedRequest, PreparedRootSnapshot,
+    ProcessRecord, ProcessStatus, StartProcessRequest, StartProcessResponse,
 };
-use super::{proxy, RunnerState};
+use super::{execution_cancelled, finish_execution, proxy, register_execution, RunnerState};
 
 impl RunnerState {
     pub(super) async fn execute_firecracker(
@@ -25,10 +25,31 @@ impl RunnerState {
         req: &PreparedRequest,
         command: &str,
         timeout_secs: u64,
+        execution_id: Option<&str>,
     ) -> Result<ExecuteResponse, RunnerError> {
         let id = Uuid::new_v4();
         let log_path = self.log_dir.join(format!("{id}.firecracker.log"));
-        let runtime = self.launch_firecracker_runtime(id, req, &log_path).await?;
+        let runtime = match self.launch_firecracker_runtime(id, req, &log_path).await {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                finish_execution(self, execution_id).await;
+                return Err(err);
+            }
+        };
+        if let Some(pid) = runtime.firecracker_pid {
+            register_execution(
+                self,
+                execution_id,
+                ExecutionProcess {
+                    pid,
+                    process_group: false,
+                },
+            )
+            .await;
+            if execution_cancelled(self, execution_id).await {
+                terminate_pid(pid).await;
+            }
+        }
         let result = async {
             self.sync_firecracker_roots_to_guest(&runtime).await?;
             let mut ssh = self.firecracker_ssh_command(&runtime)?;
@@ -53,6 +74,7 @@ impl RunnerState {
         .await;
         self.teardown_firecracker_runtime(&runtime).await;
         self.repair_ownership(&req.roots).await;
+        finish_execution(self, execution_id).await;
         result
     }
 
@@ -63,11 +85,39 @@ impl RunnerState {
         prepared: PreparedRequest,
         req: StartProcessRequest,
     ) -> Result<StartProcessResponse, RunnerError> {
-        let runtime = self
+        let execution_id = req.execution.execution_id.clone();
+        let runtime = match self
             .launch_firecracker_runtime(id, &prepared, &log_path)
-            .await?;
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                finish_execution(self, execution_id.as_deref()).await;
+                return Err(err);
+            }
+        };
+        if let Some(pid) = runtime.firecracker_pid {
+            register_execution(
+                self,
+                execution_id.as_deref(),
+                ExecutionProcess {
+                    pid,
+                    process_group: false,
+                },
+            )
+            .await;
+            if execution_cancelled(self, execution_id.as_deref()).await {
+                terminate_pid(pid).await;
+                self.teardown_firecracker_runtime(&runtime).await;
+                finish_execution(self, execution_id.as_deref()).await;
+                return Err(RunnerError::Execution(
+                    "process start was cancelled".to_string(),
+                ));
+            }
+        }
         if let Err(err) = self.sync_firecracker_roots_to_guest(&runtime).await {
             self.teardown_firecracker_runtime(&runtime).await;
+            finish_execution(self, execution_id.as_deref()).await;
             return Err(err);
         }
         let proxy_shutdown = if let Some(port) = req.port {
@@ -75,6 +125,7 @@ impl RunnerState {
                 Ok(shutdown) => Some(shutdown),
                 Err(err) => {
                     self.teardown_firecracker_runtime(&runtime).await;
+                    finish_execution(self, execution_id.as_deref()).await;
                     return Err(err);
                 }
             }
@@ -82,7 +133,14 @@ impl RunnerState {
             None
         };
 
-        let mut command = self.firecracker_ssh_command(&runtime)?;
+        let mut command = match self.firecracker_ssh_command(&runtime) {
+            Ok(command) => command,
+            Err(err) => {
+                self.teardown_firecracker_runtime(&runtime).await;
+                finish_execution(self, execution_id.as_deref()).await;
+                return Err(err);
+            }
+        };
         command.arg(remote_command(
             &prepared.sandbox_cwd,
             &prepared.env,
@@ -94,6 +152,7 @@ impl RunnerState {
             Ok(child) => child,
             Err(err) => {
                 self.teardown_firecracker_runtime(&runtime).await;
+                finish_execution(self, execution_id.as_deref()).await;
                 return Err(RunnerError::Execution(format!(
                     "firecracker process failed to start: {err}"
                 )));
@@ -149,6 +208,7 @@ impl RunnerState {
                 }
             }
         });
+        finish_execution(self, execution_id.as_deref()).await;
 
         Ok(StartProcessResponse {
             id,

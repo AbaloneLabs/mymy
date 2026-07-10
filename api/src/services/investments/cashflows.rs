@@ -6,6 +6,7 @@ use crate::models::investment::{
     CreateInvestmentCashflowRequest, InvestmentCashflowResponse, InvestmentCashflowsResponse,
     UpdateInvestmentCashflowRequest,
 };
+use crate::models::scope::ScopeFilter;
 use crate::state::AppState;
 
 use super::audit;
@@ -22,6 +23,8 @@ use super::validation::{
 #[serde(rename_all = "camelCase")]
 pub struct InvestmentListQuery {
     pub limit: Option<i64>,
+    pub scope: Option<String>,
+    pub project_id: Option<String>,
 }
 
 pub async fn list_cashflows(
@@ -29,17 +32,23 @@ pub async fn list_cashflows(
     q: InvestmentListQuery,
 ) -> AppResult<InvestmentCashflowsResponse> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let scope = ScopeFilter::parse(q.scope.as_deref(), q.project_id.as_deref())?;
     let rows = sqlx::query_as::<_, CashflowRow>(
-        r#"SELECT c.id, c.account_id, c.asset_id, c.flow_type, c.amount, c.currency,
+        r#"SELECT c.id, c.account_id, a.project_id, c.asset_id, c.flow_type, c.amount, c.currency,
                   c.recorded_at, c.notes, c.created_at, c.updated_at,
                   a.name AS account_name,
                   asset.symbol AS asset_symbol
            FROM investment_cashflows c
            LEFT JOIN investment_accounts a ON a.id = c.account_id
            LEFT JOIN investment_assets asset ON asset.id = c.asset_id
+           WHERE ($1 = 'all'
+                  OR ($1 = 'general' AND a.project_id IS NULL)
+                  OR ($1 = 'project' AND a.project_id = $2))
            ORDER BY c.recorded_at DESC, c.created_at DESC
-           LIMIT $1"#,
+           LIMIT $3"#,
     )
+    .bind(scope.kind())
+    .bind(scope.project_id())
     .bind(limit)
     .fetch_all(&state.db)
     .await?;

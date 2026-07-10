@@ -78,6 +78,11 @@ pub async fn delete_path(state: &AppState, logical_path: &str) -> AppResult<()> 
     .execute(&state.db)
     .await?;
     enqueue_s3_sync_job(state, &original_path, "delete").await?;
+    if let Err(err) =
+        crate::services::knowledge::mark_drive_path_broken(state, &original_path).await
+    {
+        tracing::warn!(error = %err, path = %original_path, "failed to project broken Wiki resource link");
+    }
     Ok(())
 }
 
@@ -129,6 +134,15 @@ pub async fn restore_trash(state: &AppState, id: Uuid) -> AppResult<DriveRestore
     .execute(&state.db)
     .await?;
     enqueue_s3_sync_job(state, &restore_target.logical_path, "upload").await?;
+    if let Err(err) = crate::services::knowledge::reconcile_drive_restore(
+        state,
+        &row.original_path,
+        &restore_target.logical_path,
+    )
+    .await
+    {
+        tracing::warn!(error = %err, "failed to reconcile restored Wiki resource link");
+    }
 
     Ok(DriveRestoreResponse {
         success: true,

@@ -16,11 +16,13 @@ use crate::agent::security::{
     ensure_read_allowed, ensure_write_allowed, is_sensitive_path, redact_sensitive_text,
 };
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
+    ToolRegistry,
 };
 use crate::services::audit::log_security_denial_safe;
 use crate::services::file_observations::{
-    ensure_file_not_changed_since_observed, record_file_observation, FileObservationSource,
+    ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
+    FileObservationSource,
 };
 
 const MAX_READ_LINES: usize = 1_000;
@@ -49,6 +51,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["path"]
             }),
         ),
+        capability: ToolCapability::read("file").with_resource_argument("path"),
         handler: Arc::new(ReadFileTool {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
@@ -72,6 +75,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["query"]
             }),
         ),
+        capability: ToolCapability::read("file").with_resource_argument("path"),
         handler: Arc::new(SearchFilesTool {
             paths: Arc::clone(&paths),
         }),
@@ -87,11 +91,14 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Examples: report.md, notes/plan.md, /drive/shared/report.md. Do not pass drive/agents/... or host paths." },
-                    "content": { "type": "string" }
+                    "content": { "type": "string" },
+                    "expectedFingerprint": { "type": "string", "description": "Fingerprint returned by read_file. Required when overwriting an existing file." }
                 },
                 "required": ["path", "content"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "file")
+            .with_resource_argument("path"),
         handler: Arc::new(WriteFileTool {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
@@ -110,11 +117,14 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {
                     "path": { "type": "string", "description": "Relative private path or /drive/... logical path." },
                     "old_string": { "type": "string" },
-                    "new_string": { "type": "string" }
+                    "new_string": { "type": "string" },
+                    "expectedFingerprint": { "type": "string", "description": "Fingerprint returned by read_file." }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path", "old_string", "new_string", "expectedFingerprint"]
             }),
         ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "file")
+            .with_resource_argument("path"),
         handler: Arc::new(PatchFileTool {
             paths,
             db: config.db.clone(),
@@ -152,6 +162,9 @@ impl ToolHandler for ReadFileTool {
         let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;
+        let fingerprint = fingerprint_path(&resolved.physical)
+            .await
+            .map_err(ToolError::Execution)?;
         let lines: Vec<&str> = content.lines().collect();
         let start = offset.saturating_sub(1).min(lines.len());
         let end = (start + limit).min(lines.len());
@@ -176,6 +189,7 @@ impl ToolHandler for ReadFileTool {
             "total_lines": lines.len(),
             "shown_start": start + 1,
             "shown_end": end,
+            "fingerprint": fingerprint.hash,
         })))
     }
 }
@@ -210,6 +224,25 @@ impl WriteFileTool {
         )
         .await
         .map_err(ToolError::Execution)?;
+        if resolved.physical.exists() {
+            let expected = args
+                .get("expectedFingerprint")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolError::InvalidArgs(
+                        "expectedFingerprint is required when overwriting an existing file"
+                            .to_string(),
+                    )
+                })?;
+            let current = fingerprint_path(&resolved.physical)
+                .await
+                .map_err(ToolError::Execution)?;
+            if expected != current.hash {
+                return Err(ToolError::Execution(
+                    "File fingerprint changed before overwrite; read the file again".to_string(),
+                ));
+            }
+        }
         if let Some(parent) = resolved.physical.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -266,6 +299,15 @@ impl PatchFileTool {
         )
         .await
         .map_err(ToolError::Execution)?;
+        let expected = required_str(args, "expectedFingerprint")?;
+        let current = fingerprint_path(&resolved.physical)
+            .await
+            .map_err(ToolError::Execution)?;
+        if expected != current.hash {
+            return Err(ToolError::Execution(
+                "File fingerprint changed before patch; read the file again".to_string(),
+            ));
+        }
         let content = tokio::fs::read_to_string(&resolved.physical)
             .await
             .map_err(|err| ToolError::Execution(format!("read failed: {err}")))?;

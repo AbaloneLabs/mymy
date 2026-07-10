@@ -10,7 +10,7 @@ use super::config::{load_servers, resolve_server, transport_name};
 use super::content::{media_dir_for_config, process_content_blocks};
 use super::naming::prefixed_tool_name;
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
@@ -23,6 +23,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             "List configured MCP servers loaded from the local agent data directory.",
             serde_json::json!({ "type": "object", "properties": {} }),
         ),
+        capability: ToolCapability::read("mcp_server"),
         handler: Arc::new(McpStatusTool {
             path: path.clone(),
             db: config.db.clone(),
@@ -41,6 +42,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["server"]
             }),
         ),
+        capability: ToolCapability::external("mcp_server").with_resource_argument("server"),
         handler: Arc::new(McpListToolsTool {
             path: path.clone(),
             db: config.db.clone(),
@@ -63,6 +65,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "required": ["server", "tool"]
             }),
         ),
+        capability: ToolCapability::external("mcp_tool").with_resource_argument("server"),
         handler: Arc::new(McpCallTool {
             path,
             db: config.db.clone(),
@@ -116,6 +119,7 @@ pub async fn register_dynamic_tools(
                 name: tool_name.clone(),
                 toolset: "mcp".to_string(),
                 schema: tool_schema(&tool_name, &description, parameters),
+                capability: ToolCapability::external("mcp_tool"),
                 handler: Arc::new(McpDynamicTool {
                     path: path.clone(),
                     db: config.db.clone(),

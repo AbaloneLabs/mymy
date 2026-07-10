@@ -115,17 +115,22 @@ export function PositionTable({
                   {money(position.costBasisAmount, position.currency)}
                 </td>
                 <td className="py-2 text-right font-mono">
-                  {money(marketValue, position.currency)}
+                  {money(
+                    marketValue,
+                    position.latestValuationCurrency ?? position.currency,
+                  )}
                 </td>
                 <td
                   className={cn(
                     "py-2 text-right font-mono",
-                    position.unrealizedPlAmount >= 0
+                    (position.unrealizedPlAmount ?? 0) >= 0
                       ? "text-[var(--status-success)]"
                       : "text-[var(--status-error)]",
                   )}
                 >
-                  {money(position.unrealizedPlAmount, position.currency)}
+                  {position.unrealizedPlAmount === undefined
+                    ? "통화 불일치"
+                    : money(position.unrealizedPlAmount, position.currency)}
                 </td>
                 <td className="py-2 text-right">
                   <IconButton
@@ -213,24 +218,32 @@ export function WatchlistGrid({
 
 export function AllocationList({
   allocations,
-  marketValueAmount,
 }: {
   allocations: InvestmentAllocation[];
-  marketValueAmount?: number;
 }) {
+  const totals = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const allocation of allocations) {
+      result.set(
+        allocation.currency,
+        (result.get(allocation.currency) ?? 0) + allocation.amount,
+      );
+    }
+    return result;
+  }, [allocations]);
   return (
     <div className="space-y-2">
       {allocations.map((slice) => (
-        <div key={slice.label}>
+        <div key={`${slice.currency}:${slice.label}`}>
           <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-            <span className="text-[var(--text-muted)]">{slice.label}</span>
-            <span className="font-mono text-[var(--text)]">{money(slice.amount)}</span>
+            <span className="text-[var(--text-muted)]">{slice.label} · {slice.currency}</span>
+            <span className="font-mono text-[var(--text)]">{money(slice.amount, slice.currency)}</span>
           </div>
           <div className="h-2 overflow-hidden rounded bg-[var(--surface-hover)]">
             <div
               className="h-full bg-[var(--accent)]"
               style={{
-                width: `${allocationWidth(slice.amount, marketValueAmount)}%`,
+                width: `${allocationWidth(slice.amount, totals.get(slice.currency))}%`,
               }}
             />
           </div>

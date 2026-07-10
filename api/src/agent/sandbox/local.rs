@@ -110,19 +110,51 @@ finally:
             .await
             .map_err(|err| SandboxError::Execution(format!("runner write failed: {err}")))?;
 
-        let output = tokio::time::timeout(
-            Duration::from_secs(options.timeout_secs),
-            Command::new("python3")
-                .arg(&runner)
-                .current_dir(&cwd)
-                .env_clear()
-                .envs(scrubbed_env())
-                .envs(options.extra_env)
-                .output(),
-        )
-        .await
-        .map_err(|_| SandboxError::Timeout(options.timeout_secs))?
-        .map_err(|err| SandboxError::Unavailable(format!("python3 execution failed: {err}")))?;
+        let mut command = Command::new("python3");
+        command
+            .arg(&runner)
+            .current_dir(&cwd)
+            .env_clear()
+            .envs(scrubbed_env())
+            .envs(options.extra_env)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        command.process_group(0);
+        let child = command
+            .spawn()
+            .map_err(|err| SandboxError::Unavailable(format!("python3 execution failed: {err}")))?;
+        let pid = child
+            .id()
+            .ok_or_else(|| SandboxError::Execution("python process has no pid".to_string()))?;
+        let wait = child.wait_with_output();
+        tokio::pin!(wait);
+        let output = if let Some(cancellation) = options.cancellation {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    terminate_process_group(pid).await;
+                    let _ = (&mut wait).await;
+                    return Err(SandboxError::Execution("execution cancelled".to_string()));
+                }
+                result = &mut wait => result,
+                _ = tokio::time::sleep(Duration::from_secs(options.timeout_secs)) => {
+                    terminate_process_group(pid).await;
+                    let _ = (&mut wait).await;
+                    return Err(SandboxError::Timeout(options.timeout_secs));
+                }
+            }
+        } else {
+            tokio::select! {
+                result = &mut wait => result,
+                _ = tokio::time::sleep(Duration::from_secs(options.timeout_secs)) => {
+                    terminate_process_group(pid).await;
+                    let _ = (&mut wait).await;
+                    return Err(SandboxError::Timeout(options.timeout_secs));
+                }
+            }
+        }
+        .map_err(|err| SandboxError::Execution(format!("python wait failed: {err}")))?;
 
         let _ = tokio::fs::remove_file(&script).await;
         let _ = tokio::fs::remove_file(&runner).await;
@@ -139,6 +171,23 @@ finally:
             cwd,
         })
     }
+}
+
+async fn terminate_process_group(pid: u32) {
+    let group = format!("-{pid}");
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(&group)
+        .status()
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg("--")
+        .arg(group)
+        .status()
+        .await;
 }
 
 fn canonicalize_existing(path: &Path) -> Result<PathBuf, SandboxError> {

@@ -10,9 +10,10 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::models::knowledge::{
-    CreateKnowledgeArticleRequest, KnowledgeArticleResponse, KnowledgeBreadcrumbResponse,
-    KnowledgeFlatQuery, KnowledgeListResponse, KnowledgeSearchQuery, KnowledgeTreeQuery,
-    KnowledgeTreeResponse, MoveKnowledgeArticleRequest, UpdateKnowledgeArticleRequest,
+    AttachKnowledgeResourceRequest, CreateKnowledgeArticleRequest, KnowledgeArticleResponse,
+    KnowledgeBreadcrumbResponse, KnowledgeFlatQuery, KnowledgeListResponse, KnowledgeResource,
+    KnowledgeResourcesResponse, KnowledgeSearchQuery, KnowledgeTreeQuery, KnowledgeTreeResponse,
+    MoveKnowledgeArticleRequest, UpdateKnowledgeArticleRequest,
 };
 use crate::models::project::DeleteResponse;
 use crate::services::knowledge as knowledge_service;
@@ -30,6 +31,39 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/knowledge/{id}/children", get(get_children))
         .route("/api/knowledge/{id}/breadcrumb", get(get_breadcrumb))
         .route("/api/knowledge/{id}/move", patch(move_node))
+        .route(
+            "/api/knowledge/{id}/resources",
+            get(list_resources).post(attach_resource),
+        )
+        .route(
+            "/api/knowledge/{id}/resources/{resource_id}",
+            axum::routing::delete(detach_resource),
+        )
+}
+
+async fn list_resources(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<KnowledgeResourcesResponse>> {
+    Ok(Json(knowledge_service::list_resources(&state, id).await?))
+}
+
+async fn attach_resource(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<AttachKnowledgeResourceRequest>,
+) -> AppResult<Json<KnowledgeResource>> {
+    Ok(Json(
+        knowledge_service::attach_resource(&state, id, request).await?,
+    ))
+}
+
+async fn detach_resource(
+    State(state): State<Arc<AppState>>,
+    Path((id, resource_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<DeleteResponse>> {
+    let success = knowledge_service::detach_resource(&state, id, resource_id).await?;
+    Ok(Json(DeleteResponse { success }))
 }
 
 pub async fn list_tree(

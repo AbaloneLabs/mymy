@@ -70,6 +70,21 @@ pub struct CreateDriveFolderRequest {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MoveDrivePathRequest {
+    pub source_path: String,
+    pub destination_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveDrivePathResponse {
+    pub success: bool,
+    pub source_path: String,
+    pub destination_path: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DriveMutationResponse {
     pub success: bool,

@@ -34,6 +34,20 @@ export interface KnowledgeArticle {
 
 export interface KnowledgeTreeNode extends KnowledgeArticle {
   children: KnowledgeTreeNode[];
+  resources: KnowledgeResource[];
+}
+
+export interface KnowledgeResource {
+  id: string;
+  knowledgeId: string;
+  resourceType: "drive_file";
+  resourceRef: string;
+  title: string;
+  sortOrder: number;
+  status: "linked" | "broken";
+  editorKind: "markdown" | "docx" | "xlsx" | "pptx";
+  createdAt: string;
+  updatedAt: string;
 }
 
 

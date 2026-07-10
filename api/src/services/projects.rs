@@ -193,6 +193,19 @@ pub async fn update_project(
 
 /// DELETE /api/projects/{id}
 pub async fn delete_project(state: &AppState, id: Uuid) -> AppResult<bool> {
+    let active_runs = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM agent_runs
+           WHERE project_id = $1
+             AND status IN ('queued', 'running', 'waiting_decision')"#,
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if active_runs > 0 {
+        return Err(AppError::Conflict(format!(
+            "project has {active_runs} active agent run(s); cancel or finish them before deletion"
+        )));
+    }
     let result = sqlx::query!("DELETE FROM projects WHERE id = $1", id)
         .execute(&state.db)
         .await?;

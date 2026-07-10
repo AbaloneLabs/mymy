@@ -10,6 +10,7 @@ pub(super) async fn execute_python_with_runner(
     allowed_roots: &[PathBuf],
     scratch_dir: &Path,
     options: ExecOptions,
+    execution_id: Option<&str>,
 ) -> Result<ExecResult, SandboxError> {
     if options.language != "python" {
         return Err(SandboxError::InvalidRequest(
@@ -49,18 +50,35 @@ finally:
     extra_roots.push(scratch_dir.to_path_buf());
     extra_roots.extend(allowed_roots.iter().cloned());
 
-    let response = RunnerClient::new(runner_url.to_string())
-        .execute(&RunnerExecuteRequest {
-            command: format!("python3 {}", shell_quote(&runner.display().to_string())),
-            cwd: cwd.display().to_string(),
-            roots: roots_for_runner(working_dir, &extra_roots),
-            timeout_secs: Some(options.timeout_secs),
-            env: Some(options.extra_env),
-        })
-        .await
-        .map_err(|err| SandboxError::Execution(err.to_string()))?;
+    let client = RunnerClient::new(runner_url.to_string());
+    let request = RunnerExecuteRequest {
+        execution_id: execution_id.map(str::to_string),
+        command: format!("python3 {}", shell_quote(&runner.display().to_string())),
+        cwd: cwd.display().to_string(),
+        roots: roots_for_runner(working_dir, &extra_roots),
+        timeout_secs: Some(options.timeout_secs),
+        env: Some(options.extra_env),
+    };
+    let response = if let (Some(cancellation), Some(execution_id)) =
+        (options.cancellation, execution_id)
+    {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                let _ = client.cancel_execution(execution_id).await;
+                Err(SandboxError::Execution("execution cancelled".to_string()))
+            }
+            result = client.execute(&request) => result.map_err(|err| SandboxError::Execution(err.to_string())),
+        }
+    } else {
+        client
+            .execute(&request)
+            .await
+            .map_err(|err| SandboxError::Execution(err.to_string()))
+    };
     let _ = tokio::fs::remove_file(&script).await;
     let _ = tokio::fs::remove_file(&runner).await;
+    let response = response?;
     let cwd = tokio::fs::read_to_string(&cwd_file)
         .await
         .ok()

@@ -86,6 +86,25 @@ impl ContextManager {
         self.last_prompt_tokens = 0;
         changed
     }
+
+    pub fn compress_with_checkpoint(
+        &mut self,
+        messages: &mut Vec<Message>,
+        checkpoint: &str,
+    ) -> bool {
+        self.compression_count = self.compression_count.saturating_add(1);
+        let mut changed = prune_tool_results(messages, self.config.protect_last_n) > 0;
+        if replace_middle_with_summary(
+            messages,
+            self.config.protect_first_n,
+            self.config.protect_last_n,
+            format!("[Structured checkpoint]\n{checkpoint}"),
+        ) {
+            changed = true;
+        }
+        self.last_prompt_tokens = 0;
+        changed
+    }
 }
 
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -167,9 +186,21 @@ fn summarize_middle(
     if head_end >= tail_start {
         return false;
     }
+    let summary = build_deterministic_summary(&messages[head_end..tail_start]);
+    replace_middle_with_summary(messages, protect_first_n, protect_last_n, summary)
+}
 
-    let middle = &messages[head_end..tail_start];
-    let summary = build_deterministic_summary(middle);
+fn replace_middle_with_summary(
+    messages: &mut Vec<Message>,
+    protect_first_n: usize,
+    protect_last_n: usize,
+    summary: String,
+) -> bool {
+    let head_end = protect_first_n.min(messages.len());
+    let tail_start = messages.len().saturating_sub(protect_last_n);
+    if head_end >= tail_start {
+        return false;
+    }
     let mut compressed = Vec::with_capacity(head_end + 1 + messages.len() - tail_start);
     compressed.extend_from_slice(&messages[..head_end]);
     compressed.push(Message::assistant(summary));

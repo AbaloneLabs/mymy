@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::models::goal::{Goal, KeyResult};
+use crate::models::goal::{FinanceKpiDefinition, Goal, KeyResult, TaskAssignmentSummary};
 
 /// A goal / OKR objective row.
 #[derive(Debug, FromRow)]
@@ -27,6 +27,14 @@ pub(super) struct KeyResultRow {
     pub(super) target_value: f64,
     pub(super) current_value: f64,
     pub(super) unit: String,
+    pub(super) finance_metric: Option<String>,
+    pub(super) finance_currency: Option<String>,
+    pub(super) finance_scope: Option<String>,
+    pub(super) finance_project_id: Option<Uuid>,
+    pub(super) finance_status: Option<String>,
+    pub(super) finance_from: Option<DateTime<Utc>>,
+    pub(super) finance_to: Option<DateTime<Utc>>,
+    pub(super) finance_category: Option<String>,
     pub(super) created_at: DateTime<Utc>,
     pub(super) updated_at: DateTime<Utc>,
 }
@@ -43,6 +51,7 @@ pub(super) fn row_to_goal(
     row: GoalRow,
     progress: f64,
     key_results: Option<Vec<KeyResult>>,
+    task_assignment: TaskAssignmentSummary,
 ) -> Goal {
     Goal {
         id: row.id.to_string(),
@@ -53,17 +62,23 @@ pub(super) fn row_to_goal(
         status: row.status,
         progress,
         key_results,
+        task_assignment,
         created_at: row.created_at.to_rfc3339(),
         updated_at: row.updated_at.to_rfc3339(),
     }
 }
 
-pub(super) fn row_to_key_result(row: KeyResultRow, current_value: f64) -> KeyResult {
+pub(super) fn row_to_key_result(
+    row: KeyResultRow,
+    current_value: f64,
+    calculation_status: &str,
+) -> KeyResult {
     let progress = if row.target_value > 0.0 {
         (current_value / row.target_value * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
+    let finance_definition = finance_definition(&row);
     KeyResult {
         id: row.id.to_string(),
         goal_id: row.goal_id.to_string(),
@@ -73,7 +88,22 @@ pub(super) fn row_to_key_result(row: KeyResultRow, current_value: f64) -> KeyRes
         current_value,
         unit: row.unit,
         progress,
+        finance_definition,
+        calculation_status: calculation_status.to_string(),
         created_at: row.created_at.to_rfc3339(),
         updated_at: row.updated_at.to_rfc3339(),
     }
+}
+
+pub(super) fn finance_definition(row: &KeyResultRow) -> Option<FinanceKpiDefinition> {
+    Some(FinanceKpiDefinition {
+        metric: row.finance_metric.clone()?,
+        currency: row.finance_currency.clone()?,
+        scope: row.finance_scope.clone()?,
+        project_id: row.finance_project_id.map(|id| id.to_string()),
+        status: row.finance_status.clone()?,
+        from: row.finance_from.map(|value| value.to_rfc3339()),
+        to: row.finance_to.map(|value| value.to_rfc3339()),
+        category: row.finance_category.clone(),
+    })
 }

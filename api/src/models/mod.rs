@@ -1,10 +1,12 @@
 //! Domain models.
 
 pub mod agent;
+pub mod agent_run;
 pub mod audit;
 pub mod auth;
 pub mod calendar;
 pub mod chat;
+pub mod decision;
 pub mod document_editor;
 pub mod drive;
 pub mod editor_settings;
@@ -15,11 +17,15 @@ pub mod llm_provider;
 pub mod moa;
 pub mod note;
 pub mod preview;
+pub mod proactive;
 pub mod project;
+pub mod runtime_memory;
 pub mod sandbox;
+pub mod scope;
 pub mod search;
 pub mod settings;
 pub mod task;
 pub mod task_status;
 pub mod transaction;
 pub mod version;
+pub mod work_graph;

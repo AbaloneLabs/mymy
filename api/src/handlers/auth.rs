@@ -71,6 +71,7 @@ pub async fn auth_verify(
         // API key encrypt/decrypt operations don't need to re-prompt for PIN.
         let enc_key = crypto::derive_key(&req.pin);
         *state.encryption_key.write().await = Some(enc_key);
+        state.agent_run_notify.notify_waiters();
 
         headers.insert(
             SET_COOKIE,
@@ -126,6 +127,7 @@ pub async fn auth_change_pin(
 
     // Update the cached encryption key so subsequent requests use the new key.
     *state.encryption_key.write().await = Some(new_key);
+    state.agent_run_notify.notify_waiters();
 
     Ok(Json(PinChangeResponse { success: true }))
 }

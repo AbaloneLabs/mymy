@@ -35,6 +35,17 @@ impl RunnerClient {
         self.post_json("/execute", req).await
     }
 
+    pub async fn cancel_execution(
+        &self,
+        execution_id: &str,
+    ) -> AppResult<RunnerStopProcessResponse> {
+        self.post_json(
+            &format!("/executions/{}/cancel", urlencoding::encode(execution_id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     pub async fn start_process(
         &self,
         req: &RunnerStartProcessRequest,
@@ -137,6 +148,8 @@ pub fn logical_path_for_runner(path: &Path) -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerExecuteRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
     pub command: String,
     pub cwd: String,
     pub roots: Vec<RunnerRoot>,
@@ -150,6 +163,8 @@ pub struct RunnerExecuteRequest {
 pub struct RunnerStartProcessRequest {
     #[serde(flatten)]
     pub execution: RunnerExecuteRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }

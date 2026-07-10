@@ -6,8 +6,10 @@ import {
   type CronBlueprint,
   type CronBlueprintField,
 } from "@/features/agent-ops/api";
+import { useAgents } from "@/features/agents/api";
+import { useProjectContext } from "@/store/projectContext";
 
-export function CronBlueprintPanel({ blueprints }: { blueprints: CronBlueprint[] }) {
+export function CronBlueprintPanel({ blueprints, defaultProfile }: { blueprints: CronBlueprint[]; defaultProfile: string | null }) {
   const { t } = useTranslation();
   if (blueprints.length === 0) return null;
   return (
@@ -17,16 +19,19 @@ export function CronBlueprintPanel({ blueprints }: { blueprints: CronBlueprint[]
       </div>
       <div className="grid gap-2 md:grid-cols-2">
         {blueprints.slice(0, 6).map((blueprint) => (
-          <CronBlueprintCard key={blueprint.key} blueprint={blueprint} />
+          <CronBlueprintCard key={blueprint.key} blueprint={blueprint} defaultProfile={defaultProfile} />
         ))}
       </div>
     </div>
   );
 }
 
-function CronBlueprintCard({ blueprint }: { blueprint: CronBlueprint }) {
+function CronBlueprintCard({ blueprint, defaultProfile }: { blueprint: CronBlueprint; defaultProfile: string | null }) {
   const { t } = useTranslation();
   const instantiateMutation = useInstantiateCronBlueprint();
+  const { data: agentsData } = useAgents();
+  const selectedProjectId = useProjectContext((state) => state.selectedProjectId);
+  const [agentProfile, setAgentProfile] = useState(defaultProfile ?? "");
   const [expanded, setExpanded] = useState(false);
   const [values, setValues] = useState<Record<string, string | boolean>>(() =>
     Object.fromEntries(
@@ -45,6 +50,8 @@ function CronBlueprintCard({ blueprint }: { blueprint: CronBlueprint }) {
         title: blueprint.title,
         schedule: blueprint.defaultSchedule,
         enabled: true,
+        agentProfile,
+        projectId: selectedProjectId,
       },
       { onSuccess: () => setExpanded(false) },
     );
@@ -84,6 +91,15 @@ function CronBlueprintCard({ blueprint }: { blueprint: CronBlueprint }) {
               }
             />
           ))}
+          <label className="block space-y-1 text-xs text-[var(--text-muted)]">
+            {t("agents.cron.agent")}
+            <select value={agentProfile} onChange={(event) => setAgentProfile(event.target.value)} className="w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text)]">
+              <option value="">{t("agents.cron.selectAgent")}</option>
+              {(agentsData?.agents ?? []).map((agent) => (
+                <option key={agent.profile} value={agent.profile}>{agent.name} ({agent.profile})</option>
+              ))}
+            </select>
+          </label>
           <div className="flex items-center justify-end gap-2">
             {instantiateMutation.isError && (
               <span className="mr-auto text-xs text-[var(--danger)]">
@@ -93,7 +109,7 @@ function CronBlueprintCard({ blueprint }: { blueprint: CronBlueprint }) {
             <button
               type="button"
               onClick={instantiate}
-              disabled={instantiateMutation.isPending}
+              disabled={instantiateMutation.isPending || !agentProfile}
               className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               {instantiateMutation.isPending ? (
