@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::scheduler::{CronJob, JobMode};
+use crate::agent::scheduler::CronJob;
 
 use super::blueprints::CronBlueprint;
 
@@ -39,6 +39,7 @@ pub struct CronBlueprintsResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct InstantiateBlueprintRequest {
     #[serde(default)]
     pub values: Value,
@@ -65,12 +66,11 @@ pub struct CronResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct CreateCronJobRequest {
     pub title: String,
     pub prompt: String,
     pub schedule: String,
-    #[serde(default)]
-    pub mode: Option<JobMode>,
     #[serde(default)]
     pub max_runs: Option<u32>,
     #[serde(default = "default_enabled")]
@@ -85,11 +85,11 @@ pub struct CreateCronJobRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct UpdateCronJobRequest {
     pub title: Option<String>,
     pub prompt: Option<String>,
     pub schedule: Option<String>,
-    pub mode: Option<JobMode>,
     pub max_runs: Option<Option<u32>>,
     pub enabled: Option<bool>,
     pub skills: Option<Vec<String>>,
@@ -103,6 +103,38 @@ pub struct CronResultsQuery {
     pub limit: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantinedCronJobsResponse {
+    pub jobs: Vec<QuarantinedCronJobSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantinedCronJobSummary {
+    pub id: String,
+    pub legacy_job_id: String,
+    pub title: String,
+    pub was_enabled: bool,
+    pub quarantine_reason: String,
+    pub quarantined_at: String,
+    pub prior_result_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_result_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantinedCronJobDetailResponse {
+    pub job: QuarantinedCronJobSummary,
+    pub original_definition: Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuarantinedCronJobDeleteResponse {
+    pub success: bool,
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -113,4 +145,42 @@ fn default_limit() -> i64 {
 
 fn default_wake_agent() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_request_rejects_removed_no_agent_mode() {
+        let request = serde_json::from_value::<CreateCronJobRequest>(serde_json::json!({
+            "title": "Job",
+            "prompt": "Do work",
+            "schedule": "every 1h",
+            "mode": "no_agent"
+        }));
+
+        assert!(request.is_err());
+    }
+
+    #[test]
+    fn update_request_rejects_any_legacy_mode_field() {
+        let request = serde_json::from_value::<UpdateCronJobRequest>(serde_json::json!({
+            "mode": "agent"
+        }));
+
+        assert!(request.is_err());
+    }
+
+    #[test]
+    fn normal_agent_job_request_needs_no_mode() {
+        let request = serde_json::from_value::<CreateCronJobRequest>(serde_json::json!({
+            "title": "Job",
+            "prompt": "Do work",
+            "schedule": "every 1h"
+        }))
+        .unwrap();
+
+        assert_eq!(request.title, "Job");
+    }
 }

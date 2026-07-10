@@ -50,11 +50,6 @@ export function CronJobCard({ job }: { job: CronJob }) {
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--text-muted)]">
             <span className="font-mono">{job.schedule}</span>
-            {job.deliver && (
-              <span>
-                {t("agents.cron.deliver")}: {job.deliver}
-              </span>
-            )}
             {job.nextRun && (
               <span>
                 {t("agents.cron.nextRun")}: {job.nextRun}

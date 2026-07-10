@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::agent::scheduler::{CronJob, JobMode};
+use crate::agent::scheduler::CronJob;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -58,7 +58,7 @@ pub(super) async fn insert_result(
            VALUES ($1, $2, $3, $4, $5, $6)"#,
         job.id,
         job.title,
-        mode_label(&job.mode),
+        "agent",
         status,
         output,
         output_path,
@@ -133,12 +133,5 @@ fn row_to_result(row: CronResultRow) -> CronResult {
         output: row.output,
         output_path: row.output_path,
         created_at: row.created_at.to_rfc3339(),
-    }
-}
-
-fn mode_label(mode: &JobMode) -> &'static str {
-    match mode {
-        JobMode::Agent => "agent",
-        JobMode::NoAgent => "no_agent",
     }
 }

@@ -13,53 +13,62 @@ use serde_json::Value;
 
 use super::BuiltinToolConfig;
 use crate::agent::scheduler::{
-    compute_next_run, jobs_path, parse_schedule, CronJob, CronStore, JobMode, Schedule,
+    compute_next_run, jobs_path, parse_schedule, CronJob, CronStore, Schedule,
 };
-use crate::agent::security::{scan_for_threats, ThreatScope};
+use crate::agent::security::{redact_sensitive_text, scan_for_threats, ThreatScope};
 use crate::agent::tools::{
     tool_result, tool_schema, ToolEntry, ToolError, ToolHandler, ToolRegistry,
 };
+use crate::services::audit::log_audit_safe;
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     registry.register(ToolEntry {
         name: "cronjob".to_string(),
         toolset: "cron".to_string(),
-        schema: tool_schema(
-            "cronjob",
-            "Manage scheduled native agent jobs. Background execution is controlled by the scheduler service.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["list", "create", "update", "pause", "resume", "remove", "trigger", "mark_run", "due", "referenced_skills", "blueprints", "instantiate_blueprint"] },
-                    "id": { "type": "string" },
-                    "blueprint": { "type": "string" },
-                    "values": { "type": "object" },
-                    "title": { "type": "string" },
-                    "prompt": { "type": "string" },
-                    "schedule": { "type": "string", "description": "RFC3339, duration like 30m, or interval like every 2h." },
-                    "mode": { "type": "string", "enum": ["agent", "no_agent"], "default": "agent" },
-                    "max_runs": { "type": "integer", "minimum": 1 },
-                    "enabled": { "type": "boolean" },
-                    "skills": { "type": "array", "items": { "type": "string" } },
-                    "context_from": { "type": "array", "items": { "type": "string" } },
-                    "wake_agent": { "type": "boolean", "default": true }
-                },
-                "required": ["action"]
-            }),
-        ),
+        schema: cron_tool_schema(),
         handler: Arc::new(CronTool {
             store: CronStore::new(jobs_path(&config.agent_data_dir)),
+            db: config.db.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 }
 
+fn cron_tool_schema() -> crate::agent::providers::ToolSchema {
+    tool_schema(
+        "cronjob",
+        "Manage scheduled native agent jobs. Background execution is controlled by the scheduler service.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["list", "create", "update", "pause", "resume", "remove", "trigger", "mark_run", "due", "referenced_skills", "blueprints", "instantiate_blueprint"] },
+                "id": { "type": "string" },
+                "blueprint": { "type": "string" },
+                "values": { "type": "object" },
+                "title": { "type": "string" },
+                "prompt": { "type": "string" },
+                "schedule": { "type": "string", "description": "RFC3339, duration like 30m, or interval like every 2h." },
+                "max_runs": { "type": "integer", "minimum": 1 },
+                "enabled": { "type": "boolean" },
+                "skills": { "type": "array", "items": { "type": "string" } },
+                "context_from": { "type": "array", "items": { "type": "string" } },
+                "wake_agent": { "type": "boolean", "default": true }
+            },
+            "required": ["action"]
+        }),
+    )
+}
+
 struct CronTool {
     store: CronStore,
+    db: Option<sqlx::PgPool>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
 impl ToolHandler for CronTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
+        reject_removed_execution_mode(args)?;
         let action = required_str(args, "action")?;
         let now = Utc::now();
         match action {
@@ -105,7 +114,7 @@ impl ToolHandler for CronTool {
                         .get("id")
                         .and_then(Value::as_str)
                         .map(str::to_string)
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     title: args
                         .get("title")
                         .and_then(Value::as_str)
@@ -115,7 +124,6 @@ impl ToolHandler for CronTool {
                     prompt,
                     next_run_at: compute_next_run(&schedule, now),
                     schedule,
-                    mode: JobMode::Agent,
                     enabled: args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                     run_count: 0,
                     max_runs: None,
@@ -127,7 +135,11 @@ impl ToolHandler for CronTool {
                     context_from: None,
                     wake_agent: true,
                 };
+                let id = job.id.clone();
+                let title = job.title.clone();
                 self.store.upsert(job).map_err(to_execution)?;
+                self.audit("create", &id, "instantiate_blueprint", &title)
+                    .await;
                 Ok(tool_result(&serde_json::json!({ "success": true })))
             }
             "create" => {
@@ -148,7 +160,7 @@ impl ToolHandler for CronTool {
                         .get("id")
                         .and_then(Value::as_str)
                         .map(str::to_string)
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     title: args
                         .get("title")
                         .and_then(Value::as_str)
@@ -157,7 +169,6 @@ impl ToolHandler for CronTool {
                         .to_string(),
                     prompt: prompt.trim().to_string(),
                     schedule,
-                    mode: parse_mode(args.get("mode").and_then(Value::as_str).unwrap_or("agent"))?,
                     enabled: args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                     next_run_at,
                     run_count: 0,
@@ -169,7 +180,10 @@ impl ToolHandler for CronTool {
                         .and_then(Value::as_bool)
                         .unwrap_or(true),
                 };
+                let id = job.id.clone();
+                let title = job.title.clone();
                 self.store.upsert(job).map_err(to_execution)?;
+                self.audit("create", &id, "create", &title).await;
                 Ok(tool_result(&serde_json::json!({ "success": true })))
             }
             "update" => {
@@ -191,9 +205,6 @@ impl ToolHandler for CronTool {
                     job.next_run_at = compute_next_run(&schedule, now);
                     job.schedule = schedule;
                 }
-                if let Some(mode) = args.get("mode").and_then(Value::as_str) {
-                    job.mode = parse_mode(mode)?;
-                }
                 if let Some(enabled) = args.get("enabled").and_then(Value::as_bool) {
                     job.enabled = enabled;
                 }
@@ -211,6 +222,7 @@ impl ToolHandler for CronTool {
                 }
                 let updated = job.clone();
                 self.store.save(&jobs).map_err(to_execution)?;
+                self.audit("update", id, "update", &updated.title).await;
                 Ok(tool_result(&serde_json::json!({
                     "success": true,
                     "job": updated
@@ -220,6 +232,7 @@ impl ToolHandler for CronTool {
                 let id = required_str(args, "id")?;
                 if action == "mark_run" {
                     self.store.mark_run(id, now).map_err(to_execution)?;
+                    self.audit("update", id, "mark_run", "").await;
                     return Ok(tool_result(&serde_json::json!({
                         "success": true,
                         "marked_run": id
@@ -228,8 +241,16 @@ impl ToolHandler for CronTool {
                 let mut jobs = self.store.load().map_err(to_execution)?;
                 let before = jobs.len();
                 if action == "remove" {
+                    let title = jobs
+                        .iter()
+                        .find(|job| job.id == id)
+                        .map(|job| job.title.clone())
+                        .unwrap_or_default();
                     jobs.retain(|job| job.id != id);
                     self.store.save(&jobs).map_err(to_execution)?;
+                    if before != jobs.len() {
+                        self.audit("delete", id, "remove", &title).await;
+                    }
                     return Ok(tool_result(&serde_json::json!({
                         "success": before != jobs.len(),
                         "removed": id
@@ -249,6 +270,7 @@ impl ToolHandler for CronTool {
                 }
                 let updated = job.clone();
                 self.store.save(&jobs).map_err(to_execution)?;
+                self.audit("update", id, action, &updated.title).await;
                 Ok(tool_result(&serde_json::json!({
                     "success": true,
                     "job": updated
@@ -256,6 +278,32 @@ impl ToolHandler for CronTool {
             }
             _ => Err(ToolError::InvalidArgs("invalid action".to_string())),
         }
+    }
+}
+
+impl CronTool {
+    async fn audit(&self, action: &str, id: &str, operation: &str, title: &str) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let actor_id = self
+            .agent_profile
+            .as_deref()
+            .map(|profile| format!("agent:{profile}"))
+            .unwrap_or_else(|| "agent:native".to_string());
+        log_audit_safe(
+            db,
+            "agent",
+            &actor_id,
+            action,
+            "cron_job",
+            Some(id),
+            Some(serde_json::json!({
+                "operation": operation,
+                "title": redact_sensitive_text(title),
+            })),
+        )
+        .await;
     }
 }
 
@@ -274,12 +322,13 @@ fn ensure_prompt_safe(prompt: &str) -> Result<(), ToolError> {
     )))
 }
 
-fn parse_mode(value: &str) -> Result<JobMode, ToolError> {
-    match value {
-        "agent" => Ok(JobMode::Agent),
-        "no_agent" => Ok(JobMode::NoAgent),
-        _ => Err(ToolError::InvalidArgs("invalid mode".to_string())),
+fn reject_removed_execution_mode(args: &Value) -> Result<(), ToolError> {
+    if args.get("mode").is_some() {
+        return Err(ToolError::Unavailable(
+            "cron execution mode is fixed to agent; no_agent mode has been removed".to_string(),
+        ));
     }
+    Ok(())
 }
 
 fn parse_string_array(value: Option<&Value>) -> Vec<String> {
@@ -318,4 +367,95 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
 
 fn to_execution(err: std::io::Error) -> ToolError {
     ToolError::Execution(format!("cron store failed: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_schema_exposes_no_execution_mode() {
+        let schema = serde_json::to_value(cron_tool_schema()).unwrap();
+        let properties = schema["function"]["parameters"]["properties"]
+            .as_object()
+            .unwrap();
+
+        assert!(!properties.contains_key("mode"));
+        assert!(!serde_json::to_string(&schema).unwrap().contains("no_agent"));
+    }
+
+    #[test]
+    fn crafted_execution_mode_is_rejected_by_the_handler_guard() {
+        let error = reject_removed_execution_mode(&serde_json::json!({
+            "action": "create",
+            "mode": "no_agent"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no_agent mode has been removed"));
+    }
+
+    #[test]
+    fn normal_agent_job_arguments_need_no_mode() {
+        assert!(reject_removed_execution_mode(&serde_json::json!({
+            "action": "create"
+        }))
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn legacy_no_agent_jobs_cannot_be_updated_resumed_or_triggered() {
+        let dir =
+            std::env::temp_dir().join(format!("mymy-agent-cron-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("jobs.json"),
+            r#"[{"id":"legacy","title":"Legacy","prompt":"hidden","schedule":{"kind":"interval","seconds":60},"mode":"no_agent","enabled":false,"next_run_at":"2026-07-10T00:00:00Z","run_count":0,"max_runs":null,"skills":[],"context_from":null,"wake_agent":true}]"#,
+        )
+        .unwrap();
+        let tool = CronTool {
+            store: CronStore::new(dir.join("jobs.json")),
+            db: None,
+            agent_profile: None,
+        };
+
+        for action in ["update", "resume", "trigger"] {
+            let error = tool
+                .execute(&serde_json::json!({"action": action, "id": "legacy"}))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("security quarantine"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn agent_cron_mutation_records_the_agent_actor(pool: sqlx::PgPool) {
+        let dir =
+            std::env::temp_dir().join(format!("mymy-agent-cron-audit-{}", uuid::Uuid::new_v4()));
+        let tool = CronTool {
+            store: CronStore::new(dir.join("jobs.json")),
+            db: Some(pool.clone()),
+            agent_profile: Some("security-test".to_string()),
+        };
+
+        tool.execute(&serde_json::json!({
+            "action": "create",
+            "title": "Agent job",
+            "prompt": "Review tasks",
+            "schedule": "every 1h"
+        }))
+        .await
+        .unwrap();
+
+        let actor = sqlx::query_scalar::<_, String>(
+            r#"SELECT actor_id FROM audit_logs
+               WHERE entity_type = 'cron_job' AND action = 'create'"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(actor, "agent:security-test");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -6,7 +6,6 @@ export interface CronJob {
   name?: string;
   schedule: string;
   prompt?: string;
-  deliver?: string;
   repeat?: string;
   skill?: string;
   script?: string;
@@ -34,7 +33,7 @@ export interface CronResult {
   jobId: string;
   jobTitle: string;
   mode: string;
-  status: "success" | "error" | "silent";
+  status: "success" | "error" | "silent" | "blocked_security_review";
   output: string;
   outputPath?: string | null;
   createdAt: string;
@@ -42,4 +41,24 @@ export interface CronResult {
 
 export interface CronResultsResponse {
   results: CronResult[];
+}
+
+export interface QuarantinedCronJob {
+  id: string;
+  legacyJobId: string;
+  title: string;
+  wasEnabled: boolean;
+  quarantineReason: string;
+  quarantinedAt: string;
+  priorResultCount: number;
+  lastResultAt?: string;
+}
+
+export interface QuarantinedCronJobsResponse {
+  jobs: QuarantinedCronJob[];
+}
+
+export interface QuarantinedCronJobDetailResponse {
+  job: QuarantinedCronJob;
+  originalDefinition: unknown;
 }

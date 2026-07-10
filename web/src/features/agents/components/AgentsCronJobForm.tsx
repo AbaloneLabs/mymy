@@ -20,9 +20,6 @@ export function CronJobForm({
   const [title, setTitle] = useState(job?.name ?? "");
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
   const [schedule, setSchedule] = useState(job?.schedule ?? "");
-  const [mode, setMode] = useState<"agent" | "no_agent">(
-    job?.deliver === "no_agent" ? "no_agent" : "agent",
-  );
   const [skills, setSkills] = useState(job?.skill ?? "");
   const busy = createMutation.isPending || updateMutation.isPending;
 
@@ -31,7 +28,6 @@ export function CronJobForm({
       title,
       prompt,
       schedule,
-      mode,
       enabled: !job?.paused,
       skills: splitNames(skills),
     };
@@ -74,19 +70,6 @@ export function CronJobForm({
         />
       </label>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <label className="space-y-1 text-xs text-[var(--text-muted)]">
-          {t("agents.cron.mode")}
-          <select
-            value={mode}
-            onChange={(event) =>
-              setMode(event.target.value as "agent" | "no_agent")
-            }
-            className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]"
-          >
-            <option value="agent">agent</option>
-            <option value="no_agent">no_agent</option>
-          </select>
-        </label>
         <label className="space-y-1 text-xs text-[var(--text-muted)]">
           {t("agents.cron.skills")}
           <input

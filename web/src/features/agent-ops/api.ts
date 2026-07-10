@@ -7,9 +7,16 @@ import type {
   CronJob,
   CronResultsResponse,
   CronResponse,
+  QuarantinedCronJobDetailResponse,
+  QuarantinedCronJobsResponse,
 } from "@/types/agent-ops";
 
 const NATIVE_CRON_QUERY_KEY = ["agent-ops", "cron", "native"] as const;
+const QUARANTINED_CRON_QUERY_KEY = [
+  "agent-ops",
+  "cron",
+  "quarantined",
+] as const;
 
 /* -------------------------------------------------- Agent Operations */
 
@@ -65,7 +72,6 @@ export interface SaveCronJobRequest {
   title: string;
   prompt: string;
   schedule: string;
-  mode?: "agent" | "no_agent";
   maxRuns?: number | null;
   enabled?: boolean;
   skills?: string[];
@@ -152,6 +158,53 @@ export function useDeleteCronJob() {
   return useCronJobMutation((id) => api.delete<CronResponse>(`/cron/jobs/${id}`));
 }
 
+export function useQuarantinedCronJobs() {
+  return useQuery({
+    queryKey: QUARANTINED_CRON_QUERY_KEY,
+    queryFn: () =>
+      api.get<QuarantinedCronJobsResponse>(
+        "/cron/security/quarantined-jobs",
+      ),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useQuarantinedCronJobDetail(
+  id: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: [...QUARANTINED_CRON_QUERY_KEY, id],
+    queryFn: () =>
+      api.get<QuarantinedCronJobDetailResponse>(
+        `/cron/security/quarantined-jobs/${id}`,
+      ),
+    enabled,
+  });
+}
+
+export function useExportQuarantinedCronJob() {
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.get<QuarantinedCronJobDetailResponse>(
+        `/cron/security/quarantined-jobs/${id}/export`,
+      ),
+  });
+}
+
+export function useDeleteQuarantinedCronJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.delete<{ success: boolean }>(
+        `/cron/security/quarantined-jobs/${id}`,
+      ),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: QUARANTINED_CRON_QUERY_KEY }),
+  });
+}
+
 function useCronJobMutation(mutationFn: (id: string) => Promise<CronResponse>) {
   const qc = useQueryClient();
   return useMutation({
@@ -172,7 +225,6 @@ interface NativeCronJob {
   title: string;
   prompt: string;
   schedule: NativeSchedule;
-  mode: "agent" | "no_agent";
   enabled: boolean;
   next_run_at: string;
   run_count: number;
@@ -201,7 +253,6 @@ function toCronJob(job: NativeCronJob): CronJob {
     name: job.title,
     schedule: scheduleLabel(job.schedule),
     prompt: job.prompt,
-    deliver: job.mode,
     repeat: job.max_runs ? `${job.run_count}/${job.max_runs}` : undefined,
     skill: job.skills?.join(", "),
     nextRun: job.next_run_at,

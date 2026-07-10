@@ -17,6 +17,7 @@ import { CronBlueprintPanel } from "./AgentsCronBlueprints";
 import { CronJobCard } from "./AgentsCronJobCard";
 import { CronJobForm } from "./AgentsCronJobForm";
 import { CronResultsPanel } from "./AgentsCronResults";
+import { CronSecurityQuarantinePanel } from "./AgentsCronSecurityQuarantine";
 
 export function CronTab({
   instanceId,
@@ -82,6 +83,8 @@ export function CronTab({
           </div>
         </div>
       </div>
+
+      <CronSecurityQuarantinePanel />
 
       <div className="flex items-center justify-end">
         <button

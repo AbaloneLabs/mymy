@@ -51,6 +51,7 @@ async fn run(cfg: Config) -> anyhow::Result<()> {
     apply_migrations(&pool).await?;
     let port = cfg.port;
     let state = Arc::new(AppState::new(pool, cfg));
+    services::cron::quarantine_legacy_jobs(&state).await?;
     let _background_workers = start_background_workers(state.clone());
     let app = build_router(state.clone(), &state.config);
 
@@ -250,7 +251,7 @@ mod tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri("/api/projects")
-                    .header(COOKIE, session_cookie)
+                    .header(COOKIE, &session_cookie)
                     .body(Body::empty())
                     .expect("request should build"),
             )
@@ -314,6 +315,105 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&body).expect("status should return JSON");
         assert_eq!(json["authenticated"], false);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn authenticated_http_cannot_create_or_update_a_removed_no_agent_job(pool: sqlx::PgPool) {
+        let pin = "2468";
+        seed_pin(&pool, pin).await;
+
+        let mut cfg = test_config();
+        let agent_data_dir =
+            std::env::temp_dir().join(format!("mymy-http-cron-security-{}", uuid::Uuid::new_v4()));
+        cfg.agent_data_dir = agent_data_dir.clone();
+        let state = Arc::new(AppState::new(pool.clone(), cfg.clone()));
+        let app = build_router(state, &cfg);
+        let verified = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/verify")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"pin":"{pin}"}}"#)))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(verified.status(), StatusCode::OK);
+        let session_cookie = verified
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("auth verify should set a session cookie")
+            .to_string();
+
+        let rejected_create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/cron/jobs")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, &session_cookie)
+                    .body(Body::from(
+                        r#"{"title":"Blocked","prompt":"hidden","schedule":"every 1h","mode":"no_agent"}"#,
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(rejected_create.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/cron/jobs")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, &session_cookie)
+                    .body(Body::from(
+                        r#"{"title":"Agent job","prompt":"Review tasks","schedule":"every 1h"}"#,
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(created.status(), StatusCode::OK);
+        let body = to_bytes(created.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("cron response should be JSON");
+        let job_id = json["jobs"][0]["id"]
+            .as_str()
+            .expect("created job should have an id");
+
+        let rejected_update = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri(format!("/api/cron/jobs/{job_id}"))
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, session_cookie)
+                    .body(Body::from(r#"{"mode":"no_agent"}"#))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(rejected_update.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let audit_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audit_logs WHERE entity_type = 'cron_job'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audit_count, 1);
+        let raw = std::fs::read_to_string(agent_data_dir.join("cron/jobs.json")).unwrap();
+        assert!(!raw.contains("\"mode\""));
+        let _ = std::fs::remove_dir_all(agent_data_dir);
     }
 
     async fn seed_pin(pool: &sqlx::PgPool, pin: &str) {

@@ -10,9 +10,11 @@ use crate::error::AppResult;
 use crate::services::cron::{
     self as cron_service, CreateCronJobRequest, CronBlueprintsResponse, CronJobsResponse,
     CronResultsQuery, CronResultsResponse, CronStatusResponse, InstantiateBlueprintRequest,
-    UpdateCronJobRequest,
+    QuarantinedCronJobDeleteResponse, QuarantinedCronJobDetailResponse,
+    QuarantinedCronJobsResponse, UpdateCronJobRequest,
 };
 use crate::state::AppState;
+use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -23,6 +25,18 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/cron/jobs/{id}/trigger", post(trigger_job))
         .route("/api/cron/status", get(status))
         .route("/api/cron/results", get(list_results))
+        .route(
+            "/api/cron/security/quarantined-jobs",
+            get(list_quarantined_jobs),
+        )
+        .route(
+            "/api/cron/security/quarantined-jobs/{id}",
+            get(get_quarantined_job).delete(delete_quarantined_job),
+        )
+        .route(
+            "/api/cron/security/quarantined-jobs/{id}/export",
+            get(export_quarantined_job),
+        )
         .route("/api/cron/blueprints", get(list_blueprints))
         .route(
             "/api/cron/blueprints/{key}/instantiate",
@@ -90,6 +104,37 @@ pub async fn list_results(
 
 pub async fn list_blueprints() -> AppResult<Json<CronBlueprintsResponse>> {
     Ok(Json(cron_service::list_blueprints().await?))
+}
+
+pub async fn list_quarantined_jobs(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<QuarantinedCronJobsResponse>> {
+    Ok(Json(cron_service::list_quarantined_jobs(&state).await?))
+}
+
+pub async fn get_quarantined_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<QuarantinedCronJobDetailResponse>> {
+    Ok(Json(cron_service::get_quarantined_job(&state, id).await?))
+}
+
+pub async fn export_quarantined_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<QuarantinedCronJobDetailResponse>> {
+    Ok(Json(
+        cron_service::export_quarantined_job(&state, id).await?,
+    ))
+}
+
+pub async fn delete_quarantined_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<QuarantinedCronJobDeleteResponse>> {
+    Ok(Json(
+        cron_service::delete_quarantined_job(&state, id).await?,
+    ))
 }
 
 pub async fn instantiate_blueprint(

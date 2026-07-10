@@ -5,8 +5,12 @@
 //! at-most-once and catch-up semantics.
 
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use chrono_tz::Tz;
@@ -20,20 +24,13 @@ pub enum Schedule {
     Cron { expression: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobMode {
-    Agent,
-    NoAgent,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CronJob {
     pub id: String,
     pub title: String,
     pub prompt: String,
     pub schedule: Schedule,
-    pub mode: JobMode,
     pub enabled: bool,
     pub next_run_at: DateTime<Utc>,
     pub run_count: u32,
@@ -61,7 +58,28 @@ impl CronStore {
             return Ok(Vec::new());
         }
         let raw = fs::read_to_string(&self.path)?;
-        serde_json::from_str(&raw).map_err(|err| {
+        let value = serde_json::from_str::<serde_json::Value>(&raw).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid cron jobs file: {err}"),
+            )
+        })?;
+        let Some(items) = value.as_array() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid cron jobs file: expected an array",
+            ));
+        };
+        if items
+            .iter()
+            .any(|item| item.as_object().is_some_and(|job| job.contains_key("mode")))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "legacy cron jobs require security quarantine before loading",
+            ));
+        }
+        serde_json::from_value(value).map_err(|err| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid cron jobs file: {err}"),
@@ -76,7 +94,7 @@ impl CronStore {
         let tmp = self
             .path
             .with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
-        fs::write(&tmp, serde_json::to_string_pretty(jobs).unwrap())?;
+        write_private_file(&tmp, serde_json::to_string_pretty(jobs).unwrap().as_bytes())?;
         fs::rename(tmp, &self.path)?;
         Ok(())
     }
@@ -285,6 +303,16 @@ pub fn jobs_path(agent_data_dir: &Path) -> PathBuf {
     agent_data_dir.join("cron").join("jobs.json")
 }
 
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
 fn default_wake_agent() -> bool {
     true
 }
@@ -357,7 +385,6 @@ mod tests {
             title: "Test".to_string(),
             prompt: "hello".to_string(),
             schedule: Schedule::Once { at: now },
-            mode: JobMode::NoAgent,
             enabled: true,
             next_run_at: now,
             run_count: 0,
@@ -370,6 +397,25 @@ mod tests {
         assert_eq!(store.due_jobs(now).unwrap().len(), 1);
         store.mark_run("job1", now).unwrap();
         assert!(store.due_jobs(now).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn store_refuses_legacy_execution_modes_until_quarantined() {
+        let dir = std::env::temp_dir().join(format!("mymy-cron-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("jobs.json");
+        fs::write(
+            &path,
+            r#"[{"id":"legacy","title":"Legacy","prompt":"hidden","schedule":{"kind":"interval","seconds":60},"mode":"no_agent","enabled":true,"next_run_at":"2026-07-10T00:00:00Z","run_count":0,"max_runs":null,"skills":[],"context_from":null,"wake_agent":true}]"#,
+        )
+        .unwrap();
+        let store = CronStore::new(path);
+
+        let error = store.load().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("security quarantine"));
         let _ = fs::remove_dir_all(dir);
     }
 }

@@ -36,6 +36,8 @@ export function CronResultsPanel({ results }: { results: CronResult[] }) {
                       ? "bg-[var(--status-success,#22c55e)]/10 text-[var(--status-success,#22c55e)]"
                       : result.status === "silent"
                         ? "bg-[var(--surface-hover)] text-[var(--text-muted)]"
+                        : result.status === "blocked_security_review"
+                          ? "bg-[var(--status-warning)]/10 text-[var(--status-warning)]"
                         : "bg-[var(--status-error)]/10 text-[var(--status-error)]",
                   )}
                 >
