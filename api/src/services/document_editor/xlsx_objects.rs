@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
 use serde_json::{json, Value};
 
 mod pivots;
@@ -25,7 +24,7 @@ use super::ooxml_charts::{
     update_ooxml_chart_legend, update_ooxml_chart_series, update_ooxml_chart_title,
     update_ooxml_chart_type,
 };
-use super::ooxml_images::image_mime_type_from_path;
+use super::ooxml_images::{image_mime_type_from_path, safe_ooxml_image_data_url};
 use super::xlsx_relationships::{xlsx_part_rels_path, xlsx_relationships_by_id};
 use super::xlsx_tables::parse_xlsx_sheet_tables;
 use super::{
@@ -321,12 +320,9 @@ fn parse_xlsx_image_object(
     let (_, image_path) = relationships.get(&relationship_id)?;
     let mime_type = image_mime_type_from_path(image_path);
     let media = read_zip_bytes(bytes, image_path).ok();
-    let data_url = media.as_ref().map(|bytes| {
-        format!(
-            "data:{mime_type};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        )
-    });
+    let data_url = media
+        .as_ref()
+        .and_then(|bytes| safe_ooxml_image_data_url(image_path, bytes));
     Some(json!({
         "id": relationship_id,
         "drawingPath": drawing_path,

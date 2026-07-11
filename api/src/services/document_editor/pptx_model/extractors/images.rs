@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::document_editor::ooxml_images::safe_ooxml_image_data_url;
 
 pub(in crate::services::document_editor) fn pptx_slide_images(
     bytes: &[u8],
@@ -19,12 +20,9 @@ pub(in crate::services::document_editor) fn pptx_slide_images(
                 .or_else(|| docx_tag_attr(&picture, "<a:blip", "r:link"))?;
             let (_, media_path) = relationships.get(&relationship_id)?;
             let mime_type = image_mime_type_from_path(media_path);
-            let data_url = read_zip_bytes(bytes, media_path).ok().map(|bytes| {
-                format!(
-                    "data:{mime_type};base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(bytes)
-                )
-            });
+            let data_url = read_zip_bytes(bytes, media_path)
+                .ok()
+                .and_then(|bytes| safe_ooxml_image_data_url(media_path, &bytes));
             let (x, y, width, height, rotation) =
                 pptx_shape_geometry_for_size(&picture, slide_size);
             let mut value = json!({

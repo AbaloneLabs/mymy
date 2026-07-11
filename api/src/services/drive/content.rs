@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
@@ -8,12 +8,18 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::error::{AppError, AppResult};
+use crate::services::document_conversion::checkpoint;
 use crate::services::editor_settings;
+use crate::services::ooxml_security::{read_ooxml_entry_text, validate_ooxml_compressed_size};
 use crate::state::AppState;
 
 use super::paths::resolve_drive_path;
 
 const MAX_TEXT_PREVIEW_BYTES: u64 = 1_000_000;
+const MAX_DOCUMENT_PACKAGE_DOCUMENT_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_DOCUMENT_PACKAGE_FONT_BYTES: u64 = 30 * 1024 * 1024;
+const MAX_DOCUMENT_PACKAGE_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DOCUMENT_PACKAGE_FONTS: usize = 64;
 
 pub(super) fn read_preview_content(
     physical_path: &Path,
@@ -21,6 +27,7 @@ pub(super) fn read_preview_content(
     mime_type: &str,
 ) -> AppResult<String> {
     if is_docx(physical_path) {
+        validate_ooxml_compressed_size(metadata.len())?;
         extract_docx_text(physical_path)
     } else if is_textual(physical_path, mime_type) {
         if metadata.len() > MAX_TEXT_PREVIEW_BYTES {
@@ -45,7 +52,6 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .ok_or_else(|| AppError::BadRequest("Invalid Drive file name".into()))?;
-    let document_bytes = fs::read(&resolved.physical_path)?;
     let font_files = editor_settings::custom_font_files_for_package(state)?;
 
     let cursor = Cursor::new(Vec::new());
@@ -54,13 +60,16 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
     writer
         .start_file(format!("document/{document_name}"), options)
         .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
-    writer
-        .write_all(&document_bytes)
-        .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+    let mut source_bytes = write_bounded_package_file(
+        &mut writer,
+        &resolved.physical_path,
+        MAX_DOCUMENT_PACKAGE_DOCUMENT_BYTES,
+    )?;
 
     let mut packaged_fonts = Vec::new();
     let mut skipped_fonts = Vec::new();
     for item in &font_files {
+        checkpoint()?;
         if item.font.embedding.as_deref() == Some("restricted") {
             skipped_fonts.push(json!({
                 "fileName": item.font.file_name,
@@ -71,16 +80,28 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
             }));
             continue;
         }
+        if packaged_fonts.len() >= MAX_DOCUMENT_PACKAGE_FONTS {
+            return Err(AppError::PayloadTooLarge(
+                "document_package_fonts: document package contains too many font files".into(),
+            ));
+        }
         let font_name = &item.font.file_name;
         let font_path = &item.path;
         let package_path = format!("fonts/{:02}-{}", packaged_fonts.len() + 1, font_name);
-        let bytes = fs::read(font_path)?;
         writer
             .start_file(&package_path, options)
             .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
-        writer
-            .write_all(&bytes)
-            .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+        let remaining = MAX_DOCUMENT_PACKAGE_SOURCE_BYTES.saturating_sub(source_bytes);
+        let copied = write_bounded_package_file(
+            &mut writer,
+            font_path,
+            remaining.min(MAX_DOCUMENT_PACKAGE_FONT_BYTES),
+        )?;
+        source_bytes = source_bytes.checked_add(copied).ok_or_else(|| {
+            AppError::PayloadTooLarge(
+                "document_package_bytes: document package source size overflowed".into(),
+            )
+        })?;
         packaged_fonts.push(json!({
             "fileName": font_name,
             "displayName": item.font.display_name,
@@ -132,6 +153,23 @@ pub fn document_package(state: &AppState, logical_path: &str) -> AppResult<(Vec<
         .map_err(|error| AppError::Internal(format!("package zip failed: {error}")))?;
     let package_name = format!("{}-with-fonts.zip", file_stem_or_name(&document_name));
     Ok((cursor.into_inner(), package_name))
+}
+
+fn write_bounded_package_file(
+    writer: &mut ZipWriter<Cursor<Vec<u8>>>,
+    path: &Path,
+    maximum: u64,
+) -> AppResult<u64> {
+    let file = fs::File::open(path)?;
+    let mut bounded = file.take(maximum.saturating_add(1));
+    let copied = std::io::copy(&mut bounded, writer)
+        .map_err(|error| AppError::Internal(format!("package write failed: {error}")))?;
+    if copied > maximum {
+        return Err(AppError::PayloadTooLarge(
+            "document_package_bytes: document package source exceeds its size budget".into(),
+        ));
+    }
+    Ok(copied)
 }
 
 pub fn mime_type_for_path(path: &Path) -> &'static str {
@@ -201,14 +239,8 @@ fn is_textual(path: &Path, mime_type: &str) -> bool {
 }
 
 fn extract_docx_text(path: &Path) -> AppResult<String> {
-    let file = File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| AppError::Internal(format!("Failed to read docx archive: {error}")))?;
-    let mut document = archive
-        .by_name("word/document.xml")
-        .map_err(|error| AppError::Internal(format!("Failed to read docx document: {error}")))?;
-    let mut xml = String::new();
-    document.read_to_string(&mut xml)?;
+    let package = fs::read(path)?;
+    let xml = read_ooxml_entry_text(&package, "word/document.xml")?;
 
     let paragraph_re = Regex::new(r"</w:p>").expect("static regex");
     let tag_re = Regex::new(r"<[^>]+>").expect("static regex");

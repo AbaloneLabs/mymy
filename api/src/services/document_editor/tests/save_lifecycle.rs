@@ -145,6 +145,37 @@ async fn model_version_and_capability_mismatches_fail_before_writing(pool: PgPoo
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn output_validation_failure_preserves_destination_without_temporary_files(pool: PgPool) {
+    let root = std::env::temp_dir().join(format!("mymy-document-reject-{}", Uuid::new_v4()));
+    let path = root.join("drive/shared/config.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let original = b"{\"safe\":true}\n";
+    fs::write(&path, original).unwrap();
+    let state = AppState::new(pool, test_config(root.clone(), false));
+    let opened = read_model(&state, "/drive/shared/config.json")
+        .await
+        .unwrap();
+    let mut invalid = opened.model.clone();
+    invalid["content"] = json!("{ invalid json\n");
+
+    let result = write_model(
+        &state,
+        write_request(&opened, invalid, "rejected-invalid-json"),
+    )
+    .await;
+
+    assert!(matches!(result, Err(AppError::BadRequest(_))));
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let temporary_files = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".mymy-"))
+        .count();
+    assert_eq!(temporary_files, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn agent_revision_is_visible_without_overwriting_the_user_draft(pool: PgPool) {
     let (state, root, path) = markdown_state(pool, false);
     let user_opened = read_model(&state, "/drive/shared/notes.md").await.unwrap();
@@ -215,23 +246,24 @@ fn markdown_state(
     let path = root.join("drive/shared/notes.md");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, "base revision\n").unwrap();
-    let state = AppState::new(
-        pool,
-        Config {
-            database_url: "postgres://sqlx-test".to_string(),
-            port: 0,
-            cors_origins: Vec::new(),
-            agent_data_dir: root.clone(),
-            auth_cookie_secure: false,
-            cron_tick_interval_secs: 60,
-            cron_timezone: "UTC".to_string(),
-            cron_output_keep: 50,
-            drive_s3_bucket: with_s3.then(|| "test-bucket".to_string()),
-            drive_s3_region: None,
-            drive_s3_endpoint: None,
-            sandbox_runner_url: None,
-            sandbox_preview_host: "127.0.0.1".to_string(),
-        },
-    );
+    let state = AppState::new(pool, test_config(root.clone(), with_s3));
     (state, root, path)
+}
+
+fn test_config(agent_data_dir: std::path::PathBuf, with_s3: bool) -> Config {
+    Config {
+        database_url: "postgres://sqlx-test".to_string(),
+        port: 0,
+        cors_origins: Vec::new(),
+        agent_data_dir,
+        auth_cookie_secure: false,
+        cron_tick_interval_secs: 60,
+        cron_timezone: "UTC".to_string(),
+        cron_output_keep: 50,
+        drive_s3_bucket: with_s3.then(|| "test-bucket".to_string()),
+        drive_s3_region: None,
+        drive_s3_endpoint: None,
+        sandbox_runner_url: None,
+        sandbox_preview_host: "127.0.0.1".to_string(),
+    }
 }

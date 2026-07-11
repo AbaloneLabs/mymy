@@ -875,10 +875,13 @@ fn json_bool(result: Result<bool, AppError>) -> Result<Value, ToolError> {
 
 fn app_error_to_tool(err: AppError) -> ToolError {
     match err {
-        AppError::BadRequest(message) | AppError::NotFound(message) => {
-            ToolError::InvalidArgs(message)
+        AppError::BadRequest(message)
+        | AppError::NotFound(message)
+        | AppError::PayloadTooLarge(message)
+        | AppError::UnsupportedMedia(message) => ToolError::InvalidArgs(message),
+        AppError::Unauthorized(message) | AppError::ServiceUnavailable(message) => {
+            ToolError::Unavailable(message)
         }
-        AppError::Unauthorized(message) => ToolError::Unavailable(message),
         AppError::Conflict(message) | AppError::Internal(message) => ToolError::Execution(message),
         AppError::Database(err) => ToolError::Execution(err.to_string()),
         AppError::Io(err) => ToolError::Execution(err.to_string()),

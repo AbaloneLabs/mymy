@@ -907,5 +907,8 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::Database(_) => "database_error",
         AppError::Io(_) => "io_error",
         AppError::Internal(_) => "internal_error",
+        AppError::PayloadTooLarge(_) => "payload_too_large",
+        AppError::UnsupportedMedia(_) => "unsupported_media",
+        AppError::ServiceUnavailable(_) => "service_unavailable",
     }
 }

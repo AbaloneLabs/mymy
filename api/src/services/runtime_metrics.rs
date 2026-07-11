@@ -115,6 +115,30 @@ fn describe() {
         "mymy_document_editor_mutation_duration_seconds",
         "Document save and conflict-copy latency by bounded outcome"
     );
+    metrics::describe_counter!(
+        "mymy_ooxml_admissions_total",
+        "OOXML package admissions by bounded outcome"
+    );
+    metrics::describe_counter!(
+        "mymy_ooxml_rejections_total",
+        "OOXML package rejections by bounded class and reason"
+    );
+    metrics::describe_histogram!(
+        "mymy_ooxml_declared_expanded_bytes",
+        "Declared aggregate OOXML expanded bytes after admission"
+    );
+    metrics::describe_counter!(
+        "mymy_document_conversion_failures_total",
+        "Bounded document conversion failures by operation and reason"
+    );
+    metrics::describe_histogram!(
+        "mymy_document_conversion_duration_seconds",
+        "Dedicated document conversion wall time by operation and outcome"
+    );
+    metrics::describe_counter!(
+        "mymy_document_malware_scans_total",
+        "Document malware scan outcomes without document-derived labels"
+    );
     metrics::describe_gauge!("mymy_agent_runs", "Current durable run count by status");
     metrics::describe_gauge!(
         "mymy_agent_runs_stale",

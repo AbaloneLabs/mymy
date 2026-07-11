@@ -8,7 +8,6 @@ use axum::http::{header, HeaderValue};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
-use bytes::Bytes;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
@@ -91,14 +90,67 @@ pub async fn read_drive_blob(
 ) -> AppResult<Response> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
     let (blob_path, mime_type) = drive_service::blob_path(&state, &path)?;
-    let bytes = tokio::fs::read(blob_path).await?;
-    let content_type = HeaderValue::from_str(&mime_type)
-        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    let file_name = blob_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let bytes = tokio::fs::read(&blob_path).await?;
+    let inline = is_safe_inline_drive_mime(&mime_type);
+    let content_type = if inline {
+        HeaderValue::from_str(&mime_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"))
+    } else {
+        HeaderValue::from_static("application/octet-stream")
+    };
     let mut response = Response::new(Body::from(bytes));
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        content_disposition(if inline { "inline" } else { "attachment" }, file_name),
+    );
     Ok(response)
+}
+
+fn is_safe_inline_drive_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "image/jpeg"
+            | "image/png"
+            | "image/gif"
+            | "image/webp"
+            | "video/mp4"
+            | "video/webm"
+            | "video/quicktime"
+            | "audio/mpeg"
+            | "audio/wav"
+            | "audio/ogg"
+            | "application/pdf"
+    )
+}
+
+fn content_disposition(kind: &str, file_name: &str) -> HeaderValue {
+    let safe_name = file_name
+        .chars()
+        .filter(|character| character.is_ascii_graphic() || *character == ' ')
+        .filter(|character| !matches!(character, '"' | '\\' | ';'))
+        .collect::<String>();
+    let safe_name = if safe_name.is_empty() {
+        "download"
+    } else {
+        safe_name.as_str()
+    };
+    HeaderValue::from_str(&format!(r#"{kind}; filename="{safe_name}""#))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=download"))
 }
 
 pub async fn read_drive_package(
@@ -106,7 +158,13 @@ pub async fn read_drive_package(
     Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Response> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
-    let (bytes, package_name) = drive_service::document_package(&state, &path)?;
+    let pool = state.document_conversion_pool.clone();
+    let worker_state = state.clone();
+    let (bytes, package_name) = pool
+        .run("download_package", move || {
+            drive_service::document_package(&worker_state, &path)
+        })
+        .await?;
     let mut response = Response::new(Body::from(bytes));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -164,7 +222,7 @@ pub async fn upload_drive_file(
 ) -> AppResult<Json<DriveUploadResponse>> {
     let mut target_path = "/drive".to_string();
     let mut idempotency_key: Option<String> = None;
-    let mut files: Vec<(String, Bytes)> = Vec::new();
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     while let Some(field) = multipart
         .next_field()
         .await
@@ -186,7 +244,7 @@ pub async fn upload_drive_file(
                     .bytes()
                     .await
                     .map_err(|err| AppError::BadRequest(format!("upload file failed: {err}")))?;
-                files.push((file_name, bytes));
+                files.push((file_name, bytes.to_vec()));
             }
             "idempotencyKey" => {
                 let key = field.text().await.map_err(|err| {
@@ -212,7 +270,7 @@ pub async fn upload_drive_file(
             .transpose()?
             .unwrap_or(file_name);
         let response =
-            drive_service::upload_file(&state, &target_path, &upload_name, &bytes).await?;
+            drive_service::upload_file(&state, &target_path, &upload_name, bytes).await?;
         uploaded.extend(response.files);
     }
 
@@ -307,5 +365,17 @@ mod upload_tests {
         assert_eq!(retry, first);
         assert_ne!(other, first);
         assert!(idempotent_upload_file_name("diagram.png", "../bad").is_err());
+    }
+
+    #[test]
+    fn active_drive_content_is_forced_to_attachment() {
+        assert!(!is_safe_inline_drive_mime("text/html"));
+        assert!(!is_safe_inline_drive_mime("image/svg+xml"));
+        assert!(!is_safe_inline_drive_mime("text/javascript"));
+        assert!(is_safe_inline_drive_mime("image/png"));
+        assert_eq!(
+            content_disposition("attachment", "bad\";name.svg"),
+            "attachment; filename=\"badname.svg\""
+        );
     }
 }

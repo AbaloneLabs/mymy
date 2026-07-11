@@ -45,7 +45,6 @@ mod xml_utils;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use base64::Engine as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -56,6 +55,7 @@ use crate::models::document_editor::{
     ValidateDocumentEditorModelResponse, WriteDocumentEditorModelRequest,
     DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
 };
+use crate::services::document_conversion::checkpoint as conversion_checkpoint;
 use crate::services::document_revisions::{
     record_document_revision, revision_provenance, RevisionActor,
 };
@@ -229,27 +229,32 @@ pub async fn read_model(
 /// open could pair an old parsed model with the fingerprint of a newer file and
 /// later pass optimistic concurrency while overwriting unseen content.
 async fn read_model_unlocked(
+    state: &AppState,
     logical_path: String,
     physical_path: std::path::PathBuf,
 ) -> AppResult<(DocumentEditorModelResponse, Vec<u8>)> {
     let worker_path = physical_path.clone();
-    let (kind, model, compatibility_warnings, bytes) = tokio::task::spawn_blocking(move || {
-        let metadata = std::fs::metadata(&worker_path)?;
-        if !metadata.is_file() {
-            return Err(AppError::BadRequest("Drive path is not a file".into()));
-        }
-        validate_document_file_size(metadata.len())?;
-        let kind = editor_kind_for_path(&worker_path);
-        if kind == DocumentEditorKind::Preview {
-            return Err(AppError::BadRequest("File type is not editable".into()));
-        }
-        let bytes = std::fs::read(&worker_path)?;
-        let model = model_from_bytes(kind, &bytes)?;
-        let compatibility_warnings = compatibility_warnings_for_bytes(kind, &bytes);
-        Ok::<_, AppError>((kind, model, compatibility_warnings, bytes))
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("document read worker failed: {error}")))??;
+    let (kind, model, compatibility_warnings, bytes) = state
+        .document_conversion_pool
+        .run("read", move || {
+            conversion_checkpoint()?;
+            let metadata = std::fs::metadata(&worker_path)?;
+            if !metadata.is_file() {
+                return Err(AppError::BadRequest("Drive path is not a file".into()));
+            }
+            validate_document_file_size(metadata.len())?;
+            let kind = editor_kind_for_path(&worker_path);
+            if kind == DocumentEditorKind::Preview {
+                return Err(AppError::BadRequest("File type is not editable".into()));
+            }
+            let bytes = std::fs::read(&worker_path)?;
+            validate_saved_document_bytes(kind, &worker_path, &bytes)?;
+            let model = model_from_bytes(kind, &bytes)?;
+            conversion_checkpoint()?;
+            let compatibility_warnings = compatibility_warnings_for_bytes(kind, &bytes);
+            Ok::<_, AppError>((kind, model, compatibility_warnings, bytes))
+        })
+        .await?;
     let fingerprint = fingerprint_token(&physical_path).await?;
     Ok((
         DocumentEditorModelResponse {
@@ -366,16 +371,20 @@ pub async fn write_model(
     let physical_path = resolved.physical_path.clone();
     let editor_kind = request.editor_kind;
     let model = request.model;
-    let (updated, original) = tokio::task::spawn_blocking(move || {
-        validate_document_model_size(&model)?;
-        let original = std::fs::read(&physical_path)?;
-        let updated = bytes_from_model(editor_kind, &original, &model)?;
-        validate_document_file_size(updated.len() as u64)?;
-        validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
-        Ok::<_, AppError>((updated, original))
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("document write worker failed: {error}")))??;
+    let (updated, original) = state
+        .document_conversion_pool
+        .run("write", move || {
+            conversion_checkpoint()?;
+            validate_document_model_size(&model)?;
+            let original = std::fs::read(&physical_path)?;
+            validate_saved_document_bytes(editor_kind, &physical_path, &original)?;
+            let updated = bytes_from_model(editor_kind, &original, &model)?;
+            validate_document_file_size(updated.len() as u64)?;
+            validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
+            conversion_checkpoint()?;
+            Ok::<_, AppError>((updated, original))
+        })
+        .await?;
     let result_content_hash = content_hash(&updated);
     let before_replace = fingerprint_token(&resolved.physical_path).await?;
     if before_replace != expected_fingerprint {
@@ -429,7 +438,7 @@ pub async fn write_model(
         drive::write_file_bytes_unlocked(state, &resolved.logical_path, &updated).await?;
     let logical_path = resolved.logical_path;
     let (mut response, committed_bytes) =
-        read_model_unlocked(logical_path.clone(), resolved.physical_path).await?;
+        read_model_unlocked(state, logical_path.clone(), resolved.physical_path).await?;
     if let Err(error) = pin_revision_snapshot(
         state,
         &logical_path,
@@ -552,15 +561,19 @@ pub async fn save_copy(
     let model = request.model;
     let target_path = target.physical_path.clone();
     let editor_kind = request.editor_kind;
-    let updated = tokio::task::spawn_blocking(move || {
-        validate_document_model_size(&model)?;
-        let updated = bytes_from_model(editor_kind, &base_bytes, &model)?;
-        validate_document_file_size(updated.len() as u64)?;
-        validate_saved_document_bytes(editor_kind, &target_path, &updated)?;
-        Ok::<_, AppError>(updated)
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("document copy worker failed: {error}")))??;
+    let updated = state
+        .document_conversion_pool
+        .run("copy", move || {
+            conversion_checkpoint()?;
+            validate_document_model_size(&model)?;
+            validate_saved_document_bytes(editor_kind, &target_path, &base_bytes)?;
+            let updated = bytes_from_model(editor_kind, &base_bytes, &model)?;
+            validate_document_file_size(updated.len() as u64)?;
+            validate_saved_document_bytes(editor_kind, &target_path, &updated)?;
+            conversion_checkpoint()?;
+            Ok::<_, AppError>(updated)
+        })
+        .await?;
     let result_content_hash = content_hash(&updated);
     let receipt = DocumentSaveReceipt {
         idempotency_key: request.idempotency_key.clone(),
@@ -580,7 +593,7 @@ pub async fn save_copy(
     let sync_status =
         drive::write_file_bytes_unlocked(state, &target.logical_path, &updated).await?;
     let (mut response, committed_bytes) =
-        read_model_unlocked(target.logical_path.clone(), target.physical_path).await?;
+        read_model_unlocked(state, target.logical_path.clone(), target.physical_path).await?;
     response.sync_status = sync_status;
     if let Err(error) = pin_revision_snapshot(
         state,
@@ -662,17 +675,21 @@ pub async fn validate_model(
     let physical_path = resolved.physical_path;
     let editor_kind = request.editor_kind;
     let model = request.model;
-    let (serialized_size, compatibility_warnings) = tokio::task::spawn_blocking(move || {
-        validate_document_model_size(&model)?;
-        let original = std::fs::read(&physical_path)?;
-        let updated = bytes_from_model(editor_kind, &original, &model)?;
-        validate_document_file_size(updated.len() as u64)?;
-        validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
-        let warnings = compatibility_warnings_for_bytes(editor_kind, &updated);
-        Ok::<_, AppError>((updated.len(), warnings))
-    })
-    .await
-    .map_err(|error| AppError::Internal(format!("document validation worker failed: {error}")))??;
+    let (serialized_size, compatibility_warnings) = state
+        .document_conversion_pool
+        .run("validate", move || {
+            conversion_checkpoint()?;
+            validate_document_model_size(&model)?;
+            let original = std::fs::read(&physical_path)?;
+            validate_saved_document_bytes(editor_kind, &physical_path, &original)?;
+            let updated = bytes_from_model(editor_kind, &original, &model)?;
+            validate_document_file_size(updated.len() as u64)?;
+            validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
+            let warnings = compatibility_warnings_for_bytes(editor_kind, &updated);
+            conversion_checkpoint()?;
+            Ok::<_, AppError>((updated.len(), warnings))
+        })
+        .await?;
     let expected_hash = current.split(':').next().unwrap_or(&current);
     if let Err(error) = refresh_revision_snapshot_pin(state, &logical_path, expected_hash).await {
         tracing::warn!(
@@ -693,7 +710,8 @@ async fn read_model_with_sync_unlocked(
     logical_path: String,
     physical_path: std::path::PathBuf,
 ) -> AppResult<DocumentEditorModelResponse> {
-    let (mut response, bytes) = read_model_unlocked(logical_path.clone(), physical_path).await?;
+    let (mut response, bytes) =
+        read_model_unlocked(state, logical_path.clone(), physical_path).await?;
     if let Err(error) =
         pin_revision_snapshot(state, &logical_path, &content_hash(&bytes), &bytes).await
     {

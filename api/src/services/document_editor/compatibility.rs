@@ -8,6 +8,7 @@
 use crate::models::document_editor::{
     DocumentCompatibilityWarning, DocumentCompatibilityWarningSeverity, DocumentEditorKind,
 };
+use crate::services::ooxml_security::expand_ooxml_entries;
 
 use super::{read_zip_text, zip_entry_names};
 
@@ -137,7 +138,7 @@ fn docx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         names.iter().any(|name| name == "word/vbaProject.bin"),
         "docx-macros",
         DocumentCompatibilityWarningSeverity::Danger,
-        "This document contains macros. Macro parts are preserved in the document package.",
+        "This document contains macros. Macro parts are preserved but never executed by mymy.",
     );
     push_warning_if(
         &mut warnings,
@@ -146,6 +147,7 @@ fn docx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         DocumentCompatibilityWarningSeverity::Info,
         "Page sections and layout settings are preserved in the document package.",
     );
+    append_active_content_warnings(&mut warnings, &names, bytes, "docx");
     warnings
 }
 
@@ -249,8 +251,9 @@ fn xlsx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         names.iter().any(|name| name == "xl/vbaProject.bin"),
         "xlsx-macros",
         DocumentCompatibilityWarningSeverity::Danger,
-        "This workbook contains macros. Macro parts are preserved in the workbook package.",
+        "This workbook contains macros. Macro parts are preserved but never executed by mymy.",
     );
+    append_active_content_warnings(&mut warnings, &names, bytes, "xlsx");
     warnings
 }
 
@@ -345,9 +348,56 @@ fn pptx_compatibility_warnings(bytes: &[u8]) -> Vec<DocumentCompatibilityWarning
         names.iter().any(|name| name == "ppt/vbaProject.bin"),
         "pptx-macros",
         DocumentCompatibilityWarningSeverity::Danger,
-        "This presentation contains macros. Macro parts are preserved in the presentation package.",
+        "This presentation contains macros. Macro parts are preserved but never executed by mymy.",
     );
+    append_active_content_warnings(&mut warnings, &names, bytes, "pptx");
     warnings
+}
+
+fn append_active_content_warnings(
+    warnings: &mut Vec<DocumentCompatibilityWarning>,
+    names: &[String],
+    bytes: &[u8],
+    package_kind: &str,
+) {
+    let has_svg = names
+        .iter()
+        .any(|name| name.to_ascii_lowercase().ends_with(".svg"));
+    push_warning_if(
+        warnings,
+        has_svg,
+        &format!("{package_kind}-svg-preserved"),
+        DocumentCompatibilityWarningSeverity::Danger,
+        "SVG parts are preserved but are not rendered or accepted for insertion because they may contain active content.",
+    );
+    let has_embedded_object = names.iter().any(|name| {
+        let lower = name.to_ascii_lowercase();
+        lower.contains("/embeddings/") || lower.ends_with("oleobject.bin")
+    });
+    push_warning_if(
+        warnings,
+        has_embedded_object,
+        &format!("{package_kind}-embedded-objects"),
+        DocumentCompatibilityWarningSeverity::Danger,
+        "Embedded object parts are preserved as opaque package data and are never opened or executed by mymy.",
+    );
+    let has_external_relationship = expand_ooxml_entries(bytes)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.name.ends_with(".rels"))
+        .any(|entry| relationship_markup_has_external_target(&entry.bytes));
+    push_warning_if(
+        warnings,
+        has_external_relationship,
+        &format!("{package_kind}-external-relationships"),
+        DocumentCompatibilityWarningSeverity::Warning,
+        "External relationships are preserved as links but are never dereferenced or refreshed by mymy.",
+    );
+}
+
+fn relationship_markup_has_external_target(xml: &[u8]) -> bool {
+    let lowercase = String::from_utf8_lossy(xml).to_ascii_lowercase();
+    lowercase.contains("targetmode=\"external\"") || lowercase.contains("targetmode='external'")
 }
 
 fn push_warning_if(

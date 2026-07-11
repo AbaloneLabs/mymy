@@ -61,6 +61,33 @@ pub(super) fn image_mime_type_from_path(path: &str) -> &'static str {
     }
 }
 
+/// Return browser-renderable image data only for inert raster formats.
+///
+/// SVG parts remain preserved in the OOXML package, but exposing attacker-
+/// controlled SVG as a data URL would move active XML into the web origin's
+/// rendering surface. The editor therefore represents SVG metadata without a
+/// preview payload and never rewrites the preserved part unless explicitly
+/// replaced by a supported raster image.
+pub(super) fn safe_ooxml_image_data_url(path: &str, bytes: &[u8]) -> Option<String> {
+    let mime_type = match path
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    Some(format!(
+        "data:{mime_type};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 pub(super) fn add_docx_image_replacements(
     original: &[u8],
     blocks: &mut [Value],
@@ -145,10 +172,7 @@ pub(super) fn docx_image_block_from_segment(
     let media_path = docx_relationship_target_path(&target);
     let media = read_zip_bytes(bytes, &media_path).ok()?;
     let mime_type = mime_type_for_path_string(&media_path);
-    let data_url = format!(
-        "data:{mime_type};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(media)
-    );
+    let data_url = safe_ooxml_image_data_url(&media_path, &media);
     let (width, height) = docx_image_extent(segment);
     let mut block = json!({
         "id": format!("img{}", index + 1),
@@ -312,7 +336,6 @@ fn ooxml_image_mime_extension(mime: &str) -> Option<(&'static str, &'static str)
         "image/jpeg" | "image/jpg" => Some(("image/jpeg", "jpg")),
         "image/gif" => Some(("image/gif", "gif")),
         "image/webp" => Some(("image/webp", "webp")),
-        "image/svg+xml" => Some(("image/svg+xml", "svg")),
         _ => None,
     }
 }
@@ -510,4 +533,20 @@ fn replace_or_insert_docx_image_src_rect(xml: &str, src_rect: &str) -> String {
         }
     }
     xml.to_string()
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn svg_is_preserved_without_a_browser_data_url_and_cannot_be_inserted() {
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        assert!(safe_ooxml_image_data_url("word/media/image.svg", svg).is_none());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(svg);
+        assert!(matches!(
+            decode_docx_image_data_url(&format!("data:image/svg+xml;base64,{encoded}")),
+            Err(AppError::BadRequest(_))
+        ));
+    }
 }

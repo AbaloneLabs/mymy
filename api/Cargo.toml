@@ -51,6 +51,8 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 iso_currency = "0.5.3"
 regex = "1"
+quick-xml = "0.41"
+crossbeam-channel = "0.5"
 dotenvy = "0.15"
 hex = "0.4"
 sha2 = "0.10"
@@ -58,6 +60,7 @@ base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 percent-encoding = "2"
 urlencoding = "2"
+unicode-normalization = "0.1"
 
 # Logging
 tracing = "0.1"

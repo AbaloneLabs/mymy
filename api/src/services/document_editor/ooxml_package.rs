@@ -7,18 +7,21 @@
 //! parts they own.
 
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::error::{AppError, AppResult};
+use crate::services::ooxml_security::{
+    expand_ooxml_entries, ooxml_entry_names, read_ooxml_entry_bytes, read_ooxml_entry_text,
+};
 
 pub(super) fn replace_zip_entries(
     original: &[u8],
     replacements: &[(&str, Vec<u8>)],
 ) -> AppResult<Vec<u8>> {
-    let mut archive = zip_archive(original)?;
+    let entries = expand_ooxml_entries(original)?;
     let mut replacement_map = replacements
         .iter()
         .map(|(path, bytes)| ((*path).to_string(), bytes.as_slice()))
@@ -26,16 +29,15 @@ pub(super) fn replace_zip_entries(
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
-    for index in 0..archive.len() {
-        let mut file = archive.by_index(index).map_err(map_zip)?;
-        let name = file.name().to_string();
-        if file.is_dir() {
+    for entry in entries {
+        let name = entry.name;
+        if entry.is_dir {
             writer.add_directory(&name, options).map_err(map_zip)?;
             continue;
         }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).map_err(map_io)?;
-        let bytes = replacement_map.remove(&name).unwrap_or(contents.as_slice());
+        let bytes = replacement_map
+            .remove(&name)
+            .unwrap_or(entry.bytes.as_slice());
         writer.start_file(&name, options).map_err(map_zip)?;
         writer.write_all(bytes).map_err(map_io)?;
     }
@@ -48,28 +50,15 @@ pub(super) fn replace_zip_entries(
 }
 
 pub(super) fn read_zip_text(bytes: &[u8], path: &str) -> AppResult<String> {
-    let mut archive = zip_archive(bytes)?;
-    let mut file = archive.by_name(path).map_err(map_zip)?;
-    let mut text = String::new();
-    file.read_to_string(&mut text).map_err(map_io)?;
-    Ok(text)
+    read_ooxml_entry_text(bytes, path)
 }
 
 pub(super) fn read_zip_bytes(bytes: &[u8], path: &str) -> AppResult<Vec<u8>> {
-    let mut archive = zip_archive(bytes)?;
-    let mut file = archive.by_name(path).map_err(map_zip)?;
-    let mut output = Vec::new();
-    file.read_to_end(&mut output).map_err(map_io)?;
-    Ok(output)
+    read_ooxml_entry_bytes(bytes, path)
 }
 
 pub(super) fn zip_entry_names(bytes: &[u8]) -> AppResult<Vec<String>> {
-    let mut archive = zip_archive(bytes)?;
-    let mut names = Vec::new();
-    for index in 0..archive.len() {
-        names.push(archive.by_index(index).map_err(map_zip)?.name().to_string());
-    }
-    Ok(names)
+    ooxml_entry_names(bytes)
 }
 
 pub(super) fn next_rid(rels: &str) -> usize {
@@ -114,11 +103,6 @@ pub(super) fn upsert_zip_replacement(
         return;
     }
     replacements.push((path, bytes));
-}
-
-fn zip_archive(bytes: &[u8]) -> AppResult<ZipArchive<Cursor<&[u8]>>> {
-    ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| AppError::BadRequest(format!("Invalid OOXML package: {error}")))
 }
 
 fn map_zip(error: zip::result::ZipError) -> AppError {

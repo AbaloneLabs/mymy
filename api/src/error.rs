@@ -1,7 +1,7 @@
 //! Unified error type mapping domain errors to HTTP responses.
 
 use axum::{
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -23,6 +23,15 @@ pub enum AppError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
+
+    #[error("unsupported media: {0}")]
+    UnsupportedMedia(String),
+
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -35,11 +44,18 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let retryable = matches!(self, AppError::ServiceUnavailable(_));
         let (status, message) = match &self {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
+            AppError::UnsupportedMedia(msg) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, msg.clone()),
+            AppError::ServiceUnavailable(msg) => {
+                tracing::warn!(error = %msg, "service unavailable");
+                (StatusCode::SERVICE_UNAVAILABLE, msg.clone())
+            }
             AppError::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
@@ -57,6 +73,33 @@ impl IntoResponse for AppError {
             }
         };
 
-        (status, Json(json!({ "error": message }))).into_response()
+        let mut response = if retryable {
+            (status, Json(json!({ "error": message, "retryable": true }))).into_response()
+        } else {
+            (status, Json(json!({ "error": message }))).into_response()
+        };
+        if retryable {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn service_unavailable_is_explicitly_retryable() {
+        let response = AppError::ServiceUnavailable("capacity unavailable".into()).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "1");
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["retryable"], true);
     }
 }

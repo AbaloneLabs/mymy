@@ -77,7 +77,10 @@ fn record_document_editor_mutation(
         }
         Ok(_) => "committed",
         Err(AppError::Conflict(_)) => "conflict",
-        Err(AppError::BadRequest(_)) => "rejected",
+        Err(
+            AppError::BadRequest(_) | AppError::PayloadTooLarge(_) | AppError::UnsupportedMedia(_),
+        ) => "rejected",
+        Err(AppError::ServiceUnavailable(_)) => "overloaded",
         Err(_) => "failed",
     };
     metrics::counter!(

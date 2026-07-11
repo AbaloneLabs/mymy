@@ -209,10 +209,13 @@ impl ProcessToolContext {
 
 pub(super) fn app_error_to_tool(err: AppError, context: &str) -> ToolError {
     match err {
-        AppError::BadRequest(message) | AppError::NotFound(message) => {
-            ToolError::InvalidArgs(message)
+        AppError::BadRequest(message)
+        | AppError::NotFound(message)
+        | AppError::PayloadTooLarge(message)
+        | AppError::UnsupportedMedia(message) => ToolError::InvalidArgs(message),
+        AppError::Unauthorized(message) | AppError::ServiceUnavailable(message) => {
+            ToolError::Unavailable(message)
         }
-        AppError::Unauthorized(message) => ToolError::Unavailable(message),
         AppError::Conflict(message) | AppError::Internal(message) => {
             ToolError::Execution(format!("{context}: {message}"))
         }

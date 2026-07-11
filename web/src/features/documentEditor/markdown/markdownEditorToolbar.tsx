@@ -268,7 +268,7 @@ export function MarkdownEditorToolbar({
           <input
             ref={imageFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+            accept="image/png,image/jpeg,image/gif,image/webp"
             className="hidden"
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];

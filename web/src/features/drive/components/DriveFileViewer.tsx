@@ -29,7 +29,7 @@ export function DriveFileViewer({
   if (isHtmlFile(file)) {
     return <LightweightBrowserPane path={file.path} />;
   }
-  if (file.mimeType.startsWith("image/")) {
+  if (file.mimeType.startsWith("image/") && file.mimeType !== "image/svg+xml") {
     return (
       <img
         src={blobUrl}

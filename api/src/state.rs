@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::agent::clarify::ClarifyGate;
 use crate::agent::execution::RunCancellation;
 use crate::config::Config;
+use crate::services::document_conversion::DocumentConversionPool;
 
 /// In-memory cache of the encryption key derived from the user's PIN.
 ///
@@ -42,6 +43,10 @@ pub struct AppState {
     /// authoritative; entries are keyed by lease epoch so an expired worker
     /// cannot unregister or signal a newer owner accidentally.
     pub run_cancellations: Arc<RwLock<HashMap<(Uuid, i64), RunCancellation>>>,
+    /// Fixed-size pool for untrusted document ZIP/XML conversion. The pool is
+    /// intentionally separate from Tokio's general blocking workers and uses a
+    /// bounded queue so overload becomes a retryable response.
+    pub document_conversion_pool: Arc<DocumentConversionPool>,
     /// Serializes writes to the same Drive file across UI, agent, and sync
     /// entry points in this API process. The weak registry avoids retaining a
     /// mutex for every historical path while still making the fingerprint
@@ -64,6 +69,7 @@ impl AppState {
             clarify_gate: Arc::new(ClarifyGate::new()),
             agent_run_notify: Arc::new(Notify::new()),
             run_cancellations: Arc::new(RwLock::new(HashMap::new())),
+            document_conversion_pool: Arc::new(DocumentConversionPool::from_environment()),
             drive_write_locks: Arc::new(Mutex::new(HashMap::new())),
             drive_namespace_lock: Arc::new(RwLock::new(())),
         }

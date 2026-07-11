@@ -8,6 +8,7 @@ use crate::models::drive::{
     DriveUploadResponse, MoveDrivePathResponse,
 };
 use crate::services::document_editor::editor_kind_for_path;
+use crate::services::document_malware::scan_document_bytes;
 use crate::services::file_mutations::atomic_replace_file;
 use crate::services::file_observations::{fingerprint_path, FileFingerprint};
 use crate::state::AppState;
@@ -94,7 +95,15 @@ pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveF
     }
 
     let mime_type = mime_type_for_path(&resolved.physical_path).to_string();
-    let content = read_preview_content(&resolved.physical_path, &metadata, &mime_type)?;
+    let preview_path = resolved.physical_path.clone();
+    let preview_metadata = metadata.clone();
+    let preview_mime_type = mime_type.clone();
+    let content = state
+        .document_conversion_pool
+        .run("preview", move || {
+            read_preview_content(&preview_path, &preview_metadata, &preview_mime_type)
+        })
+        .await?;
     let fingerprint = fingerprint_path(&resolved.physical_path)
         .await
         .map_err(AppError::Internal)?;
@@ -164,7 +173,15 @@ pub async fn write_file_conditionally(
             "Drive file no longer exists at the reviewed path".to_string(),
         ));
     }
-    write_file_bytes_unlocked(state, &resolved.logical_path, content.as_bytes()).await?;
+    let bytes = content.as_bytes().to_vec();
+    let bytes = state
+        .document_conversion_pool
+        .run("drive_write_scan", move || {
+            scan_document_bytes(&bytes)?;
+            Ok(bytes)
+        })
+        .await?;
+    write_file_bytes_unlocked(state, &resolved.logical_path, &bytes).await?;
     fingerprint_path(&resolved.physical_path)
         .await
         .map_err(AppError::Internal)
@@ -211,7 +228,7 @@ pub async fn upload_file(
     state: &AppState,
     target_directory: &str,
     file_name: &str,
-    bytes: &[u8],
+    bytes: Vec<u8>,
 ) -> AppResult<DriveUploadResponse> {
     let _namespace_guard = state.drive_namespace_lock().read().await;
     ensure_drive_root(state)?;
@@ -222,12 +239,21 @@ pub async fn upload_file(
             "Upload target must be a Drive directory".into(),
         ));
     }
+    // Scan before creating directories or temporary files so every rejected
+    // upload leaves the Drive namespace byte-for-byte unchanged.
+    let bytes = state
+        .document_conversion_pool
+        .run("upload_scan", move || {
+            scan_document_bytes(&bytes)?;
+            Ok(bytes)
+        })
+        .await?;
     fs::create_dir_all(&target_dir.physical_path)?;
     let logical_path = logical_child_path(&target_dir.logical_path, &safe_name);
     let physical_path = target_dir.physical_path.join(&safe_name);
     let write_lock = state.drive_write_lock(&physical_path).await;
     let _write_guard = write_lock.lock().await;
-    atomic_replace_file(&physical_path, bytes).await?;
+    atomic_replace_file(&physical_path, &bytes).await?;
     if let Err(error) = enqueue_s3_sync_job(state, &logical_path, "upload").await {
         tracing::error!(
             path = %logical_path,

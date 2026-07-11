@@ -1,4 +1,5 @@
 use super::*;
+use crate::services::document_editor::ooxml_images::safe_ooxml_image_data_url;
 
 pub(in crate::services::document_editor) fn pptx_slide_background_segment(
     slide: &str,
@@ -86,12 +87,9 @@ pub(in crate::services::document_editor) fn pptx_slide_background_image(
         .unwrap_or_default();
     let (_, media_path) = relationships.get(&relationship_id)?;
     let mime_type = image_mime_type_from_path(media_path);
-    let data_url = read_zip_bytes(bytes, media_path).ok().map(|bytes| {
-        format!(
-            "data:{mime_type};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        )
-    });
+    let data_url = read_zip_bytes(bytes, media_path)
+        .ok()
+        .and_then(|bytes| safe_ooxml_image_data_url(media_path, &bytes));
     Some((
         relationship_id,
         media_path.clone(),
