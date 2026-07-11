@@ -70,4 +70,3 @@ const documentEditor = {
 } as const;
 
 export default documentEditor;
-
