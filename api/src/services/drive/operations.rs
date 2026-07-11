@@ -2,15 +2,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::ContentOrigin;
 use crate::models::document_editor::DocumentEditorSyncStatus;
 use crate::models::drive::{
     DriveEntry, DriveEntryKind, DriveFileResponse, DriveListResponse, DriveProviderKind,
-    DriveUploadResponse, MoveDrivePathResponse,
+    DriveUploadOutcome, DriveUploadResponse, DriveUploadResult, MoveDrivePathResponse,
 };
 use crate::services::document_editor::editor_kind_for_path;
-use crate::services::document_malware::scan_document_bytes;
-use crate::services::file_mutations::atomic_replace_file;
 use crate::services::file_observations::{fingerprint_path, FileFingerprint};
+use crate::services::workspace_content::{
+    AdmissionActor, AdmissionOutcome, AdmissionRequest, StagedContent,
+};
 use crate::state::AppState;
 
 use super::content::{is_editable, mime_type_for_path, read_preview_content};
@@ -85,6 +87,10 @@ pub async fn list(state: &AppState, logical_path: Option<&str>) -> AppResult<Dri
 }
 
 pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveFileResponse> {
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, logical_path)
+        .await?;
     let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     let write_lock = state.drive_write_lock(&resolved.physical_path).await;
@@ -148,89 +154,47 @@ pub async fn write_file_conditionally(
     content: &str,
     expected_fingerprint: Option<&str>,
 ) -> AppResult<FileFingerprint> {
-    let _namespace_guard = state.drive_namespace_lock().read().await;
-    ensure_drive_root(state)?;
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
-    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
-    let _write_guard = write_lock.lock().await;
-    if resolved.physical_path.exists() {
-        let expected = expected_fingerprint.ok_or_else(|| {
-            AppError::Conflict(
-                "Existing Drive files require the fingerprint returned by the latest read"
-                    .to_string(),
-            )
-        })?;
-        let current = fingerprint_path(&resolved.physical_path)
-            .await
-            .map_err(AppError::Internal)?;
-        if current.hash != expected {
-            return Err(AppError::Conflict(
-                "Drive file changed since it was read".to_string(),
-            ));
-        }
-    } else if expected_fingerprint.is_some() {
+    if resolved.physical_path.exists() && expected_fingerprint.is_none() {
         return Err(AppError::Conflict(
-            "Drive file no longer exists at the reviewed path".to_string(),
+            "Existing Drive files require the fingerprint returned by the latest read".to_string(),
         ));
     }
-    let bytes = content.as_bytes().to_vec();
-    let bytes = state
-        .document_conversion_pool
-        .run("drive_write_scan", move || {
-            scan_document_bytes(&bytes)?;
-            Ok(bytes)
-        })
+    let file_name = resolved
+        .physical_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let outcome = state
+        .workspace_content
+        .admit_bytes(
+            state,
+            AdmissionRequest {
+                desired_path: resolved.logical_path,
+                file_name,
+                origin: ContentOrigin::UserEdit,
+                actor: AdmissionActor::user(),
+                expected_fingerprint: expected_fingerprint.map(str::to_string),
+                allow_overwrite: true,
+                enqueue_s3_sync: true,
+            },
+            content.as_bytes(),
+        )
         .await?;
-    write_file_bytes_unlocked(state, &resolved.logical_path, &bytes).await?;
-    fingerprint_path(&resolved.physical_path)
-        .await
-        .map_err(AppError::Internal)
+    match outcome {
+        AdmissionOutcome::Committed { fingerprint, .. } => Ok(fingerprint),
+        AdmissionOutcome::Quarantined { .. } => Err(AppError::content_quarantined()),
+        AdmissionOutcome::Rejected => Err(AppError::content_rejected()),
+    }
 }
 
-/// Write bytes while the caller holds the shared lock for the resolved path.
-///
-/// Document-editor saves need this lower-level entry point so their optimistic
-/// fingerprint check, package conversion, validation, and replacement all stay
-/// inside one critical section. Other callers must use `write_file_bytes`.
-pub(crate) async fn write_file_bytes_unlocked(
-    state: &AppState,
-    logical_path: &str,
-    bytes: &[u8],
-) -> AppResult<DocumentEditorSyncStatus> {
-    ensure_drive_root(state)?;
-    let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
-    if let Some(parent) = resolved.physical_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if resolved.physical_path.exists() && fs::metadata(&resolved.physical_path)?.is_dir() {
-        return Err(AppError::BadRequest("Cannot overwrite a directory".into()));
-    }
-    atomic_replace_file(&resolved.physical_path, bytes).await?;
-    if state.config.drive_s3_bucket.is_none() {
-        return Ok(DocumentEditorSyncStatus::LocalOnly);
-    }
-    if let Err(error) = enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await {
-        // The local file is already durable at this point. Returning an error
-        // would tell the editor that the save failed and make a retry conflict
-        // with bytes that were in fact committed. Sync recovery remains a
-        // separate status concern and must never falsify local-save outcome.
-        tracing::error!(
-            path = %resolved.logical_path,
-            error = %error,
-            "local Drive write committed but S3 sync enqueue failed"
-        );
-        return Ok(DocumentEditorSyncStatus::Failed);
-    }
-    Ok(DocumentEditorSyncStatus::Pending)
-}
-
-pub async fn upload_file(
+pub async fn upload_staged_file(
     state: &AppState,
     target_directory: &str,
     file_name: &str,
-    bytes: Vec<u8>,
+    staged: StagedContent,
 ) -> AppResult<DriveUploadResponse> {
-    let _namespace_guard = state.drive_namespace_lock().read().await;
     ensure_drive_root(state)?;
     let safe_name = validate_file_name(file_name)?;
     let target_dir = resolve_drive_path(&state.config.agent_data_dir, target_directory)?;
@@ -239,32 +203,72 @@ pub async fn upload_file(
             "Upload target must be a Drive directory".into(),
         ));
     }
-    // Scan before creating directories or temporary files so every rejected
-    // upload leaves the Drive namespace byte-for-byte unchanged.
-    let bytes = state
-        .document_conversion_pool
-        .run("upload_scan", move || {
-            scan_document_bytes(&bytes)?;
-            Ok(bytes)
-        })
-        .await?;
-    fs::create_dir_all(&target_dir.physical_path)?;
     let logical_path = logical_child_path(&target_dir.logical_path, &safe_name);
     let physical_path = target_dir.physical_path.join(&safe_name);
-    let write_lock = state.drive_write_lock(&physical_path).await;
-    let _write_guard = write_lock.lock().await;
-    atomic_replace_file(&physical_path, &bytes).await?;
-    if let Err(error) = enqueue_s3_sync_job(state, &logical_path, "upload").await {
-        tracing::error!(
-            path = %logical_path,
-            error = %error,
-            "local Drive upload committed but S3 sync enqueue failed"
-        );
-    }
+    let outcome = state
+        .workspace_content
+        .admit_staged(
+            state,
+            AdmissionRequest {
+                desired_path: logical_path.clone(),
+                file_name: safe_name.clone(),
+                origin: ContentOrigin::UserUpload,
+                actor: AdmissionActor::user(),
+                expected_fingerprint: None,
+                allow_overwrite: true,
+                enqueue_s3_sync: true,
+            },
+            staged,
+        )
+        .await?;
+    let (files, result) = match outcome {
+        AdmissionOutcome::Committed { sync_status, .. } => {
+            if sync_status == DocumentEditorSyncStatus::Failed {
+                tracing::warn!(
+                    path = %logical_path,
+                    "Drive upload committed but object-storage sync could not be queued"
+                );
+            }
+            let entry = entry_for_path(safe_name, logical_path, &physical_path)?;
+            (
+                vec![entry.clone()],
+                DriveUploadResult {
+                    requested_name: file_name.to_string(),
+                    outcome: DriveUploadOutcome::Committed,
+                    file: Some(entry),
+                    code: None,
+                    message: None,
+                },
+            )
+        }
+        AdmissionOutcome::Quarantined { .. } => (
+            Vec::new(),
+            DriveUploadResult {
+                requested_name: file_name.to_string(),
+                outcome: DriveUploadOutcome::Quarantined,
+                file: None,
+                code: Some("content_quarantined".to_string()),
+                message: Some(
+                    "The file requires user review before it becomes available.".to_string(),
+                ),
+            },
+        ),
+        AdmissionOutcome::Rejected => (
+            Vec::new(),
+            DriveUploadResult {
+                requested_name: file_name.to_string(),
+                outcome: DriveUploadOutcome::Rejected,
+                file: None,
+                code: Some("content_rejected".to_string()),
+                message: Some("The file does not pass the current content policy.".to_string()),
+            },
+        ),
+    };
 
     Ok(DriveUploadResponse {
         success: true,
-        files: vec![entry_for_path(safe_name, logical_path, &physical_path)?],
+        files,
+        results: vec![result],
     })
 }
 

@@ -5,6 +5,8 @@
 //! writes the edited model back by replacing the relevant XML parts while
 //! preserving the rest of the package.
 
+mod codec;
+pub mod commands;
 mod compatibility;
 mod docx_blocks;
 mod docx_comments;
@@ -49,6 +51,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::ContentOrigin;
 use crate::models::document_editor::{
     DocumentEditorKind, DocumentEditorModelResponse, DocumentEditorSyncStatus,
     SaveDocumentEditorCopyRequest, ValidateDocumentEditorModelRequest,
@@ -61,6 +64,7 @@ use crate::services::document_revisions::{
 };
 use crate::services::drive;
 use crate::services::file_observations::{fingerprint_path, FileFingerprint};
+use crate::services::workspace_content::{AdmissionActor, AdmissionOutcome, AdmissionRequest};
 use crate::state::AppState;
 
 use self::compatibility::compatibility_warnings_for_bytes;
@@ -217,6 +221,10 @@ pub async fn read_model(
     state: &AppState,
     logical_path: &str,
 ) -> AppResult<DocumentEditorModelResponse> {
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, logical_path)
+        .await?;
     let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     let write_lock = state.drive_write_lock(&resolved.physical_path).await;
@@ -277,6 +285,89 @@ async fn read_model_unlocked(
     ))
 }
 
+async fn model_response_from_committed_bytes(
+    state: &AppState,
+    logical_path: String,
+    physical_path: std::path::PathBuf,
+    bytes: Vec<u8>,
+    fingerprint: FileFingerprint,
+    sync_status: DocumentEditorSyncStatus,
+) -> AppResult<DocumentEditorModelResponse> {
+    let worker_path = physical_path.clone();
+    let worker_bytes = bytes;
+    let (kind, model, compatibility_warnings) = state
+        .document_conversion_pool
+        .run("committed_read", move || {
+            conversion_checkpoint()?;
+            validate_document_file_size(worker_bytes.len() as u64)?;
+            let kind = editor_kind_for_path(&worker_path);
+            if kind == DocumentEditorKind::Preview {
+                return Err(AppError::BadRequest("File type is not editable".into()));
+            }
+            validate_saved_document_bytes(kind, &worker_path, &worker_bytes)?;
+            let model = model_from_bytes(kind, &worker_bytes)?;
+            let warnings = compatibility_warnings_for_bytes(kind, &worker_bytes);
+            conversion_checkpoint()?;
+            Ok::<_, AppError>((kind, model, warnings))
+        })
+        .await?;
+    Ok(DocumentEditorModelResponse {
+        path: logical_path,
+        name: physical_path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        editor_kind: kind,
+        mime_type: mime_type_for_editor(kind),
+        fingerprint: fingerprint_value_token(&fingerprint),
+        model_schema_version: DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
+        capabilities: document_editor_capabilities(kind),
+        sync_status,
+        revision_provenance: None,
+        compatibility_warnings,
+        model,
+    })
+}
+
+async fn commit_editor_output(
+    state: &AppState,
+    logical_path: &str,
+    physical_path: &Path,
+    bytes: &[u8],
+    expected_fingerprint: Option<&str>,
+    allow_overwrite: bool,
+) -> AppResult<(FileFingerprint, DocumentEditorSyncStatus)> {
+    let file_name = physical_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .to_string();
+    let outcome = state
+        .workspace_content
+        .admit_bytes(
+            state,
+            AdmissionRequest {
+                desired_path: logical_path.to_string(),
+                file_name,
+                origin: ContentOrigin::EditorOutput,
+                actor: AdmissionActor::user(),
+                expected_fingerprint: expected_fingerprint.map(str::to_string),
+                allow_overwrite,
+                enqueue_s3_sync: true,
+            },
+            bytes,
+        )
+        .await?;
+    match outcome {
+        AdmissionOutcome::Committed {
+            fingerprint,
+            sync_status,
+        } => Ok((fingerprint, sync_status)),
+        AdmissionOutcome::Quarantined { .. } => Err(AppError::content_quarantined()),
+        AdmissionOutcome::Rejected => Err(AppError::content_rejected()),
+    }
+}
+
 pub async fn write_model(
     state: &AppState,
     request: WriteDocumentEditorModelRequest,
@@ -289,11 +380,12 @@ pub async fn write_model(
     }
     validate_document_editor_capabilities(request.editor_kind, &request.required_capabilities)?;
     validate_document_editor_idempotency_key(&request.idempotency_key)?;
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, &request.path)
+        .await?;
     let request_hash = document_save_request_hash(&request)?;
-    let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, &request.path)?;
-    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
-    let _write_guard = write_lock.lock().await;
     let metadata = std::fs::metadata(&resolved.physical_path)?;
     if !metadata.is_file() {
         return Err(AppError::BadRequest("Drive path is not a file".into()));
@@ -434,11 +526,26 @@ pub async fn write_model(
         &original,
     )
     .await?;
-    let sync_status =
-        drive::write_file_bytes_unlocked(state, &resolved.logical_path, &updated).await?;
+    let (committed_fingerprint, sync_status) = commit_editor_output(
+        state,
+        &resolved.logical_path,
+        &resolved.physical_path,
+        &updated,
+        Some(&expected_fingerprint),
+        true,
+    )
+    .await?;
     let logical_path = resolved.logical_path;
-    let (mut response, committed_bytes) =
-        read_model_unlocked(state, logical_path.clone(), resolved.physical_path).await?;
+    let committed_bytes = updated;
+    let mut response = model_response_from_committed_bytes(
+        state,
+        logical_path.clone(),
+        resolved.physical_path,
+        committed_bytes.clone(),
+        committed_fingerprint,
+        sync_status,
+    )
+    .await?;
     if let Err(error) = pin_revision_snapshot(
         state,
         &logical_path,
@@ -453,7 +560,6 @@ pub async fn write_model(
             "document save committed but its recovery snapshot was not recorded"
         );
     }
-    response.sync_status = sync_status;
     if let Err(error) =
         mark_save_receipt_committed(state, &idempotency_key, &response.fingerprint).await
     {
@@ -488,6 +594,14 @@ pub async fn save_copy(
     state: &AppState,
     request: SaveDocumentEditorCopyRequest,
 ) -> AppResult<DocumentEditorModelResponse> {
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, &request.source_path)
+        .await?;
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, &request.target_path)
+        .await?;
     if request.model_schema_version != DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION {
         return Err(AppError::BadRequest(format!(
             "Document editor model schema changed (client {}, server {})",
@@ -503,7 +617,6 @@ pub async fn save_copy(
     }
     let request_hash = document_copy_request_hash(&request)?;
     let receipt_expected = format!("copy:{}", request.base_fingerprint);
-    let _namespace_guard = state.drive_namespace_lock().read().await;
     let source = drive::resolve_drive_path(&state.config.agent_data_dir, &request.source_path)?;
     let target = drive::resolve_drive_path(&state.config.agent_data_dir, &request.target_path)?;
     let expected_source_kind = editor_kind_for_path(&source.physical_path);
@@ -513,8 +626,6 @@ pub async fn save_copy(
             "Conflict copy must keep the source document file type".into(),
         ));
     }
-    let target_lock = state.drive_write_lock(&target.physical_path).await;
-    let _target_guard = target_lock.lock().await;
     let editor_kind_key = document_editor_kind_key(request.editor_kind).to_string();
     if let Some(receipt) = load_save_receipt(state, &request.idempotency_key).await? {
         validate_save_receipt_request(
@@ -590,11 +701,25 @@ pub async fn save_copy(
             "Conflict copy idempotency key is already in use".into(),
         ));
     }
-    let sync_status =
-        drive::write_file_bytes_unlocked(state, &target.logical_path, &updated).await?;
-    let (mut response, committed_bytes) =
-        read_model_unlocked(state, target.logical_path.clone(), target.physical_path).await?;
-    response.sync_status = sync_status;
+    let (committed_fingerprint, sync_status) = commit_editor_output(
+        state,
+        &target.logical_path,
+        &target.physical_path,
+        &updated,
+        None,
+        false,
+    )
+    .await?;
+    let committed_bytes = updated;
+    let mut response = model_response_from_committed_bytes(
+        state,
+        target.logical_path.clone(),
+        target.physical_path.clone(),
+        committed_bytes.clone(),
+        committed_fingerprint,
+        sync_status,
+    )
+    .await?;
     if let Err(error) = pin_revision_snapshot(
         state,
         &target.logical_path,
@@ -643,6 +768,10 @@ pub async fn validate_model(
     state: &AppState,
     request: ValidateDocumentEditorModelRequest,
 ) -> AppResult<ValidateDocumentEditorModelResponse> {
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, &request.path)
+        .await?;
     if request.model_schema_version != DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION {
         return Err(AppError::BadRequest(format!(
             "Document editor model schema changed (client {}, server {})",
@@ -930,17 +1059,7 @@ fn fingerprint_value_token(fingerprint: &FileFingerprint) -> String {
 }
 
 fn model_from_bytes(kind: DocumentEditorKind, bytes: &[u8]) -> AppResult<Value> {
-    match kind {
-        DocumentEditorKind::Markdown | DocumentEditorKind::Text => text_model(bytes),
-        DocumentEditorKind::Csv => delimited_model(bytes, ','),
-        DocumentEditorKind::Tsv => delimited_model(bytes, '\t'),
-        DocumentEditorKind::Docx => docx_model(bytes),
-        DocumentEditorKind::Xlsx => xlsx_model(bytes),
-        DocumentEditorKind::Pptx => pptx_model(bytes),
-        DocumentEditorKind::Preview => {
-            Err(AppError::BadRequest("File type is not editable".into()))
-        }
-    }
+    codec::codec_for_kind(kind).decode(bytes)
 }
 
 fn bytes_from_model(
@@ -948,29 +1067,7 @@ fn bytes_from_model(
     original: &[u8],
     model: &Value,
 ) -> AppResult<Vec<u8>> {
-    if matches!(
-        kind,
-        DocumentEditorKind::Docx | DocumentEditorKind::Xlsx | DocumentEditorKind::Pptx
-    ) && model_from_bytes(kind, original)? == *model
-    {
-        // OOXML packages may contain producer-specific ordering, extension
-        // nodes, and ZIP metadata that are intentionally outside the editor's
-        // ownership. Returning the exact source package for a semantic no-op
-        // avoids manufacturing a package-level change and gives retries and
-        // explicit save-without-edit flows a lossless fixed point.
-        return Ok(original.to_vec());
-    }
-    match kind {
-        DocumentEditorKind::Markdown | DocumentEditorKind::Text => text_bytes(original, model),
-        DocumentEditorKind::Csv => delimited_bytes(original, model, ','),
-        DocumentEditorKind::Tsv => delimited_bytes(original, model, '\t'),
-        DocumentEditorKind::Docx => update_docx(original, model),
-        DocumentEditorKind::Xlsx => update_xlsx(original, model),
-        DocumentEditorKind::Pptx => update_pptx(original, model),
-        DocumentEditorKind::Preview => {
-            Err(AppError::BadRequest("File type is not editable".into()))
-        }
-    }
+    codec::codec_for_kind(kind).encode(original, model)
 }
 
 fn docx_model(bytes: &[u8]) -> AppResult<Value> {

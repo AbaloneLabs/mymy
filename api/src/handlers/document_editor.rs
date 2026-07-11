@@ -16,7 +16,7 @@ use crate::models::document_editor::{
     ValidateDocumentEditorModelResponse, WriteDocumentEditorModelRequest,
 };
 use crate::models::drive::DrivePathQuery;
-use crate::services::document_editor;
+use crate::services::document_editor::commands::DocumentEditorCommands;
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -38,7 +38,7 @@ async fn save_document_copy(
 ) -> AppResult<Json<DocumentEditorModelResponse>> {
     let kind = document_editor_kind_metric(request.editor_kind);
     let started = Instant::now();
-    let result = document_editor::save_copy(&state, request).await;
+    let result = DocumentEditorCommands::new(&state).save_copy(request).await;
     record_document_editor_mutation("copy", kind, started, &result);
     Ok(Json(result?))
 }
@@ -48,7 +48,7 @@ async fn read_document_model(
     Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Json<DocumentEditorModelResponse>> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
-    Ok(Json(document_editor::read_model(&state, &path).await?))
+    Ok(Json(DocumentEditorCommands::new(&state).open(&path).await?))
 }
 
 async fn write_document_model(
@@ -57,7 +57,7 @@ async fn write_document_model(
 ) -> AppResult<Json<DocumentEditorModelResponse>> {
     let kind = document_editor_kind_metric(request.editor_kind);
     let started = Instant::now();
-    let result = document_editor::write_model(&state, request).await;
+    let result = DocumentEditorCommands::new(&state).save(request).await;
     record_document_editor_mutation("save", kind, started, &result);
     Ok(Json(result?))
 }
@@ -117,6 +117,8 @@ async fn validate_document_model(
     Json(request): Json<ValidateDocumentEditorModelRequest>,
 ) -> AppResult<Json<ValidateDocumentEditorModelResponse>> {
     Ok(Json(
-        document_editor::validate_model(&state, request).await?,
+        DocumentEditorCommands::new(&state)
+            .validate(request)
+            .await?,
     ))
 }

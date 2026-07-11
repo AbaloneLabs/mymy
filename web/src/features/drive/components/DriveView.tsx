@@ -33,6 +33,7 @@ export function DriveView() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(initialFile);
   const [editorDirty, setEditorDirty] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [uploadNotice, setUploadNotice] = useState<string>();
 
   const list = useDriveList(path);
   const file = useDriveFile(selectedFilePath);
@@ -111,7 +112,27 @@ export function DriveView() {
   function handleUpload(files: FileList | null) {
     const selected = Array.from(files ?? []);
     if (selected.length === 0) return;
-    uploadFiles.mutate({ path, files: selected });
+    setUploadNotice(undefined);
+    uploadFiles.mutate(
+      { path, files: selected },
+      {
+        onSuccess: (response) => {
+          const committed = response.results.filter(
+            (result) => result.outcome === "committed",
+          ).length;
+          const quarantined = response.results.filter(
+            (result) => result.outcome === "quarantined",
+          ).length;
+          const rejected = response.results.filter(
+            (result) => result.outcome === "rejected",
+          ).length;
+          setUploadNotice(
+            t("drive.uploadResult", { committed, quarantined, rejected }),
+          );
+        },
+        onError: () => setUploadNotice(t("drive.uploadFailed")),
+      },
+    );
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -127,6 +148,15 @@ export function DriveView() {
         onSelectPath={selectPath}
         onUpload={handleUpload}
       />
+
+      {uploadNotice && (
+        <div
+          role="status"
+          className="border-b border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-2 text-xs text-[var(--text-secondary)]"
+        >
+          {uploadNotice}
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)_320px] overflow-hidden">
         <DriveBrowserPane

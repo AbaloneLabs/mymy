@@ -2,8 +2,14 @@
  * TanStack Query hooks for this domain.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { API_BASE, api, apiErrorFromResponse } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { ChatMessage, ChatSession } from "@/types/chat";
+import {
+  abortableRunDelay,
+  isTerminalRun,
+  readRunEvents,
+} from "./runEventStream";
+import { chatQueryKeys } from "./queryKeys";
 
 /* -------------------------------------------------- Chat */
 
@@ -16,7 +22,7 @@ interface ChatMessagesResponse {
 
 export function useChatSessions(projectId?: string, profile?: string) {
   return useQuery({
-    queryKey: ["chat", "sessions", projectId ?? "all", profile ?? "all"],
+    queryKey: chatQueryKeys.sessions(projectId, profile),
     queryFn: () => {
       const params = new URLSearchParams();
       if (projectId) params.set("projectId", projectId);
@@ -42,17 +48,17 @@ export function useCreateChatSession() {
       // Invalidate both the project-scoped (if any) and global session lists.
       if (vars.projectId) {
         qc.invalidateQueries({
-          queryKey: ["chat", "sessions", vars.projectId],
+          queryKey: chatQueryKeys.sessionScope(vars.projectId),
         });
       }
-      qc.invalidateQueries({ queryKey: ["chat", "sessions", "all"] });
+      qc.invalidateQueries({ queryKey: chatQueryKeys.sessionScope() });
     },
   });
 }
 
 export function useChatMessages(sessionId: string | undefined) {
   return useQuery({
-    queryKey: ["chat", "messages", sessionId],
+    queryKey: chatQueryKeys.messages(sessionId),
     queryFn: () =>
       api.get<ChatMessagesResponse>(`/chat/sessions/${sessionId}/messages`),
     enabled: Boolean(sessionId),
@@ -218,7 +224,7 @@ export function submitChatClarifyAnswer(
 
 export function useSessionRuntime(sessionId: string | undefined) {
   return useQuery({
-    queryKey: ["chat", "runtime", sessionId],
+    queryKey: chatQueryKeys.runtime(sessionId),
     queryFn: () =>
       api.get<SessionRuntimeResponse>(`/chat/sessions/${sessionId}/runtime`),
     enabled: Boolean(sessionId),
@@ -234,7 +240,7 @@ export function useAgentRuns(filters?: {
   limit?: number;
 }) {
   return useQuery({
-    queryKey: ["agent-runs", filters ?? {}],
+    queryKey: chatQueryKeys.runs(filters),
     queryFn: () => {
       const params = new URLSearchParams();
       if (filters?.status) params.set("status", filters.status);
@@ -250,7 +256,7 @@ export function useAgentRuns(filters?: {
 
 export function useRunEventLog(runId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-runs", runId, "event-log"],
+    queryKey: chatQueryKeys.eventLog(runId),
     queryFn: () =>
       api.get<{
         run: AgentRun;
@@ -271,7 +277,7 @@ export function useRunEventLog(runId: string | undefined) {
 
 export function useRunChecklist(runId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-runs", runId, "checklist"],
+    queryKey: chatQueryKeys.checklist(runId),
     queryFn: () =>
       api.get<{ items: RunChecklistItem[] }>(`/agent-runs/${runId}/checklist`),
     enabled: Boolean(runId),
@@ -359,7 +365,7 @@ export async function observeAgentRun(
         return { cursor, run: current.run };
       }
     }
-    await abortableDelay(reconnectDelay, signal);
+    await abortableRunDelay(reconnectDelay, signal);
     reconnectDelay = Math.min(reconnectDelay * 2, 2_000);
   }
 }
@@ -388,84 +394,6 @@ async function enqueueChatRun(
   throw lastError;
 }
 
-async function readRunEvents(
-  runId: string,
-  afterSequence: number,
-  onEvent: (event: ChatSseEvent) => void,
-  signal?: AbortSignal,
-) {
-  const path = `/agent-runs/${runId}/events?afterSequence=${afterSequence}`;
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiErrorFromResponse(response, path);
-  }
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("run event stream body is not readable");
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let cursor = afterSequence;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const parsed = parseSseFrame(frame);
-      if (!parsed) continue;
-      cursor = Math.max(cursor, parsed.sequence);
-      onEvent(parsed.event);
-    }
-  }
-  if (buffer.trim()) {
-    const parsed = parseSseFrame(buffer);
-    if (parsed) {
-      cursor = Math.max(cursor, parsed.sequence);
-      onEvent(parsed.event);
-    }
-  }
-  return cursor;
-}
-
-function abortableDelay(delay: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, delay);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        reject(new DOMException("Run observation aborted", "AbortError"));
-      },
-      { once: true },
-    );
-  });
-}
-
-function parseSseFrame(
-  frame: string,
-): { sequence: number; event: ChatSseEvent } | null {
-  const idLine = frame
-    .split(/\r?\n/)
-    .find((line) => line.startsWith("id:"));
-  const dataLines = frame
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart());
-  if (dataLines.length === 0) return null;
-  const sequence = Number(idLine?.slice(3).trim() ?? 0);
-  return {
-    sequence: Number.isFinite(sequence) ? sequence : 0,
-    event: JSON.parse(dataLines.join("\n")) as ChatSseEvent,
-  };
-}
-
-function isTerminalRun(status: AgentRunStatus) {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
-
 export function useDeleteChatSession(projectId?: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -475,10 +403,10 @@ export function useDeleteChatSession(projectId?: string) {
       // Invalidate project-scoped (if known) and global session lists.
       if (projectId) {
         qc.invalidateQueries({
-          queryKey: ["chat", "sessions", projectId],
+          queryKey: chatQueryKeys.sessionScope(projectId),
         });
       }
-      qc.invalidateQueries({ queryKey: ["chat", "sessions", "all"] });
+      qc.invalidateQueries({ queryKey: chatQueryKeys.sessionScope() });
     },
   });
 }

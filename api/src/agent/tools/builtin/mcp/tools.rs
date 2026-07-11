@@ -70,6 +70,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             path,
             db: config.db.clone(),
             extension_settings_key: config.extension_settings_key,
+            app_state: config.app_state.clone(),
+            agent_profile: config.agent_profile.clone(),
         }),
     });
 }
@@ -126,6 +128,8 @@ pub async fn register_dynamic_tools(
                     extension_settings_key: config.extension_settings_key,
                     server_name: server.name.clone(),
                     remote_tool_name: remote_name.to_string(),
+                    app_state: config.app_state.clone(),
+                    agent_profile: config.agent_profile.clone(),
                 }),
             });
         }
@@ -200,6 +204,8 @@ struct McpCallTool {
     path: PathBuf,
     db: Option<sqlx::PgPool>,
     extension_settings_key: Option<[u8; 32]>,
+    app_state: Option<Arc<crate::state::AppState>>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -223,7 +229,13 @@ impl ToolHandler for McpCallTool {
             serde_json::json!({ "name": tool, "arguments": arguments }),
         )
         .await?;
-        let result = process_content_blocks(result, &media_dir_for_config(&self.path)).await?;
+        let result = process_content_blocks(
+            result,
+            &media_dir_for_config(&self.path),
+            self.app_state.as_deref(),
+            self.agent_profile.as_deref(),
+        )
+        .await?;
         Ok(tool_result(&serde_json::json!({
             "success": true,
             "server": server.name,
@@ -239,6 +251,8 @@ struct McpDynamicTool {
     extension_settings_key: Option<[u8; 32]>,
     server_name: String,
     remote_tool_name: String,
+    app_state: Option<Arc<crate::state::AppState>>,
+    agent_profile: Option<String>,
 }
 
 #[async_trait]
@@ -260,7 +274,13 @@ impl ToolHandler for McpDynamicTool {
             }),
         )
         .await?;
-        let result = process_content_blocks(result, &media_dir_for_config(&self.path)).await?;
+        let result = process_content_blocks(
+            result,
+            &media_dir_for_config(&self.path),
+            self.app_state.as_deref(),
+            self.agent_profile.as_deref(),
+        )
+        .await?;
         Ok(tool_result(&serde_json::json!({
             "success": true,
             "server": self.server_name,

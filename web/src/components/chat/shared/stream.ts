@@ -1,4 +1,3 @@
-import type { Dispatch, SetStateAction } from "react";
 import type { ChatClarifyRequest, ChatSseEvent } from "@/features/chat/api";
 import type { ChatMessage, ToolCall } from "@/types/chat";
 import type { ToolEvent } from "./types";
@@ -24,58 +23,76 @@ export function makeStreamingAssistantMessage(sessionId: string, content: string
   };
 }
 
-export function handleStreamEvent(
-  event: ChatSseEvent,
-  sessionId: string,
-  setters: {
-    setStreamUserMessage: (message: ChatMessage | null) => void;
-    setStreamAssistantText: Dispatch<SetStateAction<string>>;
-    setToolEvents: Dispatch<SetStateAction<ToolEvent[]>>;
-    setPendingClarify: Dispatch<SetStateAction<ChatClarifyRequest | null>>;
-  },
-) {
+export interface ChatStreamState {
+  userMessage: ChatMessage | null;
+  assistantText: string;
+  toolEvents: ToolEvent[];
+  pendingClarify: ChatClarifyRequest | null;
+}
+
+export const initialChatStreamState: ChatStreamState = {
+  userMessage: null,
+  assistantText: "",
+  toolEvents: [],
+  pendingClarify: null,
+};
+
+export type ChatStreamAction =
+  | { type: "event"; event: ChatSseEvent; sessionId: string }
+  | { type: "reset" }
+  | { type: "clearClarify" };
+
+export function chatStreamReducer(
+  state: ChatStreamState,
+  action: ChatStreamAction,
+): ChatStreamState {
+  if (action.type === "reset") return initialChatStreamState;
+  if (action.type === "clearClarify") {
+    return { ...state, pendingClarify: null };
+  }
+  const { event, sessionId } = action;
   switch (event.type) {
     case "run_status":
-      break;
     case "outcome_unknown":
-      break;
-    case "user_message":
-      setters.setStreamUserMessage(event.message);
-      break;
-    case "text_delta":
-      setters.setStreamAssistantText((current) => current + event.content);
-      break;
     case "model_turn_started":
     case "checklist_changed":
     case "checkpoint_created":
-      break;
+    case "turn_completed":
+    case "context_compressing":
+    case "done":
+      return state;
+    case "user_message":
+      return { ...state, userMessage: event.message };
+    case "text_delta":
+      return { ...state, assistantText: state.assistantText + event.content };
     case "tool_call_start":
-      setters.setToolEvents((current) => [
-        ...current,
-        {
-          id: event.call_id,
-          sessionId,
-          name: event.tool_name,
-          status: "running",
-          arguments: event.arguments,
-          detail: event.arguments,
-          resourceKey: event.resource_key ?? undefined,
-          cancellation: event.capability?.cancellation,
-        },
-      ]);
-      break;
+      return {
+        ...state,
+        toolEvents: [
+          ...state.toolEvents,
+          {
+            id: event.call_id,
+            sessionId,
+            name: event.tool_name,
+            status: "running",
+            arguments: event.arguments,
+            detail: event.arguments,
+            resourceKey: event.resource_key ?? undefined,
+            cancellation: event.capability?.cancellation,
+          },
+        ],
+      };
     case "tool_call_finish":
-      setters.setToolEvents((current) =>
-        current.map((item) =>
+      return {
+        ...state,
+        toolEvents: state.toolEvents.map((item) =>
           item.id === event.call_id
             ? { ...item, status: "done", detail: event.error ?? event.result }
             : item,
         ),
-      );
-      break;
+      };
     case "clarify":
-      setters.setPendingClarify(event.request);
-      break;
+      return { ...state, pendingClarify: event.request };
     case "error":
       throw new Error(event.message);
   }

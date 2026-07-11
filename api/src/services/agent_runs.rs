@@ -4,6 +4,10 @@
 //! HTTP connections and in-process notifications are projections over this
 //! state and therefore never own execution lifetime or correctness.
 
+mod event_payload;
+mod projection;
+mod repository;
+mod tool_guard;
 mod worker;
 
 use std::sync::Arc;
@@ -14,16 +18,15 @@ use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::agent::execution::{
-    RunProgressStore, SessionTrigger, ToolExecutionContext, ToolExecutionGuard,
-};
+#[cfg(test)]
+use crate::agent::execution::SessionTrigger;
+use crate::agent::execution::{RunProgressStore, ToolExecutionContext};
 use crate::agent::loop_engine::delegate::{
     DelegateRunCoordinator, DelegateRunHandle, DelegateTaskResult, DelegateTaskSpec,
 };
 use crate::agent::prompt::PROMPT_VERSION;
 use crate::agent::providers::Message;
 use crate::agent::security::redact_sensitive_text;
-use crate::agent::tools::{ToolCapability, ToolEffect};
 use crate::error::{AppError, AppResult};
 use crate::models::agent_run::{
     AgentRunEventView, AgentRunEventsResponse, AgentRunView, AgentRunsQuery,
@@ -35,6 +38,12 @@ use crate::state::AppState;
 
 pub use worker::start_agent_run_worker;
 
+use self::event_payload::sanitize_event_payload;
+use self::projection::{event_to_view, input_to_view, is_terminal, run_to_view, truncate_chars};
+use self::repository::{fetch_run_row, run_columns, run_select};
+
+pub(crate) use self::tool_guard::tool_execution_guard;
+
 pub(crate) fn delegate_run_coordinator(state: AppState) -> Arc<dyn DelegateRunCoordinator> {
     Arc::new(DurableDelegateRunCoordinator { state })
 }
@@ -44,7 +53,6 @@ pub(crate) fn run_progress_store(state: AppState) -> Arc<dyn RunProgressStore> {
 }
 
 const MAX_CLIENT_REQUEST_ID_CHARS: usize = 128;
-const MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
 const RUN_LEASE_SECONDS: i64 = 30;
 const INTERACTIVE_MAX_TOOL_CALLS: u32 = 500;
 const INTERACTIVE_MAX_RUNTIME_SECONDS: u32 = 7_200;
@@ -626,14 +634,6 @@ async fn fetch_run_in_tx(
         .fetch_optional(&mut **tx)
         .await
         .map_err(Into::into)
-}
-
-pub(super) async fn fetch_run_row(pool: &sqlx::PgPool, id: Uuid) -> AppResult<AgentRunRow> {
-    sqlx::query_as::<_, AgentRunRow>(&format!("{} WHERE id = $1", run_select()))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("agent run {id} not found")))
 }
 
 pub(super) async fn append_event(
@@ -1441,298 +1441,8 @@ async fn fetch_event_by_idempotency_in_tx(
     .map_err(Into::into)
 }
 
-fn sanitize_event_payload(mut payload: Value) -> Value {
-    redact_json_strings(&mut payload);
-    let exceeds_limit =
-        serde_json::to_vec(&payload).is_ok_and(|bytes| bytes.len() > MAX_EVENT_PAYLOAD_BYTES);
-    if exceeds_limit {
-        truncated_event_envelope(&payload)
-    } else {
-        payload
-    }
-}
-
-fn truncated_event_envelope(payload: &Value) -> Value {
-    let event_type = payload
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("error");
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("type".to_string(), Value::String(event_type.to_string()));
-    envelope.insert("truncated".to_string(), Value::Bool(true));
-    for key in ["run_id", "call_id", "tool_name"] {
-        if let Some(value) = payload.get(key).and_then(Value::as_str) {
-            envelope.insert(key.to_string(), Value::String(truncate_chars(value, 512)));
-        }
-    }
-    let notice = "Event payload exceeded the persisted size limit.";
-    match event_type {
-        "text_delta" => {
-            envelope.insert("content".to_string(), Value::String(notice.to_string()));
-        }
-        "tool_call_start" => {
-            envelope.insert("arguments".to_string(), Value::String(notice.to_string()));
-        }
-        "tool_call_finish" => {
-            envelope.insert("result".to_string(), Value::String(notice.to_string()));
-            envelope.insert("error".to_string(), Value::Null);
-        }
-        _ => {
-            envelope.insert("message".to_string(), Value::String(notice.to_string()));
-        }
-    }
-    Value::Object(envelope)
-}
-
-fn redact_json_strings(value: &mut Value) {
-    match value {
-        Value::String(text) => *text = redact_sensitive_text(text),
-        Value::Array(items) => items.iter_mut().for_each(redact_json_strings),
-        Value::Object(map) => map.values_mut().for_each(redact_json_strings),
-        _ => {}
-    }
-}
-
-fn run_select() -> String {
-    format!("SELECT {} FROM agent_runs", run_columns())
-}
-
-fn run_columns() -> &'static str {
-    "id, session_id, agent_profile, trigger_type, trigger_ref, parent_run_id, \
-     parent_event_id, delegate_index, project_id, status, objective, prompt_version, authorization_context, \
-     lease_owner, lease_epoch, next_event_sequence, lease_expires_at, cancel_requested_at, started_at, \
-     heartbeat_at, completed_at, error_code, usage, created_at"
-}
-
-fn run_to_view(row: AgentRunRow) -> AgentRunView {
-    AgentRunView {
-        id: row.id.to_string(),
-        session_id: row.session_id.map(|id| id.to_string()),
-        agent_profile: row.agent_profile,
-        trigger_type: row.trigger_type,
-        trigger_ref: row.trigger_ref,
-        parent_run_id: row.parent_run_id.map(|id| id.to_string()),
-        parent_event_id: row.parent_event_id.map(|id| id.to_string()),
-        delegate_index: row.delegate_index,
-        project_id: row.project_id.map(|id| id.to_string()),
-        status: row.status,
-        objective: row.objective,
-        prompt_version: row.prompt_version,
-        lease_epoch: row.lease_epoch,
-        latest_sequence: row.next_event_sequence,
-        lease_expires_at: row.lease_expires_at.map(|time| time.to_rfc3339()),
-        cancel_requested_at: row.cancel_requested_at.map(|time| time.to_rfc3339()),
-        started_at: row.started_at.map(|time| time.to_rfc3339()),
-        heartbeat_at: row.heartbeat_at.map(|time| time.to_rfc3339()),
-        completed_at: row.completed_at.map(|time| time.to_rfc3339()),
-        error_code: row.error_code,
-        usage: row.usage,
-        created_at: row.created_at.to_rfc3339(),
-    }
-}
-
-fn event_to_view(row: AgentRunEventRow) -> AgentRunEventView {
-    AgentRunEventView {
-        id: row.id.to_string(),
-        run_id: row.run_id.to_string(),
-        sequence: row.sequence,
-        event_type: row.event_type,
-        payload_version: row.payload_version,
-        visibility: row.visibility,
-        payload: row.payload,
-        created_at: row.created_at.to_rfc3339(),
-    }
-}
-
-fn input_to_view(row: SessionRunInputRow) -> SessionRunInputView {
-    SessionRunInputView {
-        id: row.id.to_string(),
-        session_id: row.session_id.to_string(),
-        client_request_id: row.client_request_id,
-        target_run_id: row.target_run_id.map(|id| id.to_string()),
-        kind: row.kind,
-        content: row.content,
-        options: row.options,
-        status: row.status,
-        sequence: row.sequence,
-        created_at: row.created_at.to_rfc3339(),
-        applied_at: row.applied_at.map(|time| time.to_rfc3339()),
-    }
-}
-
-fn truncate_chars(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
-}
-
-fn is_terminal(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled")
-}
-
 struct DurableDelegateRunCoordinator {
     state: AppState,
-}
-
-pub(crate) struct DurableToolExecutionGuard {
-    state: AppState,
-}
-
-pub(crate) fn tool_execution_guard(state: AppState) -> Arc<dyn ToolExecutionGuard> {
-    Arc::new(DurableToolExecutionGuard { state })
-}
-
-#[async_trait]
-impl ToolExecutionGuard for DurableToolExecutionGuard {
-    async fn validate(
-        &self,
-        context: &ToolExecutionContext,
-        _tool_name: &str,
-        toolset: &str,
-        capability: &ToolCapability,
-        arguments: &Value,
-    ) -> Result<(), String> {
-        if context.cancellation.is_cancelled() {
-            return Err("run cancellation was requested before tool start".to_string());
-        }
-        if matches!(context.trigger, SessionTrigger::Wake) && capability.effect != ToolEffect::Read
-        {
-            return Err(
-                "proactive wake discovery is read-only; create a visible proposal instead"
-                    .to_string(),
-            );
-        }
-        let origin_valid = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(
-                 SELECT 1
-                 FROM agent_runs r
-                 LEFT JOIN chat_sessions s ON s.id = r.session_id
-                 INNER JOIN native_agents a ON a.profile = r.agent_profile
-                 WHERE r.id = $1 AND r.lease_epoch = $2 AND r.status = 'running'
-                   AND r.cancel_requested_at IS NULL
-                   AND r.agent_profile = $3
-                   AND r.project_id IS NOT DISTINCT FROM $4
-                   AND r.session_id IS NOT DISTINCT FROM $5
-                   AND (r.session_id IS NULL OR (
-                     s.profile = r.agent_profile
-                     AND s.project_id IS NOT DISTINCT FROM r.project_id
-                   ))
-               )"#,
-        )
-        .bind(context.run_id)
-        .bind(context.lease_epoch)
-        .bind(&context.agent_profile)
-        .bind(context.project_id)
-        .bind(context.session_id)
-        .fetch_one(&self.state.db)
-        .await
-        .map_err(|err| format!("tool origin revalidation failed: {err}"))?;
-        if !origin_valid {
-            return Err(
-                "run ownership, session, agent, or project changed before tool execution"
-                    .to_string(),
-            );
-        }
-
-        if let Some((domain, write)) = permission_domain_for_toolset(toolset) {
-            let policy = crate::services::agent_permissions::load_policy(
-                &self.state,
-                &context.agent_profile,
-            )
-            .await
-            .map_err(|err| format!("tool permission revalidation failed: {err}"))?;
-            let permitted = if write {
-                policy.can_write(domain)
-            } else {
-                policy.can_read(domain)
-            };
-            if !permitted {
-                return Err("agent tool permission changed before execution".to_string());
-            }
-        }
-
-        let autonomous = !matches!(context.trigger, SessionTrigger::Chat)
-            || !context.authorization.explicit_user_action;
-        let approval_required = capability.requires_approval(autonomous);
-        let action =
-            crate::agent::tools::proposed_action_descriptor(_tool_name, capability, arguments);
-        let action_hash = crate::agent::tools::proposed_action_hash(&action);
-        let expected_version = [
-            "expectedVersion",
-            "expectedFingerprint",
-            "targetVersion",
-            "version",
-            "updatedAt",
-        ]
-        .into_iter()
-        .find_map(|key| arguments.get(key))
-        .or_else(|| {
-            arguments.get("data").and_then(|data| {
-                [
-                    "expectedVersion",
-                    "expectedFingerprint",
-                    "targetVersion",
-                    "version",
-                    "updatedAt",
-                ]
-                .into_iter()
-                .find_map(|key| data.get(key))
-            })
-        })
-        .and_then(|value| match value {
-            Value::String(value) => Some(value.clone()),
-            Value::Number(value) => Some(value.to_string()),
-            _ => None,
-        });
-        if capability.effect != ToolEffect::Read {
-            if let Some(expected_version) = expected_version {
-                crate::services::decisions::validate_resource_target_version(
-                    &self.state,
-                    &context.agent_profile,
-                    &capability.resource_key(arguments),
-                    &expected_version,
-                )
-                .await
-                .map_err(|err| err.to_string())?;
-            }
-        }
-        let approved = context
-            .authorization
-            .approval_ceiling
-            .get("approvedActionHashes")
-            .and_then(Value::as_array)
-            .is_some_and(|hashes| {
-                hashes
-                    .iter()
-                    .any(|hash| hash.as_str() == Some(&action_hash))
-            });
-        if approval_required && !approved {
-            return Err(
-                "this action requires a durable user decision before autonomous execution"
-                    .to_string(),
-            );
-        }
-        if approval_required && approved {
-            crate::services::decisions::validate_approved_action_target(
-                &self.state,
-                context.run_id,
-                &action_hash,
-            )
-            .await
-            .map_err(|err| err.to_string())?;
-        }
-        Ok(())
-    }
-}
-
-fn permission_domain_for_toolset(
-    toolset: &str,
-) -> Option<(crate::models::agent::AgentToolDomain, bool)> {
-    let (domain, write) = toolset
-        .strip_suffix("_read")
-        .map(|domain| (domain, false))
-        .or_else(|| toolset.strip_suffix("_write").map(|domain| (domain, true)))?;
-    crate::services::agent_permissions::parse_domain(domain)
-        .ok()
-        .map(|domain| (domain, write))
 }
 
 #[async_trait]

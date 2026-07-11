@@ -19,6 +19,7 @@ use crate::models::drive::{
 };
 use crate::services::document_revisions::{record_document_revision, RevisionActor};
 use crate::services::drive as drive_service;
+use crate::services::workspace_content::{ContentStager, StagedContent};
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -89,6 +90,10 @@ pub async fn read_drive_blob(
     Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Response> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
+    state
+        .workspace_content
+        .ensure_not_quarantined(&state, &path)
+        .await?;
     let (blob_path, mime_type) = drive_service::blob_path(&state, &path)?;
     let file_name = blob_path
         .file_name()
@@ -158,6 +163,10 @@ pub async fn read_drive_package(
     Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Response> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
+    state
+        .workspace_content
+        .ensure_not_quarantined(&state, &path)
+        .await?;
     let pool = state.document_conversion_pool.clone();
     let worker_state = state.clone();
     let (bytes, package_name) = pool
@@ -222,7 +231,7 @@ pub async fn upload_drive_file(
 ) -> AppResult<Json<DriveUploadResponse>> {
     let mut target_path = "/drive".to_string();
     let mut idempotency_key: Option<String> = None;
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut files: Vec<(String, StagedContent)> = Vec::new();
     while let Some(field) = multipart
         .next_field()
         .await
@@ -240,11 +249,14 @@ pub async fn upload_drive_file(
                     .file_name()
                     .map(str::to_string)
                     .ok_or_else(|| AppError::BadRequest("uploaded file name is required".into()))?;
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|err| AppError::BadRequest(format!("upload file failed: {err}")))?;
-                files.push((file_name, bytes.to_vec()));
+                let mut stager = ContentStager::begin(&state).await?;
+                let mut field = field;
+                while let Some(chunk) = field.chunk().await.map_err(|err| {
+                    AppError::BadRequest(format!("upload file stream failed: {err}"))
+                })? {
+                    stager.write_chunk(&chunk).await?;
+                }
+                files.push((file_name, stager.finish().await?));
             }
             "idempotencyKey" => {
                 let key = field.text().await.map_err(|err| {
@@ -263,20 +275,23 @@ pub async fn upload_drive_file(
     }
 
     let mut uploaded = Vec::new();
-    for (file_name, bytes) in files {
+    let mut results = Vec::new();
+    for (file_name, staged) in files {
         let upload_name = idempotency_key
             .as_deref()
             .map(|key| idempotent_upload_file_name(&file_name, key))
             .transpose()?
             .unwrap_or(file_name);
         let response =
-            drive_service::upload_file(&state, &target_path, &upload_name, bytes).await?;
+            drive_service::upload_staged_file(&state, &target_path, &upload_name, staged).await?;
         uploaded.extend(response.files);
+        results.extend(response.results);
     }
 
     Ok(Json(DriveUploadResponse {
         success: true,
         files: uploaded,
+        results,
     }))
 }
 

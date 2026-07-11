@@ -31,6 +31,7 @@ type BackgroundWorkers = (
     JoinHandle<()>,
     JoinHandle<()>,
     Option<JoinHandle<()>>,
+    JoinHandle<()>,
 );
 
 #[tokio::main]
@@ -94,7 +95,8 @@ fn start_background_workers(state: Arc<AppState>) -> BackgroundWorkers {
         services::agent_runs::start_agent_run_worker(state.clone()),
         services::proactive::start_proactive_coordinator(state.clone()),
         services::runtime_metrics::start_runtime_metrics_collector(state.clone()),
-        services::drive_sync::start_drive_sync_worker(state),
+        services::drive_sync::start_drive_sync_worker(state.clone()),
+        services::content_quarantine::start_worker(state),
     )
 }
 

@@ -5,12 +5,15 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::ContentOrigin;
 use crate::models::drive::{DriveProviderKind, DriveProviderStatus, DriveProvidersResponse};
+use crate::services::workspace_content::{AdmissionActor, AdmissionOutcome, AdmissionRequest};
 use crate::state::AppState;
 
 use super::paths::{
     agent_workspace_path, agents_root, canonical_workspace_roots, drive_root,
-    project_workspace_path, projects_root, shared_root, AGENTS_MD_FILE, SOUL_MD_FILE,
+    logical_agent_file_path, project_workspace_path, projects_root, shared_root, AGENTS_MD_FILE,
+    SOUL_MD_FILE,
 };
 
 #[derive(Debug, Clone)]
@@ -78,7 +81,7 @@ pub fn project_drive_slug(name: &str, id: Uuid) -> String {
     format!("{prefix}-{}", &id_suffix[..8])
 }
 
-pub fn ensure_agent_workspace(
+pub async fn ensure_agent_workspace(
     state: &AppState,
     profile: &str,
     display_name: &str,
@@ -90,18 +93,24 @@ pub fn ensure_agent_workspace(
 
     let agents_path = workspace.join(AGENTS_MD_FILE);
     if !agents_path.exists() {
-        fs::write(
-            &agents_path,
+        admit_workspace_default(
+            state,
+            profile,
+            AGENTS_MD_FILE,
             default_agents_md(profile, display_name, role.unwrap_or("agent")),
-        )?;
+        )
+        .await?;
     }
 
     let soul_path = workspace.join(SOUL_MD_FILE);
     if !soul_path.exists() {
-        fs::write(
-            &soul_path,
+        admit_workspace_default(
+            state,
+            profile,
+            SOUL_MD_FILE,
             default_soul_md(profile, display_name, role.unwrap_or("agent")),
-        )?;
+        )
+        .await?;
     }
 
     Ok(())
@@ -129,7 +138,7 @@ pub async fn resolve_agent_drive_workspace(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("agent {profile} not found")))?;
 
-    ensure_agent_workspace(state, profile, &agent.name, Some(&agent.role))?;
+    ensure_agent_workspace(state, profile, &agent.name, Some(&agent.role)).await?;
     let working_dir = agent_workspace_path(&state.config.agent_data_dir, profile);
     let mut allowed_roots = vec![shared_root(&state.config.agent_data_dir)];
 
@@ -152,6 +161,53 @@ pub async fn resolve_agent_drive_workspace(
         working_dir: working_dir.canonicalize()?,
         allowed_roots: canonical_workspace_roots(allowed_roots)?,
     })
+}
+
+async fn admit_workspace_default(
+    state: &AppState,
+    profile: &str,
+    file_name: &str,
+    content: String,
+) -> AppResult<()> {
+    let desired_path = logical_agent_file_path(profile, file_name);
+    let outcome = state
+        .workspace_content
+        .admit_bytes(
+            state,
+            AdmissionRequest {
+                desired_path,
+                file_name: file_name.to_string(),
+                origin: ContentOrigin::AgentGenerated,
+                actor: AdmissionActor::system(),
+                expected_fingerprint: None,
+                allow_overwrite: false,
+                enqueue_s3_sync: true,
+            },
+            content.as_bytes(),
+        )
+        .await;
+
+    match outcome {
+        Ok(AdmissionOutcome::Committed { .. }) => Ok(()),
+        Ok(AdmissionOutcome::Quarantined { .. }) => Err(AppError::Internal(
+            "built-in agent workspace content unexpectedly required review".to_string(),
+        )),
+        Ok(AdmissionOutcome::Rejected) => Err(AppError::Internal(
+            "built-in agent workspace content was rejected".to_string(),
+        )),
+        Err(AppError::Coded {
+            code: "quarantine_destination_conflict",
+            ..
+        }) if agent_workspace_path(&state.config.agent_data_dir, profile)
+            .join(file_name)
+            .is_file() =>
+        {
+            // Concurrent workspace reconciliation may win the create-if-missing
+            // race. The visible file is then the authoritative result.
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub async fn archive_agent_workspace(state: &AppState, profile: &str) -> AppResult<()> {

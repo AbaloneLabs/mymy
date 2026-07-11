@@ -52,6 +52,15 @@ export interface DriveProvidersResponse {
 export interface DriveUploadResponse {
   success: boolean;
   files: DriveEntry[];
+  results: DriveUploadResult[];
+}
+
+export interface DriveUploadResult {
+  requestedName: string;
+  outcome: "committed" | "quarantined" | "rejected";
+  file?: DriveEntry;
+  code?: string;
+  message?: string;
 }
 
 export interface DriveTrashEntry {
@@ -74,7 +83,12 @@ export interface DriveRestoreResponse {
 
 export type DriveSyncOperation = "upload" | "download" | "delete";
 
-export type DriveSyncStatus = "pending" | "running" | "failed" | "done";
+export type DriveSyncStatus =
+  | "pending"
+  | "running"
+  | "failed"
+  | "done"
+  | "quarantined";
 
 export interface DriveSyncJob {
   id: string;

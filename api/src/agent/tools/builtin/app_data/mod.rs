@@ -14,6 +14,7 @@ use crate::agent::tools::{tool_schema, ToolEntry, ToolRegistry};
 use crate::state::AppState;
 
 mod agents;
+mod arguments;
 mod calendar;
 mod drive;
 mod execution;

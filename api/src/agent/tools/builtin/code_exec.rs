@@ -40,7 +40,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "processes_write".to_string(),
         schema: tool_schema(
             "execute_code",
-            "Execute a Python script with scrubbed environment, timeout, and sandbox tool RPC helpers.",
+            "Execute a Python script with scrubbed environment, timeout, and sandbox tool RPC helpers. Drive mounts are read-only; use mymy_tools for workspace writes.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

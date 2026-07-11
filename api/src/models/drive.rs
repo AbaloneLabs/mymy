@@ -107,6 +107,28 @@ pub struct WriteDriveFileResponse {
 pub struct DriveUploadResponse {
     pub success: bool,
     pub files: Vec<DriveEntry>,
+    pub results: Vec<DriveUploadResult>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DriveUploadOutcome {
+    Committed,
+    Quarantined,
+    Rejected,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveUploadResult {
+    pub requested_name: String,
+    pub outcome: DriveUploadOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<DriveEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +190,7 @@ pub enum DriveSyncStatus {
     Running,
     Failed,
     Done,
+    Quarantined,
 }
 
 #[derive(Debug, Serialize)]

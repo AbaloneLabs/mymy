@@ -1,21 +1,26 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
-use uuid::Uuid;
+
+use super::arguments::{
+    required_profile, required_str, string_field, typed, typed_data, typed_event_query,
+    typed_goal_query, typed_investment_list_query, typed_knowledge_tree_query, typed_note_query,
+    typed_session_query, typed_transaction_query, uuid_arg,
+};
 
 use crate::agent::execution::ToolExecutionContext;
 use crate::agent::tools::{
-    tool_result, DataSensitivity, ToolCapability, ToolEffect, ToolError, ToolHandler,
+    app_error_to_tool, tool_result, DataSensitivity, ToolCapability, ToolEffect, ToolError,
+    ToolHandler,
 };
 use crate::error::AppError;
 use crate::models::drive::{CreateDriveFolderRequest, WriteDriveFileRequest};
-use crate::models::knowledge::{AttachKnowledgeResourceRequest, KnowledgeTreeQuery};
+use crate::models::knowledge::AttachKnowledgeResourceRequest;
 use crate::models::sandbox::StartSandboxProcessRequest;
 use crate::services::agent_prompts::AgentPromptQuery;
 use crate::services::agents as agents_service;
-use crate::services::calendar::{self as calendar_service, EventQuery};
+use crate::services::calendar as calendar_service;
 use crate::services::chat::{self, SessionQuery};
 use crate::services::document_revisions::{record_document_revision, RevisionActor};
 use crate::services::drive as drive_service;
@@ -23,13 +28,13 @@ use crate::services::file_observations::{
     ensure_file_not_changed_since_observed, record_file_observation_fingerprint, FileFingerprint,
     FileObservationSource,
 };
-use crate::services::goals::{self as goals_service, GoalQuery};
-use crate::services::investments::{self as investments_service, InvestmentListQuery};
+use crate::services::goals as goals_service;
+use crate::services::investments as investments_service;
 use crate::services::knowledge as knowledge_service;
-use crate::services::notes::{self as notes_service, NoteQuery};
+use crate::services::notes as notes_service;
 use crate::services::sandbox;
 use crate::services::tasks::{self as tasks_service, TaskFilter};
-use crate::services::transactions::{self as transactions_service, TransactionQuery};
+use crate::services::transactions as transactions_service;
 use crate::state::AppState;
 
 pub(super) enum AppAction {
@@ -766,103 +771,6 @@ impl AppDataTool {
     }
 }
 
-fn typed<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
-    serde_json::from_value(args.clone())
-        .map_err(|err| ToolError::InvalidArgs(format!("invalid arguments: {err}")))
-}
-
-fn typed_data<T: DeserializeOwned>(args: &Value) -> Result<T, ToolError> {
-    let data = args
-        .get("data")
-        .ok_or_else(|| ToolError::InvalidArgs("missing data".to_string()))?;
-    serde_json::from_value(data.clone())
-        .map_err(|err| ToolError::InvalidArgs(format!("invalid data: {err}")))
-}
-
-fn typed_session_query(args: &Value) -> Result<SessionQuery, ToolError> {
-    Ok(SessionQuery {
-        project_id: string_field(args, "projectId"),
-        scope: string_field(args, "scope"),
-        profile: string_field(args, "profile"),
-    })
-}
-
-fn typed_goal_query(args: &Value) -> Result<GoalQuery, ToolError> {
-    Ok(GoalQuery {
-        status: string_field(args, "status"),
-        r#type: string_field(args, "type"),
-        period: string_field(args, "period"),
-    })
-}
-
-fn typed_event_query(args: &Value) -> Result<EventQuery, ToolError> {
-    Ok(EventQuery {
-        project_id: string_field(args, "projectId"),
-        from: string_field(args, "from"),
-        to: string_field(args, "to"),
-    })
-}
-
-fn typed_note_query(args: &Value) -> Result<NoteQuery, ToolError> {
-    Ok(NoteQuery {
-        project_id: string_field(args, "projectId"),
-        scope: string_field(args, "scope"),
-    })
-}
-
-fn typed_knowledge_tree_query(args: &Value) -> Result<KnowledgeTreeQuery, ToolError> {
-    Ok(KnowledgeTreeQuery {
-        project_id: string_field(args, "projectId"),
-    })
-}
-
-fn typed_transaction_query(args: &Value) -> Result<TransactionQuery, ToolError> {
-    Ok(TransactionQuery {
-        project_id: string_field(args, "projectId"),
-        scope: string_field(args, "scope"),
-        r#type: string_field(args, "type"),
-        from: string_field(args, "from"),
-        to: string_field(args, "to"),
-        category: string_field(args, "category"),
-        status: string_field(args, "status"),
-    })
-}
-
-fn typed_investment_list_query(args: &Value) -> Result<InvestmentListQuery, ToolError> {
-    Ok(InvestmentListQuery {
-        limit: args.get("limit").and_then(Value::as_i64),
-        scope: string_field(args, "scope"),
-        project_id: string_field(args, "projectId"),
-    })
-}
-
-fn uuid_arg(args: &Value, key: &str) -> Result<Uuid, ToolError> {
-    Uuid::parse_str(required_str(args, key)?)
-        .map_err(|err| ToolError::InvalidArgs(format!("invalid {key}: {err}")))
-}
-
-fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ToolError::InvalidArgs(format!("missing {key}")))
-}
-
-fn string_field(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn required_profile(profile: &Option<String>) -> Result<&str, ToolError> {
-    profile
-        .as_deref()
-        .ok_or_else(|| ToolError::Unavailable("agent profile is not configured".to_string()))
-}
-
 fn json_result<T: serde::Serialize>(result: Result<T, AppError>) -> Result<Value, ToolError> {
     let value = result.map_err(app_error_to_tool)?;
     serde_json::to_value(value)
@@ -871,19 +779,4 @@ fn json_result<T: serde::Serialize>(result: Result<T, AppError>) -> Result<Value
 
 fn json_bool(result: Result<bool, AppError>) -> Result<Value, ToolError> {
     json_result(result.map(|success| serde_json::json!({ "success": success })))
-}
-
-fn app_error_to_tool(err: AppError) -> ToolError {
-    match err {
-        AppError::BadRequest(message)
-        | AppError::NotFound(message)
-        | AppError::PayloadTooLarge(message)
-        | AppError::UnsupportedMedia(message) => ToolError::InvalidArgs(message),
-        AppError::Unauthorized(message) | AppError::ServiceUnavailable(message) => {
-            ToolError::Unavailable(message)
-        }
-        AppError::Conflict(message) | AppError::Internal(message) => ToolError::Execution(message),
-        AppError::Database(err) => ToolError::Execution(err.to_string()),
-        AppError::Io(err) => ToolError::Execution(err.to_string()),
-    }
 }

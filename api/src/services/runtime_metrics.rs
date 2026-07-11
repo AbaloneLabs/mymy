@@ -136,8 +136,12 @@ fn describe() {
         "Dedicated document conversion wall time by operation and outcome"
     );
     metrics::describe_counter!(
-        "mymy_document_malware_scans_total",
-        "Document malware scan outcomes without document-derived labels"
+        "mymy_content_inspections_total",
+        "Native content policy outcomes by bounded origin and policy version"
+    );
+    metrics::describe_counter!(
+        "mymy_content_quarantine_transitions_total",
+        "Content quarantine lifecycle transitions without content-derived labels"
     );
     metrics::describe_gauge!("mymy_agent_runs", "Current durable run count by status");
     metrics::describe_gauge!(

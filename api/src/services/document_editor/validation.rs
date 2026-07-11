@@ -17,9 +17,10 @@ use serde_json::Value;
 use unicode_normalization::UnicodeNormalization as _;
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::{ContentOrigin, ContentSafetyVerdict};
 use crate::models::document_editor::DocumentEditorKind;
+use crate::services::content_safety::ContentSafetyEngine;
 use crate::services::document_conversion::checkpoint;
-use crate::services::document_malware::scan_document_bytes;
 
 use super::text_formats::has_utf8_bom;
 use crate::services::ooxml_security::{expand_ooxml_entries, ExpandedOoxmlEntry};
@@ -43,10 +44,14 @@ pub(super) fn validate_saved_document_bytes(
     path: &Path,
     bytes: &[u8],
 ) -> AppResult<()> {
-    // Scanning precedes format parsing so a configured fail-closed scanner is
-    // authoritative for every editable format, including plain text. OOXML
-    // admission still enforces local resource limits independently.
-    scan_document_bytes(bytes)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let report = ContentSafetyEngine::new().inspect(file_name, bytes, ContentOrigin::EditorOutput);
+    if report.verdict == ContentSafetyVerdict::Reject {
+        return Err(AppError::content_rejected());
+    }
     validate_structured_text_for_path(path, bytes)?;
     match kind {
         DocumentEditorKind::Docx | DocumentEditorKind::Xlsx | DocumentEditorKind::Pptx => {

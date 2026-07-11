@@ -15,6 +15,7 @@ fn test_tool() -> TerminalTool {
         agent_profile: None,
         project_id: None,
         preview_host: "127.0.0.1".to_string(),
+        app_state: None,
     }
 }
 
@@ -94,9 +95,15 @@ async fn redirection_allows_logical_shared_drive_path() {
     std::fs::create_dir_all(&shared).unwrap();
     let roots = allowed_roots(&agent, std::slice::from_ref(&shared));
 
-    check_redirected_paths(None, "printf ok > /drive/shared/check.txt", &agent, &roots)
-        .await
-        .unwrap();
+    check_redirected_paths(
+        None,
+        None,
+        "printf ok > /drive/shared/check.txt",
+        &agent,
+        &roots,
+    )
+    .await
+    .unwrap();
 
     let _ = std::fs::remove_dir_all(base);
 }

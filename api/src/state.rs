@@ -12,7 +12,9 @@ use uuid::Uuid;
 use crate::agent::clarify::ClarifyGate;
 use crate::agent::execution::RunCancellation;
 use crate::config::Config;
+use crate::services::content_safety::ContentSafetyEngine;
 use crate::services::document_conversion::DocumentConversionPool;
+use crate::services::workspace_content::WorkspaceContentService;
 
 /// In-memory cache of the encryption key derived from the user's PIN.
 ///
@@ -47,6 +49,10 @@ pub struct AppState {
     /// intentionally separate from Tokio's general blocking workers and uses a
     /// bounded queue so overload becomes a retryable response.
     pub document_conversion_pool: Arc<DocumentConversionPool>,
+    /// Native structural inspection and origin-policy service.
+    pub content_safety: Arc<ContentSafetyEngine>,
+    /// Sole application boundary for admitting and committing Drive bytes.
+    pub workspace_content: Arc<WorkspaceContentService>,
     /// Serializes writes to the same Drive file across UI, agent, and sync
     /// entry points in this API process. The weak registry avoids retaining a
     /// mutex for every historical path while still making the fingerprint
@@ -70,6 +76,8 @@ impl AppState {
             agent_run_notify: Arc::new(Notify::new()),
             run_cancellations: Arc::new(RwLock::new(HashMap::new())),
             document_conversion_pool: Arc::new(DocumentConversionPool::from_environment()),
+            content_safety: Arc::new(ContentSafetyEngine::new()),
+            workspace_content: Arc::new(WorkspaceContentService::new()),
             drive_write_locks: Arc::new(Mutex::new(HashMap::new())),
             drive_namespace_lock: Arc::new(RwLock::new(())),
         }

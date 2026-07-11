@@ -50,6 +50,10 @@ pub struct SecurityStatusResponse {
     pub filesystem_guard_enabled: bool,
     pub tls_validation_enabled: bool,
     pub secret_sources: Vec<crate::agent::security::SecretSourceStatus>,
+    pub content_engine_enabled: bool,
+    pub content_policy_version: String,
+    pub pending_quarantine_count: i64,
+    pub quarantine_capacity_available: bool,
 }
 
 #[derive(Debug, Deserialize)]

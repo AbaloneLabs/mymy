@@ -126,8 +126,8 @@ where
 }
 
 pub fn roots_for_runner(primary_root: &Path, extra_roots: &[PathBuf]) -> Vec<RunnerRoot> {
-    let mut roots = vec![RunnerRoot::writable(primary_root)];
-    roots.extend(extra_roots.iter().map(|root| RunnerRoot::writable(root)));
+    let mut roots = vec![RunnerRoot::for_path(primary_root)];
+    roots.extend(extra_roots.iter().map(|root| RunnerRoot::for_path(root)));
     roots.sort_by(|left, right| left.host_path.cmp(&right.host_path));
     roots.dedup_by(|left, right| left.host_path == right.host_path);
     roots
@@ -178,20 +178,25 @@ pub struct RunnerRoot {
 }
 
 impl RunnerRoot {
-    pub fn writable(path: &Path) -> Self {
+    pub fn for_path(path: &Path) -> Self {
         let path = path.display().to_string();
         Self {
             host_path: path.clone(),
             mount_path: logical_path_for_runner(Path::new(&path)),
-            writable: true,
+            // Drive is an admission-controlled data namespace. Sandboxed
+            // processes receive it read-only and must use file-tool RPC for
+            // writes, while non-Drive scratch roots remain writable.
+            writable: !Path::new(&path)
+                .components()
+                .any(|component| component.as_os_str() == "drive"),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::logical_path_for_runner;
-    use std::path::Path;
+    use super::{logical_path_for_runner, roots_for_runner};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn maps_drive_paths_to_logical_mounts() {
@@ -211,6 +216,25 @@ mod tests {
             logical_path_for_runner(Path::new("/app/data/agent/sandbox/job")),
             "/app/data/agent/sandbox/job"
         );
+    }
+
+    #[test]
+    fn runner_mounts_drive_read_only_and_scratch_writable() {
+        let roots = roots_for_runner(
+            Path::new("/app/data/agent/drive/agents/elena"),
+            &[
+                PathBuf::from("/app/data/agent/drive/shared"),
+                PathBuf::from("/app/data/agent/sandbox/session"),
+            ],
+        );
+        assert!(roots
+            .iter()
+            .filter(|root| root.host_path.contains("/drive/"))
+            .all(|root| !root.writable));
+        assert!(roots
+            .iter()
+            .find(|root| root.host_path.contains("/sandbox/"))
+            .is_some_and(|root| root.writable));
     }
 }
 

@@ -4,6 +4,9 @@ import os
 import socket
 
 
+_file_fingerprints = {}
+
+
 def call_tool(name, **kwargs):
     socket_path = os.environ.get("MYMY_TOOLS_RPC_PATH")
     if not socket_path:
@@ -24,7 +27,10 @@ def call_tool(name, **kwargs):
 
 
 def read_file(path, offset=1, limit=500):
-    return call_tool("read_file", path=path, offset=offset, limit=limit)
+    result = call_tool("read_file", path=path, offset=offset, limit=limit)
+    if result.get("fingerprint"):
+        _file_fingerprints[path] = result["fingerprint"]
+    return result
 
 
 def search_files(query, path=None, limit=50):
@@ -35,10 +41,27 @@ def search_files(query, path=None, limit=50):
 
 
 def write_file(path, content):
-    return call_tool("write_file", path=path, content=content)
+    args = {"path": path, "content": content}
+    if path in _file_fingerprints:
+        args["expectedFingerprint"] = _file_fingerprints[path]
+    result = call_tool("write_file", **args)
+    if result.get("fingerprint"):
+        _file_fingerprints[path] = result["fingerprint"]
+    return result
 
 
 def patch_file(path, old_string, new_string):
-    return call_tool("patch_file", path=path, old_string=old_string, new_string=new_string)
+    if path not in _file_fingerprints:
+        read_file(path)
+    result = call_tool(
+        "patch_file",
+        path=path,
+        old_string=old_string,
+        new_string=new_string,
+        expectedFingerprint=_file_fingerprints[path],
+    )
+    if result.get("fingerprint"):
+        _file_fingerprints[path] = result["fingerprint"]
+    return result
 "#
 }

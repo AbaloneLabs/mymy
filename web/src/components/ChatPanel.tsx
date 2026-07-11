@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -12,7 +12,6 @@ import {
   useSessionRuntime,
   useRunChecklist,
   type AgentRunStatus,
-  type ChatClarifyRequest,
 } from "@/features/chat/api";
 import { useNativeSkills, useSkillBundles } from "@/features/skills/api";
 import { useMoaPresets } from "@/features/moa/api";
@@ -30,16 +29,15 @@ import {
 } from "@/components/chat/composer/slashCommandUtils";
 import {
   buildToolCallById,
-  handleStreamEvent,
+  chatStreamReducer,
+  initialChatStreamState,
   makeStreamingAssistantMessage,
 } from "@/components/chat/shared/stream";
 import { createQueuedTurnId } from "@/components/chat/queue/useQueuedChatTurns";
+import { chatQueryKeys } from "@/features/chat/queryKeys";
 import { RunStatusCard } from "@/components/chat/runtime/runStatusCard";
 import { useChatAttachments } from "@/components/chat/attachments/useChatAttachments";
-import type {
-  QueuedChatTurn,
-  ToolEvent,
-} from "@/components/chat/shared/types";
+import type { QueuedChatTurn } from "@/components/chat/shared/types";
 
 interface ChatPanelProps {
   sessionId: string | null;
@@ -67,10 +65,14 @@ export function ChatPanel({
   const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
   const [streamError, setStreamError] = useState(false);
   const [streamErrorMessage, setStreamErrorMessage] = useState("");
-  const [streamUserMessage, setStreamUserMessage] = useState<ChatMessage | null>(null);
-  const [streamAssistantText, setStreamAssistantText] = useState("");
-  const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
-  const [pendingClarify, setPendingClarify] = useState<ChatClarifyRequest | null>(null);
+  const [chatStream, dispatchChatStream] = useReducer(
+    chatStreamReducer,
+    initialChatStreamState,
+  );
+  const streamUserMessage = chatStream.userMessage;
+  const streamAssistantText = chatStream.assistantText;
+  const toolEvents = chatStream.toolEvents;
+  const pendingClarify = chatStream.pendingClarify;
   const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [clarifyError, setClarifyError] = useState(false);
   const [clarifySubmitting, setClarifySubmitting] = useState(false);
@@ -200,7 +202,7 @@ export function ChatPanel({
     await updateQueuedChatInput(editingQueuedTurnId, content);
     setEditingQueuedTurnId(null);
     setQueuedEditText("");
-    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
+    await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
   }
 
   function cancelQueuedTurnEdit() {
@@ -211,7 +213,7 @@ export function ChatPanel({
   async function cancelQueuedTurn(turnId: string) {
     await cancelQueuedChatInput(turnId);
     if (editingQueuedTurnId === turnId) cancelQueuedTurnEdit();
-    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
+    await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
   }
 
   function updateScrollStickiness() {
@@ -234,10 +236,7 @@ export function ChatPanel({
     setOutcomeUnknown(false);
     setStreamError(false);
     setStreamErrorMessage("");
-    setStreamUserMessage(null);
-    setStreamAssistantText("");
-    setToolEvents([]);
-    setPendingClarify(null);
+    dispatchChatStream({ type: "reset" });
     setClarifyAnswer("");
     setClarifyError(false);
     setClarifySubmitting(false);
@@ -254,23 +253,16 @@ export function ChatPanel({
           if (event.type === "outcome_unknown") {
             setOutcomeUnknown(true);
           }
-          handleStreamEvent(event, runSessionId, {
-            setStreamUserMessage,
-            setStreamAssistantText,
-            setToolEvents,
-            setPendingClarify,
-          });
+          dispatchChatStream({ type: "event", event, sessionId: runSessionId });
         },
         controller.signal,
       );
       runCursorsRef.current.set(runId, result.cursor);
       setObservedRunStatus(result.run.status);
-      await qc.invalidateQueries({ queryKey: ["chat", "messages", runSessionId] });
-      await qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-      await qc.invalidateQueries({ queryKey: ["chat", "runtime", runSessionId] });
-      setStreamUserMessage(null);
-      setStreamAssistantText("");
-      setToolEvents([]);
+      await qc.invalidateQueries({ queryKey: chatQueryKeys.messages(runSessionId) });
+      await qc.invalidateQueries({ queryKey: chatQueryKeys.sessionsRoot });
+      await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(runSessionId) });
+      dispatchChatStream({ type: "reset" });
     } catch (error) {
       if (!controller.signal.aborted) {
         setStreamError(true);
@@ -354,7 +346,7 @@ export function ChatPanel({
           moaPresetId: selectedMoaPreset?.id ?? null,
         },
       );
-      await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
+      await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
       if (!isStreamingRef.current && enqueued.run) {
         void observeRun(enqueued.run.id, sessionId);
       }
@@ -370,7 +362,7 @@ export function ChatPanel({
     if (!observedRunId) return;
     const response = await cancelAgentRun(observedRunId);
     if (response.accepted) setCancelRequested(true);
-    await qc.invalidateQueries({ queryKey: ["chat", "runtime", sessionId] });
+    await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
   }
 
   const submitClarify = async (answer: string) => {
@@ -385,7 +377,7 @@ export function ChatPanel({
         pendingClarify.requestId,
         trimmed,
       );
-      setPendingClarify(null);
+      dispatchChatStream({ type: "clearClarify" });
       setClarifyAnswer("");
     } catch {
       setClarifyError(true);

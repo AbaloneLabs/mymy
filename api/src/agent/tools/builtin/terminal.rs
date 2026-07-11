@@ -40,11 +40,11 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "processes_write".to_string(),
         schema: tool_schema(
             "terminal",
-            "Execute a shell command in the agent sandbox. Set background=true for long-running servers.",
+            "Execute a shell command in the agent sandbox. Drive mounts are read-only; use read_file, write_file, or patch_file for workspace content. Set background=true for long-running servers.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "Shell command to execute." },
+                    "command": { "type": "string", "description": "Shell command to execute. Direct Drive writes are unavailable; use file tools." },
                     "timeout": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": "Maximum seconds to wait." },
                     "workdir": { "type": "string", "description": "Optional working directory." },
                     "background": { "type": "boolean", "default": false, "description": "Start a managed background process instead of waiting for command completion." },
@@ -63,6 +63,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             agent_profile: config.agent_profile.clone(),
             project_id: config.project_id,
             preview_host: config.sandbox_preview_host.clone(),
+            app_state: config.app_state.clone(),
         }),
     });
 

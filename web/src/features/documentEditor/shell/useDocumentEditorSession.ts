@@ -1,4 +1,11 @@
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   editorCommandsForKind,
   matchesEditorShortcut,
@@ -10,18 +17,6 @@ import {
   useEditorPreferences,
 } from "@/features/documentEditor/shared/fonts";
 import { stableJson } from "@/features/documentEditor/shared/models";
-import {
-  countModelMatches,
-  modelSearchError,
-  replaceAllInModel,
-  replaceFirstInModel,
-} from "@/features/documentEditor/shared/search";
-import {
-  applyEditorOperations,
-  coalesceEditorOperationEntries,
-  createEditorOperationEntry,
-  type EditorOperationEntry,
-} from "@/features/documentEditor/shared/operationHistory";
 import {
   captureEditorSelection,
   type EditorSelectionSnapshot,
@@ -35,10 +30,15 @@ import { requiredDocumentEditorCapabilities } from "@/features/documentEditor/sh
 import { drivePackageUrl } from "@/features/drive/api";
 import { ApiError } from "@/lib/api";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
+import { reviewedConflictFingerprint } from "./documentEditorRevisionState";
 import {
-  classifyIncomingDocumentRevision,
-  reviewedConflictFingerprint,
-} from "./documentEditorRevisionState";
+  createDocumentEditorSessionState,
+  documentEditorSessionReducer,
+  type ExternalRevisionSource,
+} from "./documentEditorSessionState";
+import { useDocumentEditorHistory } from "./useDocumentEditorHistory";
+import { useDocumentEditorAutosave } from "./useDocumentEditorAutosave";
+import { useDocumentEditorSearch } from "./useDocumentEditorSearch";
 import {
   deleteDocumentEditorRecoveryDraft,
   documentEditorRecoveryDraftId,
@@ -52,14 +52,6 @@ import {
   subscribeToDocumentEditorRevisions,
   type DocumentEditorRevisionNotice,
 } from "./documentEditorRevisionChannel";
-
-const MAX_HISTORY_ENTRIES = 100;
-const MAX_HISTORY_BYTES = 5_000_000;
-
-interface EditorHistory {
-  past: EditorOperationEntry[];
-  future: EditorOperationEntry[];
-}
 
 export function useDocumentEditorSession({
   data,
@@ -78,17 +70,26 @@ export function useDocumentEditorSession({
   const autosaveEnabled = preferences.data?.preferences.autosaveEnabled === true;
   const autosaveDelayMs = preferences.data?.preferences.autosaveDelayMs ?? 5_000;
   const rootRef = useRef<HTMLDivElement>(null);
-  const recoverySessionIdRef = useRef(crypto.randomUUID());
+  const [recoverySessionId] = useState(() => crypto.randomUUID());
   const restoredRecoveryDraftIdRef = useRef<string | null>(null);
   const ignoredRecoveryDraftIdsRef = useRef(new Set<string>());
-  const [draft, setDraft] = useState<unknown>(() => data.model);
-  const [draftKey, setDraftKey] = useState(() => data.fingerprint);
-  const [baseModel, setBaseModel] = useState<unknown>(() => data.model);
-  const [baseKey, setBaseKey] = useState(() => data.fingerprint);
-  const [fingerprint, setFingerprint] = useState(() => data.fingerprint);
-  const [compatibilityWarnings, setCompatibilityWarnings] = useState(
-    () => data.compatibilityWarnings,
+  const [sessionState, dispatchSession] = useReducer(
+    documentEditorSessionReducer,
+    data,
+    createDocumentEditorSessionState,
   );
+  const {
+    currentModel: draft,
+    currentKey: draftKey,
+    serverModel: baseModel,
+    serverKey: baseKey,
+    acceptedFingerprint: fingerprint,
+    compatibilityWarnings,
+    syncStatus,
+    externalRevision,
+    externalRevisionSource,
+    saveConflict,
+  } = sessionState;
   const [draftCompatibilityValidation, setDraftCompatibilityValidation] =
     useState<{
       draftKey: string;
@@ -97,44 +98,26 @@ export function useDocumentEditorSession({
     } | null>(null);
   const [compatibilityValidationError, setCompatibilityValidationError] =
     useState<{ draftKey: string; message: string } | null>(null);
-  const [syncStatus, setSyncStatus] = useState(data.syncStatus);
-  const [externalRevision, setExternalRevision] =
-    useState<DocumentEditorModelResponse | null>(null);
-  const [externalRevisionSource, setExternalRevisionSource] = useState<
-    "another-tab" | "external" | null
-  >(null);
   const [recoveryDraft, setRecoveryDraft] =
     useState<DocumentEditorRecoveryDraft | null>(null);
   const [recoveryChecked, setRecoveryChecked] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
-  const [saveConflict, setSaveConflict] = useState(false);
   const [saveCopyOpen, setSaveCopyOpen] = useState(false);
   const [saveCopyTargetPath, setSaveCopyTargetPath] = useState(() =>
     defaultDocumentCopyPath(data.path),
   );
   const [savedCopyPath, setSavedCopyPath] = useState<string | null>(null);
-  const [saveQueued, setSaveQueued] = useState(false);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
-  const [findPanelOpen, setFindPanelOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [replaceValue, setReplaceValue] = useState("");
-  const [matchCase, setMatchCase] = useState(false);
-  const [wholeWord, setWholeWord] = useState(false);
-  const [regexSearch, setRegexSearch] = useState(false);
   const [editorCommandRequest, setEditorCommandRequest] =
     useState<EditorCommandRequest | null>(null);
   const [selectionSnapshot, setSelectionSnapshot] =
     useState<EditorSelectionSnapshot>(() => ({ kind: "none", label: "No selection" }));
-  const [history, setHistory] = useState<EditorHistory>({
-    past: [],
-    future: [],
-  });
+  const editorHistory = useDocumentEditorHistory();
   const latestDraftRef = useRef(draft);
   const latestDraftKeyRef = useRef(draftKey);
-  const saveQueuedRef = useRef(false);
   const pendingSaveIdentityRef = useRef<{
     draftKey: string;
     expectedFingerprint: string;
@@ -147,7 +130,7 @@ export function useDocumentEditorSession({
     idempotencyKey: string;
   } | null>(null);
   const recoverySnapshotRef = useRef({
-    sessionId: recoverySessionIdRef.current,
+    sessionId: recoverySessionId,
     path: data.path,
     editorKind: data.editorKind,
     modelSchemaVersion: data.modelSchemaVersion,
@@ -156,8 +139,6 @@ export function useDocumentEditorSession({
     model: draft,
     dirty: false,
   });
-  latestDraftRef.current = draft;
-  latestDraftKeyRef.current = draftKey;
   const dirty = draftKey !== baseKey;
   const externalComparison = useMemo(
     () =>
@@ -178,63 +159,65 @@ export function useDocumentEditorSession({
     validatedDraftCompatibility?.warnings ?? compatibilityWarnings;
   const compatibilityValidationPending =
     dirty && draftCompatibilityValidation?.draftKey !== draftKey;
-  recoverySnapshotRef.current = {
-    sessionId: recoverySessionIdRef.current,
-    path: data.path,
-    editorKind: data.editorKind,
-    modelSchemaVersion: data.modelSchemaVersion,
-    baseFingerprint: fingerprint,
-    baseModel,
-    model: draft,
+  const autosave = useDocumentEditorAutosave({
+    enabled: autosaveEnabled,
+    delayMs: autosaveDelayMs,
     dirty,
-  };
-  const matchCount = countModelMatches(draft, {
-    query: findQuery,
-    matchCase,
-    wholeWord,
-    regexSearch,
+    draftKey,
+    savePending: writeModel.isPending,
+    saveConflict,
+    onSave: () => void save(),
   });
-  const searchError = modelSearchError({
-    query: findQuery,
-    matchCase,
-    wholeWord,
-    regexSearch,
-  });
-  const runAutosave = useEffectEvent(() => {
-    void save();
-  });
-  const runQueuedSave = useEffectEvent(() => {
-    if (!saveQueuedRef.current || writeModel.isPending || saveConflict) return;
-    saveQueuedRef.current = false;
-    setSaveQueued(false);
-    void save();
-  });
+  useEffect(() => {
+    latestDraftRef.current = draft;
+    latestDraftKeyRef.current = draftKey;
+    recoverySnapshotRef.current = {
+      sessionId: recoverySessionId,
+      path: data.path,
+      editorKind: data.editorKind,
+      modelSchemaVersion: data.modelSchemaVersion,
+      baseFingerprint: fingerprint,
+      baseModel,
+      model: draft,
+      dirty,
+    };
+  }, [
+    baseModel,
+    data.editorKind,
+    data.modelSchemaVersion,
+    data.path,
+    dirty,
+    draft,
+    draftKey,
+    fingerprint,
+    recoverySessionId,
+  ]);
   const updateSelectionSnapshot = useEffectEvent(() => {
     setSelectionSnapshot(captureEditorSelection(rootRef.current, data.editorKind));
   });
   const observeIncomingRevision = useEffectEvent(
-    (incoming: DocumentEditorModelResponse) => {
-      const disposition = classifyIncomingDocumentRevision({
-        acceptedFingerprint: fingerprint,
-        incomingFingerprint: incoming.fingerprint,
-        dirty,
-        saving: writeModel.isPending,
-      });
-      if (disposition === "same") {
-        if (externalRevision?.fingerprint === incoming.fingerprint) {
-          setExternalRevisionSource(null);
-        }
-        setExternalRevision((current) =>
-          current?.fingerprint === incoming.fingerprint ? null : current,
-        );
+    (
+      incoming: DocumentEditorModelResponse,
+      source: ExternalRevisionSource = "external",
+    ) => {
+      if (
+        incoming.fingerprint !== fingerprint &&
+        !dirty &&
+        !writeModel.isPending
+      ) {
+        dispatchSession({ type: "incomingRevision", response: incoming, source });
+        autosave.clear();
+        editorHistory.reset();
+        setDraftCompatibilityValidation(null);
+        setCompatibilityValidationError(null);
+        setRecoveryDraft(null);
+        void deleteDocumentEditorRecoveryDraft(
+          documentEditorRecoveryDraftId(data.path, recoverySessionId),
+        ).catch(() => undefined);
+        writeModel.reset();
         return;
       }
-      if (disposition === "pin-external") {
-        setExternalRevision(incoming);
-        setExternalRevisionSource((current) => current ?? "external");
-        return;
-      }
-      adoptServerRevision(incoming);
+      dispatchSession({ type: "incomingRevision", response: incoming, source });
     },
   );
 
@@ -254,7 +237,7 @@ export function useDocumentEditorSession({
     (notice: DocumentEditorRevisionNotice) => {
       if (
         notice.path !== data.path ||
-        notice.sourceSessionId === recoverySessionIdRef.current ||
+        notice.sourceSessionId === recoverySessionId ||
         notice.fingerprint === fingerprint ||
         !refreshModel
       ) {
@@ -263,8 +246,7 @@ export function useDocumentEditorSession({
       void refreshModel()
         .then((incoming) => {
           if (!incoming || incoming.fingerprint !== notice.fingerprint) return;
-          setExternalRevisionSource("another-tab");
-          observeIncomingRevision(incoming);
+          observeIncomingRevision(incoming, "another-tab");
         })
         .catch(() => undefined);
     },
@@ -322,7 +304,7 @@ export function useDocumentEditorSession({
         void deleteDocumentEditorRecoveryDraft(
           documentEditorRecoveryDraftId(
             data.path,
-            recoverySessionIdRef.current,
+            recoverySessionId,
           ),
         ).catch(() => undefined);
       }
@@ -343,7 +325,15 @@ export function useDocumentEditorSession({
         .catch((error) => setRecoveryError(recoveryErrorMessage(error)));
     }, 750);
     return () => window.clearTimeout(timer);
-  }, [data.path, dirty, draftKey, fingerprint, recoveryChecked, recoveryDraft]);
+  }, [
+    data.path,
+    dirty,
+    draftKey,
+    fingerprint,
+    recoveryChecked,
+    recoveryDraft,
+    recoverySessionId,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -373,26 +363,6 @@ export function useDocumentEditorSession({
       root.removeEventListener("focusin", handleFocusIn);
     };
   }, []);
-
-  useEffect(() => {
-    if (!autosaveEnabled || !dirty || writeModel.isPending || saveConflict) return;
-    const timer = window.setTimeout(() => {
-      runAutosave();
-    }, autosaveDelayMs);
-    return () => window.clearTimeout(timer);
-  }, [
-    autosaveDelayMs,
-    autosaveEnabled,
-    dirty,
-    draftKey,
-    saveConflict,
-    writeModel.isPending,
-  ]);
-
-  useEffect(() => {
-    if (writeModel.isPending || !dirty || saveConflict) return;
-    runQueuedSave();
-  }, [dirty, draftKey, saveConflict, writeModel.isPending]);
 
   useEffect(() => {
     if (!dirty || saveConflict) return;
@@ -433,97 +403,40 @@ export function useDocumentEditorSession({
   }, [data.editorKind, data.modelSchemaVersion, data.path, dirty, draft, draftKey, fingerprint, saveConflict]);
 
   function commitDraft(next: unknown) {
-    const operation = createEditorOperationEntry({
-      before: draft,
-      after: next,
-      label: "Edit document model",
-    });
-    if (!operation) return;
-    const nextKey = `local:${operation.id}`;
-    operation.beforeRevisionKey = draftKey;
-    operation.afterRevisionKey = nextKey;
-    const previous = history.past.at(-1);
-    const previewCoalesced = previous
-      ? coalesceEditorOperationEntries(previous, operation)
-      : undefined;
-    const committedKey =
-      previewCoalesced === null
-        ? (previous?.beforeRevisionKey ?? nextKey)
-        : nextKey;
-    setSaveConflict(false);
+    const transition = editorHistory.commit(draft, draftKey, next);
+    if (!transition) return;
     writeModel.reset();
-    if (writeModel.isPending) queueSave();
-    setHistory((current) => {
-      const currentPrevious = current.past.at(-1);
-      const coalesced = currentPrevious
-        ? coalesceEditorOperationEntries(currentPrevious, operation)
-        : undefined;
-      const past =
-        coalesced === undefined
-          ? [...current.past, operation]
-          : coalesced === null
-            ? current.past.slice(0, -1)
-            : [...current.past.slice(0, -1), coalesced];
-      return { past: trimHistoryEntries(past), future: [] };
+    if (writeModel.isPending) autosave.queue();
+    dispatchSession({
+      type: "localDraft",
+      model: transition.model,
+      key: transition.key,
     });
-    setDraft(next);
-    setDraftKey(committedKey);
   }
 
   function undo() {
-    const previous = history.past.at(-1);
-    if (previous === undefined) return;
-    const restored = applyEditorOperations(draft, previous.inverse);
-    setHistory({
-      past: history.past.slice(0, -1),
-      future: trimHistoryEntries(
-        [previous, ...history.future],
-        "start",
-      ),
+    const transition = editorHistory.undo(draft);
+    if (!transition) return;
+    dispatchSession({
+      type: "localDraft",
+      model: transition.model,
+      key: transition.key,
     });
-    setSaveConflict(false);
-    setDraft(restored);
-    setDraftKey(previous.beforeRevisionKey ?? `undo:${previous.id}`);
   }
 
   function redo() {
-    const next = history.future[0];
-    if (next === undefined) return;
-    const restored = applyEditorOperations(draft, next.forward);
-    setHistory({
-      past: trimHistoryEntries([...history.past, next]),
-      future: history.future.slice(1),
+    const transition = editorHistory.redo(draft);
+    if (!transition) return;
+    dispatchSession({
+      type: "localDraft",
+      model: transition.model,
+      key: transition.key,
     });
-    setSaveConflict(false);
-    setDraft(restored);
-    setDraftKey(next.afterRevisionKey ?? `redo:${next.id}`);
-  }
-
-  function replaceFirst() {
-    const result = replaceFirstInModel(draft, {
-      query: findQuery,
-      replacement: replaceValue,
-      matchCase,
-      wholeWord,
-      regexSearch,
-    });
-    if (result.replacements > 0) commitDraft(result.model);
-  }
-
-  function replaceAll() {
-    const result = replaceAllInModel(draft, {
-      query: findQuery,
-      replacement: replaceValue,
-      matchCase,
-      wholeWord,
-      regexSearch,
-    });
-    if (result.replacements > 0) commitDraft(result.model);
   }
 
   async function save(options: { expectedFingerprint?: string } = {}) {
     if (writeModel.isPending) {
-      if (dirty) queueSave();
+      if (dirty) autosave.queue();
       return false;
     }
     if (!dirty) return true;
@@ -541,7 +454,11 @@ export function useDocumentEditorSession({
             idempotencyKey: crypto.randomUUID(),
           };
     pendingSaveIdentityRef.current = saveIdentity;
-    setSaveConflict(false);
+    dispatchSession({
+      type: "saveStarted",
+      snapshotKey: savingDraftKey,
+      expectedFingerprint,
+    });
     writeModel.reset();
     try {
       const saved = await writeModel.mutateAsync({
@@ -555,17 +472,14 @@ export function useDocumentEditorSession({
         syncQuery: true,
       });
       const savedKey = savingDraftKey;
-      setSaveConflict(false);
-      clearQueuedSave();
-      setFingerprint(saved.fingerprint);
-      setBaseModel(saved.model);
-      setBaseKey(savedKey);
-      setCompatibilityWarnings(saved.compatibilityWarnings);
+      autosave.clear();
+      dispatchSession({
+        type: "saveSucceeded",
+        snapshotKey: savedKey,
+        response: saved,
+      });
       setDraftCompatibilityValidation(null);
       setCompatibilityValidationError(null);
-      setSyncStatus(saved.syncStatus);
-      setExternalRevision(null);
-      setExternalRevisionSource(null);
       setLastSavedAt(new Date().toLocaleTimeString());
       setRecoveryDraft(null);
       if (pendingSaveIdentityRef.current === saveIdentity) {
@@ -574,17 +488,15 @@ export function useDocumentEditorSession({
       publishDocumentEditorRevision({
         path: data.path,
         fingerprint: saved.fingerprint,
-        sourceSessionId: recoverySessionIdRef.current,
+        sourceSessionId: recoverySessionId,
       });
       if (latestDraftKeyRef.current === savingDraftKey) {
         deleteOwnedRecoveryDrafts();
-        setDraft(saved.model);
-        setDraftKey(savedKey);
         return true;
       }
       deleteRestoredRecoveryDraft();
       void persistDocumentEditorRecoveryDraft({
-        sessionId: recoverySessionIdRef.current,
+        sessionId: recoverySessionId,
         path: data.path,
         editorKind: data.editorKind,
         modelSchemaVersion: data.modelSchemaVersion,
@@ -592,25 +504,27 @@ export function useDocumentEditorSession({
         baseModel: saved.model,
         model: latestDraftRef.current,
       }).catch((error) => setRecoveryError(recoveryErrorMessage(error)));
-      queueSave();
+      autosave.queue();
       return false;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
-        setSaveConflict(true);
-        clearQueuedSave();
+        dispatchSession({ type: "saveFailed", conflict: true });
+        autosave.clear();
         const refreshed = await refreshModel?.().catch(() => null);
         if (refreshed && refreshed.fingerprint !== fingerprint) {
-          setExternalRevision(refreshed);
-          setExternalRevisionSource("external");
+          dispatchSession({
+            type: "incomingRevision",
+            response: refreshed,
+            source: "external",
+          });
         }
         return false;
       }
-      setSaveConflict(false);
+      dispatchSession({ type: "saveFailed", conflict: false });
       // A second explicit save made while the first request was pending is a
       // real follow-up intent. Preserve that one retry after a transport
       // failure, while successful and conflict transitions clear both the UI
       // flag and the authoritative ref so it cannot leak into a later edit.
-      setSaveQueued(saveQueuedRef.current);
       return false;
     }
   }
@@ -689,23 +603,18 @@ export function useDocumentEditorSession({
     ) {
       return false;
     }
-    const externalKey = externalRevision.fingerprint;
     const mergedKey = `rebase:${crypto.randomUUID()}`;
-    setBaseModel(externalRevision.model);
-    setBaseKey(externalKey);
-    setFingerprint(externalRevision.fingerprint);
-    setCompatibilityWarnings(externalRevision.compatibilityWarnings);
+    dispatchSession({
+      type: "rebase",
+      response: externalRevision,
+      mergedModel: externalComparison.mergedModel,
+      mergedKey,
+    });
     setDraftCompatibilityValidation(null);
     setCompatibilityValidationError(null);
-    setSyncStatus(externalRevision.syncStatus);
-    setDraft(externalComparison.mergedModel);
-    setDraftKey(mergedKey);
-    setHistory({ past: [], future: [] });
-    setSaveConflict(false);
-    setExternalRevision(null);
-    setExternalRevisionSource(null);
+    editorHistory.reset();
     pendingSaveIdentityRef.current = null;
-    clearQueuedSave();
+    autosave.clear();
     writeModel.reset();
     return true;
   }
@@ -713,17 +622,22 @@ export function useDocumentEditorSession({
   function restoreRecoveryDraft() {
     if (!recoveryDraft || writeModel.isPending) return false;
     const recoveredBaseKey = recoveryDraft.baseFingerprint;
-    setBaseModel(recoveryDraft.baseModel);
-    setBaseKey(recoveredBaseKey);
-    setFingerprint(recoveryDraft.baseFingerprint);
-    setDraft(recoveryDraft.model);
-    setDraftKey(`recovery:${recoveryDraft.id}`);
-    setHistory({ past: [], future: [] });
-    setSaveConflict(false);
-    clearQueuedSave();
+    dispatchSession({
+      type: "restoreRecovery",
+      baseModel: recoveryDraft.baseModel,
+      baseKey: recoveredBaseKey,
+      baseFingerprint: recoveryDraft.baseFingerprint,
+      model: recoveryDraft.model,
+      key: `recovery:${recoveryDraft.id}`,
+    });
+    editorHistory.reset();
+    autosave.clear();
     if (data.fingerprint !== recoveryDraft.baseFingerprint) {
-      setExternalRevision(data);
-      setExternalRevisionSource("external");
+      dispatchSession({
+        type: "incomingRevision",
+        response: data,
+        source: "external",
+      });
     }
     restoredRecoveryDraftIdRef.current = recoveryDraft.id;
     setRecoveryDraft(null);
@@ -740,22 +654,16 @@ export function useDocumentEditorSession({
   }
 
   function adoptServerRevision(revision: DocumentEditorModelResponse) {
-    const revisionKey = revision.fingerprint;
-    saveQueuedRef.current = false;
-    setSaveQueued(false);
-    setSaveConflict(false);
-    setExternalRevision(null);
-    setExternalRevisionSource(null);
-    setFingerprint(revision.fingerprint);
-    setBaseModel(revision.model);
-    setBaseKey(revisionKey);
-    setDraft(revision.model);
-    setDraftKey(revisionKey);
-    setCompatibilityWarnings(revision.compatibilityWarnings);
+    autosave.clear();
+    dispatchSession({
+      type: "rebase",
+      response: revision,
+      mergedModel: revision.model,
+      mergedKey: revision.fingerprint,
+    });
     setDraftCompatibilityValidation(null);
     setCompatibilityValidationError(null);
-    setSyncStatus(revision.syncStatus);
-    setHistory({ past: [], future: [] });
+    editorHistory.reset();
     setRecoveryDraft(null);
     deleteOwnedRecoveryDrafts();
     writeModel.reset();
@@ -763,7 +671,7 @@ export function useDocumentEditorSession({
 
   function deleteOwnedRecoveryDrafts() {
     const ids = new Set([
-      documentEditorRecoveryDraftId(data.path, recoverySessionIdRef.current),
+      documentEditorRecoveryDraftId(data.path, recoverySessionId),
     ]);
     if (restoredRecoveryDraftIdRef.current) {
       ids.add(restoredRecoveryDraftIdRef.current);
@@ -781,15 +689,7 @@ export function useDocumentEditorSession({
     void deleteDocumentEditorRecoveryDraft(id).catch(() => undefined);
   }
 
-  function queueSave() {
-    saveQueuedRef.current = true;
-    setSaveQueued(true);
-  }
-
-  function clearQueuedSave() {
-    saveQueuedRef.current = false;
-    setSaveQueued(false);
-  }
+  const search = useDocumentEditorSearch(draft, commitDraft);
 
   async function downloadPackage() {
     if (writeModel.isPending) return;
@@ -829,7 +729,7 @@ export function useDocumentEditorSession({
       return;
     }
     if (commandId === "find" || commandId === "replace") {
-      setFindPanelOpen(true);
+      search.setFindPanelOpen(true);
       return;
     }
     if (commandId === "shortcuts") {
@@ -877,11 +777,11 @@ export function useDocumentEditorSession({
     validatedDraftSerializedSize: validatedDraftCompatibility?.serializedSize ?? null,
     syncStatus,
     dirty,
-    operationCount: history.past.length,
+    operationCount: editorHistory.operationCount,
     selectionSnapshot,
     lastSavedAt,
     isSaving: writeModel.isPending,
-    isSaveQueued: saveQueued,
+    isSaveQueued: autosave.queued,
     saveError: writeModel.isError && !saveConflict,
     saveErrorMessage:
       writeModel.isError && !saveConflict && writeModel.error instanceof Error
@@ -902,20 +802,20 @@ export function useDocumentEditorSession({
     externalComparison,
     recoveryDraftAvailable: recoveryDraft !== null,
     recoveryError,
-    canUndo: history.past.length > 0,
-    canRedo: history.future.length > 0,
+    canUndo: editorHistory.canUndo,
+    canRedo: editorHistory.canRedo,
     keymapEntries,
     shortcutHelpOpen,
     commandPaletteOpen,
     commandPaletteQuery,
-    findPanelOpen,
-    findQuery,
-    replaceValue,
-    matchCase,
-    wholeWord,
-    regexSearch,
-    matchCount,
-    searchError,
+    findPanelOpen: search.findPanelOpen,
+    findQuery: search.findQuery,
+    replaceValue: search.replaceValue,
+    matchCase: search.matchCase,
+    wholeWord: search.wholeWord,
+    regexSearch: search.regexSearch,
+    matchCount: search.matchCount,
+    searchError: search.searchError,
     editorCommandRequest,
     commitDraft,
     undo,
@@ -935,16 +835,16 @@ export function useDocumentEditorSession({
     setShortcutHelpOpen,
     setCommandPaletteOpen,
     setCommandPaletteQuery,
-    setFindPanelOpen,
-    setFindQuery,
-    setReplaceValue,
-    setMatchCase,
-    setWholeWord,
-    setRegexSearch,
+    setFindPanelOpen: search.setFindPanelOpen,
+    setFindQuery: search.setFindQuery,
+    setReplaceValue: search.setReplaceValue,
+    setMatchCase: search.setMatchCase,
+    setWholeWord: search.setWholeWord,
+    setRegexSearch: search.setRegexSearch,
     setSaveCopyOpen,
     setSaveCopyTargetPath,
-    replaceFirst,
-    replaceAll,
+    replaceFirst: search.replaceFirst,
+    replaceAll: search.replaceAll,
   };
 }
 
@@ -961,20 +861,4 @@ export function defaultDocumentCopyPath(path: string) {
   const stem = hasExtension ? name.slice(0, extensionIndex) : name;
   const extension = hasExtension ? name.slice(extensionIndex) : "";
   return `${directory}${stem} (conflict copy)${extension}`;
-}
-
-function trimHistoryEntries(
-  entries: EditorOperationEntry[],
-  keep: "end" | "start" = "end",
-) {
-  const next =
-    keep === "end"
-      ? entries.slice(-MAX_HISTORY_ENTRIES)
-      : entries.slice(0, MAX_HISTORY_ENTRIES);
-  let totalSize = next.reduce((sum, entry) => sum + entry.size, 0);
-  while (next.length > 1 && totalSize > MAX_HISTORY_BYTES) {
-    const removed = keep === "end" ? next.shift() : next.pop();
-    totalSize -= removed?.size ?? 0;
-  }
-  return next;
 }

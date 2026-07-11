@@ -2,7 +2,6 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -34,14 +33,14 @@ fn normalize_logical_drive_path_rejects_similar_prefixes() {
     assert!(err.to_string().contains("Drive paths must start"));
 }
 
-#[tokio::test]
-async fn document_package_includes_document_and_uploaded_fonts() {
+#[sqlx::test(migrations = "./migrations")]
+async fn document_package_includes_document_and_uploaded_fonts(pool: sqlx::PgPool) {
     let agent_data_dir =
         std::env::temp_dir().join(format!("mymy-drive-package-test-{}", Uuid::new_v4()));
     let _ = fs::remove_dir_all(&agent_data_dir);
     fs::create_dir_all(agent_data_dir.join("drive/agents/elena")).unwrap();
 
-    let state = test_state(agent_data_dir.clone());
+    let state = test_state(pool, agent_data_dir.clone());
     fs::write(
         agent_data_dir.join("drive/agents/elena/test.md"),
         b"# Test document\n",
@@ -87,14 +86,14 @@ async fn document_package_includes_document_and_uploaded_fonts() {
     let _ = fs::remove_dir_all(agent_data_dir);
 }
 
-#[tokio::test]
-async fn raw_drive_write_requires_and_rechecks_the_read_fingerprint() {
+#[sqlx::test(migrations = "./migrations")]
+async fn raw_drive_write_requires_and_rechecks_the_read_fingerprint(pool: sqlx::PgPool) {
     let agent_data_dir =
         std::env::temp_dir().join(format!("mymy-drive-cas-test-{}", Uuid::new_v4()));
     let path = agent_data_dir.join("drive/shared/state.txt");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, "first").unwrap();
-    let state = test_state(agent_data_dir.clone());
+    let state = test_state(pool, agent_data_dir.clone());
 
     let opened = read_file(&state, "/drive/shared/state.txt").await.unwrap();
     assert!(!opened.fingerprint.is_empty());
@@ -127,10 +126,7 @@ async fn raw_drive_write_requires_and_rechecks_the_read_fingerprint() {
     let _ = fs::remove_dir_all(agent_data_dir);
 }
 
-fn test_state(agent_data_dir: PathBuf) -> AppState {
-    let db = PgPoolOptions::new()
-        .connect_lazy("postgres://mymy:mymy@localhost/mymy")
-        .unwrap();
+fn test_state(db: sqlx::PgPool, agent_data_dir: PathBuf) -> AppState {
     AppState::new(
         db,
         Config {

@@ -8,7 +8,9 @@ use super::super::workspace_paths::WorkspacePathPolicy;
 use super::{MAX_LABEL_CHARS, MAX_PREVIEW_PORT, MIN_PREVIEW_PORT};
 use crate::agent::security::{ensure_read_allowed, ensure_write_allowed};
 use crate::agent::tools::ToolError;
+use crate::error::AppError;
 use crate::services::audit::log_security_denial_safe;
+use crate::state::AppState;
 
 pub(super) fn parse_preview_port(value: Option<&Value>) -> Result<Option<u16>, ToolError> {
     let Some(value) = value else {
@@ -42,19 +44,28 @@ pub(super) fn validate_label(value: &str, label: &str) -> Result<String, ToolErr
 
 pub(super) async fn check_redirected_paths(
     db: Option<&sqlx::PgPool>,
+    state: Option<&AppState>,
     command: &str,
     workdir: &Path,
     allowed_roots: &[PathBuf],
 ) -> Result<(), ToolError> {
     let paths = WorkspacePathPolicy::new(workdir.to_path_buf(), allowed_roots.to_vec());
+    for target in literal_drive_targets(command) {
+        let resolved = paths.resolve_for_write_with_logical(&target)?;
+        ensure_content_access(state, &resolved.logical).await?;
+    }
     for target in redirected_targets(output_redirection_regex(), command) {
         let path = paths.resolve_for_write_internal_path(&resolve_shell_path(workdir, &target))?;
+        ensure_content_access(state, &paths.logical_path_for(&path)).await?;
         if let Err(error) = ensure_write_allowed(&path) {
             audit_terminal_denial(db, "terminal_write_redirect", &path, &error).await;
             return Err(error);
         }
     }
     for target in redirected_targets(input_redirection_regex(), command) {
+        let candidate =
+            paths.resolve_for_write_internal_path(&resolve_shell_path(workdir, &target))?;
+        ensure_content_access(state, &paths.logical_path_for(&candidate)).await?;
         let path = paths.resolve_existing_internal_path(&resolve_shell_path(workdir, &target))?;
         if let Err(error) = ensure_read_allowed(&path) {
             audit_terminal_denial(db, "terminal_read_redirect", &path, &error).await;
@@ -62,6 +73,42 @@ pub(super) async fn check_redirected_paths(
         }
     }
     Ok(())
+}
+
+fn literal_drive_targets(command: &str) -> Vec<String> {
+    literal_drive_path_regex()
+        .find_iter(command)
+        .map(|value| {
+            value
+                .as_str()
+                .trim_end_matches([',', ')', ']', '}'])
+                .to_string()
+        })
+        .collect()
+}
+
+fn literal_drive_path_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"/drive(?:/[^\s'\";&|<>]*)?"#).expect("literal Drive path regex compiles")
+    })
+}
+
+async fn ensure_content_access(
+    state: Option<&AppState>,
+    logical_path: &str,
+) -> Result<(), ToolError> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, logical_path)
+        .await
+        .map_err(|error| match error {
+            AppError::Coded { code, message, .. } => ToolError::Coded { code, message },
+            other => ToolError::Execution(other.to_string()),
+        })
 }
 
 fn redirected_targets(regex: &Regex, command: &str) -> Vec<String> {

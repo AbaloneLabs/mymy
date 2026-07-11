@@ -7,8 +7,9 @@
 
 pub(crate) mod delegate;
 mod todo_injection;
+mod turn_state;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -26,8 +27,9 @@ use crate::agent::context::ContextManager;
 use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::types::{FinishReason, StreamDelta, ToolCall, Usage};
 use crate::agent::providers::{LlmProvider, Message};
-use crate::agent::security::redact_sensitive_text;
 use crate::agent::tools::{tool_error, tool_result, ToolCapability, ToolRegistry};
+
+use self::turn_state::{TurnAccumulator, TurnEffect};
 
 const CLARIFY_TIMEOUT_SECS: u64 = 1_800;
 
@@ -231,12 +233,7 @@ impl AgentLoop {
                 let api_calls = iteration + 1;
                 yield AgentEvent::ModelTurnStarted { iteration: api_calls };
                 let tools = self.visible_tool_schemas();
-                let mut content = String::new();
-                let mut reasoning = String::new();
-                let mut finish_reason = FinishReason::Stop;
-                let mut finish_seen = false;
-                let mut usage = Usage::default();
-                let mut tool_calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
+                let mut turn = TurnAccumulator::new();
 
                 {
                     let request_messages = messages.clone();
@@ -291,49 +288,22 @@ impl AgentLoop {
                             }
                         };
 
-                        match delta {
-                            StreamDelta::Text(text) => {
-                                let text = redact_sensitive_text(&text);
-                                content.push_str(&text);
-                                yield AgentEvent::TextDelta(text);
+                        match turn.apply(delta) {
+                            TurnEffect::Text(text) => yield AgentEvent::TextDelta(text),
+                            TurnEffect::Reasoning(text) => {
+                                yield AgentEvent::ReasoningDelta(text)
                             }
-                            StreamDelta::Reasoning(text) => {
-                                let text = redact_sensitive_text(&text);
-                                reasoning.push_str(&text);
-                                yield AgentEvent::ReasoningDelta(text);
-                            }
-                            StreamDelta::ToolCallStart { index, id, name } => {
-                                tool_calls.insert(index, ToolCall {
-                                    id,
-                                    name,
-                                    arguments: String::new(),
-                                });
-                            }
-                            StreamDelta::ToolCallArguments { index, fragment } => {
-                                let entry = tool_calls.entry(index).or_insert_with(|| ToolCall {
-                                    id: format!("call_{index}"),
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                });
-                                entry.arguments.push_str(&fragment);
-                            }
-                            StreamDelta::Finish { reason, usage: delta_usage } => {
-                                if delta_usage.total_tokens > 0
-                                    || delta_usage.prompt_tokens > 0
-                                    || delta_usage.completion_tokens > 0
-                                {
-                                    usage = delta_usage;
-                                }
-                                if !finish_seen || reason != FinishReason::Stop {
-                                    finish_reason = reason;
-                                    finish_seen = true;
-                                }
-                            }
+                            TurnEffect::None => {}
                         }
                     }
                 }
 
-                let assembled_tool_calls: Vec<ToolCall> = tool_calls.into_values().collect();
+                let completed_turn = turn.complete();
+                let content = completed_turn.content;
+                let reasoning = completed_turn.reasoning;
+                let finish_reason = completed_turn.finish_reason;
+                let usage = completed_turn.usage;
+                let assembled_tool_calls = completed_turn.tool_calls;
                 let content_is_empty = content.trim().is_empty() && reasoning.trim().is_empty();
                 if content_is_empty && assembled_tool_calls.is_empty() && finish_reason == FinishReason::Stop {
                     empty_responses += 1;
@@ -1269,6 +1239,8 @@ mod tests {
         max_active: Arc<AtomicUsize>,
     }
 
+    struct QuarantinedTool;
+
     #[async_trait]
     impl ToolHandler for EchoTool {
         async fn execute(&self, args: &serde_json::Value) -> Result<String, ToolError> {
@@ -1296,6 +1268,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(tool_result(args))
+        }
+    }
+
+    #[async_trait]
+    impl ToolHandler for QuarantinedTool {
+        async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+            Err(ToolError::Coded {
+                code: "content_quarantined",
+                message: "This file is considered suspicious and cannot be accessed until the user approves it. If you need the file, ask the user for approval.".to_string(),
+            })
         }
     }
 
@@ -1379,6 +1361,76 @@ mod tests {
         assert!(messages
             .iter()
             .any(|message| message.tool_call_id.as_deref() == Some("call_1")));
+    }
+
+    #[tokio::test]
+    async fn quarantined_tool_failure_is_safe_and_the_run_continues_without_retry() {
+        let provider = Arc::new(MockProvider {
+            turns: Mutex::new(VecDeque::from([
+                vec![
+                    StreamDelta::ToolCallStart {
+                        index: 0,
+                        id: "quarantine_call".to_string(),
+                        name: "read_quarantined".to_string(),
+                    },
+                    StreamDelta::ToolCallArguments {
+                        index: 0,
+                        fragment: r#"{"path":"untrusted-name"}"#.to_string(),
+                    },
+                    StreamDelta::Finish {
+                        reason: FinishReason::ToolCalls,
+                        usage: Usage::default(),
+                    },
+                ],
+                vec![
+                    StreamDelta::Text("I need user approval.".to_string()),
+                    text_finish(),
+                ],
+            ])),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(ToolEntry {
+            name: "read_quarantined".to_string(),
+            toolset: "test".to_string(),
+            schema: ToolSchema {
+                tool_type: "function".to_string(),
+                function: FunctionSchema {
+                    name: "read_quarantined".to_string(),
+                    description: None,
+                    parameters: serde_json::json!({"type":"object"}),
+                },
+            },
+            capability: crate::agent::tools::ToolCapability::read("file"),
+            handler: Arc::new(QuarantinedTool),
+        });
+        let agent_loop = AgentLoop::new(provider, Arc::new(registry), LoopConfig::default(), None);
+        let mut messages = vec![Message::user("read it")];
+        let events: Vec<AgentEvent> = agent_loop.run("system", &mut messages).collect().await;
+
+        let finished = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolCallFinished { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(finished.len(), 1, "the failed call must not be retried");
+        let result: Value = serde_json::from_str(finished[0]).unwrap();
+        assert_eq!(result["code"], "content_quarantined");
+        assert!(result["error"].as_str().unwrap().contains("ask the user"));
+        let serialized = result.to_string();
+        assert!(!serialized.contains("Settings"));
+        assert!(!serialized.contains("quarantine_call"));
+        assert!(!serialized.contains("untrusted-name"));
+        assert!(events.iter().any(
+            |event| matches!(event, AgentEvent::TextDelta(text) if text.contains("approval"))
+        ));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Done { .. })));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::RunPaused { .. })));
     }
 
     #[tokio::test]

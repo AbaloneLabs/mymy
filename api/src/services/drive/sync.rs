@@ -86,6 +86,7 @@ pub(crate) async fn document_sync_status(
         Some("done") => DocumentEditorSyncStatus::Synced,
         Some("pending" | "running") => DocumentEditorSyncStatus::Pending,
         Some("failed") | None => DocumentEditorSyncStatus::Failed,
+        Some("quarantined") => DocumentEditorSyncStatus::Failed,
         Some(_) => DocumentEditorSyncStatus::Failed,
     })
 }
@@ -141,6 +142,7 @@ fn parse_sync_status(value: &str) -> DriveSyncStatus {
         "running" => DriveSyncStatus::Running,
         "failed" => DriveSyncStatus::Failed,
         "done" => DriveSyncStatus::Done,
+        "quarantined" => DriveSyncStatus::Quarantined,
         _ => DriveSyncStatus::Pending,
     }
 }

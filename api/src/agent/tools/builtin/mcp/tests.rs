@@ -34,21 +34,21 @@ fn rpc_response_requires_expected_id() {
 }
 
 #[tokio::test]
-async fn content_blocks_extract_text_and_cache_media() {
+async fn content_blocks_require_the_central_boundary_for_media() {
     let dir = std::env::temp_dir().join(format!("mymy-mcp-media-{}", uuid::Uuid::new_v4()));
     let result = process_content_blocks(
         serde_json::json!({
             "content": [
                 { "type": "text", "text": "hello" },
-                { "type": "image", "mimeType": "image/png", "data": "aGk=" }
+                { "type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" }
             ]
         }),
         &dir,
+        None,
+        None,
     )
     .await
-    .unwrap();
-    assert_eq!(result["content"], "hello");
-    let path = result["media"][0]["path"].as_str().unwrap();
-    assert!(std::path::Path::new(path).exists());
+    .unwrap_err();
+    assert!(result.to_string().contains("without application state"));
     let _ = std::fs::remove_dir_all(dir);
 }

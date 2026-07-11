@@ -80,12 +80,19 @@ pub async fn get_settings(state: &AppState) -> AppResult<SettingsResponse> {
     })
 }
 
-pub async fn security_status(_state: &AppState) -> AppResult<SecurityStatusResponse> {
+pub async fn security_status(state: &AppState) -> AppResult<SecurityStatusResponse> {
     Ok(SecurityStatusResponse {
         redaction_enabled: true,
         filesystem_guard_enabled: true,
         tls_validation_enabled: true,
         secret_sources: crate::agent::security::source_statuses().await,
+        content_engine_enabled: true,
+        content_policy_version: crate::services::content_safety::CONTENT_POLICY_VERSION.to_string(),
+        pending_quarantine_count: crate::services::content_quarantine::pending_count(state).await?,
+        quarantine_capacity_available: crate::services::content_quarantine::capacity_available(
+            state,
+        )
+        .await?,
     })
 }
 

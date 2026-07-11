@@ -4,12 +4,13 @@
 //! depends on an open browser or one-shot channel: the transaction records the
 //! answer and moves a suspended run back to the durable queue.
 
+mod target;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -20,6 +21,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::decision::{DecisionView, DecisionsQuery, ResolveDecisionResponse};
 use crate::services::agent_runs;
 use crate::state::AppState;
+
+use self::target::{hash_value, versions_equal};
 
 const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_CONTEXT_CHARS: usize = 8_000;
@@ -905,23 +908,6 @@ async fn resource_updated_at(
         .bind(id)
         .fetch_optional(&state.db)
         .await?)
-}
-
-fn versions_equal(expected: &str, current: &str) -> bool {
-    match (
-        DateTime::parse_from_rfc3339(expected),
-        DateTime::parse_from_rfc3339(current),
-    ) {
-        (Ok(expected), Ok(current)) => expected == current,
-        _ => expected == current,
-    }
-}
-
-fn hash_value(value: &Value) -> Result<String, String> {
-    let bytes = serde_json::to_vec(value).map_err(|err| err.to_string())?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(hex::encode(hasher.finalize()))
 }
 
 fn row_to_durable(row: DecisionRow) -> DurableDecision {

@@ -13,8 +13,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::ContentOrigin;
 use crate::services::agents;
 use crate::services::drive;
+use crate::services::file_observations::fingerprint_path;
+use crate::services::workspace_content::{AdmissionActor, AdmissionOutcome, AdmissionRequest};
 use crate::state::AppState;
 
 const MAX_PROMPT_FILE_BYTES: usize = 200_000;
@@ -58,7 +61,7 @@ pub async fn get_prompts(
 ) -> AppResult<AgentPromptsResponse> {
     let profile = normalize_profile(query.profile)?;
     let agent = registered_agent(state, &profile).await?;
-    drive::ensure_agent_workspace(state, &profile, &agent.name, Some(&agent.role))?;
+    drive::ensure_agent_workspace(state, &profile, &agent.name, Some(&agent.role)).await?;
     let agents_path = agents_md_path(&state.config.agent_data_dir, &profile)?;
     let soul_path = soul_md_path(&state.config.agent_data_dir, &profile)?;
     Ok(AgentPromptsResponse {
@@ -81,18 +84,26 @@ pub async fn update_prompts(
 ) -> AppResult<AgentPromptsResponse> {
     let profile = normalize_profile(query.profile)?;
     let agent = registered_agent(state, &profile).await?;
-    drive::ensure_agent_workspace(state, &profile, &agent.name, Some(&agent.role))?;
+    drive::ensure_agent_workspace(state, &profile, &agent.name, Some(&agent.role)).await?;
     if let Some(content) = req.agents_md {
         write_prompt_file(
+            state,
+            &profile,
+            drive::AGENTS_MD_FILE,
             &agents_md_path(&state.config.agent_data_dir, &profile)?,
             &content,
-        )?;
+        )
+        .await?;
     }
     if let Some(content) = req.soul_md {
         write_prompt_file(
+            state,
+            &profile,
+            drive::SOUL_MD_FILE,
             &soul_md_path(&state.config.agent_data_dir, &profile)?,
             &content,
-        )?;
+        )
+        .await?;
     }
     get_prompts(
         state,
@@ -168,19 +179,49 @@ fn read_prompt_file(path: &Path, display_path: &str) -> AppResult<PromptFile> {
     }
 }
 
-fn write_prompt_file(path: &Path, content: &str) -> AppResult<()> {
+async fn write_prompt_file(
+    state: &AppState,
+    profile: &str,
+    file_name: &str,
+    path: &Path,
+    content: &str,
+) -> AppResult<()> {
     if content.len() > MAX_PROMPT_FILE_BYTES {
         return Err(AppError::BadRequest(format!(
             "prompt file exceeds {MAX_PROMPT_FILE_BYTES} bytes"
         )));
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| map_io("prompt mkdir failed", parent, err))?;
+    let expected_fingerprint = if path.is_file() {
+        Some(
+            fingerprint_path(path)
+                .await
+                .map_err(|error| AppError::Internal(format!("prompt fingerprint failed: {error}")))?
+                .hash,
+        )
+    } else {
+        None
+    };
+    let outcome = state
+        .workspace_content
+        .admit_bytes(
+            state,
+            AdmissionRequest {
+                desired_path: drive::logical_agent_file_path(profile, file_name),
+                file_name: file_name.to_string(),
+                origin: ContentOrigin::UserEdit,
+                actor: AdmissionActor::user(),
+                expected_fingerprint,
+                allow_overwrite: true,
+                enqueue_s3_sync: true,
+            },
+            content.as_bytes(),
+        )
+        .await?;
+    match outcome {
+        AdmissionOutcome::Committed { .. } => Ok(()),
+        AdmissionOutcome::Quarantined { .. } => Err(AppError::content_quarantined()),
+        AdmissionOutcome::Rejected => Err(AppError::content_rejected()),
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, content).map_err(|err| map_io("prompt temp write failed", &tmp, err))?;
-    fs::rename(&tmp, path).map_err(|err| map_io("prompt move failed", path, err))?;
-    Ok(())
 }
 
 fn map_io(context: &str, path: &Path, err: std::io::Error) -> AppError {

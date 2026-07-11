@@ -91,4 +91,71 @@ export interface SecurityStatus {
   filesystemGuardEnabled: boolean;
   tlsValidationEnabled: boolean;
   secretSources: SecretSourceStatus[];
+  contentEngineEnabled: boolean;
+  contentPolicyVersion: string;
+  pendingQuarantineCount: number;
+  quarantineCapacityAvailable: boolean;
+}
+
+export type ContentOrigin =
+  | "user_edit"
+  | "user_upload"
+  | "agent_generated"
+  | "agent_download"
+  | "s3_download"
+  | "connector_import"
+  | "editor_output";
+
+export type ContentFindingCode =
+  | "ambiguous_filename"
+  | "double_extension"
+  | "declared_type_mismatch"
+  | "executable_content"
+  | "script_content"
+  | "unknown_content_type"
+  | "restricted_format"
+  | "archive_active_content"
+  | "ooxml_macro"
+  | "ooxml_active_x"
+  | "ooxml_ole_embedding"
+  | "ooxml_external_relationship"
+  | "ooxml_svg_content"
+  | "archive_resource_limit"
+  | "invalid_archive_structure"
+  | "invalid_document_structure"
+  | "invalid_media_structure";
+
+export interface ContentSafetyFinding {
+  code: ContentFindingCode;
+  severity: "notice" | "suspicious" | "dangerous" | "invalid";
+}
+
+export interface QuarantineItem {
+  id: string;
+  desiredPath: string;
+  normalizedName: string;
+  detectedType: string;
+  origin: ContentOrigin;
+  actorKind: string;
+  actorLabel?: string;
+  size: number;
+  findings: ContentSafetyFinding[];
+  policyVersion: string;
+  status: string;
+  version: number;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface QuarantineListResponse {
+  items: QuarantineItem[];
+  nextCursor?: string;
+}
+
+export interface QuarantineDecisionResponse {
+  id: string;
+  status: string;
+  version: number;
+  committedPath?: string;
+  fingerprint?: string;
 }

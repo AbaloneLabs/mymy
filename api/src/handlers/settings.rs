@@ -2,20 +2,65 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
 
+use crate::error::AppError;
 use crate::error::AppResult;
+use crate::models::content_security::{
+    ApproveQuarantineRequest, DeleteQuarantineRequest, QuarantineDecisionResponse,
+    QuarantineListQuery, QuarantineListResponse,
+};
 use crate::models::settings::{SecurityStatusResponse, SettingsResponse, UpdateSettingsRequest};
+use crate::services::content_quarantine;
 use crate::services::settings as settings_service;
 use crate::state::AppState;
+use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/settings", get(get_settings).patch(update_settings))
         .route("/api/settings/security", get(security_status))
+        .route("/api/settings/security/quarantine", get(list_quarantine))
+        .route(
+            "/api/settings/security/quarantine/{id}/approve",
+            axum::routing::post(approve_quarantine),
+        )
+        .route(
+            "/api/settings/security/quarantine/{id}",
+            axum::routing::delete(delete_quarantine),
+        )
+}
+
+pub async fn list_quarantine(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QuarantineListQuery>,
+) -> AppResult<Json<QuarantineListResponse>> {
+    Ok(Json(content_quarantine::list(&state, query).await?))
+}
+
+pub async fn approve_quarantine(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<ApproveQuarantineRequest>,
+) -> AppResult<Json<QuarantineDecisionResponse>> {
+    let id = Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest("invalid content review identifier".to_string()))?;
+    Ok(Json(
+        content_quarantine::approve(&state, id, request).await?,
+    ))
+}
+
+pub async fn delete_quarantine(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<DeleteQuarantineRequest>,
+) -> AppResult<Json<QuarantineDecisionResponse>> {
+    let id = Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest("invalid content review identifier".to_string()))?;
+    Ok(Json(content_quarantine::delete(&state, id, request).await?))
 }
 
 pub async fn get_settings(State(state): State<Arc<AppState>>) -> AppResult<Json<SettingsResponse>> {

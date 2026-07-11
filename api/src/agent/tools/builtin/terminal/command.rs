@@ -29,6 +29,7 @@ pub(super) struct TerminalTool {
     pub(super) agent_profile: Option<String>,
     pub(super) project_id: Option<Uuid>,
     pub(super) preview_host: String,
+    pub(super) app_state: Option<std::sync::Arc<crate::state::AppState>>,
 }
 
 #[async_trait]
@@ -61,7 +62,14 @@ impl TerminalTool {
             None => std::fs::canonicalize(&self.working_dir)
                 .unwrap_or_else(|_| self.working_dir.clone()),
         };
-        check_redirected_paths(self.db.as_ref(), command, &workdir, &self.allowed_roots).await?;
+        check_redirected_paths(
+            self.db.as_ref(),
+            self.app_state.as_deref(),
+            command,
+            &workdir,
+            &self.allowed_roots,
+        )
+        .await?;
 
         if let Some(matched) = detect_dangerous_command(command) {
             match matched.severity {

@@ -6,6 +6,7 @@ pub mod audit;
 pub mod auth;
 pub mod calendar;
 pub mod chat;
+pub mod content_security;
 pub mod decision;
 pub mod document_editor;
 pub mod drive;

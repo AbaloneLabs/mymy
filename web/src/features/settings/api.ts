@@ -3,7 +3,13 @@
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { AppSettings, Language, SecurityStatus } from "@/types/settings";
+import type {
+  AppSettings,
+  Language,
+  QuarantineDecisionResponse,
+  QuarantineListResponse,
+  SecurityStatus,
+} from "@/types/settings";
 
 /* -------------------------------------------------- Settings */
 
@@ -31,5 +37,66 @@ export function useSecurityStatus() {
   return useQuery({
     queryKey: ["settings", "security"],
     queryFn: () => api.get<SecurityStatus>("/settings/security"),
+  });
+}
+
+export function usePendingQuarantine() {
+  return useQuery({
+    queryKey: ["settings", "security", "quarantine", "pending"],
+    queryFn: () =>
+      api.get<QuarantineListResponse>(
+        "/settings/security/quarantine?status=pending",
+      ),
+    refetchInterval: () =>
+      typeof document === "undefined" || document.visibilityState === "visible"
+        ? 5_000
+        : false,
+  });
+}
+
+export function useApproveQuarantine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      expectedVersion,
+      destinationPath,
+    }: {
+      id: string;
+      expectedVersion: number;
+      destinationPath?: string;
+    }) =>
+      api.post<QuarantineDecisionResponse>(
+        `/settings/security/quarantine/${id}/approve`,
+        {
+          expectedVersion,
+          idempotencyKey: crypto.randomUUID(),
+          destinationPath,
+        },
+      ),
+    onSettled: () => {
+      void qc.invalidateQueries({
+        queryKey: ["settings", "security", "quarantine"],
+      });
+      void qc.invalidateQueries({ queryKey: ["settings", "security"] });
+      void qc.invalidateQueries({ queryKey: ["drive", "list"] });
+    },
+  });
+}
+
+export function useDeleteQuarantine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, expectedVersion }: { id: string; expectedVersion: number }) =>
+      api.delete<QuarantineDecisionResponse>(
+        `/settings/security/quarantine/${id}`,
+        { expectedVersion },
+      ),
+    onSettled: () => {
+      void qc.invalidateQueries({
+        queryKey: ["settings", "security", "quarantine"],
+      });
+      void qc.invalidateQueries({ queryKey: ["settings", "security"] });
+    },
   });
 }

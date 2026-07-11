@@ -11,6 +11,9 @@ const DEFAULT_CRON_TICK_INTERVAL_SECS: u64 = 60;
 const DEFAULT_CRON_TIMEZONE: &str = "UTC";
 const DEFAULT_CRON_OUTPUT_KEEP: usize = 50;
 const DEFAULT_SANDBOX_PREVIEW_HOST: &str = "127.0.0.1";
+const DEFAULT_CONTENT_MAX_ITEM_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_QUARANTINE_MAX_PENDING_BYTES: u64 = 1024 * 1024 * 1024;
+const DEFAULT_QUARANTINE_RETENTION_DAYS: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -93,6 +96,34 @@ impl Config {
             sandbox_runner_url,
             sandbox_preview_host,
         }
+    }
+
+    /// Maximum bytes accepted for one staged content item. Deployments may
+    /// lower, but never raise, the native engine's compiled safety ceiling.
+    pub fn content_max_item_bytes(&self) -> u64 {
+        env_parse_positive(
+            "MYMY_CONTENT_MAX_ITEM_BYTES",
+            DEFAULT_CONTENT_MAX_ITEM_BYTES,
+        )
+        .min(DEFAULT_CONTENT_MAX_ITEM_BYTES)
+    }
+
+    /// Aggregate bytes retained for unresolved user review.
+    pub fn quarantine_max_pending_bytes(&self) -> u64 {
+        env_parse_positive(
+            "MYMY_QUARANTINE_MAX_PENDING_BYTES",
+            DEFAULT_QUARANTINE_MAX_PENDING_BYTES,
+        )
+        .min(DEFAULT_QUARANTINE_MAX_PENDING_BYTES)
+    }
+
+    /// Days a pending review item remains available before expiration.
+    pub fn quarantine_retention_days(&self) -> u64 {
+        env_parse_positive(
+            "MYMY_QUARANTINE_RETENTION_DAYS",
+            DEFAULT_QUARANTINE_RETENTION_DAYS,
+        )
+        .min(DEFAULT_QUARANTINE_RETENTION_DAYS)
     }
 }
 

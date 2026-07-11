@@ -14,11 +14,16 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::primitives::ByteStream;
 use sqlx::FromRow;
+use tokio::io::AsyncReadExt;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::models::content_security::ContentOrigin;
 use crate::services::drive;
+use crate::services::workspace_content::{
+    AdmissionActor, AdmissionOutcome, AdmissionRequest, ContentStager,
+};
 use crate::state::AppState;
 
 const CLAIM_LIMIT: i64 = 5;
@@ -33,6 +38,12 @@ struct DriveSyncWorkRow {
     drive_path: String,
     operation: String,
     attempt_count: i32,
+}
+
+enum JobOutcome {
+    Done,
+    Quarantined(Uuid),
+    Rejected,
 }
 
 pub fn start_drive_sync_worker(state: Arc<AppState>) -> Option<JoinHandle<()>> {
@@ -63,7 +74,9 @@ async fn process_pending_jobs(state: &AppState) -> AppResult<()> {
     for job in jobs {
         let result = perform_job(state, &client, bucket, &job).await;
         match result {
-            Ok(()) => mark_job_done(state, job.id).await?,
+            Ok(JobOutcome::Done) => mark_job_done(state, job.id).await?,
+            Ok(JobOutcome::Quarantined(id)) => mark_job_quarantined(state, job.id, id).await?,
+            Ok(JobOutcome::Rejected) => mark_job_rejected(state, job.id).await?,
             Err(err) => mark_job_failed(state, job.id, job.attempt_count, &err.to_string()).await?,
         }
     }
@@ -105,10 +118,16 @@ async fn perform_job(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     job: &DriveSyncWorkRow,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<JobOutcome> {
     match job.operation.as_str() {
-        "upload" => upload_path(state, client, bucket, &job.drive_path).await,
-        "delete" => delete_path(client, bucket, &job.drive_path).await,
+        "upload" => {
+            upload_path(state, client, bucket, &job.drive_path).await?;
+            Ok(JobOutcome::Done)
+        }
+        "delete" => {
+            delete_path(client, bucket, &job.drive_path).await?;
+            Ok(JobOutcome::Done)
+        }
         "download" => download_path(state, client, bucket, &job.drive_path).await,
         other => anyhow::bail!("unsupported Drive sync operation: {other}"),
     }
@@ -196,16 +215,46 @@ async fn download_path(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     logical_path: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<JobOutcome> {
     let key = drive::s3_object_key(logical_path)?;
-    let physical_path = drive::physical_path_for_sync(state, logical_path)?;
-    if let Some(parent) = physical_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     let response = client.get_object().bucket(bucket).key(key).send().await?;
-    let bytes = response.body.collect().await?.into_bytes();
-    tokio::fs::write(physical_path, bytes).await?;
-    Ok(())
+    let mut reader = response.body.into_async_read();
+    let mut stager = ContentStager::begin(state).await?;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        stager.write_chunk(&buffer[..read]).await?;
+    }
+    let staged = stager.finish().await?;
+    let file_name = Path::new(logical_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow::anyhow!("S3 download path does not name a file"))?
+        .to_string();
+    let outcome = state
+        .workspace_content
+        .admit_staged(
+            state,
+            AdmissionRequest {
+                desired_path: logical_path.to_string(),
+                file_name,
+                origin: ContentOrigin::S3Download,
+                actor: AdmissionActor::provider(),
+                expected_fingerprint: None,
+                allow_overwrite: true,
+                enqueue_s3_sync: false,
+            },
+            staged,
+        )
+        .await?;
+    Ok(match outcome {
+        AdmissionOutcome::Committed { .. } => JobOutcome::Done,
+        AdmissionOutcome::Quarantined { id, .. } => JobOutcome::Quarantined(id),
+        AdmissionOutcome::Rejected => JobOutcome::Rejected,
+    })
 }
 
 async fn s3_client(state: &AppState) -> AppResult<aws_sdk_s3::Client> {
@@ -240,6 +289,33 @@ async fn mark_job_done(state: &AppState, id: Uuid) -> AppResult<()> {
         "UPDATE drive_sync_jobs SET status = 'done', lease_expires_at = NULL, updated_at = now(), error = NULL WHERE id = $1",
         id
     )
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn mark_job_quarantined(state: &AppState, id: Uuid, quarantine_id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE drive_sync_jobs
+              SET status = 'quarantined', quarantine_id = $2,
+                  lease_expires_at = NULL, updated_at = now(), error = NULL
+            WHERE id = $1"#,
+    )
+    .bind(id)
+    .bind(quarantine_id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn mark_job_rejected(state: &AppState, id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE drive_sync_jobs
+              SET status = 'failed', lease_expires_at = NULL,
+                  updated_at = now(), error = 'content_rejected'
+            WHERE id = $1"#,
+    )
+    .bind(id)
     .execute(&state.db)
     .await?;
     Ok(())

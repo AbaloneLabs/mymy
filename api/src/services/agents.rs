@@ -50,7 +50,7 @@ pub async fn list_agents(state: &AppState) -> AppResult<AgentsResponse> {
 
     for row in &mut rows {
         if let Err(err) =
-            drive::ensure_agent_workspace(state, &row.profile, &row.name, Some(&row.role))
+            drive::ensure_agent_workspace(state, &row.profile, &row.name, Some(&row.role)).await
         {
             tracing::warn!(
                 profile = %row.profile,
@@ -133,7 +133,7 @@ pub async fn create_agent(state: &AppState, req: CreateAgentRequest) -> AppResul
         other => AppError::Database(other),
     })?;
 
-    drive::ensure_agent_workspace(state, &profile, &name, Some(&role))?;
+    drive::ensure_agent_workspace(state, &profile, &name, Some(&role)).await?;
     agent_permissions::ensure_defaults(state, &profile).await?;
     let permissions = agent_permissions::list_permissions(state, &profile).await?;
 
@@ -199,7 +199,7 @@ pub async fn update_agent(
     .fetch_one(&state.db)
     .await?;
 
-    drive::ensure_agent_workspace(state, &profile, &name, Some(&role))?;
+    drive::ensure_agent_workspace(state, &profile, &name, Some(&role)).await?;
     let permissions = if let Some(permissions) = req.tool_permissions {
         agent_permissions::replace_permissions(state, &profile, permissions).await?
     } else {

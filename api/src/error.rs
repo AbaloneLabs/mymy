@@ -32,6 +32,14 @@ pub enum AppError {
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    #[error("{message}")]
+    Coded {
+        code: &'static str,
+        status: StatusCode,
+        message: String,
+        retryable: bool,
+    },
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -44,39 +52,79 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let retryable = matches!(self, AppError::ServiceUnavailable(_));
-        let (status, message) = match &self {
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
-            AppError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
-            AppError::UnsupportedMedia(msg) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, msg.clone()),
+        let (status, code, message, retryable) = match &self {
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg.clone(), false),
+            AppError::BadRequest(msg) => {
+                (StatusCode::BAD_REQUEST, "bad_request", msg.clone(), false)
+            }
+            AppError::Unauthorized(msg) => {
+                (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone(), false)
+            }
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg.clone(), false),
+            AppError::PayloadTooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                msg.clone(),
+                false,
+            ),
+            AppError::UnsupportedMedia(msg) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media",
+                msg.clone(),
+                false,
+            ),
             AppError::ServiceUnavailable(msg) => {
                 tracing::warn!(error = %msg, "service unavailable");
-                (StatusCode::SERVICE_UNAVAILABLE, msg.clone())
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service_unavailable",
+                    msg.clone(),
+                    true,
+                )
             }
+            AppError::Coded {
+                code,
+                status,
+                message,
+                retryable,
+            } => (*status, *code, message.clone(), *retryable),
             AppError::Internal(msg) => {
                 tracing::error!(error = %msg, "internal error");
-                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    msg.clone(),
+                    false,
+                )
             }
             AppError::Database(e) => {
                 tracing::error!(error = ?e, "database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    "database_error",
                     "database error".to_string(),
+                    false,
                 )
             }
             AppError::Io(e) => {
                 tracing::error!(error = ?e, "io error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "io error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "io_error",
+                    "io error".to_string(),
+                    false,
+                )
             }
         };
 
         let mut response = if retryable {
-            (status, Json(json!({ "error": message, "retryable": true }))).into_response()
+            (
+                status,
+                Json(json!({ "error": message, "code": code, "retryable": true })),
+            )
+                .into_response()
         } else {
-            (status, Json(json!({ "error": message }))).into_response()
+            (status, Json(json!({ "error": message, "code": code }))).into_response()
         };
         if retryable {
             response
@@ -84,6 +132,65 @@ impl IntoResponse for AppError {
                 .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
         }
         response
+    }
+}
+
+impl AppError {
+    pub fn coded(code: &'static str, status: StatusCode, message: impl Into<String>) -> Self {
+        Self::Coded {
+            code,
+            status,
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    pub fn content_quarantined() -> Self {
+        Self::coded(
+            "content_quarantined",
+            StatusCode::LOCKED,
+            "This file is considered suspicious and cannot be accessed until the user approves it. If you need the file, ask the user for approval.",
+        )
+    }
+
+    pub fn content_rejected() -> Self {
+        Self::coded(
+            "content_rejected",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The file does not pass the current content policy.",
+        )
+    }
+
+    pub fn quarantine_capacity_exceeded() -> Self {
+        Self::coded(
+            "quarantine_capacity_exceeded",
+            StatusCode::INSUFFICIENT_STORAGE,
+            "Pending content review storage is full.",
+        )
+    }
+
+    pub fn stale_quarantine_version() -> Self {
+        Self::coded(
+            "stale_quarantine_version",
+            StatusCode::CONFLICT,
+            "This review item changed in another session.",
+        )
+    }
+
+    pub fn quarantine_destination_conflict() -> Self {
+        Self::coded(
+            "quarantine_destination_conflict",
+            StatusCode::CONFLICT,
+            "A file already exists at the requested destination.",
+        )
+    }
+
+    pub fn content_policy_changed() -> Self {
+        Self::coded(
+            "content_policy_changed",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The file cannot be released under the current content policy.",
+        )
     }
 }
 

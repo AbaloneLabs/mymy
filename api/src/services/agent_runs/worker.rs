@@ -910,5 +910,6 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::PayloadTooLarge(_) => "payload_too_large",
         AppError::UnsupportedMedia(_) => "unsupported_media",
         AppError::ServiceUnavailable(_) => "service_unavailable",
+        AppError::Coded { code, .. } => code,
     }
 }

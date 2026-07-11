@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::{FunctionSchema, ToolSchema};
 use crate::agent::security::{scan_for_threats, ThreatScope};
+use crate::error::AppError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
@@ -28,6 +29,29 @@ pub enum ToolError {
     Execution(String),
     #[error("resource unavailable: {0}")]
     Unavailable(String),
+    #[error("{code}: {message}")]
+    Coded { code: &'static str, message: String },
+}
+
+/// Translate application-domain failures into the stable tool contract.
+///
+/// Keeping this mapping at the registry boundary prevents individual tools
+/// from changing agent-visible retry or disclosure semantics when backend
+/// errors evolve.
+pub fn app_error_to_tool(error: AppError) -> ToolError {
+    match error {
+        AppError::Coded { code, message, .. } => ToolError::Coded { code, message },
+        AppError::BadRequest(message)
+        | AppError::NotFound(message)
+        | AppError::PayloadTooLarge(message)
+        | AppError::UnsupportedMedia(message) => ToolError::InvalidArgs(message),
+        AppError::Unauthorized(message) | AppError::ServiceUnavailable(message) => {
+            ToolError::Unavailable(message)
+        }
+        AppError::Conflict(message) | AppError::Internal(message) => ToolError::Execution(message),
+        AppError::Database(error) => ToolError::Execution(error.to_string()),
+        AppError::Io(error) => ToolError::Execution(error.to_string()),
+    }
 }
 
 #[async_trait]
@@ -374,6 +398,7 @@ impl ToolRegistry {
 
         match result {
             Ok(result) => sanitize_tool_output(name, &result),
+            Err(ToolError::Coded { code, message }) => tool_coded_error(code, &message),
             Err(err) => tool_error(&err.to_string()),
         }
     }
@@ -411,6 +436,10 @@ pub fn tool_result<T: Serialize>(data: &T) -> String {
 
 pub fn tool_error(message: &str) -> String {
     serde_json::json!({ "error": message }).to_string()
+}
+
+pub fn tool_coded_error(code: &str, message: &str) -> String {
+    serde_json::json!({ "error": message, "code": code }).to_string()
 }
 
 pub fn proposed_action_descriptor(

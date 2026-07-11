@@ -219,6 +219,7 @@ pub(super) fn app_error_to_tool(err: AppError, context: &str) -> ToolError {
         AppError::Conflict(message) | AppError::Internal(message) => {
             ToolError::Execution(format!("{context}: {message}"))
         }
+        AppError::Coded { code, message, .. } => ToolError::Coded { code, message },
         AppError::Database(err) => ToolError::Execution(format!("{context}: {err}")),
         AppError::Io(err) => ToolError::Execution(format!("{context}: {err}")),
     }

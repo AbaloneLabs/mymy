@@ -16,16 +16,18 @@ use crate::agent::security::{
     ensure_read_allowed, ensure_write_allowed, is_sensitive_path, redact_sensitive_text,
 };
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
-    ToolRegistry,
+    app_error_to_tool, tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError,
+    ToolHandler, ToolRegistry,
 };
+use crate::error::AppError;
+use crate::models::content_security::ContentOrigin;
 use crate::services::audit::log_security_denial_safe;
 use crate::services::document_revisions::{record_document_revision, RevisionActor};
-use crate::services::file_mutations::atomic_replace_file;
 use crate::services::file_observations::{
     ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
     record_file_observation_fingerprint, FileFingerprint, FileObservationSource,
 };
+use crate::services::workspace_content::{AdmissionActor, AdmissionOutcome, AdmissionRequest};
 use crate::state::AppState;
 
 const MAX_READ_LINES: usize = 1_000;
@@ -164,6 +166,8 @@ impl ToolHandler for ReadFileTool {
         // observation reads. Otherwise the tool could return text from one
         // revision with the fingerprint of the next revision and authorize a
         // later overwrite the agent never actually reviewed.
+        let candidate = self.paths.resolve_for_write_with_logical(path)?;
+        ensure_content_access(self.app_state.as_deref(), &candidate.logical).await?;
         let _namespace_guard = match self.app_state.as_deref() {
             Some(state) => Some(state.drive_namespace_lock().read().await),
             None => None,
@@ -236,25 +240,12 @@ impl WriteFileTool {
     async fn write(&self, args: &Value) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
-        let _namespace_guard = match self.app_state.as_deref() {
-            Some(state) => Some(state.drive_namespace_lock().read().await),
-            None => None,
-        };
         let resolved = self.paths.resolve_for_write_with_logical(path)?;
+        ensure_content_access(self.app_state.as_deref(), &resolved.logical).await?;
         if let Err(err) = ensure_write_allowed(&resolved.physical) {
             audit_guardrail_denial(self.db.as_ref(), "write", &resolved.physical, &err).await;
             return Err(err);
         }
-        let _write_guard = match self.app_state.as_deref() {
-            Some(state) => Some(
-                state
-                    .drive_write_lock(&resolved.physical)
-                    .await
-                    .lock_owned()
-                    .await,
-            ),
-            None => None,
-        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -263,16 +254,22 @@ impl WriteFileTool {
         )
         .await
         .map_err(ToolError::Execution)?;
-        if resolved.physical.exists() {
-            let expected = args
-                .get("expectedFingerprint")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    ToolError::InvalidArgs(
-                        "expectedFingerprint is required when overwriting an existing file"
-                            .to_string(),
-                    )
-                })?;
+        let existed = resolved.physical.exists();
+        let expected = if existed {
+            Some(
+                args.get("expectedFingerprint")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ToolError::InvalidArgs(
+                            "expectedFingerprint is required when overwriting an existing file"
+                                .to_string(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        if let Some(expected) = expected {
             let current = fingerprint_path(&resolved.physical)
                 .await
                 .map_err(ToolError::Execution)?;
@@ -282,9 +279,40 @@ impl WriteFileTool {
                 ));
             }
         }
-        atomic_replace_file(&resolved.physical, content.as_bytes())
+        let state = self.app_state.as_deref().ok_or_else(|| {
+            ToolError::Unavailable("workspace content service is not configured".to_string())
+        })?;
+        let outcome = state
+            .workspace_content
+            .admit_bytes(
+                state,
+                AdmissionRequest {
+                    desired_path: resolved.logical.clone(),
+                    file_name: resolved
+                        .physical
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("file")
+                        .to_string(),
+                    origin: ContentOrigin::AgentGenerated,
+                    actor: AdmissionActor::agent(self.agent_profile.as_deref(), None),
+                    expected_fingerprint: expected.map(str::to_string),
+                    allow_overwrite: existed,
+                    enqueue_s3_sync: true,
+                },
+                content.as_bytes(),
+            )
             .await
-            .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
+            .map_err(app_error_to_tool)?;
+        match outcome {
+            AdmissionOutcome::Committed { .. } => {}
+            AdmissionOutcome::Quarantined { .. } => {
+                return Err(app_error_to_tool(AppError::content_quarantined()));
+            }
+            AdmissionOutcome::Rejected => {
+                return Err(app_error_to_tool(AppError::content_rejected()));
+            }
+        }
         let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -323,25 +351,13 @@ impl PatchFileTool {
         let path = required_str(args, "path")?;
         let old_string = required_str(args, "old_string")?;
         let new_string = required_str(args, "new_string")?;
-        let _namespace_guard = match self.app_state.as_deref() {
-            Some(state) => Some(state.drive_namespace_lock().read().await),
-            None => None,
-        };
+        let candidate = self.paths.resolve_for_write_with_logical(path)?;
+        ensure_content_access(self.app_state.as_deref(), &candidate.logical).await?;
         let resolved = self.paths.resolve_existing_with_logical(path)?;
         if let Err(err) = ensure_write_allowed(&resolved.physical) {
             audit_guardrail_denial(self.db.as_ref(), "patch", &resolved.physical, &err).await;
             return Err(err);
         }
-        let _write_guard = match self.app_state.as_deref() {
-            Some(state) => Some(
-                state
-                    .drive_write_lock(&resolved.physical)
-                    .await
-                    .lock_owned()
-                    .await,
-            ),
-            None => None,
-        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -369,9 +385,40 @@ impl PatchFileTool {
             )));
         }
         let updated = content.replacen(old_string, new_string, 1);
-        atomic_replace_file(&resolved.physical, updated.as_bytes())
+        let state = self.app_state.as_deref().ok_or_else(|| {
+            ToolError::Unavailable("workspace content service is not configured".to_string())
+        })?;
+        let outcome = state
+            .workspace_content
+            .admit_bytes(
+                state,
+                AdmissionRequest {
+                    desired_path: resolved.logical.clone(),
+                    file_name: resolved
+                        .physical
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("file")
+                        .to_string(),
+                    origin: ContentOrigin::AgentGenerated,
+                    actor: AdmissionActor::agent(self.agent_profile.as_deref(), None),
+                    expected_fingerprint: Some(expected.to_string()),
+                    allow_overwrite: true,
+                    enqueue_s3_sync: true,
+                },
+                updated.as_bytes(),
+            )
             .await
-            .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
+            .map_err(app_error_to_tool)?;
+        match outcome {
+            AdmissionOutcome::Committed { .. } => {}
+            AdmissionOutcome::Quarantined { .. } => {
+                return Err(app_error_to_tool(AppError::content_quarantined()));
+            }
+            AdmissionOutcome::Rejected => {
+                return Err(app_error_to_tool(AppError::content_rejected()));
+            }
+        }
         let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -496,6 +543,20 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
         .ok_or_else(|| ToolError::InvalidArgs(format!("missing {key}")))
 }
 
+async fn ensure_content_access(
+    state: Option<&AppState>,
+    logical_path: &str,
+) -> Result<(), ToolError> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+    state
+        .workspace_content
+        .ensure_not_quarantined(state, logical_path)
+        .await
+        .map_err(app_error_to_tool)
+}
+
 async fn audit_guardrail_denial(
     db: Option<&sqlx::PgPool>,
     operation: &str,
@@ -568,7 +629,6 @@ async fn record_committed_agent_file(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn path_policy_rejects_workspace_escape() {
@@ -591,16 +651,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
-    #[tokio::test]
-    async fn write_and_patch_share_one_fingerprint_critical_section() {
-        let temp_root =
-            std::env::temp_dir().join(format!("mymy-file-race-{}", uuid::Uuid::new_v4()));
+    #[sqlx::test(migrations = "./migrations")]
+    async fn write_and_patch_share_one_fingerprint_critical_section(pool: sqlx::PgPool) {
+        let base = std::env::temp_dir().join(format!("mymy-file-race-{}", uuid::Uuid::new_v4()));
+        let temp_root = base.join("drive/shared");
         std::fs::create_dir_all(&temp_root).unwrap();
         let path = temp_root.join("state.txt");
         std::fs::write(&path, "first").unwrap();
         let fingerprint = fingerprint_path(&path).await.unwrap().hash;
         let paths = Arc::new(WorkspacePathPolicy::new(temp_root.clone(), Vec::new()));
-        let state = Arc::new(test_state(temp_root.clone()));
+        let state = Arc::new(test_state(pool, base.clone()));
         let writer = WriteFileTool {
             paths: Arc::clone(&paths),
             db: None,
@@ -637,13 +697,10 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".mymy-"))
             .count();
         assert_eq!(temporary_files, 0);
-        let _ = std::fs::remove_dir_all(temp_root);
+        let _ = std::fs::remove_dir_all(base);
     }
 
-    fn test_state(agent_data_dir: std::path::PathBuf) -> AppState {
-        let db = PgPoolOptions::new()
-            .connect_lazy("postgres://mymy:mymy@localhost/mymy")
-            .unwrap();
+    fn test_state(db: sqlx::PgPool, agent_data_dir: std::path::PathBuf) -> AppState {
         AppState::new(
             db,
             Config {

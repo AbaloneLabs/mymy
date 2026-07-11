@@ -5,6 +5,8 @@ use serde_json::Value;
 use super::runner::resolve_runner_cwd;
 use super::*;
 use crate::agent::tools::ToolHandler;
+use crate::config::Config;
+use crate::state::AppState;
 
 fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("mymy-code-exec-{name}-{}", uuid::Uuid::new_v4()));
@@ -82,11 +84,14 @@ print(os.path.basename(os.getcwd()))
     let _ = std::fs::remove_dir_all(scratch);
 }
 
-#[tokio::test]
-async fn python_can_write_and_patch_files_via_rpc() {
-    let workspace = temp_dir("workspace");
+#[sqlx::test(migrations = "./migrations")]
+async fn python_can_write_and_patch_files_via_rpc(pool: sqlx::PgPool) {
+    let base = temp_dir("drive");
+    let workspace = base.join("drive/agents/test");
+    std::fs::create_dir_all(&workspace).unwrap();
     let scratch = temp_dir("scratch");
-    let tool = test_tool(workspace.clone(), scratch.clone());
+    let mut tool = test_tool(workspace.clone(), scratch.clone());
+    tool.app_state = Some(Arc::new(test_state(pool, base.clone())));
 
     let output = tool
         .execute(&serde_json::json!({
@@ -99,14 +104,17 @@ print(mymy_tools.read_file("generated.txt")["content"])
         .await
         .unwrap();
     let parsed = serde_json::from_str::<Value>(&output).unwrap();
-    assert!(parsed["stdout"].as_str().unwrap().contains("beta"));
+    assert!(
+        parsed["stdout"].as_str().unwrap().contains("beta"),
+        "unexpected code RPC output: {parsed:#}"
+    );
 
-    let _ = std::fs::remove_dir_all(workspace);
+    let _ = std::fs::remove_dir_all(base);
     let _ = std::fs::remove_dir_all(scratch);
 }
 
-#[tokio::test]
-async fn python_rpc_can_write_shared_logical_drive_path() {
+#[sqlx::test(migrations = "./migrations")]
+async fn python_rpc_can_write_shared_logical_drive_path(pool: sqlx::PgPool) {
     let base = temp_dir("drive");
     let workspace = base.join("drive").join("agents").join("elena");
     let shared = base.join("drive").join("shared");
@@ -124,7 +132,7 @@ async fn python_rpc_can_write_shared_logical_drive_path() {
             .collect(),
         db: None,
         agent_profile: None,
-        app_state: None,
+        app_state: Some(Arc::new(test_state(pool, base.clone()))),
     };
 
     let output = tool
@@ -145,6 +153,27 @@ print(mymy_tools.read_file("/drive/shared/generated.txt")["content"])
 
     let _ = std::fs::remove_dir_all(base);
     let _ = std::fs::remove_dir_all(scratch);
+}
+
+fn test_state(db: sqlx::PgPool, agent_data_dir: PathBuf) -> AppState {
+    AppState::new(
+        db,
+        Config {
+            database_url: String::new(),
+            port: 0,
+            cors_origins: Vec::new(),
+            agent_data_dir,
+            auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 10,
+            drive_s3_bucket: None,
+            drive_s3_region: None,
+            drive_s3_endpoint: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
+        },
+    )
 }
 
 #[test]
