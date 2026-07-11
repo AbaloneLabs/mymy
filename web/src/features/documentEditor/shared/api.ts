@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type {
   DocumentEditorModelResponse,
   SaveDocumentEditorCopyRequest,
@@ -7,6 +7,7 @@ import type {
   ValidateDocumentEditorModelResponse,
   WriteDocumentEditorModelRequest,
 } from "@/types/documentEditor";
+import { documentEditorQueryKeys } from "./queryKeys";
 
 type WriteDocumentEditorModelMutationInput = WriteDocumentEditorModelRequest & {
   syncQuery?: boolean;
@@ -31,7 +32,7 @@ export function validateDocumentEditorModel(
 
 export function useDocumentEditorModel(path: string | null) {
   return useQuery({
-    queryKey: ["document-editor", "model", path],
+    queryKey: documentEditorQueryKeys.model(path),
     enabled: Boolean(path),
     queryFn: () =>
       api.get<DocumentEditorModelResponse>(
@@ -55,7 +56,7 @@ export function useWriteDocumentEditorModel() {
       }),
     onSuccess: (data, variables) => {
       if (variables.syncQuery !== false) {
-        qc.setQueryData(["document-editor", "model", data.path], data);
+        qc.setQueryData(documentEditorQueryKeys.model(data.path), data);
       }
       qc.invalidateQueries({ queryKey: ["drive", "file", data.path] });
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
@@ -70,9 +71,13 @@ export function useSaveDocumentEditorCopy() {
     mutationFn: (input: SaveDocumentEditorCopyRequest) =>
       api.post<DocumentEditorModelResponse>("/document-editor/copy", input),
     onSuccess: (data) => {
-      qc.setQueryData(["document-editor", "model", data.path], data);
+      qc.setQueryData(documentEditorQueryKeys.model(data.path), data);
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
       qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
     },
   });
+}
+
+export function isDocumentEditorConflictError(error: unknown) {
+  return error instanceof ApiError && error.status === 409;
 }

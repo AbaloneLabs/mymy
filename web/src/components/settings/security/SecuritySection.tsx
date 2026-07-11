@@ -9,12 +9,12 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
+  settingsApiErrorCode,
   useApproveQuarantine,
   useDeleteQuarantine,
   usePendingQuarantine,
   useSecurityStatus,
 } from "@/features/settings/api";
-import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { ContentFindingCode, QuarantineItem } from "@/types/settings";
 
@@ -193,7 +193,7 @@ export function SecuritySection() {
                   {
                     onSuccess: () => setConflictId(undefined),
                     onError: (error) => {
-                      const code = apiErrorCode(error);
+  const code = settingsApiErrorCode(error);
                       if (code === "quarantine_destination_conflict") {
                         setConflictId(item.id);
                         setActionError(
@@ -217,7 +217,7 @@ export function SecuritySection() {
                   {
                     onError: (error) =>
                       setActionError(
-                        apiErrorCode(error) === "stale_quarantine_version"
+                        settingsApiErrorCode(error) === "stale_quarantine_version"
                           ? t("settings.security.staleReview")
                           : t("settings.security.reviewActionError"),
                       ),
@@ -338,14 +338,6 @@ function QuarantineCard({
       </div>
     </article>
   );
-}
-
-function apiErrorCode(error: unknown) {
-  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") {
-    return undefined;
-  }
-  const code = (error.body as { code?: unknown }).code;
-  return typeof code === "string" ? code : undefined;
 }
 
 function findingLabel(

@@ -4,13 +4,13 @@
 //! affect future work. Automatic candidates remain pending review, while
 //! keyword recall is bounded and failure-tolerant.
 
+mod classification;
 mod embedding;
-
-use std::collections::{HashMap, HashSet};
+mod projection;
+mod ranking;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -18,14 +18,15 @@ use crate::agent::security::{redact_sensitive_text, scan_for_threats, ThreatScop
 use crate::error::{AppError, AppResult};
 use crate::models::runtime_memory::{
     AgentMemoryView, MemoriesResponse, MemoryEmbeddingSettingsView, MemorySearchQuery,
-    RecentRecapResponse, ReviewMemoryRequest, RunSummaryView, UpdateMemoryEmbeddingSettings,
+    RecentRecapResponse, ReviewMemoryRequest, UpdateMemoryEmbeddingSettings,
 };
 use crate::models::scope::ScopeFilter;
 use crate::state::AppState;
 
+use self::classification::{keywords, topic_key, validate_memory};
 use self::embedding::{local_feature_embedding, vector_literal};
-
-const MAX_MEMORY_CHARS: usize = 4_000;
+use self::projection::{memory_view, summary_view};
+use self::ranking::reciprocal_rank_fusion;
 
 /// Provenance and classification must be supplied together so callers cannot
 /// accidentally create an unscoped or unattributed durable fact.
@@ -42,7 +43,7 @@ pub struct NewMemory<'a> {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct MemoryRow {
+pub(super) struct MemoryRow {
     id: Uuid,
     source_run_id: Option<Uuid>,
     source_run_snapshot_id: Option<String>,
@@ -71,7 +72,7 @@ struct EmbeddingSettingsRow {
 }
 
 #[derive(Debug, FromRow)]
-struct SummaryRow {
+pub(super) struct SummaryRow {
     run_id: Uuid,
     agent_profile: String,
     project_id: Option<Uuid>,
@@ -500,41 +501,6 @@ async fn vector_memories(
     Ok(rows)
 }
 
-fn reciprocal_rank_fusion(
-    keyword: Vec<MemoryRow>,
-    semantic: Vec<MemoryRow>,
-    limit: i64,
-) -> Vec<MemoryRow> {
-    let mut ranked = HashMap::<Uuid, (f64, MemoryRow)>::new();
-    for (index, row) in keyword.into_iter().enumerate() {
-        let score = 1.0 / (60.0 + index as f64 + 1.0);
-        ranked
-            .entry(row.id)
-            .and_modify(|value| value.0 += score)
-            .or_insert((score, row));
-    }
-    for (index, row) in semantic.into_iter().enumerate() {
-        let score = 1.0 / (60.0 + index as f64 + 1.0);
-        ranked
-            .entry(row.id)
-            .and_modify(|value| value.0 += score)
-            .or_insert((score, row));
-    }
-    let mut values = ranked.into_values().collect::<Vec<_>>();
-    values.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.1.created_at.cmp(&left.1.created_at))
-    });
-    values
-        .into_iter()
-        .take(limit as usize)
-        .map(|(_, row)| row)
-        .collect()
-}
-
 pub async fn get_embedding_settings(
     state: &AppState,
     profile: &str,
@@ -791,98 +757,6 @@ pub async fn review_memory(
     .await?;
     tx.commit().await?;
     Ok(memory_view(row))
-}
-
-fn validate_memory(
-    memory_type: &str,
-    origin: &str,
-    content: &str,
-    sensitivity: &str,
-) -> AppResult<()> {
-    let content = content.trim();
-    if content.is_empty() || content.chars().count() > MAX_MEMORY_CHARS {
-        return Err(AppError::BadRequest(format!(
-            "memory content must contain 1 to {MAX_MEMORY_CHARS} characters"
-        )));
-    }
-    if !matches!(
-        memory_type,
-        "preference" | "convention" | "decision" | "fact"
-    ) || !matches!(origin, "explicit_user" | "agent_proposed" | "decision")
-        || !matches!(sensitivity, "normal" | "private" | "financial")
-    {
-        return Err(AppError::BadRequest(
-            "invalid memory classification".to_string(),
-        ));
-    }
-    if redact_sensitive_text(content) != content {
-        return Err(AppError::BadRequest(
-            "credentials and secrets cannot be stored as durable memory".to_string(),
-        ));
-    }
-    if !scan_for_threats(content, ThreatScope::Strict).is_empty() {
-        return Err(AppError::BadRequest(
-            "instruction-like untrusted content cannot be promoted to durable memory".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn keywords(value: &str, limit: usize) -> Vec<String> {
-    let mut seen = HashSet::new();
-    value
-        .split(|character: char| {
-            !character.is_alphanumeric() && character != '_' && character != '-'
-        })
-        .map(str::trim)
-        .filter(|word| word.chars().count() > 1)
-        .map(str::to_lowercase)
-        .filter(|word| seen.insert(word.clone()))
-        .take(limit)
-        .collect()
-}
-
-fn topic_key(content: &str) -> String {
-    let topics = keywords(content, 5).join(":");
-    let mut hasher = Sha256::new();
-    hasher.update(topics.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-fn memory_view(row: MemoryRow) -> AgentMemoryView {
-    AgentMemoryView {
-        id: row.id.to_string(),
-        source_run_id: row.source_run_id.map(|id| id.to_string()),
-        source_run_snapshot_id: row.source_run_snapshot_id,
-        source_decision_id: row.source_decision_id.map(|id| id.to_string()),
-        agent_profile: row.agent_profile,
-        project_id: row.project_id.map(|id| id.to_string()),
-        memory_type: row.memory_type,
-        origin: row.origin,
-        content: row.content,
-        confidence: row.confidence,
-        status: row.status,
-        sensitivity: row.sensitivity,
-        valid_from: row.valid_from.to_rfc3339(),
-        valid_until: row.valid_until.map(|value| value.to_rfc3339()),
-        superseded_by: row.superseded_by.map(|id| id.to_string()),
-        created_at: row.created_at.to_rfc3339(),
-    }
-}
-
-fn summary_view(row: SummaryRow) -> RunSummaryView {
-    RunSummaryView {
-        run_id: row.run_id.to_string(),
-        agent_profile: row.agent_profile,
-        project_id: row.project_id.map(|id| id.to_string()),
-        objective: row.objective,
-        outcome: row.outcome,
-        summary_text: row.summary_text,
-        key_topics: row.key_topics,
-        source_event_start: row.source_event_start,
-        source_event_end: row.source_event_end,
-        created_at: row.created_at.to_rfc3339(),
-    }
 }
 
 #[cfg(test)]

@@ -580,3 +580,9 @@ export function PptxEditor({
     </div>
   );
 }
+/**
+ * Presentation interaction controller and view assembler.
+ *
+ * Selection and cancellable drafts stay in this controller while slide,
+ * toolbar, timeline, inspector, and object components remain rendering views.
+ */

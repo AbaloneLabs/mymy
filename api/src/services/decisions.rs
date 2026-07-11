@@ -4,7 +4,9 @@
 //! depends on an open browser or one-shot channel: the transaction records the
 //! answer and moves a suspended run back to the durable queue.
 
+mod projection;
 mod target;
+mod validation;
 
 use std::sync::Arc;
 
@@ -22,13 +24,17 @@ use crate::models::decision::{DecisionView, DecisionsQuery, ResolveDecisionRespo
 use crate::services::agent_runs;
 use crate::state::AppState;
 
+use self::projection::{row_to_durable, row_to_view, truncate};
 use self::target::{hash_value, versions_equal};
+use self::validation::{
+    validate_answer_not_secret, validate_choice, validate_proposed_action_hash,
+};
 
 const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_CONTEXT_CHARS: usize = 8_000;
 
 #[derive(Debug, Clone, FromRow)]
-struct DecisionRow {
+pub(super) struct DecisionRow {
     id: Uuid,
     run_id: Uuid,
     session_id: Option<Uuid>,
@@ -741,49 +747,6 @@ async fn fetch_pending_by_dedupe(
     .map_err(Into::into)
 }
 
-fn validate_answer_not_secret(answer: &Value) -> AppResult<()> {
-    let serialized = answer.to_string();
-    if redact_sensitive_text(&serialized) != serialized {
-        return Err(AppError::BadRequest(
-            "Decision answers cannot contain credentials or instruction-like secret payloads; use Settings credentials instead"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_choice(decision: &DecisionRow, answer: &Value) -> AppResult<()> {
-    let Some(choices) = decision
-        .choices
-        .as_array()
-        .filter(|choices| !choices.is_empty())
-    else {
-        return Ok(());
-    };
-    if !choices.iter().any(|choice| choice == answer) {
-        return Err(AppError::BadRequest(
-            "decision answer is not one of the available choices".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_proposed_action_hash(decision: &DecisionRow) -> AppResult<()> {
-    let Some(action) = &decision.proposed_action else {
-        return Ok(());
-    };
-    let expected = decision.proposed_action_hash.as_deref().ok_or_else(|| {
-        AppError::Conflict("approval is missing its proposed action hash".to_string())
-    })?;
-    let actual = hash_value(action).map_err(AppError::Internal)?;
-    if actual != expected {
-        return Err(AppError::Conflict(
-            "proposed action changed after approval was requested".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 async fn live_target_matches(state: &AppState, decision: &DecisionRow) -> AppResult<bool> {
     let Some(expected) = decision.target_version.as_deref() else {
         return Ok(true);
@@ -910,49 +873,6 @@ async fn resource_updated_at(
         .await?)
 }
 
-fn row_to_durable(row: DecisionRow) -> DurableDecision {
-    DurableDecision {
-        id: row.id,
-        session_id: row.session_id,
-        question: row.question,
-        choices: row
-            .choices
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        created_at: row.created_at.to_rfc3339(),
-    }
-}
-
-fn row_to_view(row: DecisionRow) -> DecisionView {
-    DecisionView {
-        id: row.id.to_string(),
-        run_id: row.run_id.to_string(),
-        session_id: row.session_id.map(|id| id.to_string()),
-        cron_job_id: row.cron_job_id,
-        kind: row.kind,
-        context: row.context,
-        reason: row.reason,
-        question: row.question,
-        choices: row.choices,
-        suspend: row.suspend,
-        status: row.status,
-        answer: row.answer,
-        proposed_action: row.proposed_action,
-        target_version: row.target_version,
-        expires_at: row.expires_at.map(|time| time.to_rfc3339()),
-        created_at: row.created_at.to_rfc3339(),
-        resolved_at: row.resolved_at.map(|time| time.to_rfc3339()),
-    }
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,6 +973,96 @@ mod tests {
         .await
         .unwrap();
         assert!(event_exists);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn choice_resolution_resumes_once_and_duplicate_delivery_is_idempotent(
+        pool: sqlx::PgPool,
+    ) {
+        let state = AppState::new(pool.clone(), test_config());
+        sqlx::query(
+            r#"INSERT INTO native_agents
+                 (profile, name, drive_path, sandbox_status)
+               VALUES ('decision-resume', 'Decision resume',
+                       '/drive/agents/decision-resume', 'ready')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let session_id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO chat_sessions (agent_id, profile)
+               VALUES ('native-decision-resume', 'decision-resume') RETURNING id"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let run_id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO agent_runs
+                 (session_id, agent_profile, trigger_type, status,
+                  objective, prompt_version)
+               VALUES ($1, 'decision-resume', 'chat', 'waiting_decision',
+                       'Choose a deterministic path', 'test') RETURNING id"#,
+        )
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let decision_id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO decisions
+                 (run_id, session_id, kind, question, choices, suspend)
+               VALUES ($1, $2, 'choice', 'Choose one?',
+                       '["first", "second"]'::jsonb, true)
+               RETURNING id"#,
+        )
+        .bind(run_id)
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let first = resolve_decision(
+            &state,
+            decision_id,
+            Value::String("second".to_string()),
+            "user",
+        )
+        .await
+        .unwrap();
+        let duplicate = resolve_decision(
+            &state,
+            decision_id,
+            Value::String("second".to_string()),
+            "user",
+        )
+        .await
+        .unwrap();
+
+        assert!(first.applied);
+        assert!(!duplicate.applied);
+        assert_eq!(first.decision.status, "resolved");
+        assert_eq!(duplicate.decision.status, "resolved");
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id = $1")
+                .bind(run_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "queued"
+        );
+        assert_eq!(
+            resolved_answers_for_run(&state, run_id).await.unwrap(),
+            vec!["Decision question: Choose one?\nResolved answer: \"second\"".to_string()]
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM agent_run_events WHERE run_id = $1 AND event_type = 'decision_resolved'",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
     }
 
     fn test_config() -> crate::config::Config {

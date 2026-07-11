@@ -952,3 +952,9 @@ export function XlsxEditor({
     </div>
   );
 }
+/**
+ * Spreadsheet interaction controller and view assembler.
+ *
+ * Workbook edits are local transactions emitted through `onChange`; grid,
+ * toolbar, formula, metadata, and object views never own persistence.
+ */

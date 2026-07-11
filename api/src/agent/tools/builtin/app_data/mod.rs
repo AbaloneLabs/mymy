@@ -13,6 +13,7 @@ use super::BuiltinToolConfig;
 use crate::agent::tools::{tool_schema, ToolEntry, ToolRegistry};
 use crate::state::AppState;
 
+mod action;
 mod agents;
 mod arguments;
 mod calendar;
@@ -28,7 +29,8 @@ mod prompts;
 mod sessions;
 mod tasks;
 
-use execution::{AppAction, AppDataTool};
+use action::AppAction;
+use execution::AppDataTool;
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     let Some(state) = config.app_state.clone() else {

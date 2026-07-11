@@ -2,7 +2,7 @@
  * TanStack Query hooks for this domain.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type {
   AppSettings,
   Language,
@@ -10,6 +10,7 @@ import type {
   QuarantineListResponse,
   SecurityStatus,
 } from "@/types/settings";
+import { settingsQueryKeys } from "./queryKeys";
 
 /* -------------------------------------------------- Settings */
 
@@ -19,7 +20,7 @@ interface SettingsResponse {
 
 export function useSettings() {
   return useQuery({
-    queryKey: ["settings"],
+    queryKey: settingsQueryKeys.root,
     queryFn: () => api.get<SettingsResponse>("/settings"),
   });
 }
@@ -29,20 +30,20 @@ export function useUpdateLanguage() {
   return useMutation({
     mutationFn: (language: Language) =>
       api.patch<{ settings: AppSettings }>("/settings", { language }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: settingsQueryKeys.root }),
   });
 }
 
 export function useSecurityStatus() {
   return useQuery({
-    queryKey: ["settings", "security"],
+    queryKey: settingsQueryKeys.security,
     queryFn: () => api.get<SecurityStatus>("/settings/security"),
   });
 }
 
 export function usePendingQuarantine() {
   return useQuery({
-    queryKey: ["settings", "security", "quarantine", "pending"],
+    queryKey: settingsQueryKeys.pendingQuarantine,
     queryFn: () =>
       api.get<QuarantineListResponse>(
         "/settings/security/quarantine?status=pending",
@@ -76,9 +77,9 @@ export function useApproveQuarantine() {
       ),
     onSettled: () => {
       void qc.invalidateQueries({
-        queryKey: ["settings", "security", "quarantine"],
+        queryKey: settingsQueryKeys.quarantine,
       });
-      void qc.invalidateQueries({ queryKey: ["settings", "security"] });
+      void qc.invalidateQueries({ queryKey: settingsQueryKeys.security });
       void qc.invalidateQueries({ queryKey: ["drive", "list"] });
     },
   });
@@ -94,9 +95,17 @@ export function useDeleteQuarantine() {
       ),
     onSettled: () => {
       void qc.invalidateQueries({
-        queryKey: ["settings", "security", "quarantine"],
+        queryKey: settingsQueryKeys.quarantine,
       });
-      void qc.invalidateQueries({ queryKey: ["settings", "security"] });
+      void qc.invalidateQueries({ queryKey: settingsQueryKeys.security });
     },
   });
+}
+
+export function settingsApiErrorCode(error: unknown) {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") {
+    return undefined;
+  }
+  const code = (error.body as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
 }

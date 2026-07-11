@@ -1,3 +1,10 @@
+/**
+ * DOCX interaction controller and view assembler.
+ *
+ * Durable persistence remains in the editor shell. This controller translates
+ * gestures into immutable model replacements and delegates rendering to the
+ * canvas, toolbar, outline, parts, and style view modules.
+ */
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { EditorCommandRequest } from "../shared/commands";
 import {

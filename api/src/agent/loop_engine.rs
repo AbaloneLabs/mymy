@@ -5,7 +5,9 @@
 //! or a safety limit is reached. Session ownership stays outside the loop; the
 //! caller passes mutable history and later persists the messages it cares about.
 
+mod budget;
 pub(crate) mod delegate;
+mod dispatch;
 mod todo_injection;
 mod turn_state;
 
@@ -18,17 +20,19 @@ use std::time::Instant;
 
 use futures::{stream::BoxStream, stream::FuturesUnordered, StreamExt};
 use serde_json::Value;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::Mutex;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::agent::clarify::{normalize_choices, ClarifyGate, ClarifyRequest};
+use crate::agent::clarify::{ClarifyGate, ClarifyRequest};
 use crate::agent::context::ContextManager;
 use crate::agent::execution::ToolExecutionContext;
-use crate::agent::providers::types::{FinishReason, StreamDelta, ToolCall, Usage};
+use crate::agent::providers::types::{FinishReason, StreamDelta, Usage};
 use crate::agent::providers::{LlmProvider, Message};
 use crate::agent::tools::{tool_error, tool_result, ToolCapability, ToolRegistry};
 
+use self::budget::{allocate_child_budget, RunBudget};
+use self::dispatch::{tool_is_allowed, ToolDispatch, ToolDispatchPolicy};
 use self::turn_state::{TurnAccumulator, TurnEffect};
 
 const CLARIFY_TIMEOUT_SECS: u64 = 1_800;
@@ -86,27 +90,6 @@ impl Default for LoopConfig {
             max_empty_responses: 2,
         }
     }
-}
-
-enum ToolDispatch {
-    Execute,
-    Blocked(String),
-    Clarify {
-        request: ClarifyRequest,
-        receiver: oneshot::Receiver<String>,
-    },
-    DurableClarify {
-        question: String,
-        choices: Vec<String>,
-    },
-    Approval {
-        question: String,
-        proposed_action: Value,
-        target_version: Option<String>,
-    },
-    Delegate {
-        tasks: Vec<delegate::DelegateTaskSpec>,
-    },
 }
 
 pub struct AgentLoop {
@@ -192,17 +175,7 @@ impl AgentLoop {
             let mut empty_responses = 0;
             let mut completion_reminder_sent = false;
             let run_started_at = Instant::now();
-            let max_tool_calls = self.execution_context.as_ref()
-                .and_then(|context| context.authorization.budget.get("maxToolCalls"))
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok());
-            let max_runtime_seconds = self.execution_context.as_ref()
-                .and_then(|context| context.authorization.budget.get("maxRuntimeSeconds"))
-                .and_then(Value::as_u64);
-            let max_total_tokens = self.execution_context.as_ref()
-                .and_then(|context| context.authorization.budget.get("maxTotalTokens"))
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok());
+            let run_budget = RunBudget::from_context(self.execution_context.as_ref());
             let mut total_model_tokens = 0_u32;
             let cancellation = self
                 .execution_context
@@ -210,12 +183,12 @@ impl AgentLoop {
                 .map(|context| context.cancellation.clone());
 
             for iteration in 0..self.config.max_iterations {
-                if max_total_tokens.is_some_and(|limit| total_model_tokens >= limit) {
+                if run_budget.token_limit_reached(total_model_tokens) {
                     yield AgentEvent::Error("run token budget exceeded".to_string());
                     yield AgentEvent::Done { total_api_calls: iteration, total_tool_calls };
                     return;
                 }
-                if max_runtime_seconds.is_some_and(|seconds| run_started_at.elapsed().as_secs() >= seconds) {
+                if run_budget.runtime_limit_reached(run_started_at) {
                     yield AgentEvent::Error("run runtime budget exceeded".to_string());
                     yield AgentEvent::Done { total_api_calls: iteration, total_tool_calls };
                     return;
@@ -331,7 +304,7 @@ impl AgentLoop {
                     usage: usage.clone(),
                 };
                 total_model_tokens = total_model_tokens.saturating_add(usage.total_tokens);
-                if max_total_tokens.is_some_and(|limit| total_model_tokens > limit) {
+                if run_budget.token_limit_exceeded(total_model_tokens) {
                     yield AgentEvent::Error("run token budget exceeded; partial output was preserved".to_string());
                     yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
                     return;
@@ -420,10 +393,13 @@ impl AgentLoop {
                     return;
                 }
 
-                let parallel_fits_budget = max_tool_calls.is_none_or(|limit| {
-                    total_tool_calls.saturating_add(assembled_tool_calls.len() as u32) <= limit
-                });
-                if parallel_fits_budget && self.parallel_batch_eligible(&assembled_tool_calls) {
+                let parallel_fits_budget =
+                    run_budget.tool_batch_fits(total_tool_calls, assembled_tool_calls.len());
+                if parallel_fits_budget
+                    && self
+                        .dispatch_policy()
+                        .parallel_batch_eligible(&assembled_tool_calls)
+                {
                     let group_started_at = Instant::now();
                     let parallel_call_count = assembled_tool_calls.len();
                     let mut pending = FuturesUnordered::new();
@@ -534,7 +510,7 @@ impl AgentLoop {
                         yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
                         return;
                     }
-                    if max_tool_calls.is_some_and(|limit| total_tool_calls >= limit) {
+                    if run_budget.tool_limit_reached(total_tool_calls) {
                         yield AgentEvent::Error("run tool-call budget exceeded".to_string());
                         yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
                         return;
@@ -567,7 +543,7 @@ impl AgentLoop {
                         capability: tool_capability,
                     };
 
-                    let dispatch = self.evaluate_tool_dispatch(&call).await;
+                    let dispatch = self.dispatch_policy().evaluate(&call).await;
                     let tool_started_at = Instant::now();
                     let result = match dispatch {
                         ToolDispatch::Execute => {
@@ -754,10 +730,10 @@ impl AgentLoop {
                                 .config
                                 .max_api_calls
                                 .saturating_sub(api_calls.saturating_add(1));
-                            let remaining_tool_budget = max_tool_calls
-                                .map(|limit| limit.saturating_sub(total_tool_calls));
-                            let remaining_token_budget = max_total_tokens
-                                .map(|limit| limit.saturating_sub(total_model_tokens));
+                            let remaining_tool_budget =
+                                run_budget.remaining_tools(total_tool_calls);
+                            let remaining_token_budget =
+                                run_budget.remaining_tokens(total_model_tokens);
                             let delegated = self
                                 .run_delegate_tasks(
                                     system_prompt,
@@ -799,139 +775,6 @@ impl AgentLoop {
         })
     }
 
-    async fn evaluate_tool_dispatch(&self, call: &ToolCall) -> ToolDispatch {
-        if !self.is_tool_allowed(&call.name) {
-            return ToolDispatch::Blocked(tool_error(&format!(
-                "tool is blocked in this delegated child: {}",
-                call.name
-            )));
-        }
-
-        if call.name == "clarify" {
-            return self.evaluate_clarify(call).await;
-        }
-
-        if call.name == "delegate_task" {
-            return self.evaluate_delegate(call).await;
-        }
-
-        if let Some(approval) = self.evaluate_approval(call) {
-            return approval;
-        }
-
-        ToolDispatch::Execute
-    }
-
-    fn parallel_batch_eligible(&self, calls: &[ToolCall]) -> bool {
-        if calls.len() < 2 {
-            return false;
-        }
-        let autonomous = self.execution_context.as_ref().is_some_and(|context| {
-            !matches!(
-                context.trigger,
-                crate::agent::execution::SessionTrigger::Chat
-            ) || !context.authorization.explicit_user_action
-        });
-        let mut resources = HashSet::new();
-        calls.iter().all(|call| {
-            if !self.is_tool_allowed(&call.name)
-                || matches!(call.name.as_str(), "clarify" | "delegate_task")
-            {
-                return false;
-            }
-            let Some(capability) = self.tool_registry.capability(&call.name) else {
-                return false;
-            };
-            if !capability.parallel_safe() || capability.requires_approval(autonomous) {
-                return false;
-            }
-            let Ok(arguments) = serde_json::from_str::<Value>(&call.arguments) else {
-                return false;
-            };
-            resources.insert(capability.resource_key(&arguments))
-        })
-    }
-
-    fn evaluate_approval(&self, call: &ToolCall) -> Option<ToolDispatch> {
-        let context = self.execution_context.as_ref()?;
-        context.decisions.as_ref()?;
-        let capability = self.tool_registry.capability(&call.name)?;
-        let autonomous = !matches!(
-            context.trigger,
-            crate::agent::execution::SessionTrigger::Chat
-        ) || !context.authorization.explicit_user_action;
-        if !capability.requires_approval(autonomous) {
-            return None;
-        }
-        let arguments = serde_json::from_str::<Value>(&call.arguments).ok()?;
-        let proposed_action =
-            crate::agent::tools::proposed_action_descriptor(&call.name, capability, &arguments);
-        let action_hash = crate::agent::tools::proposed_action_hash(&proposed_action);
-        let already_approved = context
-            .authorization
-            .approval_ceiling
-            .get("approvedActionHashes")
-            .and_then(Value::as_array)
-            .is_some_and(|hashes| {
-                hashes
-                    .iter()
-                    .any(|hash| hash.as_str() == Some(&action_hash))
-            });
-        if already_approved {
-            return None;
-        }
-        let resource_key = capability.resource_key(&arguments);
-        Some(ToolDispatch::Approval {
-            question: format!(
-                "Approve the {:?} action `{}` on `{}`?",
-                capability.effect, call.name, resource_key
-            ),
-            proposed_action,
-            target_version: extract_target_version(&arguments),
-        })
-    }
-
-    async fn evaluate_clarify(&self, call: &ToolCall) -> ToolDispatch {
-        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
-            return ToolDispatch::Execute;
-        };
-        let Some(question) = args
-            .get("question")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|question| !question.is_empty())
-        else {
-            return ToolDispatch::Execute;
-        };
-        let choices = normalize_choices(args.get("choices"));
-        if self
-            .execution_context
-            .as_ref()
-            .and_then(|context| context.decisions.as_ref())
-            .is_some()
-        {
-            return ToolDispatch::DurableClarify {
-                question: question.to_string(),
-                choices,
-            };
-        }
-        let (Some(gate), Some(session_id)) = (&self.clarify_gate, self.session_id) else {
-            return ToolDispatch::Execute;
-        };
-        let (request, receiver) = gate.request(session_id, question, choices).await;
-        ToolDispatch::Clarify { request, receiver }
-    }
-
-    async fn evaluate_delegate(&self, call: &ToolCall) -> ToolDispatch {
-        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
-            return ToolDispatch::Blocked(tool_error("invalid delegate_task arguments"));
-        };
-        match delegate::parse_delegate_tasks(&args) {
-            Ok(tasks) => ToolDispatch::Delegate { tasks },
-            Err(message) => ToolDispatch::Blocked(tool_error(message)),
-        }
-    }
-
     async fn run_delegate_tasks(
         &self,
         system_prompt: &str,
@@ -953,12 +796,13 @@ impl AgentLoop {
         });
         for (position, task) in tasks.iter_mut().enumerate() {
             let position = position as u32;
-            let api_quota = allocate_budget(remaining_api_budget, task_count, position).max(1);
+            let api_quota =
+                allocate_child_budget(remaining_api_budget, task_count, position).max(1);
             task.max_turns = task.max_turns.min(api_quota);
-            task.max_tool_calls =
-                remaining_tool_budget.map(|budget| allocate_budget(budget, task_count, position));
+            task.max_tool_calls = remaining_tool_budget
+                .map(|budget| allocate_child_budget(budget, task_count, position));
             task.max_total_tokens =
-                child_token_pool.map(|budget| allocate_budget(budget, task_count, position));
+                child_token_pool.map(|budget| allocate_child_budget(budget, task_count, position));
         }
         let parent_system_prompt = system_prompt.to_string();
         let available_tools = self
@@ -1131,44 +975,19 @@ impl AgentLoop {
             .collect()
     }
 
-    fn is_tool_allowed(&self, tool_name: &str) -> bool {
-        match &self.allowed_tool_names {
-            Some(allowed) => {
-                allowed.contains(tool_name) && !delegate::is_delegate_tool_blocked(tool_name)
-            }
-            None => true,
+    fn dispatch_policy(&self) -> ToolDispatchPolicy<'_> {
+        ToolDispatchPolicy {
+            registry: &self.tool_registry,
+            allowed_tool_names: self.allowed_tool_names.as_ref(),
+            execution_context: self.execution_context.as_ref(),
+            clarify_gate: self.clarify_gate.as_ref(),
+            session_id: self.session_id,
         }
     }
-}
 
-fn extract_target_version(arguments: &Value) -> Option<String> {
-    let direct = [
-        "expectedVersion",
-        "expectedFingerprint",
-        "targetVersion",
-        "version",
-        "updatedAt",
-    ]
-    .into_iter()
-    .find_map(|key| arguments.get(key))
-    .or_else(|| {
-        arguments.get("data").and_then(|data| {
-            [
-                "expectedVersion",
-                "expectedFingerprint",
-                "targetVersion",
-                "version",
-                "updatedAt",
-            ]
-            .into_iter()
-            .find_map(|key| data.get(key))
-        })
-    });
-    direct.and_then(|value| match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        _ => None,
-    })
+    fn is_tool_allowed(&self, tool_name: &str) -> bool {
+        tool_is_allowed(self.allowed_tool_names.as_ref(), tool_name)
+    }
 }
 
 struct DelegateBatchResult {
@@ -1183,13 +1002,6 @@ impl DelegateBatchResult {
             total_tokens: 0,
         }
     }
-}
-
-fn allocate_budget(total: u32, count: u32, position: u32) -> u32 {
-    if count == 0 {
-        return 0;
-    }
-    total / count + u32::from(position < total % count)
 }
 
 #[cfg(test)]
@@ -1210,6 +1022,8 @@ mod tests {
         turns: Mutex<VecDeque<Vec<StreamDelta>>>,
     }
 
+    struct DisconnectingProvider;
+
     #[async_trait]
     impl LlmProvider for MockProvider {
         async fn stream(
@@ -1221,6 +1035,25 @@ mod tests {
             let mut turns = self.turns.lock().await;
             let deltas = turns.pop_front().unwrap_or_default();
             Ok(Box::pin(stream::iter(deltas.into_iter().map(Ok))))
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for DisconnectingProvider {
+        async fn stream(
+            &self,
+            _system_prompt: &str,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> Result<BoxStream<'_, Result<StreamDelta, ProviderError>>, ProviderError> {
+            Ok(Box::pin(stream::iter([
+                Ok(StreamDelta::Text("partial visible result".to_string())),
+                Err(ProviderError::StreamEnded),
+            ])))
         }
 
         async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
@@ -1312,6 +1145,40 @@ mod tests {
             .iter()
             .any(|event| matches!(event, AgentEvent::Done { .. })));
         assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn provider_disconnect_has_one_deterministic_partial_error_terminal_sequence() {
+        let agent_loop = AgentLoop::new(
+            Arc::new(DisconnectingProvider),
+            Arc::new(ToolRegistry::new()),
+            LoopConfig::default(),
+            None,
+        );
+        let mut messages = vec![Message::user("start")];
+
+        let events = agent_loop
+            .run("system", &mut messages)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentEvent::ModelTurnStarted { iteration: 1 },
+                AgentEvent::TextDelta(text),
+                AgentEvent::Error(error),
+                AgentEvent::Done {
+                    total_api_calls: 1,
+                    total_tool_calls: 0,
+                }
+            ] if text == "partial visible result" && error == "provider stream error: stream ended unexpectedly"
+        ));
+        assert_eq!(
+            messages.len(),
+            1,
+            "an incomplete assistant turn must not enter the next provider context"
+        );
     }
 
     #[tokio::test]
@@ -1565,14 +1432,5 @@ mod tests {
             .await;
 
         assert_eq!(max_active.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn delegate_budget_allocation_preserves_parent_total() {
-        let allocations = (0..5)
-            .map(|position| allocate_budget(17, 5, position))
-            .collect::<Vec<_>>();
-        assert_eq!(allocations.iter().sum::<u32>(), 17);
-        assert_eq!(allocations, vec![4, 4, 3, 3, 3]);
     }
 }

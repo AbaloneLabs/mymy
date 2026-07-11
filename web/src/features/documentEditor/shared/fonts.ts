@@ -9,6 +9,7 @@ import type {
   EditorPreferences,
   EditorPreferencesResponse,
 } from "@/types/editorSettings";
+import { documentEditorQueryKeys } from "./queryKeys";
 
 export const builtInFontFamilies = [
   "Noto Sans",
@@ -25,7 +26,7 @@ export const builtInFontFamilies = [
 
 export function useEditorFonts() {
   return useQuery({
-    queryKey: ["editor-settings", "fonts"],
+    queryKey: documentEditorQueryKeys.fonts,
     queryFn: () => api.get<EditorFontsResponse>("/editor-settings/fonts"),
   });
 }
@@ -35,7 +36,7 @@ export function useUploadEditorFonts() {
   return useMutation({
     mutationFn: (files: File[]) => uploadEditorFonts(files),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["editor-settings", "fonts"] }),
+      qc.invalidateQueries({ queryKey: documentEditorQueryKeys.fonts }),
   });
 }
 
@@ -47,13 +48,13 @@ export function useDeleteEditorFont() {
         `/editor-settings/fonts/${encodeURIComponent(id)}`,
       ),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["editor-settings", "fonts"] }),
+      qc.invalidateQueries({ queryKey: documentEditorQueryKeys.fonts }),
   });
 }
 
 export function useEditorKeymap() {
   return useQuery({
-    queryKey: ["editor-settings", "keymap"],
+    queryKey: documentEditorQueryKeys.keymap,
     queryFn: () => api.get<EditorKeymapResponse>("/editor-settings/keymap"),
   });
 }
@@ -64,13 +65,13 @@ export function useUpdateEditorKeymap() {
     mutationFn: (shortcuts: EditorKeymapEntry[]) =>
       api.put<EditorKeymapResponse>("/editor-settings/keymap", { shortcuts }),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["editor-settings", "keymap"] }),
+      qc.invalidateQueries({ queryKey: documentEditorQueryKeys.keymap }),
   });
 }
 
 export function useEditorPreferences() {
   return useQuery({
-    queryKey: ["editor-settings", "preferences"],
+    queryKey: documentEditorQueryKeys.preferences,
     queryFn: () =>
       api.get<EditorPreferencesResponse>("/editor-settings/preferences"),
   });
@@ -84,7 +85,7 @@ export function useUpdateEditorPreferences() {
         preferences,
       }),
     onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["editor-settings", "preferences"] }),
+      qc.invalidateQueries({ queryKey: documentEditorQueryKeys.preferences }),
   });
 }
 

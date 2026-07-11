@@ -1011,6 +1011,117 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn crash_reconciliation_finalizes_a_committed_claim_and_requeues_an_uncommitted_claim(
+        pool: PgPool,
+    ) {
+        let root = test_root();
+        let state = AppState::new(pool, test_config(root.clone()));
+        let committed_bytes = b"%PDF-1.7\ncommitted before crash\n%%EOF";
+        let committed = state
+            .workspace_content
+            .admit_bytes(
+                &state,
+                user_upload("/drive/committed.pdf", "committed.pdf"),
+                committed_bytes,
+            )
+            .await
+            .unwrap();
+        let committed_id = match committed {
+            AdmissionOutcome::Quarantined { id } => id,
+            other => panic!("expected quarantine, got {other:?}"),
+        };
+        let committed_row = load_row(&state, committed_id).await.unwrap();
+        let committed_private_path = storage_path(&state, committed_row.storage_key);
+        let committed_drive_path = root.join("drive/committed.pdf");
+        std::fs::create_dir_all(committed_drive_path.parent().unwrap()).unwrap();
+        std::fs::write(&committed_drive_path, committed_bytes).unwrap();
+        sqlx::query(
+            r#"UPDATE content_quarantine_items
+                  SET status = 'approving', version = 2,
+                      approval_idempotency_key = 'crash-after-commit',
+                      updated_at = now() - interval '10 minutes'
+                WHERE id = $1"#,
+        )
+        .bind(committed_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let uncommitted = state
+            .workspace_content
+            .admit_bytes(
+                &state,
+                user_upload("/drive/uncommitted.pdf", "uncommitted.pdf"),
+                b"%PDF-1.7\nuncommitted before crash\n%%EOF",
+            )
+            .await
+            .unwrap();
+        let uncommitted_id = match uncommitted {
+            AdmissionOutcome::Quarantined { id } => id,
+            other => panic!("expected quarantine, got {other:?}"),
+        };
+        let uncommitted_row = load_row(&state, uncommitted_id).await.unwrap();
+        let uncommitted_private_path = storage_path(&state, uncommitted_row.storage_key);
+        sqlx::query(
+            r#"UPDATE content_quarantine_items
+                  SET status = 'approving', version = 2,
+                      approval_idempotency_key = 'crash-before-commit',
+                      updated_at = now() - interval '10 minutes'
+                WHERE id = $1"#,
+        )
+        .bind(uncommitted_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        reconcile(&state).await.unwrap();
+
+        let committed_after = load_row(&state, committed_id).await.unwrap();
+        assert_eq!(committed_after.status, "approved");
+        assert_eq!(committed_after.version, 3);
+        assert_eq!(
+            committed_after.committed_fingerprint.as_deref(),
+            Some(committed_after.sha256.as_str())
+        );
+        assert!(!committed_private_path.exists());
+        assert_eq!(
+            std::fs::read(committed_drive_path).unwrap(),
+            committed_bytes
+        );
+
+        let uncommitted_after = load_row(&state, uncommitted_id).await.unwrap();
+        assert_eq!(uncommitted_after.status, "pending");
+        assert_eq!(uncommitted_after.version, 3);
+        assert!(uncommitted_after.approval_idempotency_key.is_none());
+        assert!(uncommitted_private_path.exists());
+        assert!(!root.join("drive/uncommitted.pdf").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn crash_reconciliation_removes_aged_unreferenced_private_objects(pool: PgPool) {
+        let root = test_root();
+        let state = AppState::new(pool, test_config(root.clone()));
+        reconcile(&state).await.unwrap();
+        let orphan = pending_root(&state).join(Uuid::new_v4().to_string());
+        std::fs::write(&orphan, b"unreferenced crash residue").unwrap();
+        let old = SystemTime::now()
+            .checked_sub(Duration::from_secs(ORPHAN_GRACE_SECS + 1))
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        reconcile(&state).await.unwrap();
+
+        assert!(!orphan.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn replacement_candidate_does_not_hide_the_existing_trusted_revision(pool: PgPool) {
         let root = test_root();
         let state = AppState::new(pool, test_config(root.clone()));

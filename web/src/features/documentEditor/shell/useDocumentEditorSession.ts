@@ -16,7 +16,6 @@ import {
   useEditorKeymap,
   useEditorPreferences,
 } from "@/features/documentEditor/shared/fonts";
-import { stableJson } from "@/features/documentEditor/shared/models";
 import {
   captureEditorSelection,
   type EditorSelectionSnapshot,
@@ -24,11 +23,10 @@ import {
 import {
   useSaveDocumentEditorCopy,
   useWriteDocumentEditorModel,
-  validateDocumentEditorModel,
+  isDocumentEditorConflictError,
 } from "@/features/documentEditor/shared/api";
 import { requiredDocumentEditorCapabilities } from "@/features/documentEditor/shared/capabilities";
 import { drivePackageUrl } from "@/features/drive/api";
-import { ApiError } from "@/lib/api";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 import { reviewedConflictFingerprint } from "./documentEditorRevisionState";
 import {
@@ -39,13 +37,8 @@ import {
 import { useDocumentEditorHistory } from "./useDocumentEditorHistory";
 import { useDocumentEditorAutosave } from "./useDocumentEditorAutosave";
 import { useDocumentEditorSearch } from "./useDocumentEditorSearch";
-import {
-  deleteDocumentEditorRecoveryDraft,
-  documentEditorRecoveryDraftId,
-  persistDocumentEditorRecoveryDraft,
-  readDocumentEditorRecoveryDraft,
-  type DocumentEditorRecoveryDraft,
-} from "./documentEditorRecoveryDraft";
+import { useDocumentEditorCompatibilityValidation } from "./useDocumentEditorCompatibilityValidation";
+import { useDocumentEditorRecovery } from "./useDocumentEditorRecovery";
 import { compareAndMergeDocumentModels } from "./documentEditorThreeWayMerge";
 import {
   publishDocumentEditorRevision,
@@ -70,9 +63,6 @@ export function useDocumentEditorSession({
   const autosaveEnabled = preferences.data?.preferences.autosaveEnabled === true;
   const autosaveDelayMs = preferences.data?.preferences.autosaveDelayMs ?? 5_000;
   const rootRef = useRef<HTMLDivElement>(null);
-  const [recoverySessionId] = useState(() => crypto.randomUUID());
-  const restoredRecoveryDraftIdRef = useRef<string | null>(null);
-  const ignoredRecoveryDraftIdsRef = useRef(new Set<string>());
   const [sessionState, dispatchSession] = useReducer(
     documentEditorSessionReducer,
     data,
@@ -90,18 +80,6 @@ export function useDocumentEditorSession({
     externalRevisionSource,
     saveConflict,
   } = sessionState;
-  const [draftCompatibilityValidation, setDraftCompatibilityValidation] =
-    useState<{
-      draftKey: string;
-      serializedSize: number;
-      warnings: DocumentEditorModelResponse["compatibilityWarnings"];
-    } | null>(null);
-  const [compatibilityValidationError, setCompatibilityValidationError] =
-    useState<{ draftKey: string; message: string } | null>(null);
-  const [recoveryDraft, setRecoveryDraft] =
-    useState<DocumentEditorRecoveryDraft | null>(null);
-  const [recoveryChecked, setRecoveryChecked] = useState(false);
-  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [saveCopyOpen, setSaveCopyOpen] = useState(false);
   const [saveCopyTargetPath, setSaveCopyTargetPath] = useState(() =>
@@ -129,17 +107,17 @@ export function useDocumentEditorSession({
     baseFingerprint: string;
     idempotencyKey: string;
   } | null>(null);
-  const recoverySnapshotRef = useRef({
-    sessionId: recoverySessionId,
-    path: data.path,
-    editorKind: data.editorKind,
-    modelSchemaVersion: data.modelSchemaVersion,
-    baseFingerprint: fingerprint,
-    baseModel,
-    model: draft,
-    dirty: false,
-  });
   const dirty = draftKey !== baseKey;
+  const recovery = useDocumentEditorRecovery({
+    data,
+    baseModel,
+    draft,
+    draftKey,
+    dirty,
+    fingerprint,
+  });
+  const recoveryDraft = recovery.availableDraft;
+  const recoverySessionId = recovery.sessionId;
   const externalComparison = useMemo(
     () =>
       externalRevision
@@ -151,14 +129,14 @@ export function useDocumentEditorSession({
         : null,
     [baseModel, draft, externalRevision],
   );
-  const validatedDraftCompatibility =
-    dirty && draftCompatibilityValidation?.draftKey === draftKey
-      ? draftCompatibilityValidation
-      : null;
-  const displayedCompatibilityWarnings =
-    validatedDraftCompatibility?.warnings ?? compatibilityWarnings;
-  const compatibilityValidationPending =
-    dirty && draftCompatibilityValidation?.draftKey !== draftKey;
+  const compatibilityValidation = useDocumentEditorCompatibilityValidation({
+    data: { ...data, compatibilityWarnings },
+    draft,
+    draftKey,
+    dirty,
+    fingerprint,
+    saveConflict,
+  });
   const autosave = useDocumentEditorAutosave({
     enabled: autosaveEnabled,
     delayMs: autosaveDelayMs,
@@ -171,16 +149,6 @@ export function useDocumentEditorSession({
   useEffect(() => {
     latestDraftRef.current = draft;
     latestDraftKeyRef.current = draftKey;
-    recoverySnapshotRef.current = {
-      sessionId: recoverySessionId,
-      path: data.path,
-      editorKind: data.editorKind,
-      modelSchemaVersion: data.modelSchemaVersion,
-      baseFingerprint: fingerprint,
-      baseModel,
-      model: draft,
-      dirty,
-    };
   }, [
     baseModel,
     data.editorKind,
@@ -208,12 +176,9 @@ export function useDocumentEditorSession({
         dispatchSession({ type: "incomingRevision", response: incoming, source });
         autosave.clear();
         editorHistory.reset();
-        setDraftCompatibilityValidation(null);
-        setCompatibilityValidationError(null);
-        setRecoveryDraft(null);
-        void deleteDocumentEditorRecoveryDraft(
-          documentEditorRecoveryDraftId(data.path, recoverySessionId),
-        ).catch(() => undefined);
+        compatibilityValidation.reset();
+        recovery.clearAvailable();
+        recovery.deleteCurrentSessionDraft();
         writeModel.reset();
         return;
       }
@@ -268,90 +233,6 @@ export function useDocumentEditorSession({
   }, [dirty]);
 
   useEffect(() => {
-    let active = true;
-    restoredRecoveryDraftIdRef.current = null;
-    void readDocumentEditorRecoveryDraft(
-      data.path,
-      ignoredRecoveryDraftIdsRef.current,
-    )
-      .then((stored) => {
-        if (!active) return;
-        if (
-          stored?.editorKind === data.editorKind &&
-          stored.modelSchemaVersion === data.modelSchemaVersion &&
-          stableJson(stored.model) !== stableJson(stored.baseModel)
-        ) {
-          setRecoveryDraft(stored);
-        } else {
-          setRecoveryDraft(null);
-        }
-      })
-      .catch((error) => {
-        if (active) setRecoveryError(recoveryErrorMessage(error));
-      })
-      .finally(() => {
-        if (active) setRecoveryChecked(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [data.editorKind, data.modelSchemaVersion, data.path]);
-
-  useEffect(() => {
-    if (!recoveryChecked) return;
-    if (!dirty) {
-      if (!recoveryDraft) {
-        void deleteDocumentEditorRecoveryDraft(
-          documentEditorRecoveryDraftId(
-            data.path,
-            recoverySessionId,
-          ),
-        ).catch(() => undefined);
-      }
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const snapshot = recoverySnapshotRef.current;
-      void persistDocumentEditorRecoveryDraft({
-        sessionId: snapshot.sessionId,
-        path: snapshot.path,
-        editorKind: snapshot.editorKind,
-        modelSchemaVersion: snapshot.modelSchemaVersion,
-        baseFingerprint: snapshot.baseFingerprint,
-        baseModel: snapshot.baseModel,
-        model: snapshot.model,
-      })
-        .then(() => setRecoveryError(null))
-        .catch((error) => setRecoveryError(recoveryErrorMessage(error)));
-    }, 750);
-    return () => window.clearTimeout(timer);
-  }, [
-    data.path,
-    dirty,
-    draftKey,
-    fingerprint,
-    recoveryChecked,
-    recoveryDraft,
-    recoverySessionId,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      const snapshot = recoverySnapshotRef.current;
-      if (!snapshot.dirty) return;
-      void persistDocumentEditorRecoveryDraft({
-        sessionId: snapshot.sessionId,
-        path: snapshot.path,
-        editorKind: snapshot.editorKind,
-        modelSchemaVersion: snapshot.modelSchemaVersion,
-        baseFingerprint: snapshot.baseFingerprint,
-        baseModel: snapshot.baseModel,
-        model: snapshot.model,
-      }).catch(() => undefined);
-    };
-  }, []);
-
-  useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
     const handleSelectionChange = () => updateSelectionSnapshot();
@@ -363,44 +244,6 @@ export function useDocumentEditorSession({
       root.removeEventListener("focusin", handleFocusIn);
     };
   }, []);
-
-  useEffect(() => {
-    if (!dirty || saveConflict) return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setCompatibilityValidationError(null);
-      void validateDocumentEditorModel(
-        {
-          path: data.path,
-          editorKind: data.editorKind,
-          model: draft,
-          modelSchemaVersion: data.modelSchemaVersion,
-          requiredCapabilities: requiredDocumentEditorCapabilities(data.editorKind),
-          expectedFingerprint: fingerprint,
-        },
-        controller.signal,
-      )
-        .then((result) => {
-          setDraftCompatibilityValidation({
-            draftKey,
-            serializedSize: result.serializedSize,
-            warnings: result.compatibilityWarnings,
-          });
-        })
-        .catch((error) => {
-          if (error instanceof DOMException && error.name === "AbortError") return;
-          setCompatibilityValidationError({
-            draftKey,
-            message:
-              error instanceof Error ? error.message : "Draft validation failed",
-          });
-        });
-    }, 900);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [data.editorKind, data.modelSchemaVersion, data.path, dirty, draft, draftKey, fingerprint, saveConflict]);
 
   function commitDraft(next: unknown) {
     const transition = editorHistory.commit(draft, draftKey, next);
@@ -478,10 +321,9 @@ export function useDocumentEditorSession({
         snapshotKey: savedKey,
         response: saved,
       });
-      setDraftCompatibilityValidation(null);
-      setCompatibilityValidationError(null);
+      compatibilityValidation.reset();
       setLastSavedAt(new Date().toLocaleTimeString());
-      setRecoveryDraft(null);
+      recovery.clearAvailable();
       if (pendingSaveIdentityRef.current === saveIdentity) {
         pendingSaveIdentityRef.current = null;
       }
@@ -491,23 +333,19 @@ export function useDocumentEditorSession({
         sourceSessionId: recoverySessionId,
       });
       if (latestDraftKeyRef.current === savingDraftKey) {
-        deleteOwnedRecoveryDrafts();
+        recovery.deleteOwnedDrafts();
         return true;
       }
-      deleteRestoredRecoveryDraft();
-      void persistDocumentEditorRecoveryDraft({
-        sessionId: recoverySessionId,
-        path: data.path,
-        editorKind: data.editorKind,
-        modelSchemaVersion: data.modelSchemaVersion,
+      recovery.deleteRestoredDraft();
+      recovery.persistCurrentDraft({
         baseFingerprint: saved.fingerprint,
-        baseModel: saved.model,
+        nextBaseModel: saved.model,
         model: latestDraftRef.current,
-      }).catch((error) => setRecoveryError(recoveryErrorMessage(error)));
+      });
       autosave.queue();
       return false;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
+      if (isDocumentEditorConflictError(error)) {
         dispatchSession({ type: "saveFailed", conflict: true });
         autosave.clear();
         const refreshed = await refreshModel?.().catch(() => null);
@@ -610,8 +448,7 @@ export function useDocumentEditorSession({
       mergedModel: externalComparison.mergedModel,
       mergedKey,
     });
-    setDraftCompatibilityValidation(null);
-    setCompatibilityValidationError(null);
+    compatibilityValidation.reset();
     editorHistory.reset();
     pendingSaveIdentityRef.current = null;
     autosave.clear();
@@ -639,18 +476,12 @@ export function useDocumentEditorSession({
         source: "external",
       });
     }
-    restoredRecoveryDraftIdRef.current = recoveryDraft.id;
-    setRecoveryDraft(null);
+    recovery.markRestored(recoveryDraft.id);
     return true;
   }
 
   function dismissRecoveryDraft() {
-    if (recoveryDraft) {
-      // Dismissing in this tab must not delete a recovery record that may
-      // still belong to another live tab editing the same path.
-      ignoredRecoveryDraftIdsRef.current.add(recoveryDraft.id);
-    }
-    setRecoveryDraft(null);
+    recovery.dismissAvailable();
   }
 
   function adoptServerRevision(revision: DocumentEditorModelResponse) {
@@ -661,32 +492,11 @@ export function useDocumentEditorSession({
       mergedModel: revision.model,
       mergedKey: revision.fingerprint,
     });
-    setDraftCompatibilityValidation(null);
-    setCompatibilityValidationError(null);
+    compatibilityValidation.reset();
     editorHistory.reset();
-    setRecoveryDraft(null);
-    deleteOwnedRecoveryDrafts();
+    recovery.clearAvailable();
+    recovery.deleteOwnedDrafts();
     writeModel.reset();
-  }
-
-  function deleteOwnedRecoveryDrafts() {
-    const ids = new Set([
-      documentEditorRecoveryDraftId(data.path, recoverySessionId),
-    ]);
-    if (restoredRecoveryDraftIdRef.current) {
-      ids.add(restoredRecoveryDraftIdRef.current);
-      restoredRecoveryDraftIdRef.current = null;
-    }
-    ids.forEach((id) => {
-      void deleteDocumentEditorRecoveryDraft(id).catch(() => undefined);
-    });
-  }
-
-  function deleteRestoredRecoveryDraft() {
-    const id = restoredRecoveryDraftIdRef.current;
-    if (!id) return;
-    restoredRecoveryDraftIdRef.current = null;
-    void deleteDocumentEditorRecoveryDraft(id).catch(() => undefined);
   }
 
   const search = useDocumentEditorSearch(draft, commitDraft);
@@ -768,13 +578,10 @@ export function useDocumentEditorSession({
     rootRef,
     draft,
     fingerprint,
-    compatibilityWarnings: displayedCompatibilityWarnings,
-    compatibilityValidationPending,
-    compatibilityValidationError:
-      compatibilityValidationError?.draftKey === draftKey
-        ? compatibilityValidationError.message
-        : null,
-    validatedDraftSerializedSize: validatedDraftCompatibility?.serializedSize ?? null,
+    compatibilityWarnings: compatibilityValidation.warnings,
+    compatibilityValidationPending: compatibilityValidation.pending,
+    compatibilityValidationError: compatibilityValidation.error,
+    validatedDraftSerializedSize: compatibilityValidation.serializedSize,
     syncStatus,
     dirty,
     operationCount: editorHistory.operationCount,
@@ -801,7 +608,7 @@ export function useDocumentEditorSession({
     externalRevisionProvenance: externalRevision?.revisionProvenance ?? null,
     externalComparison,
     recoveryDraftAvailable: recoveryDraft !== null,
-    recoveryError,
+    recoveryError: recovery.error,
     canUndo: editorHistory.canUndo,
     canRedo: editorHistory.canRedo,
     keymapEntries,
@@ -846,10 +653,6 @@ export function useDocumentEditorSession({
     replaceFirst: search.replaceFirst,
     replaceAll: search.replaceAll,
   };
-}
-
-function recoveryErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Browser recovery storage failed";
 }
 
 export function defaultDocumentCopyPath(path: string) {
