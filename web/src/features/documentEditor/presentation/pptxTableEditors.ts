@@ -21,7 +21,9 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) =>
-        table.id === tableId ? { ...table, ...patch } : table,
+        table.id === tableId && !table.preservationOnly
+          ? { ...table, ...patch }
+          : table,
       ),
     );
   }
@@ -35,7 +37,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         return {
           ...table,
           rows: table.rows.map((row, currentRowIndex) =>
@@ -59,7 +61,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         const columnCount = Math.max(1, ...table.rows.map((row) => row.length));
         const cellStyles = Array.from({ length: table.rows.length }, (_, currentRow) =>
           Array.from({ length: columnCount }, (_cell, currentColumn) => ({
@@ -79,7 +81,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         const columnCount = Math.max(
           1,
           ...table.rows.map((row) => row.length),
@@ -116,7 +118,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) =>
-        table.id === tableId
+        table.id === tableId && !table.preservationOnly
           ? {
               ...table,
               rows: table.rows.map((row) => {
@@ -149,7 +151,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) =>
-        table.id === tableId && table.rows.length > 1
+        table.id === tableId && !table.preservationOnly && table.rows.length > 1
           ? {
               ...table,
               rows: table.rows.filter(
@@ -171,7 +173,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         const columnCount = Math.max(0, ...table.rows.map((row) => row.length));
         if (columnCount <= 1) return table;
         return {
@@ -200,7 +202,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         const columnCount = Math.max(1, ...table.rows.map((row) => row.length));
         const columnWidths =
           table.columnWidths && table.columnWidths.length === columnCount
@@ -216,7 +218,7 @@ export function createPptxTableEditors({
     if (!slide) return;
     updateSlideTables(slide.id, (tables) =>
       tables.map((table) => {
-        if (table.id !== tableId) return table;
+        if (table.id !== tableId || table.preservationOnly) return table;
         const rowCount = Math.max(1, table.rows.length);
         const rowHeights =
           table.rowHeights && table.rowHeights.length === rowCount

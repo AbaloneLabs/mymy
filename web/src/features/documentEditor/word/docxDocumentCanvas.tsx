@@ -3,6 +3,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   RefObject,
 } from "react";
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import {
@@ -13,6 +14,7 @@ import {
 } from "./docxEditorUtils";
 import {
   docxRenderableRuns,
+  docxTextEditingBlockReason,
   docxRunStyle,
   docxRunTextInputPatch,
   docxStyleForBlock,
@@ -27,6 +29,12 @@ import type {
 import { DocxImageBlock } from "./docxImageBlock";
 import { DocxRuler } from "./docxPageLayoutControls";
 import { DocxTableBlock } from "./docxTableBlock";
+import {
+  docxAnchoredTextSegments,
+  docxCommentRanges,
+  docxHyperlinkRanges,
+  docxNoteReferences,
+} from "./docxTextAnchors";
 
 type AddDocxBlockType = Exclude<
   DocxBlock["type"],
@@ -34,6 +42,7 @@ type AddDocxBlockType = Exclude<
 >;
 
 type DocxDocumentCanvasProps = {
+  activePage?: DocxPageSettings;
   activeBlockId?: string | null;
   composingBlockIdRef: RefObject<string | null>;
   model: DocxModel;
@@ -123,6 +132,7 @@ type DocxDocumentCanvasProps = {
 };
 
 export function DocxDocumentCanvas({
+  activePage,
   activeBlockId,
   composingBlockIdRef,
   model,
@@ -158,6 +168,7 @@ export function DocxDocumentCanvas({
   onUpdateTableStyle,
 }: DocxDocumentCanvasProps) {
   const { t } = useTranslation();
+  const skipNextCompositionInputRef = useRef<string | null>(null);
 
   function handleTextBlockBeforeInput(
     event: ReactFormEvent<HTMLDivElement>,
@@ -183,10 +194,10 @@ export function DocxDocumentCanvas({
   }
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface)] p-6">
-      <DocxRuler page={model.page} onChange={onUpdatePage} />
+      <DocxRuler page={activePage ?? model.page} onChange={onUpdatePage} />
       <div
         className="mx-auto min-h-[980px] max-w-full border border-[var(--border)] bg-white text-neutral-950 shadow-sm"
-        style={docxPageStyle(model.page)}
+        style={docxPageStyle(activePage ?? model.page)}
       >
         {model.blocks.length === 0 && (
           <button
@@ -304,11 +315,21 @@ export function DocxDocumentCanvas({
             );
           }
           const runs = docxRenderableRuns(block);
+          const hasTextAnchors =
+            docxCommentRanges(block).length > 0 ||
+            docxHyperlinkRanges(block).length > 0;
+          const anchoredSegments = hasTextAnchors
+            ? docxAnchoredTextSegments(block, runs ?? [{ text: block.text }])
+            : null;
+          const noteReferences = docxNoteReferences(block);
+          const editingBlockReason = docxTextEditingBlockReason(block);
           const paragraphStyle = docxStyleForBlock(model.styles, block);
           return (
             <div key={block.id} className="relative">
               <div
-                contentEditable
+                contentEditable={!editingBlockReason}
+                aria-readonly={Boolean(editingBlockReason)}
+                title={editingBlockReason ?? undefined}
                 suppressContentEditableWarning
                 onFocus={() => onSetActiveBlockId(block.id)}
                 onCompositionStart={() => {
@@ -316,6 +337,7 @@ export function DocxDocumentCanvas({
                 }}
                 onCompositionEnd={(event) => {
                   composingBlockIdRef.current = null;
+                  skipNextCompositionInputRef.current = block.id;
                   onUpdateBlock(
                     index,
                     docxTextEditPatch(
@@ -323,6 +345,11 @@ export function DocxDocumentCanvas({
                       event.currentTarget.textContent ?? "",
                     ),
                   );
+                  window.setTimeout(() => {
+                    if (skipNextCompositionInputRef.current === block.id) {
+                      skipNextCompositionInputRef.current = null;
+                    }
+                  }, 0);
                 }}
                 onKeyDown={(event) => {
                   if (
@@ -366,6 +393,10 @@ export function DocxDocumentCanvas({
                 }}
                 onInput={(event) => {
                   if (composingBlockIdRef.current === block.id) return;
+                  if (skipNextCompositionInputRef.current === block.id) {
+                    skipNextCompositionInputRef.current = null;
+                    return;
+                  }
                   onUpdateBlock(
                     index,
                     docxTextEditPatch(
@@ -378,13 +409,37 @@ export function DocxDocumentCanvas({
                 className={cn(
                   "min-h-7 rounded-sm px-1 py-1 outline-none",
                   isActive && "ring-1 ring-[var(--accent)]/30",
+                  editingBlockReason && "cursor-not-allowed bg-amber-50/60",
                   block.type === "heading" ? "mb-3 mt-4 font-semibold" : "mb-2 leading-7",
                   block.pageBreakBefore &&
                     "mt-8 border-t border-dashed border-neutral-300 pt-4",
                 )}
                 style={docxTextBlockStyle(block, paragraphStyle)}
               >
-                {runs
+                {anchoredSegments
+                  ? anchoredSegments.map((segment, segmentIndex) => (
+                      <span
+                        key={`${block.id}-anchor-${segmentIndex}`}
+                        title={
+                          segment.hyperlink?.target ??
+                          (segment.commentIds.length > 0
+                            ? `Comment ${segment.commentIds.map((id) => `#${id}`).join(", ")}`
+                            : undefined)
+                        }
+                        data-docx-comment-ids={segment.commentIds.join(",") || undefined}
+                        data-docx-hyperlink-id={segment.hyperlink?.id}
+                        style={{
+                          ...docxRunStyle(segment.run),
+                          backgroundColor:
+                            segment.commentIds.length > 0 ? "#fef3c7" : undefined,
+                          color: segment.hyperlink ? "#1d4ed8" : undefined,
+                          textDecoration: segment.hyperlink ? "underline" : undefined,
+                        }}
+                      >
+                        {segment.text}
+                      </span>
+                    ))
+                  : runs
                   ? runs.map((run, runIndex) => (
                       <span key={`${block.id}-run-${runIndex}`} style={docxRunStyle(run)}>
                         {run.text}
@@ -392,25 +447,31 @@ export function DocxDocumentCanvas({
                     ))
                   : block.text}
               </div>
-              {block.footnoteId && (
-                <button
-                  type="button"
-                  onClick={() => onOpenTextPartsForBlock(block.id)}
-                  className="absolute right-0 top-0 -translate-y-1/3 rounded-sm px-1 align-super text-[10px] font-semibold text-blue-700 hover:bg-blue-50"
-                  title="Footnote"
-                >
-                  {block.footnoteId}
-                </button>
+              {editingBlockReason && isActive && (
+                <div className="mb-2 px-1 text-[10px] text-amber-700">
+                  Limited paragraph: {editingBlockReason}. Metadata remains editable in
+                  the document-parts panel.
+                </div>
               )}
-              {block.endnoteId && (
-                <button
-                  type="button"
-                  onClick={() => onOpenTextPartsForBlock(block.id)}
-                  className="absolute right-6 top-0 -translate-y-1/3 rounded-sm px-1 align-super text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50"
-                  title="Endnote"
-                >
-                  {block.endnoteId}
-                </button>
+              {noteReferences.length > 0 && (
+                <div className="absolute right-0 top-0 flex -translate-y-1/3 gap-0.5">
+                  {noteReferences.map((reference, referenceIndex) => (
+                    <button
+                      key={`${reference.kind}-${reference.id}-${referenceIndex}`}
+                      type="button"
+                      onClick={() => onOpenTextPartsForBlock(block.id)}
+                      className={cn(
+                        "rounded-sm px-1 align-super text-[10px] font-semibold hover:bg-blue-50",
+                        reference.kind === "footnote"
+                          ? "text-blue-700"
+                          : "text-emerald-700",
+                      )}
+                      title={`${reference.kind} at character ${reference.offset}`}
+                    >
+                      {reference.id}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           );

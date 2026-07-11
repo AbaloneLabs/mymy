@@ -18,6 +18,7 @@ import type {
 } from "../spreadsheet";
 import { createSpreadsheetCellActions } from "../spreadsheet";
 import { createSpreadsheetSheetActions } from "../spreadsheet";
+import { canHideXlsxSheet, xlsxSheetDuplicateBlockReason } from "../spreadsheet";
 import { createSpreadsheetRangeActions } from "../spreadsheet";
 import { addSpreadsheetSelectionRange } from "../spreadsheet";
 import {
@@ -25,11 +26,15 @@ import {
   SpreadsheetStatusBar,
 } from "../spreadsheet";
 import { SpreadsheetSheetTabs } from "../spreadsheet";
+import { SpreadsheetSheetDeletionDialog } from "../spreadsheet";
+import type { XlsxSheetDeletionPreview } from "../spreadsheet";
 import {
   emptyViewport,
   rangeToA1,
+  parsedXlsxMergedRanges,
   scrollCellIntoView,
   singleCellRange,
+  xlsxMergeAwareSelectionTarget,
 } from "../spreadsheet";
 import type {
   CellPosition,
@@ -37,10 +42,14 @@ import type {
   SpreadsheetViewport,
 } from "../spreadsheet";
 import {
+  applyXlsxClipboardPayload,
   recalculateXlsxModel,
+  xlsxSortBlockReason,
+  xlsxStructureEditBlockReason,
   xlsxColumnWidthPx,
   xlsxRowHeightPx,
 } from "../spreadsheet";
+import type { XlsxClipboardPayload } from "../spreadsheet";
 import { columnName, normalizeXlsxCells } from "../shared/models";
 import type { XlsxDefinedName, XlsxModel } from "../shared/models";
 import { createSpreadsheetObjectEditors } from "../spreadsheet";
@@ -73,6 +82,18 @@ export function XlsxEditor({
     useState<SpreadsheetTableResizeDrag | null>(null);
   const [filterText, setFilterText] = useState("");
   const [showFormulas, setShowFormulas] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [pendingSheetDeletion, setPendingSheetDeletion] =
+    useState<XlsxSheetDeletionPreview | null>(null);
+  const [columnResizePreview, setColumnResizePreview] = useState<{
+    columnIndex: number;
+    widthPx: number;
+  } | null>(null);
+  const [rowResizePreview, setRowResizePreview] = useState<{
+    rowIndex: number;
+    heightPx: number;
+  } | null>(null);
+  const resizeCancelRef = useRef<(() => void) | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
@@ -121,6 +142,14 @@ export function XlsxEditor({
     showFormulas,
     viewport,
   });
+  const mergedRanges = parsedXlsxMergedRanges(sheet?.mergedRanges);
+  const sortBlockReason = xlsxSortBlockReason(
+    sheet,
+    selectionRange,
+    activeCell?.column,
+    filterText,
+  );
+  const structureBlockReason = xlsxStructureEditBlockReason(sheet);
   const activeModelCell =
     sheet && activeCell
       ? normalizeXlsxCells(
@@ -140,10 +169,21 @@ export function XlsxEditor({
     );
   }
 
+  function commitActiveSheetMutation(next: XlsxModel) {
+    if (sheet?.protection?.enabled) {
+      setMutationError(
+        "This sheet is protected. Disable protection before changing cells or objects.",
+      );
+      return;
+    }
+    setMutationError(null);
+    commitXlsxModel(next);
+  }
+
   const objectEditors = createSpreadsheetObjectEditors({
     sheet,
     model,
-    commitXlsxModel,
+    commitXlsxModel: commitActiveSheetMutation,
   });
   const {
     addColumn,
@@ -167,9 +207,11 @@ export function XlsxEditor({
   } = createSpreadsheetCellActions({
     activeCell,
     columnCount,
-    commitXlsxModel,
+    commitXlsxModel: commitActiveSheetMutation,
     displaySheet,
+    filterText,
     model,
+    onMutationError: setMutationError,
     selectedRanges,
     selectionRange,
     setActiveCell,
@@ -223,7 +265,8 @@ export function XlsxEditor({
   } = createSpreadsheetRangeActions({
     activeCell,
     columnCount,
-    commitXlsxModel,
+    commitXlsxModel: commitActiveSheetMutation,
+    commitSheetSettingsModel: commitXlsxModel,
     displayGridSheet,
     displayRowLimit,
     model,
@@ -234,23 +277,29 @@ export function XlsxEditor({
   });
 
   function selectCell(position: CellPosition, extend = false, additive = false) {
-    setActiveCell(position);
+    const target = xlsxMergeAwareSelectionTarget(
+      mergedRanges,
+      position,
+      selectionAnchor,
+      extend,
+    );
+    setActiveCell(target.active);
     if (additive) {
       if (selectionRange) {
         setExtraSelectionRanges((current) =>
           addSpreadsheetSelectionRange(current, selectionRange),
         );
       }
-      setSelectionAnchor(position);
-      setSelectionEnd(position);
+      setSelectionAnchor(target.anchor);
+      setSelectionEnd(target.end);
       return;
     }
     if (extend && selectionAnchor) {
-      setSelectionEnd(position);
+      setSelectionEnd(target.end);
     } else {
       setExtraSelectionRanges([]);
-      setSelectionAnchor(position);
-      setSelectionEnd(position);
+      setSelectionAnchor(target.anchor);
+      setSelectionEnd(target.end);
     }
   }
 
@@ -301,12 +350,34 @@ export function XlsxEditor({
   }
 
   async function copySelection() {
-    await copySpreadsheetSelection({
+    const warning = await copySpreadsheetSelection({
       columnCount,
       displayGridSheet,
+      rawSheet: sheet,
       selectedRanges,
       showFormulas,
     });
+    setMutationError(warning);
+  }
+
+  function pasteXlsxClipboard(
+    start: CellPosition,
+    payload: XlsxClipboardPayload,
+  ) {
+    if (!sheet) return;
+    const result = applyXlsxClipboardPayload(model, sheet.id, start, payload);
+    if (!result.model) {
+      setMutationError(result.reason);
+      return;
+    }
+    setMutationError(null);
+    commitActiveSheetMutation(result.model);
+    const [primary, ...extra] = result.targetRanges;
+    if (!primary) return;
+    setActiveCell({ row: primary.top, column: primary.left });
+    setSelectionAnchor({ row: primary.top, column: primary.left });
+    setSelectionEnd({ row: primary.bottom, column: primary.right });
+    setExtraSelectionRanges(extra);
   }
 
   function startFillDrag(
@@ -325,42 +396,110 @@ export function XlsxEditor({
     event: ReactPointerEvent<HTMLButtonElement>,
     columnIndex: number,
   ) {
-    if (!sheet) return;
+    if (!sheet || sheet.protection?.enabled) return;
     event.preventDefault();
     event.stopPropagation();
     const startX = event.clientX;
     const startWidthPx = xlsxColumnWidthPx(sheet, columnIndex);
-    const handleMove = (moveEvent: PointerEvent) => {
-      const nextWidthPx = Math.max(48, startWidthPx + moveEvent.clientX - startX);
-      updateColumnWidth(columnIndex, (nextWidthPx - 12) / 7);
-    };
-    const handleUp = () => {
+    let latestWidthPx = startWidthPx;
+    let finished = false;
+    resizeCancelRef.current?.();
+    const cleanup = () => {
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+      window.removeEventListener("blur", handleCancel);
+      window.removeEventListener("keydown", handleKeyDown);
+      if (resizeCancelRef.current === handleCancel) resizeCancelRef.current = null;
     };
+    const handleMove = (moveEvent: PointerEvent) => {
+      latestWidthPx = Math.max(48, startWidthPx + moveEvent.clientX - startX);
+      setColumnResizePreview({ columnIndex, widthPx: latestWidthPx });
+    };
+    const handleUp = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      setColumnResizePreview(null);
+      if (latestWidthPx !== startWidthPx) {
+        updateColumnWidth(columnIndex, (latestWidthPx - 12) / 7);
+      }
+    };
+    const handleCancel = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      setColumnResizePreview(null);
+    };
+    const handleKeyDown = (keyboardEvent: KeyboardEvent) => {
+      if (keyboardEvent.key !== "Escape") return;
+      keyboardEvent.preventDefault();
+      handleCancel();
+    };
+    resizeCancelRef.current = handleCancel;
     window.addEventListener("pointermove", handleMove);
     window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+    window.addEventListener("blur", handleCancel);
+    window.addEventListener("keydown", handleKeyDown);
   }
 
   function startRowResize(
     event: ReactPointerEvent<HTMLButtonElement>,
     rowIndex: number,
   ) {
-    if (!sheet) return;
+    if (!sheet || sheet.protection?.enabled) return;
+    if (!sheet.rows[rowIndex]) {
+      setMutationError(
+        `Row ${rowIndex + 1} is only a virtual empty row. Enter a value before resizing it.`,
+      );
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     const startY = event.clientY;
     const startHeightPx = xlsxRowHeightPx(sheet.rows[rowIndex]);
-    const handleMove = (moveEvent: PointerEvent) => {
-      const nextHeightPx = Math.max(24, startHeightPx + moveEvent.clientY - startY);
-      updateRowHeight(rowIndex, nextHeightPx * 0.75);
-    };
-    const handleUp = () => {
+    let latestHeightPx = startHeightPx;
+    let finished = false;
+    resizeCancelRef.current?.();
+    const cleanup = () => {
       window.removeEventListener("pointermove", handleMove);
       window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+      window.removeEventListener("blur", handleCancel);
+      window.removeEventListener("keydown", handleKeyDown);
+      if (resizeCancelRef.current === handleCancel) resizeCancelRef.current = null;
     };
+    const handleMove = (moveEvent: PointerEvent) => {
+      latestHeightPx = Math.max(24, startHeightPx + moveEvent.clientY - startY);
+      setRowResizePreview({ rowIndex, heightPx: latestHeightPx });
+    };
+    const handleUp = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      setRowResizePreview(null);
+      if (latestHeightPx !== startHeightPx) {
+        updateRowHeight(rowIndex, latestHeightPx * 0.75);
+      }
+    };
+    const handleCancel = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      setRowResizePreview(null);
+    };
+    const handleKeyDown = (keyboardEvent: KeyboardEvent) => {
+      if (keyboardEvent.key !== "Escape") return;
+      keyboardEvent.preventDefault();
+      handleCancel();
+    };
+    resizeCancelRef.current = handleCancel;
     window.addEventListener("pointermove", handleMove);
     window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+    window.addEventListener("blur", handleCancel);
+    window.addEventListener("keydown", handleKeyDown);
   }
 
   function startTableResizeDrag(
@@ -426,8 +565,24 @@ export function XlsxEditor({
       setFillDrag(null);
       if (drag) finishFillDrag(drag);
     }
+    function handleCancel() {
+      setFillDrag(null);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      handleCancel();
+    }
     window.addEventListener("pointerup", handlePointerUp);
-    return () => window.removeEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handleCancel);
+    window.addEventListener("blur", handleCancel);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handleCancel);
+      window.removeEventListener("blur", handleCancel);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [fillDrag]);
 
   useEffect(() => {
@@ -437,9 +592,47 @@ export function XlsxEditor({
       setTableResizeDrag(null);
       if (drag) finishTableResizeDrag(drag);
     }
+    function handleCancel() {
+      setTableResizeDrag(null);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      handleCancel();
+    }
     window.addEventListener("pointerup", handlePointerUp);
-    return () => window.removeEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handleCancel);
+    window.addEventListener("blur", handleCancel);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handleCancel);
+      window.removeEventListener("blur", handleCancel);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [tableResizeDrag]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFillDrag(null);
+      setTableResizeDrag(null);
+      resizeCancelRef.current?.();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [sheet?.id]);
+
+  useEffect(() => {
+    if (
+      tableResizeDrag &&
+      !sheet?.tables?.some((table) => table.id === tableResizeDrag.tableId)
+    ) {
+      const timer = window.setTimeout(() => setTableResizeDrag(null), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [sheet?.tables, tableResizeDrag]);
+
+  useEffect(() => () => resizeCancelRef.current?.(), []);
 
   function selectReference(reference: string) {
     selectSpreadsheetReference(reference, {
@@ -470,11 +663,17 @@ export function XlsxEditor({
   }
 
   function focusCell(row: number, column: number) {
-    selectCell({ row, column });
-    scrollCellIntoView(gridRef.current, row, column);
+    const target = xlsxMergeAwareSelectionTarget(
+      mergedRanges,
+      { row, column },
+      null,
+      false,
+    ).active;
+    selectCell(target);
+    scrollCellIntoView(gridRef.current, target.row, target.column);
     requestAnimationFrame(() => {
       const input = document.querySelector<HTMLInputElement>(
-        `[data-spreadsheet-cell="${row}:${column}"]`,
+        `[data-spreadsheet-cell="${target.row}:${target.column}"]`,
       );
       input?.focus();
       input?.select();
@@ -502,7 +701,25 @@ export function XlsxEditor({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
+      {pendingSheetDeletion && (
+        <SpreadsheetSheetDeletionDialog
+          preview={pendingSheetDeletion}
+          onCancel={() => setPendingSheetDeletion(null)}
+          onConfirm={() => {
+            const refreshedPreview = deleteSheet(pendingSheetDeletion);
+            if (refreshedPreview) {
+              setPendingSheetDeletion(refreshedPreview);
+              setMutationError(
+                "The deletion impact changed. Review the refreshed preview before confirming again.",
+              );
+              return;
+            }
+            setPendingSheetDeletion(null);
+            setMutationError(null);
+          }}
+        />
+      )}
       <SpreadsheetToolbar
         activeCellLabel={
           selectionRange
@@ -515,7 +732,7 @@ export function XlsxEditor({
         }
         activeCellValue={activeCellValue}
         activeCellFormulaMetadata={activeModelCell}
-        activeCellDisabled={!activeCell}
+        activeCellDisabled={!activeCell || sheet?.protection?.enabled === true}
         onActiveCellLabelChange={selectReference}
         onActiveCellChange={(value) => {
           if (!activeCell) return;
@@ -527,6 +744,9 @@ export function XlsxEditor({
         }}
         onAddRow={addRow}
         onAddColumn={addColumn}
+        canAddRow={!structureBlockReason}
+        canAddColumn={!structureBlockReason}
+        structureBlockReason={structureBlockReason}
         onDeleteRow={deleteActiveRow}
         onDeleteColumn={deleteActiveColumn}
         onClearCell={clearActiveCell}
@@ -575,29 +795,63 @@ export function XlsxEditor({
           activeCell &&
             sheet &&
             activeCell.row < sheet.rows.length &&
-            sheet.rows.length > 1,
+            sheet.rows.length > 1 &&
+            !structureBlockReason,
         )}
-        canDeleteColumn={Boolean(activeCell && columnCount > 1)}
-        canClearCell={Boolean(activeCell)}
+        canDeleteColumn={Boolean(activeCell && columnCount > 1 && !structureBlockReason)}
+        canClearCell={Boolean(activeCell && !sheet?.protection?.enabled)}
         canCopy={selectedRanges.length > 0}
-        canFillDown={Boolean(selectionRange && selectionRange.bottom > selectionRange.top)}
-        canFillRight={Boolean(selectionRange && selectionRange.right > selectionRange.left)}
-        canSetAutoFilter={Boolean(selectionRange)}
-        canMerge={Boolean(selectionRange && !singleCellRange(selectionRange))}
-        canUnmerge={Boolean(selectionRange && sheet?.mergedRanges?.length)}
-        canCreateTable={Boolean(selectionRange)}
-        canValidate={Boolean(validationRange)}
-        canApplyConditionalFormatting={Boolean(validationRange)}
-        canApplyHyperlink={Boolean(validationRange)}
-        canApplyComment={Boolean(validationRange)}
-        canHide={Boolean(selectionRange)}
-        canFormat={selectedRanges.length > 0}
-        canSort={Boolean(activeCell)}
+        canFillDown={Boolean(
+          selectionRange &&
+            selectionRange.bottom > selectionRange.top &&
+            !sheet?.protection?.enabled,
+        )}
+        canFillRight={Boolean(
+          selectionRange &&
+            selectionRange.right > selectionRange.left &&
+            !sheet?.protection?.enabled,
+        )}
+        canSetAutoFilter={Boolean(selectionRange && !sheet?.protection?.enabled)}
+        canMerge={Boolean(
+          selectionRange &&
+            !singleCellRange(selectionRange) &&
+            !sheet?.protection?.enabled,
+        )}
+        canUnmerge={Boolean(
+          selectionRange &&
+            sheet?.mergedRanges?.length &&
+            !sheet.protection?.enabled,
+        )}
+        canCreateTable={Boolean(selectionRange && !sheet?.protection?.enabled)}
+        canValidate={Boolean(validationRange && !sheet?.protection?.enabled)}
+        canApplyConditionalFormatting={Boolean(
+          validationRange && !sheet?.protection?.enabled,
+        )}
+        canApplyHyperlink={Boolean(validationRange && !sheet?.protection?.enabled)}
+        canApplyComment={Boolean(validationRange && !sheet?.protection?.enabled)}
+        canHide={Boolean(selectionRange && !sheet?.protection?.enabled)}
+        canFormat={selectedRanges.length > 0 && !sheet?.protection?.enabled}
+        canSort={!sortBlockReason}
+        sortBlockReason={sortBlockReason}
       />
+      {mutationError && (
+        <div
+          role="alert"
+          className="shrink-0 border-b border-[var(--status-error)]/40 bg-[var(--status-error)]/10 px-3 py-1.5 text-xs text-[var(--status-error)]"
+        >
+          No cells changed. {mutationError}
+        </div>
+      )}
+      {sheet?.protection?.enabled && !mutationError && (
+        <div className="shrink-0 border-b border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-3 py-1.5 text-xs text-[var(--status-warning)]">
+          Protected sheet: cell, range, and object editing is read-only until protection is disabled.
+        </div>
+      )}
       <SpreadsheetSheetTabs
         sheets={model.sheets}
         activeSheet={sheet}
         onSelectSheet={(sheetId) => {
+          setPendingSheetDeletion(null);
           setPreferredSheetId(sheetId);
           setActiveCell(null);
           setSelectionAnchor(null);
@@ -606,11 +860,18 @@ export function XlsxEditor({
         }}
         onAddSheet={addSheet}
         onDuplicateSheet={duplicateSheet}
-        onDeleteSheet={deleteSheet}
+        onDeleteSheet={() => {
+          const preview = deleteSheet();
+          if (preview) setPendingSheetDeletion(preview);
+        }}
         onMoveSheet={moveSheet}
         onRenameSheet={renameSheet}
         onSheetStateChange={updateSheetState}
         onSheetTabColorChange={updateSheetTabColor}
+        duplicateSheetBlockReason={xlsxSheetDuplicateBlockReason(sheet)}
+        canChangeActiveSheetVisibility={Boolean(
+          sheet && canHideXlsxSheet(model.sheets, sheet.id),
+        )}
       />
       <SpreadsheetObjectStrip
         sheet={sheet}
@@ -628,6 +889,7 @@ export function XlsxEditor({
         onPivotNameChange={objectEditors.updatePivotName}
         onPivotFieldChange={objectEditors.updatePivotField}
         onPivotDataFieldChange={objectEditors.updatePivotDataField}
+        readOnly={sheet?.protection?.enabled === true}
       />
       <SpreadsheetDefinedNamesPanel
         definedNames={model.definedNames ?? []}
@@ -667,6 +929,9 @@ export function XlsxEditor({
         tableResizeDrag={tableResizeDrag}
         tableResizePreviewRange={tableResizePreviewRange}
         showFormulas={showFormulas}
+        readOnly={sheet?.protection?.enabled === true}
+        columnResizePreview={columnResizePreview}
+        rowResizePreview={rowResizePreview}
         onViewportChange={setViewport}
         onSelectAllCells={selectAllCells}
         onSelectColumn={selectColumn}
@@ -677,6 +942,7 @@ export function XlsxEditor({
         onSelectCell={selectCell}
         onCellKeyDown={handleCellKeyDown}
         onUpdateCellsFromMatrix={updateCellsFromMatrix}
+        onPasteXlsxClipboard={pasteXlsxClipboard}
         onSetFillDrag={setFillDrag}
         onStartFillDrag={startFillDrag}
         onSetTableResizeDrag={setTableResizeDrag}

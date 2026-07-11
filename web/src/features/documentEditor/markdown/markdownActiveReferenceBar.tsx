@@ -3,6 +3,7 @@ import {
   markdownReferenceInputLabel,
   singleLineMarkdownReferenceTarget,
 } from "./markdownReferenceActions";
+import { MarkdownReferenceField } from "./markdownReferenceField";
 
 type MarkdownActiveReferenceBarProps = {
   reference: MarkdownReference;
@@ -22,7 +23,8 @@ export function MarkdownActiveReferenceBar({
       <span className="mb-2 rounded border border-[var(--border)] px-1.5 py-0.5 uppercase text-[10px] text-[var(--text-faint)]">
         {reference.kind}
       </span>
-      {reference.labelStart !== undefined &&
+      {reference.labelEditable &&
+        reference.labelStart !== undefined &&
         reference.labelEnd !== undefined && (
           <label className="grid min-w-40 gap-1">
             <span className="uppercase tracking-wide">
@@ -32,30 +34,32 @@ export function MarkdownActiveReferenceBar({
                   ? "Footnote"
                   : "Label"}
             </span>
-            <input
+            <MarkdownReferenceField
               value={markdownReferenceInputLabel(reference)}
-              onChange={(event) =>
-                onLabelChange(reference, event.currentTarget.value)
-              }
+              onCommit={(value) => onLabelChange(reference, value)}
               className="h-8 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
           </label>
         )}
-      {reference.targetStart !== undefined &&
+      {reference.targetEditable &&
+        reference.targetStart !== undefined &&
         reference.targetEnd !== undefined && (
           <label className="grid min-w-56 flex-1 gap-1">
             <span className="uppercase tracking-wide">
               {reference.kind === "footnote" ? "Body" : "Target"}
             </span>
-            <input
+            <MarkdownReferenceField
               value={singleLineMarkdownReferenceTarget(reference)}
-              onChange={(event) =>
-                onTargetChange(reference, event.currentTarget.value)
-              }
+              onCommit={(value) => onTargetChange(reference, value)}
               className="h-8 rounded border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
           </label>
         )}
+      {reference.preservationReason && (
+        <span className="mb-1 max-w-md rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-2 py-1.5 text-[10px] text-[var(--status-warning)]">
+          {reference.preservationReason}
+        </span>
+      )}
       <button
         type="button"
         onClick={() => onFocusRange(reference.start, reference.end)}

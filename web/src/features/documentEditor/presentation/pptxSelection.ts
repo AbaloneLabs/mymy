@@ -22,7 +22,10 @@ export type PptxObjectRecord = {
   object: PptxObject;
 };
 export type PptxGeometryPatch = Partial<
-  Pick<PptxObject, "x" | "y" | "width" | "height" | "rotation" | "groupId">
+  Pick<
+    PptxObject,
+    "x" | "y" | "width" | "height" | "rotation" | "groupId" | "groupShapeId"
+  >
 >;
 export type PptxSelectionBox = {
   startX: number;
@@ -30,7 +33,29 @@ export type PptxSelectionBox = {
   currentX: number;
   currentY: number;
   additive: boolean;
+  startSelectedObjectKeys: PptxSelectionKey[];
+  startActiveObjectKey: PptxSelectionKey | null;
 };
+
+export function restoredPptxSelection(
+  slide: PptxSlide | undefined,
+  selectedKeys: PptxSelectionKey[],
+  activeKey: PptxSelectionKey | null,
+) {
+  const available = new Set(
+    slide
+      ? pptxSlideObjectRecords(slide).map((record) =>
+          pptxSelectionKey(record.objectKind, record.objectId),
+        )
+      : [],
+  );
+  const nextSelectedKeys = selectedKeys.filter((key) => available.has(key));
+  const nextActiveKey =
+    activeKey && available.has(activeKey)
+      ? activeKey
+      : (nextSelectedKeys.at(-1) ?? null);
+  return { selectedKeys: nextSelectedKeys, activeKey: nextActiveKey };
+}
 
 export function pptxSelectionKey(
   objectKind: PptxObjectKind,

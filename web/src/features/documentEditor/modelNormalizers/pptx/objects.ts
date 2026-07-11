@@ -40,6 +40,14 @@ export function normalizePptxText(value: unknown, textIndex: number): PptxText {
       typeof textItem.id === "string"
         ? textItem.id
         : `t${textIndex + 1}`,
+    shapeId:
+      typeof textItem.shapeId === "string" ? textItem.shapeId : undefined,
+    groupShapeId:
+      typeof textItem.groupShapeId === "string"
+        ? textItem.groupShapeId
+        : undefined,
+    textSegmentCount: numericField(textItem.textSegmentCount),
+    complexText: textItem.complexText === true,
     groupId: normalizePptxGroupId(textItem.groupId),
     text: typeof textItem.text === "string" ? textItem.text : "",
     placeholderType:
@@ -83,6 +91,12 @@ export function normalizePptxShapes(shapes: unknown[]): PptxShape[] {
           typeof shapeItem.id === "string"
             ? shapeItem.id
             : `s${shapeIndex + 1}`,
+        shapeId:
+          typeof shapeItem.shapeId === "string" ? shapeItem.shapeId : undefined,
+        groupShapeId:
+          typeof shapeItem.groupShapeId === "string"
+            ? shapeItem.groupShapeId
+            : undefined,
         groupId: normalizePptxGroupId(shapeItem.groupId),
         kind,
         x: numericField(shapeItem.x),
@@ -124,6 +138,13 @@ export function normalizePptxTables(tables: unknown[]): PptxTable[] {
           typeof tableItem.id === "string"
             ? tableItem.id
             : `tbl${tableIndex + 1}`,
+        shapeId:
+          typeof tableItem.shapeId === "string" ? tableItem.shapeId : undefined,
+        groupShapeId:
+          typeof tableItem.groupShapeId === "string"
+            ? tableItem.groupShapeId
+            : undefined,
+        preservationOnly: tableItem.preservationOnly === true,
         groupId: normalizePptxGroupId(tableItem.groupId),
         textIndexStart: numericField(tableItem.textIndexStart),
         rows: normalizedRows,
@@ -177,6 +198,12 @@ export function normalizePptxImages(images: unknown[]): PptxImage[] {
           typeof imageItem.id === "string"
             ? imageItem.id
             : `img${imageIndex + 1}`,
+        shapeId:
+          typeof imageItem.shapeId === "string" ? imageItem.shapeId : undefined,
+        groupShapeId:
+          typeof imageItem.groupShapeId === "string"
+            ? imageItem.groupShapeId
+            : undefined,
         groupId: normalizePptxGroupId(imageItem.groupId),
         relationshipId:
           typeof imageItem.relationshipId === "string"
@@ -267,6 +294,12 @@ export function normalizePptxCharts(charts: unknown[]): PptxChart[] {
           typeof chartItem.id === "string"
             ? chartItem.id
             : `chart${chartIndex + 1}`,
+        shapeId:
+          typeof chartItem.shapeId === "string" ? chartItem.shapeId : undefined,
+        groupShapeId:
+          typeof chartItem.groupShapeId === "string"
+            ? chartItem.groupShapeId
+            : undefined,
         groupId: normalizePptxGroupId(chartItem.groupId),
         relationshipId:
           typeof chartItem.relationshipId === "string"

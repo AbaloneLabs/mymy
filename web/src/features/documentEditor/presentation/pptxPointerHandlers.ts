@@ -18,6 +18,7 @@ import {
 } from "./pptxEditorGeometry";
 import {
   pptxObjectIntersectsSelectionBox,
+  restoredPptxSelection,
   pptxSelectionBoxBounds,
   pptxSelectionKey,
   pptxSlideObjectRecords,
@@ -66,14 +67,9 @@ interface PptxPointerHandlerParams {
   setSelectionBox: Dispatch<SetStateAction<PptxSelectionBox | null>>;
   setSnapGuides: Dispatch<SetStateAction<PptxSnapGuide[]>>;
   slide: PptxSlide | undefined;
-  updateChartById: (chartId: string, patch: Partial<PptxChart>) => void;
-  updateImageById: (imageId: string, patch: Partial<PptxImage>) => void;
   updateObjectGeometries: (
     patches: Map<PptxSelectionKey, PptxGeometryPatch>,
   ) => void;
-  updateShapeById: (shapeId: string, patch: Partial<PptxShape>) => void;
-  updateTableById: (tableId: string, patch: Partial<PptxTable>) => void;
-  updateTextById: (textId: string, patch: Partial<PptxText>) => void;
 }
 
 export function usePptxPointerHandlers({
@@ -98,12 +94,7 @@ export function usePptxPointerHandlers({
   setSelectionBox,
   setSnapGuides,
   slide,
-  updateChartById,
-  updateImageById,
   updateObjectGeometries,
-  updateShapeById,
-  updateTableById,
-  updateTextById,
 }: PptxPointerHandlerParams) {
   function startObjectDrag(
     event: ReactPointerEvent<HTMLElement>,
@@ -155,6 +146,8 @@ export function usePptxPointerHandlers({
       startWidth: object.width ?? 80,
       startHeight: object.height ?? 10,
       rect,
+      startSelectedObjectKeys: selectedObjectKeys,
+      startActiveObjectKey: activeObjectKey,
       groupItems,
     });
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -227,6 +220,8 @@ export function usePptxPointerHandlers({
       currentX: point.x,
       currentY: point.y,
       additive,
+      startSelectedObjectKeys: selectedObjectKeys,
+      startActiveObjectKey: activeObjectKey,
     });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -256,7 +251,7 @@ export function usePptxPointerHandlers({
       snappingEnabled && slide
         ? pptxSnapTargets(pptxSlideObjectRecords(slide), ignoredSnapKeys)
         : null;
-    const updateObject = updateObjectByDragKind(dragState.objectKind);
+    let previewPatches: Map<PptxSelectionKey, PptxGeometryPatch>;
     if (dragState.groupItems && dragState.mode === "move") {
       const movedBounds = pptxBoundsFromItems(
         dragState.groupItems.map((item) => ({
@@ -280,7 +275,7 @@ export function usePptxPointerHandlers({
         });
       });
       setSnapGuides(snapDelta.guides);
-      updateObjectGeometries(patches);
+      previewPatches = patches;
     } else if (dragState.mode === "move") {
       const movedBounds = {
         x: dragState.startX + deltaX,
@@ -292,10 +287,12 @@ export function usePptxPointerHandlers({
         ? pptxMoveSnap(movedBounds, snapTargets)
         : { deltaX: 0, deltaY: 0, guides: [] };
       setSnapGuides(snapDelta.guides);
-      updateObject(dragState.objectId, {
-        x: clampPercent(dragState.startX + deltaX + snapDelta.deltaX),
-        y: clampPercent(dragState.startY + deltaY + snapDelta.deltaY),
-      });
+      previewPatches = new Map([
+        [pptxSelectionKey(dragState.objectKind, dragState.objectId), {
+          x: clampPercent(dragState.startX + deltaX + snapDelta.deltaX),
+          y: clampPercent(dragState.startY + deltaY + snapDelta.deltaY),
+        }],
+      ]);
     } else {
       const minHeight = dragState.objectKind === "shape" ? 0 : 4;
       const nextSize = event.shiftKey
@@ -322,19 +319,16 @@ export function usePptxPointerHandlers({
           )
         : { ...nextSize, guides: [] };
       setSnapGuides(snappedSize.guides);
-      updateObject(dragState.objectId, {
-        width: snappedSize.width,
-        height: snappedSize.height,
-      });
+      previewPatches = new Map([
+        [pptxSelectionKey(dragState.objectKind, dragState.objectId), {
+          width: snappedSize.width,
+          height: snappedSize.height,
+        }],
+      ]);
     }
-  }
-
-  function updateObjectByDragKind(objectKind: SlideDragState["objectKind"]) {
-    if (objectKind === "text") return updateTextById;
-    if (objectKind === "shape") return updateShapeById;
-    if (objectKind === "image") return updateImageById;
-    if (objectKind === "table") return updateTableById;
-    return updateChartById;
+    setDragState((current) =>
+      current ? { ...current, previewPatches } : current,
+    );
   }
 
   function handleCanvasPointerUp() {
@@ -355,6 +349,25 @@ export function usePptxPointerHandlers({
       }
       setSelectionBox(null);
     }
+    if (dragState?.previewPatches?.size) {
+      updateObjectGeometries(dragState.previewPatches);
+    }
+    setSnapGuides([]);
+    setDragState(null);
+  }
+
+  function cancelCanvasPointerTransaction() {
+    const snapshot = dragState ?? selectionBox;
+    if (snapshot) {
+      const restored = restoredPptxSelection(
+        slide,
+        snapshot.startSelectedObjectKeys,
+        snapshot.startActiveObjectKey,
+      );
+      setSelectedObjectKeys(restored.selectedKeys);
+      activateObjectKey(restored.activeKey);
+    }
+    setSelectionBox(null);
     setSnapGuides([]);
     setDragState(null);
   }
@@ -363,6 +376,7 @@ export function usePptxPointerHandlers({
     handleCanvasPointerDown,
     handleCanvasPointerMove,
     handleCanvasPointerUp,
+    cancelCanvasPointerTransaction,
     startObjectDrag,
   };
 }

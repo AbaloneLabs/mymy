@@ -14,19 +14,24 @@ const DELIMITED_COLUMN_TYPES = [
 export function DelimitedTableProfilePanel({
   rows,
   headerRow,
+  columnTypes,
   model,
   onModelChange,
+  onHeaderRowChange,
+  onColumnTypesChange,
 }: {
   rows: string[][];
   headerRow: boolean;
+  columnTypes: string[];
   model: DelimitedTableModel;
   onModelChange: (model: DelimitedTableModel) => void;
+  onHeaderRowChange: (value: boolean) => void;
+  onColumnTypesChange: (types: string[]) => void;
 }) {
   const profile = delimitedTableProfile(rows, headerRow);
   const delimiter = model.delimiter ?? ",";
   const quoteCharacter = model.quoteCharacter ?? "\"";
   const escapePolicy = model.escapePolicy ?? "double";
-  const columnTypes = model.columnTypes ?? [];
   if (profile.columns.length === 0) return null;
   function patch(patch: Partial<DelimitedTableModel>) {
     onModelChange({ ...model, ...patch });
@@ -36,15 +41,18 @@ export function DelimitedTableProfilePanel({
       columnTypes[columnIndex] ?? "auto",
     );
     next[index] = value;
-    patch({ columnTypes: next });
+    onColumnTypesChange(next);
   }
   function applyInferredColumnTypes() {
-    patch({ columnTypes: profile.columns.map((column) => column.inferredType) });
+    onColumnTypesChange(profile.columns.map((column) => column.inferredType));
   }
   return (
     <div className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="font-medium text-[var(--text)]">Data profile</span>
+        <span className="font-medium text-[var(--text)]">View profile</span>
+        <span className="rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-1.5 py-0.5 text-[10px]">
+          This browser tab only · not saved to the file
+        </span>
         <span className="text-[11px] text-[var(--text-faint)]">
           {profile.rowCount} rows · {profile.columnCount} columns · {profile.populatedCells} filled
         </span>
@@ -59,13 +67,16 @@ export function DelimitedTableProfilePanel({
           <input
             type="checkbox"
             checked={headerRow}
-            onChange={(event) => patch({ headerRow: event.currentTarget.checked })}
+            onChange={(event) => onHeaderRowChange(event.currentTarget.checked)}
             className="h-3.5 w-3.5 accent-[var(--accent)]"
           />
           Header row
         </label>
       </div>
       <div className="mb-2 grid gap-2 md:grid-cols-5">
+        <div className="md:col-span-5 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+          File serialization · saved with the document
+        </div>
         <label className="flex min-w-0 flex-col gap-1">
           <span className="text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
             Delimiter

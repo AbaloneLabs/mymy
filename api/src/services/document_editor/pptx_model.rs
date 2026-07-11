@@ -191,7 +191,7 @@ pub(super) fn update_pptx(original: &[u8], model: &Value) -> AppResult<Vec<u8>> 
         };
         let original_text_count = pptx_shape_texts_for_size(&original_xml, slide_size).len();
         let mut texts = extract_text_tags(&original_xml, "a:t");
-        apply_pptx_text_replacements(&mut texts, &text_specs);
+        apply_pptx_text_replacements(&mut texts, &text_specs)?;
         apply_pptx_table_replacements(&mut texts, &table_specs);
         let mut updated = replace_tag_texts(&original_xml, "a:t", &texts);
         updated = update_pptx_shape_geometries_for_size(&updated, &text_specs, slide_size);

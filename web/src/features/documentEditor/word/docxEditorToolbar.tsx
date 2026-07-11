@@ -32,10 +32,14 @@ export function DocxEditorToolbar(props: DocxEditorToolbarProps) {
         onUpdateActive={props.onUpdateActive}
       />
       <DocxPageToolbarControls
+        onApplyPageDraft={props.onApplyPageDraft}
+        onCancelPageDraft={props.onCancelPageDraft}
         onUpdatePage={props.onUpdatePage}
         onUpdatePageOrientation={props.onUpdatePageOrientation}
         onUpdatePagePreset={props.onUpdatePagePreset}
         page={props.page}
+        pageDraftDirty={props.pageDraftDirty}
+        pageScopeLabel={props.pageScopeLabel}
       />
       <DocxDocumentToolbarControls
         hasDocumentParts={props.hasDocumentParts}

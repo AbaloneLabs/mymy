@@ -8,7 +8,7 @@ import {
   xlsxRangeFromRef,
 } from "./spreadsheetGeometry";
 import { adjustSpreadsheetFormulaReferences } from "./spreadsheetFormulaReferences";
-import { xlsxSqrefRanges } from "./spreadsheetXlsxMetadata";
+import { rangesOverlap, xlsxSqrefRanges } from "./spreadsheetXlsxMetadata";
 import { columnName, normalizeXlsxCells } from "../shared/models";
 import type {
   XlsxCell,
@@ -235,28 +235,133 @@ export function filteredXlsxRows(
     });
 }
 
-export function sortXlsxRows(
+export function sortXlsxRange(
   rows: XlsxRow[],
-  columnCount: number,
+  range: NormalizedCellRange,
   columnIndex: number,
   direction: "asc" | "desc",
 ) {
-  return rows
-    .map((row, rowIndex) =>
-      normalizeXlsxRowForPosition(row, rowIndex, columnCount),
-    )
-    .map((row, originalIndex) => ({ row, originalIndex }))
+  const normalizedRows = rows.map((row, rowIndex) => ({
+    ...row,
+    cells: normalizeXlsxCells(
+      row.cells,
+      range.right + 1,
+      row.index || String(rowIndex + 1),
+    ),
+  }));
+  const sortedSegments = normalizedRows
+    .slice(range.top, range.bottom + 1)
+    .map((row, originalIndex) => ({
+      cells: row.cells.slice(range.left, range.right + 1),
+      originalIndex,
+    }))
     .sort((left, right) => {
       const result = compareSpreadsheetValues(
-        displayXlsxCellValue(left.row.cells[columnIndex]),
-        displayXlsxCellValue(right.row.cells[columnIndex]),
+        displayXlsxCellValue(left.cells[columnIndex - range.left]),
+        displayXlsxCellValue(right.cells[columnIndex - range.left]),
       );
       if (result !== 0) return direction === "asc" ? result : -result;
       return left.originalIndex - right.originalIndex;
-    })
-    .map(({ row }, rowIndex) =>
-      normalizeXlsxRowForPosition(row, rowIndex, columnCount),
+    });
+  return normalizedRows.map((row, rowIndex) => {
+    if (rowIndex < range.top || rowIndex > range.bottom) return row;
+    const segment = sortedSegments[rowIndex - range.top]?.cells ?? [];
+    const cells = [...row.cells];
+    for (let column = range.left; column <= range.right; column += 1) {
+      const source = segment[column - range.left];
+      cells[column] = {
+        ...(source ?? { value: "" }),
+        ref: `${columnName(column)}${rowIndex + 1}`,
+      };
+    }
+    return { ...row, cells };
+  });
+}
+
+/**
+ * Sorting is enabled only for a selected raw-value rectangle whose related
+ * metadata has unambiguous ownership. Unsupported combinations are surfaced
+ * as a reason in the toolbar instead of committing a plausible-looking sort
+ * that bakes formula results or detaches comments and range rules.
+ */
+export function xlsxSortBlockReason(
+  sheet: XlsxSheet | undefined,
+  range: NormalizedCellRange | null,
+  columnIndex: number | undefined,
+  filterText = "",
+) {
+  if (!sheet || !range || columnIndex === undefined) {
+    return "Select a rectangular range before sorting";
+  }
+  if (range.bottom <= range.top) return "Select at least two rows to sort";
+  if (columnIndex < range.left || columnIndex > range.right) {
+    return "Keep the active sort cell inside the selected range";
+  }
+  if (range.top < 0 || range.bottom >= sheet.rows.length) {
+    return "The sort range must contain existing rows only";
+  }
+  if (filterText.trim()) return "Clear the view-only row filter before sorting";
+  if (sheet.protection?.enabled) return "Protected sheets cannot be sorted here";
+  if (sheet.autoFilter) return "Clear the saved filter before sorting this range";
+  if ((sheet.pivots?.length ?? 0) > 0) {
+    return "Pivot source ownership is unknown, so sorting is blocked";
+  }
+  if (
+    sheet.rows
+      .slice(range.top, range.bottom + 1)
+      .some((row) => row.hidden)
+  ) {
+    return "Unhide every row in the selected range before sorting";
+  }
+  const selectedCells = sheet.rows
+    .slice(range.top, range.bottom + 1)
+    .flatMap((row, rowOffset) =>
+      normalizeXlsxCells(
+        row.cells,
+        range.right + 1,
+        row.index || String(range.top + rowOffset + 1),
+      ).slice(range.left, range.right + 1),
     );
+  if (
+    selectedCells.some(
+      (cell) =>
+        cell.formula ||
+        cell.formulaRef ||
+        cell.formulaType ||
+        cell.generated === "spill" ||
+        cell.spillParent ||
+        cell.spillRange,
+    )
+  ) {
+    return "Formula and spill cells require a reference-aware sort";
+  }
+  if (sheet.mergedRanges?.some((item) => referenceOverlapsRange(item.ref, range))) {
+    return "Merged cells overlap the selected sort range";
+  }
+  if (sheet.tables?.some((item) => referenceOverlapsRange(item.ref, range))) {
+    return "Use a table-aware sort for ranges inside a table";
+  }
+  if (
+    sheet.dataValidations?.some((item) => referenceOverlapsRange(item.sqref, range)) ||
+    sheet.conditionalFormattings?.some((item) =>
+      referenceOverlapsRange(item.sqref, range),
+    ) ||
+    sheet.hyperlinks?.some((item) => referenceOverlapsRange(item.ref, range)) ||
+    sheet.comments?.some((item) => referenceOverlapsRange(item.ref, range))
+  ) {
+    return "Range metadata overlaps the selection and cannot be reordered safely";
+  }
+  return null;
+}
+
+function referenceOverlapsRange(
+  reference: string | undefined,
+  range: NormalizedCellRange,
+) {
+  return Boolean(
+    reference &&
+      xlsxSqrefRanges(reference).some((item) => rangesOverlap(item, range)),
+  );
 }
 
 export function displayXlsxCellValue(cell?: XlsxCell, showFormulas = false) {
@@ -315,20 +420,4 @@ export function nextXlsxSheetPath(model: XlsxModel) {
   let number = Math.max(0, ...numbers) + 1;
   while (used.has(`xl/worksheets/sheet${number}.xml`)) number += 1;
   return `xl/worksheets/sheet${number}.xml`;
-}
-
-function normalizeXlsxRowForPosition(
-  row: XlsxRow,
-  rowIndex: number,
-  columnCount: number,
-): XlsxRow {
-  const index = String(rowIndex + 1);
-  return {
-    ...row,
-    index,
-    cells: normalizeXlsxCells(row.cells, columnCount, index).map((cell, cellIndex) => ({
-      ...cell,
-      ref: `${columnName(cellIndex)}${index}`,
-    })),
-  };
 }

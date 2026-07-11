@@ -1,4 +1,10 @@
-import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
+import type {
+  ClipboardEventHandler,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEventHandler,
+  RefObject,
+} from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { normalizeRow } from "../shared/models";
@@ -172,11 +178,12 @@ export function DelimitedTableGrid({
                           columnIndex,
                         )}
                       >
-                        <input
+                        <DelimitedCellInput
+                          key={`${rowIndex}:${columnIndex}:${cell}`}
                           data-delimited-cell={`${rowIndex}:${columnIndex}`}
                           value={cell}
-                          onChange={(event) =>
-                            onUpdateCell(rowIndex, columnIndex, event.target.value)
+                          onCommit={(value) =>
+                            onUpdateCell(rowIndex, columnIndex, value)
                           }
                           onFocus={() =>
                             onSetActiveCell({ row: rowIndex, column: columnIndex })
@@ -200,7 +207,6 @@ export function DelimitedTableGrid({
                               onUpdateCellsFromMatrix(rowIndex, columnIndex, matrix);
                             }
                           }}
-                          className="h-8 min-w-32 bg-[var(--bg)] px-2 text-[var(--text)] outline-none focus:bg-[var(--surface)]"
                           aria-label={t("documentEditor.cellLabel", {
                             row: rowIndex + 1,
                             column: columnIndex + 1,
@@ -228,5 +234,61 @@ export function DelimitedTableGrid({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function DelimitedCellInput({
+  value,
+  onCommit,
+  onFocus,
+  onMouseDown,
+  onMouseEnter,
+  onKeyDown,
+  onPaste,
+  ...inputProps
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+  onFocus: () => void;
+  onMouseDown: MouseEventHandler<HTMLInputElement>;
+  onMouseEnter: MouseEventHandler<HTMLInputElement>;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+  onPaste: ClipboardEventHandler<HTMLInputElement>;
+  "data-delimited-cell": string;
+  "aria-label": string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const cancelledRef = useRef(false);
+
+  return (
+    <input
+      {...inputProps}
+      value={draft}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onFocus={() => {
+        cancelledRef.current = false;
+        setDraft(value);
+        onFocus();
+      }}
+      onBlur={() => {
+        if (!cancelledRef.current && draft !== value) onCommit(draft);
+        cancelledRef.current = false;
+      }}
+      onMouseDown={onMouseDown}
+      onMouseEnter={onMouseEnter}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelledRef.current = true;
+          setDraft(value);
+          event.currentTarget.blur();
+          return;
+        }
+        onKeyDown(event);
+      }}
+      onPaste={onPaste}
+      className="h-8 min-w-32 bg-[var(--bg)] px-2 text-[var(--text)] outline-none focus:bg-[var(--surface)]"
+    />
   );
 }

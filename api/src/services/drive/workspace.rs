@@ -154,7 +154,8 @@ pub async fn resolve_agent_drive_workspace(
     })
 }
 
-pub fn archive_agent_workspace(state: &AppState, profile: &str) -> AppResult<()> {
+pub async fn archive_agent_workspace(state: &AppState, profile: &str) -> AppResult<()> {
+    let _namespace_guard = state.drive_namespace_lock().write().await;
     let source = agent_workspace_path(&state.config.agent_data_dir, profile);
     if !source.exists() {
         return Ok(());

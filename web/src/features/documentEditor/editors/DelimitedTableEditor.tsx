@@ -8,11 +8,20 @@ import { DelimitedTableMetadataBar } from "../delimitedTable/delimitedTableMetad
 import { DelimitedTableProfilePanel } from "../delimitedTable/delimitedProfilePanel";
 import { delimitedLooksLikeHeader } from "../delimitedTable/delimitedTableUtils";
 import {
+  changedDelimitedFormatKeys,
+  delimitedEncodingIssue,
+  delimitedFormatDraft as createDelimitedFormatDraft,
+  delimitedFormatSample,
+} from "../delimitedTable/delimitedFormatDraft";
+import {
   ensureDelimitedDisplayRows,
   ensureDelimitedRows,
+  DELIMITED_MATRIX_MIME,
+  delimitedSortBlockReason,
   filteredDelimitedRows,
   rangeToClipboardText,
-  sortDelimitedRows,
+  serializeInternalDelimitedMatrix,
+  sortedDelimitedRowIndexes,
   valuesFromDelimitedRange,
 } from "../spreadsheet";
 import {
@@ -54,6 +63,20 @@ export function DelimitedTableEditor({
   const [selectionAnchor, setSelectionAnchor] = useState<CellPosition | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<CellPosition | null>(null);
   const [filterText, setFilterText] = useState("");
+  const [headerRow, setHeaderRow] = useState(
+    () => model.headerRow ?? delimitedLooksLikeHeader(model.rows),
+  );
+  const [columnTypes, setColumnTypes] = useState<string[]>(() => [
+    ...(model.columnTypes ?? []),
+  ]);
+  const rowIdSequenceRef = useRef(model.rows.length);
+  const [rowIds, setRowIds] = useState(() =>
+    model.rows.map((_, index) => `delimited-row-${index + 1}`),
+  );
+  const [sortSnapshot, setSortSnapshot] = useState<string[] | null>(null);
+  const [sortMessage, setSortMessage] = useState<string | null>(null);
+  const baselineFormat = createDelimitedFormatDraft(model);
+  const [formatDraft, setFormatDraft] = useState(() => baselineFormat);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const [viewport, setViewport] = useState<SpreadsheetViewport>(emptyViewport);
@@ -62,7 +85,6 @@ export function DelimitedTableEditor({
   const columnCount = Math.max(MIN_DELIMITED_VISIBLE_COLUMNS, sourceColumnCount);
   const displayRowLimit = Math.max(MIN_DELIMITED_VISIBLE_ROWS, sourceRows.length);
   const rows = ensureDelimitedDisplayRows(sourceRows, displayRowLimit);
-  const headerRow = model.headerRow ?? delimitedLooksLikeHeader(sourceRows);
   const visibleRows = filteredDelimitedRows(rows, columnCount, filterText);
   const rowWindow = virtualWindow(
     visibleRows.length,
@@ -89,8 +111,39 @@ export function DelimitedTableEditor({
       ? [[activeCellValue]]
       : [];
   const selectionSummary = summarizeSelection(selectedValues);
+  const changedFormatKeys = changedDelimitedFormatKeys(
+    baselineFormat,
+    formatDraft,
+  );
+  const formatEncodingIssue = delimitedEncodingIssue(
+    sourceRows,
+    formatDraft.encoding,
+    formatDraft.bom,
+  );
+  const formatModel = { ...model, ...formatDraft };
 
-  function commitDelimitedRows(nextRows: string[][]) {
+  function updateFormatModel(next: DelimitedTableModel) {
+    setFormatDraft(createDelimitedFormatDraft(next));
+  }
+
+  function applyFormatDraft() {
+    if (changedFormatKeys.length === 0 || formatEncodingIssue) return;
+    onChange({ ...model, ...formatDraft });
+  }
+
+  function nextRowId() {
+    rowIdSequenceRef.current += 1;
+    return `delimited-row-${rowIdSequenceRef.current}`;
+  }
+
+  function rowIdsForLength(length: number) {
+    const next = rowIds.slice(0, length);
+    while (next.length < length) next.push(nextRowId());
+    return next;
+  }
+
+  function commitDelimitedRows(nextRows: string[][], nextRowIds?: string[]) {
+    setRowIds(nextRowIds ?? rowIdsForLength(nextRows.length));
     onChange({
       ...model,
       rows: nextRows,
@@ -98,17 +151,11 @@ export function DelimitedTableEditor({
   }
 
   function updateCell(rowIndex: number, columnIndex: number, value: string) {
-    const requiredColumns = Math.max(sourceColumnCount, columnIndex + 1);
-    commitDelimitedRows(
-      ensureDelimitedRows(sourceRows, rowIndex + 1, requiredColumns).map(
-        (row, currentRowIndex) => {
-          if (currentRowIndex !== rowIndex) return row;
-          return row.map((cell, currentColumnIndex) =>
-            currentColumnIndex === columnIndex ? value : cell,
-          );
-        },
-      ),
-    );
+    const nextRows = sourceRows.map((row) => [...row]);
+    while (nextRows.length <= rowIndex) nextRows.push([]);
+    while (nextRows[rowIndex].length <= columnIndex) nextRows[rowIndex].push("");
+    nextRows[rowIndex][columnIndex] = value;
+    commitDelimitedRows(nextRows);
   }
 
   function updateCellsFromMatrix(
@@ -117,18 +164,14 @@ export function DelimitedTableEditor({
     matrix: string[][],
   ) {
     if (matrix.length === 0) return;
-    const requiredRows = startRow + matrix.length;
-    const requiredColumns = Math.max(
-      sourceColumnCount,
-      startColumn + Math.max(...matrix.map((row) => row.length)),
-    );
-    const nextRows = ensureDelimitedRows(sourceRows, requiredRows, requiredColumns).map((row, rowIndex) => {
-      const pastedRow = matrix[rowIndex - startRow];
-      if (!pastedRow) return row;
-      return row.map((cell, columnIndex) => {
-        if (columnIndex < startColumn) return cell;
-        const pastedValue = pastedRow[columnIndex - startColumn];
-        return pastedValue === undefined ? cell : pastedValue;
+    const nextRows = sourceRows.map((row) => [...row]);
+    matrix.forEach((pastedRow, rowOffset) => {
+      const rowIndex = startRow + rowOffset;
+      while (nextRows.length <= rowIndex) nextRows.push([]);
+      const target = nextRows[rowIndex];
+      while (target.length < startColumn + pastedRow.length) target.push("");
+      pastedRow.forEach((value, columnOffset) => {
+        target[startColumn + columnOffset] = value;
       });
     });
     commitDelimitedRows(nextRows);
@@ -176,7 +219,25 @@ export function DelimitedTableEditor({
 
   async function copySelection() {
     if (!selectionRange) return;
-    await navigator.clipboard?.writeText(rangeToClipboardText(selectedValues));
+    const plainText = rangeToClipboardText(selectedValues);
+    if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+            [DELIMITED_MATRIX_MIME]: new Blob(
+              [serializeInternalDelimitedMatrix(selectedValues)],
+              { type: DELIMITED_MATRIX_MIME },
+            ),
+          }),
+        ]);
+        return;
+      } catch {
+        // Browsers may reject custom clipboard MIME types; plain text remains
+        // a fully quoted interoperable fallback parsed by the same state machine.
+      }
+    }
+    await navigator.clipboard?.writeText(plainText);
   }
 
   function fillDown() {
@@ -215,9 +276,89 @@ export function DelimitedTableEditor({
 
   function sortRowsByActiveColumn(direction: "asc" | "desc") {
     if (!activeCell) return;
-    commitDelimitedRows(
-      sortDelimitedRows(sourceRows, sourceColumnCount, activeCell.column, direction),
+    const reconciledIds = rowIdsForLength(sourceRows.length);
+    let scope = "all data rows";
+    let targetIndexes: number[];
+    if (selectionRange && selectionRange.bottom > selectionRange.top) {
+      if (
+        activeCell.column < selectionRange.left ||
+        activeCell.column > selectionRange.right
+      ) {
+        setSortMessage("Sort blocked: the active sort column is outside the selection");
+        return;
+      }
+      const top = Math.min(selectionRange.top, sourceRows.length);
+      const bottom = Math.min(selectionRange.bottom, sourceRows.length - 1);
+      targetIndexes =
+        top <= bottom
+          ? Array.from({ length: bottom - top + 1 }, (_, offset) => top + offset)
+          : [];
+      scope = `selected rows ${selectionRange.top + 1}-${Math.min(
+        selectionRange.bottom + 1,
+        sourceRows.length,
+      )}`;
+    } else if (filterText.trim()) {
+      targetIndexes = visibleRows
+        .map((item) => item.rowIndex)
+        .filter((rowIndex) => rowIndex < sourceRows.length);
+      scope = "currently filtered rows";
+    } else {
+      targetIndexes = sourceRows.map((_, rowIndex) => rowIndex);
+    }
+    const headerExcluded = headerRow && targetIndexes.includes(0);
+    if (headerExcluded) targetIndexes = targetIndexes.filter((rowIndex) => rowIndex !== 0);
+    if (targetIndexes.length < 2) {
+      setSortMessage("Sort made no change: fewer than two data rows are in scope");
+      return;
+    }
+    const blockReason = delimitedSortBlockReason(
+      sourceRows,
+      targetIndexes,
+      activeCell.column,
     );
+    if (blockReason) {
+      setSortMessage(blockReason);
+      return;
+    }
+    const sortedSourceIndexes = sortedDelimitedRowIndexes(
+      sourceRows,
+      targetIndexes,
+      activeCell.column,
+      direction,
+    );
+    const targetPositions = [...targetIndexes].sort((left, right) => left - right);
+    const nextRows = sourceRows.map((row) => row);
+    const nextIds = [...reconciledIds];
+    targetPositions.forEach((targetIndex, index) => {
+      const sourceIndex = sortedSourceIndexes[index];
+      nextRows[targetIndex] = sourceRows[sourceIndex];
+      nextIds[targetIndex] = reconciledIds[sourceIndex];
+    });
+    setSortSnapshot((current) => current ?? reconciledIds);
+    setSortMessage(
+      `Sorted ${scope} by ${columnName(activeCell.column)} ${direction}; ${
+        headerExcluded ? "header excluded" : "no header in scope"
+      }`,
+    );
+    commitDelimitedRows(nextRows, nextIds);
+  }
+
+  function restorePreSortOrder() {
+    if (!sortSnapshot) return;
+    const reconciledIds = rowIdsForLength(sourceRows.length);
+    const rowById = new Map(
+      reconciledIds.map((rowId, index) => [rowId, sourceRows[index]] as const),
+    );
+    const restoredIds = sortSnapshot.filter((rowId) => rowById.has(rowId));
+    reconciledIds.forEach((rowId) => {
+      if (!restoredIds.includes(rowId)) restoredIds.push(rowId);
+    });
+    commitDelimitedRows(
+      restoredIds.map((rowId) => rowById.get(rowId) ?? []),
+      restoredIds,
+    );
+    setSortSnapshot(null);
+    setSortMessage("Restored the pre-sort row order while retaining later cell edits");
   }
 
   const handleCommandRequest = useEffectEvent(
@@ -252,9 +393,11 @@ export function DelimitedTableEditor({
   function addRow() {
     const insertAt = activeCell ? activeCell.row + 1 : sourceRows.length;
     const requiredColumns = Math.max(sourceColumnCount, (activeCell?.column ?? 0) + 1);
-    const nextRows = ensureDelimitedRows(sourceRows, insertAt, requiredColumns);
+    const nextRows = sourceRows.map((row) => [...row]);
     nextRows.splice(insertAt, 0, Array(requiredColumns).fill(""));
-    commitDelimitedRows(nextRows);
+    const nextIds = rowIdsForLength(sourceRows.length);
+    nextIds.splice(insertAt, 0, nextRowId());
+    commitDelimitedRows(nextRows, nextIds);
     setActiveCell({ row: insertAt, column: activeCell?.column ?? 0 });
     setSelectionAnchor({ row: insertAt, column: activeCell?.column ?? 0 });
     setSelectionEnd({ row: insertAt, column: activeCell?.column ?? 0 });
@@ -277,7 +420,12 @@ export function DelimitedTableEditor({
 
   function deleteActiveRow() {
     if (!activeCell || activeCell.row >= sourceRows.length || sourceRows.length <= 1) return;
-    commitDelimitedRows(sourceRows.filter((_, index) => index !== activeCell.row));
+    commitDelimitedRows(
+      sourceRows.filter((_, index) => index !== activeCell.row),
+      rowIdsForLength(sourceRows.length).filter(
+        (_, index) => index !== activeCell.row,
+      ),
+    );
     setActiveCell(null);
     setSelectionAnchor(null);
     setSelectionEnd(null);
@@ -287,7 +435,7 @@ export function DelimitedTableEditor({
     if (!activeCell || activeCell.column >= sourceColumnCount || sourceColumnCount <= 1) return;
     commitDelimitedRows(
       sourceRows.map((row) =>
-        normalizeRow(row, sourceColumnCount).filter((_, index) => index !== activeCell.column),
+        row.filter((_, index) => index !== activeCell.column),
       ),
     );
     setActiveCell(null);
@@ -429,13 +577,74 @@ export function DelimitedTableEditor({
         canFillRight={Boolean(selectionRange && selectionRange.right > selectionRange.left)}
         canSort={Boolean(activeCell)}
       />
-      <DelimitedTableMetadataBar model={model} onChange={onChange} />
+      {changedFormatKeys.length > 0 && (
+        <div className="grid shrink-0 gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-muted)] md:grid-cols-[minmax(0,1fr)_minmax(16rem,1fr)_auto]">
+          <div>
+            <div>
+              File format draft: {changedFormatKeys.join(", ")}
+            </div>
+            {formatEncodingIssue && (
+              <div className="mt-1 text-[var(--status-error)]">
+                {formatEncodingIssue}
+              </div>
+            )}
+          </div>
+          <pre className="max-h-20 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-[var(--bg)] p-1.5 font-mono text-[10px]">
+            {delimitedFormatSample(sourceRows, formatDraft)}
+          </pre>
+          <div className="flex items-start gap-1">
+            <button
+              type="button"
+              disabled={Boolean(formatEncodingIssue)}
+              onClick={applyFormatDraft}
+              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Apply format
+            </button>
+            <button
+              type="button"
+              onClick={() => setFormatDraft(baselineFormat)}
+              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 hover:bg-[var(--surface-hover)]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      <DelimitedTableMetadataBar
+        model={formatModel}
+        onChange={updateFormatModel}
+      />
       <DelimitedTableProfilePanel
         rows={sourceRows}
         headerRow={headerRow}
-        model={model}
-        onModelChange={onChange}
+        columnTypes={columnTypes}
+        model={formatModel}
+        onModelChange={updateFormatModel}
+        onHeaderRowChange={setHeaderRow}
+        onColumnTypesChange={setColumnTypes}
       />
+      {sortMessage && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+          <span>{sortMessage}</span>
+          {sortSnapshot && (
+            <button
+              type="button"
+              onClick={restorePreSortOrder}
+              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 hover:bg-[var(--surface-hover)]"
+            >
+              Restore pre-sort order
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setSortMessage(null)}
+            className="ml-auto rounded px-1 hover:bg-[var(--surface-hover)]"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <DelimitedTableGrid
         gridRef={gridRef}
         activeCell={activeCell}

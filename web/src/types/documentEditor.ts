@@ -14,9 +14,28 @@ export interface DocumentEditorModelResponse {
   editorKind: DocumentEditorKind;
   mimeType: string;
   fingerprint: string;
+  modelSchemaVersion: number;
+  capabilities: string[];
+  syncStatus: DocumentEditorSyncStatus;
+  revisionProvenance?: DocumentRevisionProvenance;
   compatibilityWarnings: DocumentCompatibilityWarning[];
   model: unknown;
 }
+
+export type DocumentRevisionActorKind = "user" | "agent" | "system";
+
+export interface DocumentRevisionProvenance {
+  actorKind: DocumentRevisionActorKind;
+  actorId?: string;
+  source: string;
+  createdAt: string;
+}
+
+export type DocumentEditorSyncStatus =
+  | "localOnly"
+  | "pending"
+  | "synced"
+  | "failed";
 
 export type DocumentCompatibilityWarningSeverity = "info" | "warning" | "danger";
 
@@ -30,5 +49,34 @@ export interface WriteDocumentEditorModelRequest {
   path: string;
   editorKind: DocumentEditorKind;
   model: unknown;
-  expectedFingerprint?: string;
+  modelSchemaVersion: number;
+  requiredCapabilities: string[];
+  idempotencyKey: string;
+  expectedFingerprint: string;
+}
+
+export interface SaveDocumentEditorCopyRequest {
+  sourcePath: string;
+  targetPath: string;
+  editorKind: DocumentEditorKind;
+  model: unknown;
+  modelSchemaVersion: number;
+  requiredCapabilities: string[];
+  idempotencyKey: string;
+  baseFingerprint: string;
+}
+
+export interface ValidateDocumentEditorModelRequest {
+  path: string;
+  editorKind: DocumentEditorKind;
+  model: unknown;
+  modelSchemaVersion: number;
+  requiredCapabilities: string[];
+  expectedFingerprint: string;
+}
+
+export interface ValidateDocumentEditorModelResponse {
+  fingerprint: string;
+  serializedSize: number;
+  compatibilityWarnings: DocumentCompatibilityWarning[];
 }

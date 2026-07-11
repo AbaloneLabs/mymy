@@ -2,6 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type {
   DocumentEditorModelResponse,
+  SaveDocumentEditorCopyRequest,
+  ValidateDocumentEditorModelRequest,
+  ValidateDocumentEditorModelResponse,
   WriteDocumentEditorModelRequest,
 } from "@/types/documentEditor";
 
@@ -13,6 +16,17 @@ function documentQuery(path: string) {
   const params = new URLSearchParams();
   params.set("path", path);
   return params.toString();
+}
+
+export function validateDocumentEditorModel(
+  input: ValidateDocumentEditorModelRequest,
+  signal?: AbortSignal,
+) {
+  return api.post<ValidateDocumentEditorModelResponse>(
+    "/document-editor/validate",
+    input,
+    { signal },
+  );
 }
 
 export function useDocumentEditorModel(path: string | null) {
@@ -34,6 +48,9 @@ export function useWriteDocumentEditorModel() {
         path: input.path,
         editorKind: input.editorKind,
         model: input.model,
+        modelSchemaVersion: input.modelSchemaVersion,
+        requiredCapabilities: input.requiredCapabilities,
+        idempotencyKey: input.idempotencyKey,
         expectedFingerprint: input.expectedFingerprint,
       }),
     onSuccess: (data, variables) => {
@@ -41,6 +58,19 @@ export function useWriteDocumentEditorModel() {
         qc.setQueryData(["document-editor", "model", data.path], data);
       }
       qc.invalidateQueries({ queryKey: ["drive", "file", data.path] });
+      qc.invalidateQueries({ queryKey: ["drive", "list"] });
+      qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
+    },
+  });
+}
+
+export function useSaveDocumentEditorCopy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SaveDocumentEditorCopyRequest) =>
+      api.post<DocumentEditorModelResponse>("/document-editor/copy", input),
+    onSuccess: (data) => {
+      qc.setQueryData(["document-editor", "model", data.path], data);
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
       qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
     },

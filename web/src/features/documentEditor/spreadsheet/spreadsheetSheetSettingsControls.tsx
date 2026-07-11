@@ -96,7 +96,7 @@ export function SpreadsheetSheetSettingsControls({
               }
               className="h-3.5 w-3.5 accent-[var(--accent)]"
             />
-            Filter
+            Block filter
           </label>
           <label className="inline-flex h-7 items-center gap-1 px-1 text-[11px] text-[var(--text-muted)]">
             <input
@@ -107,7 +107,7 @@ export function SpreadsheetSheetSettingsControls({
               }
               className="h-3.5 w-3.5 accent-[var(--accent)]"
             />
-            Sort
+            Block sort
           </label>
         </>
       )}

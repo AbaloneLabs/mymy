@@ -3,8 +3,12 @@ use super::super::super::*;
 #[test]
 fn pptx_text_shape_writes_basic_run_formatting() {
     let spec = PptxTextSpec {
+        shape_id: None,
+        group_shape_id: None,
         text: "Formatted slide text".to_string(),
         text_index: None,
+        text_segment_count: 1,
+        complex_text: false,
         group_id: None,
         x: 10.0,
         y: 12.0,
@@ -37,9 +41,11 @@ fn pptx_text_shape_writes_basic_run_formatting() {
 
 #[test]
 fn pptx_shape_model_reads_and_updates_geometry() {
-    let xml = r#"<p:sld><p:sp><p:spPr><a:xfrm rot="1800000"><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="r"/><a:r><a:rPr u="sng" strike="sngStrike"/><a:t>Box</a:t></a:r></a:p></p:txBody></p:sp></p:sld>"#;
+    let xml = r#"<p:sld><p:sp><p:nvSpPr><p:cNvPr id="4" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm rot="1800000"><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm></p:spPr><p:txBody><a:p><a:pPr algn="r"/><a:r><a:rPr u="sng" strike="sngStrike"/><a:t>Box</a:t></a:r></a:p></p:txBody></p:sp></p:sld>"#;
     let texts = pptx_shape_texts_for_size(xml, PptxSlideSize::default());
     assert_eq!(texts[0]["text"], "Box");
+    assert_eq!(texts[0]["shapeId"], "4");
+    assert_eq!(texts[0]["placeholderType"], "title");
     assert_eq!(texts[0]["x"], 10.0);
     assert_eq!(texts[0]["y"], 10.0);
     assert_eq!(texts[0]["width"], 20.0);
@@ -50,8 +56,12 @@ fn pptx_shape_model_reads_and_updates_geometry() {
     assert_eq!(texts[0]["align"], "right");
 
     let spec = PptxTextSpec {
+        shape_id: None,
+        group_shape_id: None,
         text: "Box".to_string(),
         text_index: None,
+        text_segment_count: 1,
+        complex_text: false,
         group_id: None,
         x: 20.0,
         y: 30.0,
@@ -73,6 +83,77 @@ fn pptx_shape_model_reads_and_updates_geometry() {
     assert!(updated.contains(r#"<a:off x="1828800" y="1543050"/>"#));
     assert!(updated.contains(r#"<a:ext cx="3657600" cy="2571750"/>"#));
     assert!(updated.contains(r#"<a:xfrm rot="2700000">"#));
+}
+
+#[test]
+fn pptx_text_geometry_update_skips_the_shape_tree_prefix() {
+    let xml = r#"<p:sld><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="4" name="Title"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>Box</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#;
+    let spec = PptxTextSpec {
+        shape_id: None,
+        group_shape_id: None,
+        text: "Box".to_string(),
+        text_index: Some(0),
+        text_segment_count: 1,
+        complex_text: true,
+        group_id: None,
+        x: 20.0,
+        y: 30.0,
+        width: 40.0,
+        height: 50.0,
+        rotation: 0.0,
+        font_size: 18,
+        font_family: None,
+        color: None,
+        fill_color: None,
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        align: None,
+    };
+
+    let updated = update_pptx_shape_geometries_for_size(xml, &[spec], PptxSlideSize::default());
+
+    assert!(updated.contains(r#"<p:grpSpPr><a:xfrm><a:off x="0" y="0"/>"#));
+    assert!(updated.contains(r#"<p:spPr><a:xfrm rot="0"><a:off x="1828800" y="1543050"/>"#));
+}
+
+#[test]
+fn pptx_rich_text_noop_preserves_runs_and_changed_text_is_rejected() {
+    let mut texts = vec!["Bold".to_string(), "Italic".to_string()];
+    let spec = PptxTextSpec {
+        shape_id: None,
+        group_shape_id: None,
+        text: "BoldItalic".to_string(),
+        text_index: Some(0),
+        text_segment_count: 2,
+        complex_text: true,
+        group_id: None,
+        x: 10.0,
+        y: 10.0,
+        width: 80.0,
+        height: 10.0,
+        rotation: 0.0,
+        font_size: 18,
+        font_family: None,
+        color: None,
+        fill_color: None,
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        align: None,
+    };
+
+    apply_pptx_text_replacements(&mut texts, std::slice::from_ref(&spec)).unwrap();
+    assert_eq!(texts, ["Bold", "Italic"]);
+
+    let changed = PptxTextSpec {
+        text: "Changed".to_string(),
+        ..spec
+    };
+    assert!(apply_pptx_text_replacements(&mut texts, &[changed]).is_err());
+    assert_eq!(texts, ["Bold", "Italic"]);
 }
 
 #[test]
@@ -108,12 +189,15 @@ fn pptx_basic_shape_model_reads_extended_shapes_and_connectors() {
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0]["kind"], "pentagon");
     assert_eq!(shapes[1]["kind"], "straightConnector1");
+    assert_eq!(shapes[1]["shapeId"], "5");
     assert_eq!(shapes[1]["lineEndArrow"], "triangle");
 }
 
 #[test]
 fn pptx_basic_shape_writes_geometry_fill_and_stroke() {
     let spec = PptxShapeSpec {
+        shape_id: None,
+        group_shape_id: None,
         kind: PptxShapeKind::Rect,
         group_id: None,
         x: 10.0,
@@ -143,6 +227,8 @@ fn pptx_basic_shape_writes_geometry_fill_and_stroke() {
 #[test]
 fn pptx_connector_shape_writes_connector_xml() {
     let spec = PptxShapeSpec {
+        shape_id: None,
+        group_shape_id: None,
         kind: PptxShapeKind::StraightConnector1,
         group_id: None,
         x: 10.0,
@@ -173,15 +259,21 @@ fn pptx_group_shape_model_reads_group_ids() {
     let shapes = pptx_slide_shapes_for_size(xml, PptxSlideSize::default());
 
     assert_eq!(texts[0]["groupId"], "group7");
+    assert_eq!(texts[0]["groupShapeId"], "9");
     assert_eq!(shapes[0]["groupId"], "group7");
+    assert_eq!(shapes[0]["groupShapeId"], "9");
     assert_eq!(shapes[0]["kind"], "ellipse");
 }
 
 #[test]
 fn pptx_grouped_objects_render_as_group_shape() {
     let text = PptxTextSpec {
+        shape_id: Some(4),
+        group_shape_id: Some(9),
         text: "Grouped".to_string(),
         text_index: None,
+        text_segment_count: 1,
+        complex_text: false,
         group_id: Some("group1".to_string()),
         x: 10.0,
         y: 10.0,
@@ -199,6 +291,8 @@ fn pptx_grouped_objects_render_as_group_shape() {
         align: None,
     };
     let shape = PptxShapeSpec {
+        shape_id: Some(5),
+        group_shape_id: Some(9),
         kind: PptxShapeKind::Ellipse,
         group_id: Some("group1".to_string()),
         x: 45.0,
@@ -225,6 +319,9 @@ fn pptx_grouped_objects_render_as_group_shape() {
 
     assert!(xml.contains("<p:grpSp>"));
     assert!(xml.contains(r#"name="Group group1""#));
+    assert!(xml.contains(r#"<p:cNvPr id="9" name="Group group1"/>"#));
+    assert!(xml.contains(r#"<p:cNvPr id="4" name="TextBox 4"/>"#));
+    assert!(xml.contains(r#"<p:cNvPr id="5" name="Shape 5"/>"#));
     assert!(xml.contains("<p:cNvGrpSpPr/>"));
     assert!(xml.contains("<a:chOff"));
     assert!(xml.contains("<a:chExt"));
@@ -236,8 +333,12 @@ fn pptx_grouped_objects_render_as_group_shape() {
 fn pptx_regroup_slide_objects_wraps_existing_managed_objects() {
     let xml = r#"<p:sld><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr></p:grpSpPr><p:sp><p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:p><a:r><a:t>Old</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:sp><p:sp><p:spPr><a:prstGeom prst="flowChartProcess"><a:avLst/></a:prstGeom></p:spPr></p:sp></p:spTree></p:cSld></p:sld>"#;
     let text = PptxTextSpec {
+        shape_id: None,
+        group_shape_id: None,
         text: "New".to_string(),
         text_index: None,
+        text_segment_count: 1,
+        complex_text: false,
         group_id: Some("group2".to_string()),
         x: 10.0,
         y: 10.0,
@@ -255,6 +356,8 @@ fn pptx_regroup_slide_objects_wraps_existing_managed_objects() {
         align: None,
     };
     let shape = PptxShapeSpec {
+        shape_id: None,
+        group_shape_id: None,
         kind: PptxShapeKind::Rect,
         group_id: Some("group2".to_string()),
         x: 45.0,
@@ -292,6 +395,8 @@ fn pptx_basic_shapes_replace_managed_shapes_only() {
     let xml = r#"<p:sld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr></p:grpSpPr><p:sp><p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:p><a:r><a:t>Keep text</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:spPr></p:sp><p:sp><p:spPr><a:prstGeom prst="flowChartProcess"><a:avLst/></a:prstGeom></p:spPr></p:sp></p:spTree></p:sld>"#;
     let specs = vec![
         PptxShapeSpec {
+            shape_id: None,
+            group_shape_id: None,
             kind: PptxShapeKind::Line,
             group_id: None,
             x: 10.0,
@@ -306,6 +411,8 @@ fn pptx_basic_shapes_replace_managed_shapes_only() {
             line_end_arrow: Some(PptxLineArrowKind::Triangle),
         },
         PptxShapeSpec {
+            shape_id: None,
+            group_shape_id: None,
             kind: PptxShapeKind::Ellipse,
             group_id: None,
             x: 20.0,
@@ -338,6 +445,8 @@ fn pptx_basic_shapes_replace_managed_shapes_only() {
 fn pptx_basic_shapes_replace_existing_connector_segments() {
     let xml = r#"<p:sld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr></p:grpSpPr><p:cxnSp><p:nvCxnSpPr><p:cNvPr id="7" name="Old connector"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom><a:ln w="12700"><a:solidFill><a:srgbClr val="111111"/></a:solidFill></a:ln></p:spPr></p:cxnSp></p:spTree></p:sld>"#;
     let specs = vec![PptxShapeSpec {
+        shape_id: None,
+        group_shape_id: None,
         kind: PptxShapeKind::StraightConnector1,
         group_id: None,
         x: 10.0,
@@ -354,9 +463,27 @@ fn pptx_basic_shapes_replace_existing_connector_segments() {
 
     let updated = replace_pptx_basic_shapes_for_size(xml, &specs, PptxSlideSize::default());
 
-    assert!(updated.contains(r#"<p:cNvPr id="20000" name="Connector 20000"/>"#));
+    assert!(updated.contains(r#"<p:cNvPr id="7" name="Connector 7"/>"#));
     assert!(updated.contains(r#"<a:srgbClr val="2563EB"/>"#));
     assert!(updated.contains(r#"<a:headEnd type="triangle"/>"#));
     assert!(!updated.contains("Old connector"));
     assert!(!updated.contains(r#"<a:srgbClr val="111111"/>"#));
+}
+
+#[test]
+fn pptx_basic_shape_replacement_matches_existing_shapes_by_package_id() {
+    let xml = r##"<p:sld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="7" name="Delete"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="514350"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:spPr></p:sp><p:sp><p:nvSpPr><p:cNvPr id="8" name="Keep"/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="514350"/><a:ext cx="1828800" cy="1028700"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="DBEAFE"/></a:solidFill></p:spPr></p:sp></p:spTree></p:sld>"##;
+    let models = pptx_slide_shapes_for_size(xml, PptxSlideSize::default());
+    let specs = pptx_shape_specs(&json!({ "shapes": [models[1].clone()] }));
+    let kept_segment = &pptx_basic_shape_segments(xml)[1].1;
+    let reparsed = pptx_shape_specs(&json!({
+        "shapes": pptx_slide_shapes_for_size(kept_segment, PptxSlideSize::default())
+    }));
+    assert_eq!(reparsed, specs);
+
+    let updated = replace_pptx_basic_shapes_for_size(xml, &specs, PptxSlideSize::default());
+
+    assert!(!updated.contains(r#"id="7" name="Delete""#));
+    assert!(updated.contains(r#"id="8""#));
+    assert!(!updated.contains("20000"));
 }

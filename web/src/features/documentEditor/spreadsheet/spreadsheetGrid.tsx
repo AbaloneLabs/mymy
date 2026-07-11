@@ -1,11 +1,17 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type {
+  ComponentProps,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   RefObject,
 } from "react";
 import { cn } from "@/lib/utils";
 import { clipboardDataToMatrix } from "./spreadsheetData";
+import {
+  xlsxClipboardPayloadFromDataTransfer,
+  type XlsxClipboardPayload,
+} from "./spreadsheetXlsxClipboard";
+import { spreadsheetCellEditCommitValue } from "./spreadsheetCellEditTransaction";
 import { xlsxConditionalCellStyle } from "./spreadsheetConditionalFormatting";
 import { spreadsheetRangeContainsCell } from "./spreadsheetEditorUtils";
 import {
@@ -33,10 +39,16 @@ import {
   SpreadsheetSpacerRow,
 } from "./spreadsheetPanels";
 import {
-  displayXlsxCellValue,
+  formulaBarXlsxCellValue,
   xlsxColumnWidthPx,
   xlsxRowHeightPx,
 } from "./spreadsheetXlsxGridModel";
+import { renderedXlsxCellValue } from "./spreadsheetNumberFormat";
+import {
+  parsedXlsxMergedRanges,
+  xlsxMergeFragmentForCell,
+  xlsxMergedRangeForCell,
+} from "./spreadsheetMerges";
 import {
   xlsxCellHasComment,
   xlsxCellHasDataValidation,
@@ -87,6 +99,9 @@ export function SpreadsheetGrid({
   tableResizeDrag,
   tableResizePreviewRange,
   showFormulas,
+  readOnly,
+  columnResizePreview,
+  rowResizePreview,
   onViewportChange,
   onSelectAllCells,
   onSelectColumn,
@@ -97,6 +112,7 @@ export function SpreadsheetGrid({
   onSelectCell,
   onCellKeyDown,
   onUpdateCellsFromMatrix,
+  onPasteXlsxClipboard,
   onSetFillDrag,
   onStartFillDrag,
   onSetTableResizeDrag,
@@ -122,6 +138,9 @@ export function SpreadsheetGrid({
   tableResizeDrag: SpreadsheetTableResizeDrag | null;
   tableResizePreviewRange: NormalizedCellRange | null;
   showFormulas: boolean;
+  readOnly: boolean;
+  columnResizePreview: { columnIndex: number; widthPx: number } | null;
+  rowResizePreview: { rowIndex: number; heightPx: number } | null;
   onViewportChange: (viewport: SpreadsheetViewport) => void;
   onSelectAllCells: (additive?: boolean) => void;
   onSelectColumn: (column: number, extend?: boolean, additive?: boolean) => void;
@@ -150,6 +169,10 @@ export function SpreadsheetGrid({
     startColumn: number,
     matrix: string[][],
   ) => void;
+  onPasteXlsxClipboard: (
+    start: CellPosition,
+    payload: XlsxClipboardPayload,
+  ) => void;
   onSetFillDrag: (drag: SpreadsheetFillDrag) => void;
   onStartFillDrag: (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -172,6 +195,20 @@ export function SpreadsheetGrid({
       (record): record is { tableId: string; range: NormalizedCellRange } =>
         record.range !== null,
     );
+  const renderedRows = visibleRows.slice(rowWindow.start, rowWindow.end);
+  const renderedRowIndexes = renderedRows.map((record) => record.rowIndex);
+  const renderedRowByIndex = new Map(
+    renderedRows.map((record) => [record.rowIndex, record.row]),
+  );
+  const mergedRanges = parsedXlsxMergedRanges(sheet?.mergedRanges);
+  const columnWidthPx = (index: number) =>
+    columnResizePreview?.columnIndex === index
+      ? columnResizePreview.widthPx
+      : xlsxColumnWidthPx(sheet, index);
+  const rowHeightPx = (item: XlsxRow, index: number) =>
+    rowResizePreview?.rowIndex === index
+      ? rowResizePreview.heightPx
+      : xlsxRowHeightPx(item);
 
   return (
     <div
@@ -222,8 +259,8 @@ export function SpreadsheetGrid({
                   ) && "bg-[var(--accent)]/10 text-[var(--accent)]",
                 )}
                 style={{
-                  minWidth: xlsxColumnWidthPx(sheet, index),
-                  width: xlsxColumnWidthPx(sheet, index),
+                  minWidth: columnWidthPx(index),
+                  width: columnWidthPx(index),
                 }}
               >
                 {columnName(index)}
@@ -254,10 +291,10 @@ export function SpreadsheetGrid({
               }
             />
           )}
-          {visibleRows.slice(rowWindow.start, rowWindow.end).map(({ row, rowIndex }) => (
+          {renderedRows.map(({ row, rowIndex }) => (
             <tr
               key={`${sheet?.id ?? "sheet"}:${row.index}:${rowIndex}`}
-              style={{ height: xlsxRowHeightPx(row) }}
+              style={{ height: rowHeightPx(row, rowIndex) }}
             >
               <th
                 onClick={(event) =>
@@ -288,59 +325,113 @@ export function SpreadsheetGrid({
                 <SpreadsheetColumnSpacer width={leftColumnSpacerWidth} />
               )}
               {visibleColumnIndexes.map((cellIndex) => {
-                const cell = normalizeXlsxCells(
-                  row.cells,
-                  columnCount,
-                  row.index || String(rowIndex + 1),
-                )[cellIndex];
-                const mergedClass = xlsxMergedCellClass(
-                  sheet?.mergedRanges,
+                const mergedRange = xlsxMergedRangeForCell(
+                  mergedRanges,
                   rowIndex,
                   cellIndex,
+                );
+                const mergeFragment = mergedRange
+                  ? xlsxMergeFragmentForCell(
+                      mergedRange,
+                      renderedRowIndexes,
+                      visibleColumnIndexes,
+                      rowIndex,
+                      cellIndex,
+                    )
+                  : null;
+                if (mergeFragment && !mergeFragment.isFragmentAnchor) return null;
+                const targetRowIndex = mergeFragment?.anchor.row ?? rowIndex;
+                const targetCellIndex = mergeFragment?.anchor.column ?? cellIndex;
+                const displayRow =
+                  displaySheet?.rows[targetRowIndex] ??
+                  (targetRowIndex === rowIndex ? row : undefined);
+                const cell = normalizeXlsxCells(
+                  displayRow?.cells ?? [],
+                  targetCellIndex + 1,
+                  displayRow?.index || String(targetRowIndex + 1),
+                )[targetCellIndex];
+                const rawRow = sheet?.rows[targetRowIndex];
+                const rawCell = normalizeXlsxCells(
+                  rawRow?.cells ?? [],
+                  targetCellIndex + 1,
+                  rawRow?.index || String(targetRowIndex + 1),
+                )[targetCellIndex];
+                const mergedClass = xlsxMergedCellClass(
+                  sheet?.mergedRanges,
+                  targetRowIndex,
+                  targetCellIndex,
                 );
                 const hasValidation = xlsxCellHasDataValidation(
                   sheet?.dataValidations,
-                  rowIndex,
-                  cellIndex,
+                  targetRowIndex,
+                  targetCellIndex,
                 );
                 const hasHyperlink = xlsxCellHasHyperlink(
                   sheet?.hyperlinks,
-                  rowIndex,
-                  cellIndex,
+                  targetRowIndex,
+                  targetCellIndex,
                 );
                 const hasComment = xlsxCellHasComment(
                   sheet?.comments,
-                  rowIndex,
-                  cellIndex,
+                  targetRowIndex,
+                  targetCellIndex,
                 );
                 const conditionalStyle = xlsxConditionalCellStyle(
                   sheet?.conditionalFormattings,
                   displaySheet,
-                  rowIndex,
-                  cellIndex,
+                  targetRowIndex,
+                  targetCellIndex,
                   cell,
                   columnCount,
                 );
                 const hasConditionalStyle = conditionalStyle.backgroundColor !== undefined;
                 const inExtraSelection = extraSelectionRanges.some((range) =>
-                  spreadsheetRangeContainsCell(range, rowIndex, cellIndex),
+                  spreadsheetRangeContainsCell(
+                    range,
+                    targetRowIndex,
+                    targetCellIndex,
+                  ),
                 );
                 const tableRecord = tableRanges.find((record) =>
-                  spreadsheetRangeContainsCell(record.range, rowIndex, cellIndex),
+                  spreadsheetRangeContainsCell(
+                    record.range,
+                    targetRowIndex,
+                    targetCellIndex,
+                  ),
                 );
                 const tableRange = tableRecord?.range;
                 const tableBottomRight =
-                  tableRange?.bottom === rowIndex && tableRange.right === cellIndex;
+                  tableRange?.bottom === targetRowIndex &&
+                  tableRange.right === targetCellIndex;
+                const mergedWidth = mergeFragment?.columnIndexes.reduce(
+                  (total, index) => total + columnWidthPx(index),
+                  0,
+                );
+                const mergedHeight = mergeFragment?.rowIndexes.reduce(
+                  (total, index) =>
+                    total +
+                    rowHeightPx(renderedRowByIndex.get(index) ?? row, index),
+                  0,
+                );
+                const selectionEndsAtCell = Boolean(
+                  selectionRange &&
+                    selectionRange.bottom ===
+                      (mergeFragment?.range.bottom ?? rowIndex) &&
+                    selectionRange.right ===
+                      (mergeFragment?.range.right ?? cellIndex),
+                );
                 return (
                   <td
-                    key={`${cell.ref}:${cellIndex}`}
+                    key={`${cell.ref}:${rowIndex}:${cellIndex}`}
+                    colSpan={mergeFragment?.colSpan}
+                    rowSpan={mergeFragment?.rowSpan}
                     className={cn(
                       "relative",
                       spreadsheetCellClass(
                         activeCell,
                         selectionRange,
-                        rowIndex,
-                        cellIndex,
+                        targetRowIndex,
+                        targetCellIndex,
                       ),
                       inExtraSelection &&
                         "bg-[var(--accent)]/5 outline outline-1 outline-offset-[-1px] outline-[var(--accent)]/45",
@@ -350,23 +441,27 @@ export function SpreadsheetGrid({
                       hasConditionalStyle &&
                         "shadow-[inset_0_0_0_1px_rgba(132,204,22,0.35)]",
                       fillPreviewRange &&
-                        spreadsheetRangeContainsCell(fillPreviewRange, rowIndex, cellIndex) &&
+                        spreadsheetRangeContainsCell(
+                          fillPreviewRange,
+                          targetRowIndex,
+                          targetCellIndex,
+                        ) &&
                         "outline outline-1 outline-offset-[-1px] outline-[rgba(132,204,22,0.75)]",
                       tableRange &&
                         "shadow-[inset_0_0_0_1px_rgba(14,165,233,0.18)]",
-                      tableRange?.top === rowIndex &&
+                      tableRange?.top === targetRowIndex &&
                         "border-t-sky-400/70",
-                      tableRange?.bottom === rowIndex &&
+                      tableRange?.bottom === targetRowIndex &&
                         "border-b-sky-400/70",
-                      tableRange?.left === cellIndex &&
+                      tableRange?.left === targetCellIndex &&
                         "border-l-sky-400/70",
-                      tableRange?.right === cellIndex &&
+                      tableRange?.right === targetCellIndex &&
                         "border-r-sky-400/70",
                       tableResizePreviewRange &&
                         spreadsheetRangeContainsCell(
                           tableResizePreviewRange,
-                          rowIndex,
-                          cellIndex,
+                          targetRowIndex,
+                          targetCellIndex,
                         ) &&
                         "outline outline-1 outline-offset-[-1px] outline-sky-400",
                     )}
@@ -374,18 +469,23 @@ export function SpreadsheetGrid({
                     {hasComment && (
                       <span className="pointer-events-none absolute right-0 top-0 z-10 h-0 w-0 border-l-[8px] border-l-transparent border-t-[8px] border-t-amber-400" />
                     )}
-                    <input
-                      data-spreadsheet-cell={`${rowIndex}:${cellIndex}`}
-                      value={displayXlsxCellValue(cell, showFormulas)}
-                      onChange={(event) =>
-                        onUpdateCell(rowIndex, cellIndex, event.target.value)
+                    <SpreadsheetCellEditor
+                      readOnly={readOnly}
+                      data-spreadsheet-cell={`${targetRowIndex}:${targetCellIndex}`}
+                      rawValue={formulaBarXlsxCellValue(rawCell)}
+                      displayValue={renderedXlsxCellValue(cell, showFormulas)}
+                      onValueChange={(value) =>
+                        onUpdateCell(targetRowIndex, targetCellIndex, value)
                       }
                       onFocus={() => {
                         if (skipNextFocusSelectRef.current) {
                           skipNextFocusSelectRef.current = false;
                           return;
                         }
-                        onSelectCell({ row: rowIndex, column: cellIndex });
+                        onSelectCell({
+                          row: targetRowIndex,
+                          column: targetCellIndex,
+                        });
                       }}
                       onMouseDown={(event) => {
                         skipNextFocusSelectRef.current = true;
@@ -393,7 +493,7 @@ export function SpreadsheetGrid({
                           skipNextFocusSelectRef.current = false;
                         }, 0);
                         onSelectCell(
-                          { row: rowIndex, column: cellIndex },
+                          { row: targetRowIndex, column: targetCellIndex },
                           event.shiftKey,
                           event.metaKey || event.ctrlKey,
                         );
@@ -402,27 +502,53 @@ export function SpreadsheetGrid({
                         if (tableResizeDrag && event.buttons === 1) {
                           onSetTableResizeDrag({
                             ...tableResizeDrag,
-                            end: { row: rowIndex, column: cellIndex },
+                            end: {
+                              row: mergeFragment?.range.bottom ?? rowIndex,
+                              column: mergeFragment?.range.right ?? cellIndex,
+                            },
                           });
                           return;
                         }
                         if (fillDrag && event.buttons === 1) {
                           onSetFillDrag({
                             ...fillDrag,
-                            end: { row: rowIndex, column: cellIndex },
+                            end: {
+                              row: mergeFragment?.range.bottom ?? rowIndex,
+                              column: mergeFragment?.range.right ?? cellIndex,
+                            },
                           });
                           return;
                         }
                         if (event.buttons === 1) {
-                          onSelectCell({ row: rowIndex, column: cellIndex }, true);
+                          onSelectCell(
+                            { row: targetRowIndex, column: targetCellIndex },
+                            true,
+                          );
                         }
                       }}
-                      onKeyDown={(event) => onCellKeyDown(event, rowIndex, cellIndex)}
+                      onKeyDown={(event) =>
+                        onCellKeyDown(event, targetRowIndex, targetCellIndex)
+                      }
                       onPaste={(event) => {
+                        const rich = xlsxClipboardPayloadFromDataTransfer(
+                          event.clipboardData,
+                        );
+                        if (rich) {
+                          event.preventDefault();
+                          onPasteXlsxClipboard(
+                            { row: targetRowIndex, column: targetCellIndex },
+                            rich,
+                          );
+                          return;
+                        }
                         const matrix = clipboardDataToMatrix(event.clipboardData);
                         if (matrix) {
                           event.preventDefault();
-                          onUpdateCellsFromMatrix(rowIndex, cellIndex, matrix);
+                          onUpdateCellsFromMatrix(
+                            targetRowIndex,
+                            targetCellIndex,
+                            matrix,
+                          );
                         }
                       }}
                       className={cn(
@@ -430,9 +556,10 @@ export function SpreadsheetGrid({
                         mergedClass,
                       )}
                       style={{
-                        minWidth: xlsxColumnWidthPx(sheet, cellIndex),
-                        width: xlsxColumnWidthPx(sheet, cellIndex),
-                        height: xlsxRowHeightPx(row),
+                        minWidth:
+                          mergedWidth ?? columnWidthPx(cellIndex),
+                        width: mergedWidth ?? columnWidthPx(cellIndex),
+                        height: mergedHeight ?? rowHeightPx(row, rowIndex),
                         ...xlsxCellInputStyle(cell),
                         ...conditionalStyle,
                         ...xlsxHyperlinkCellStyle(cell, hasHyperlink),
@@ -443,13 +570,14 @@ export function SpreadsheetGrid({
                         hasConditionalStyle ? "conditional formatting" : null,
                         hasHyperlink ? "hyperlink" : null,
                         hasComment ? "comment" : null,
+                        mergeFragment
+                          ? `merged ${mergeFragment.range.top + 1}:${mergeFragment.range.bottom + 1}`
+                          : null,
                       ]
                         .filter(Boolean)
                         .join(" · ")}
                     />
-                    {selectionRange &&
-                      selectionRange.bottom === rowIndex &&
-                      selectionRange.right === cellIndex && (
+                    {selectionRange && selectionEndsAtCell && (
                         <button
                           type="button"
                           onPointerDown={(event) => onStartFillDrag(event, selectionRange)}
@@ -493,5 +621,76 @@ export function SpreadsheetGrid({
         </tbody>
       </table>
     </div>
+  );
+}
+
+type SpreadsheetCellEditorProps = Omit<
+  ComponentProps<"input">,
+  "defaultValue" | "onChange" | "value"
+> & {
+  displayValue: string;
+  rawValue: string;
+  onValueChange: (value: string) => void;
+};
+
+/**
+ * Keep formatted display text out of the mutation path. A passive cell may
+ * show currency, percent, or a formula result, but focus always switches to an
+ * edit-local raw/formula value. The workbook changes once on commit; Escape
+ * discards the preview without adding a compensating history entry.
+ */
+function SpreadsheetCellEditor({
+  displayValue,
+  rawValue,
+  onValueChange,
+  onFocus,
+  onBlur,
+  onKeyDown,
+  ...inputProps
+}: SpreadsheetCellEditorProps) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(rawValue);
+  const originalValueRef = useRef(rawValue);
+  const cancelledRef = useRef(false);
+
+  return (
+    <input
+      {...inputProps}
+      value={editing ? editValue : displayValue}
+      onFocus={(event) => {
+        originalValueRef.current = rawValue;
+        cancelledRef.current = false;
+        setEditValue(rawValue);
+        setEditing(true);
+        onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        const committed = spreadsheetCellEditCommitValue(
+          originalValueRef.current,
+          editValue,
+          cancelledRef.current,
+        );
+        cancelledRef.current = false;
+        setEditing(false);
+        if (committed !== null) onValueChange(committed);
+        onBlur?.(event);
+      }}
+      onChange={(event) => {
+        const value = event.currentTarget.value;
+        setEditValue(value);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelledRef.current = true;
+          const original = originalValueRef.current;
+          setEditValue(original);
+          event.currentTarget.blur();
+          return;
+        }
+        onKeyDown?.(event);
+      }}
+    />
   );
 }

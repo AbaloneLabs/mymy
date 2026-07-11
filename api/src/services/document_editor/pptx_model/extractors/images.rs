@@ -29,6 +29,7 @@ pub(in crate::services::document_editor) fn pptx_slide_images(
                 pptx_shape_geometry_for_size(&picture, slide_size);
             let mut value = json!({
                 "id": format!("img{}", index + 1),
+                "shapeId": docx_tag_attr(&picture, "<p:cNvPr", "id"),
                 "relationshipId": relationship_id,
                 "mediaPath": media_path,
                 "mimeType": mime_type,
@@ -44,8 +45,9 @@ pub(in crate::services::document_editor) fn pptx_slide_images(
                 "imageCropBottom": pptx_picture_crop_percent(&picture, "b"),
                 "altText": pptx_picture_alt_text(&picture)
             });
-            if let Some(group_id) = pptx_group_id_for_offset(&groups, offset) {
-                value["groupId"] = json!(group_id);
+            if let Some(group) = pptx_group_for_offset(&groups, offset) {
+                value["groupId"] = json!(group.group_id);
+                value["groupShapeId"] = json!(group.shape_id.to_string());
             }
             Some(value)
         })

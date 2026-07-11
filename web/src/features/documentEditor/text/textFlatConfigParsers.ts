@@ -56,6 +56,10 @@ function parseYamlConfig(content: string) {
       const parsed = splitInlineComment(mapping[3]);
       const decorated = yamlValueDecorators(parsed.value);
       const path = [...stack.map((item) => item.key), key];
+      const keyStartColumn = line.indexOf(key, mapping[1].length);
+      const valueStartColumn = decorated.value
+        ? line.indexOf(decorated.value, keyStartColumn + key.length)
+        : -1;
       if (!decorated.value) {
         stack.push({ indent: indentSize, key });
         continue;
@@ -68,6 +72,8 @@ function parseYamlConfig(content: string) {
           lineIndex,
           lineEndIndex: block.endLineIndex,
           key,
+          keyStartColumn,
+          keyEndColumn: keyStartColumn + key.length,
           value: block.value,
           path,
           indent,
@@ -87,7 +93,11 @@ function parseYamlConfig(content: string) {
         documentIndex,
         lineIndex,
         key,
+        keyStartColumn,
+        keyEndColumn: keyStartColumn + key.length,
         value: decorated.value,
+        valueStartColumn,
+        valueEndColumn: valueStartColumn + decorated.value.length,
         path,
         indent,
         suffix: parsed.suffix,
@@ -118,11 +128,20 @@ function parseYamlConfig(content: string) {
           stack.push({ indent: indentSize + 1, key });
           continue;
         }
+        const keyStartColumn = line.indexOf(key, indent.length + 1);
+        const valueStartColumn = line.indexOf(
+          valueDecorated.value,
+          keyStartColumn + key.length,
+        );
         entries.push({
           documentIndex,
           lineIndex,
           key,
+          keyStartColumn,
+          keyEndColumn: keyStartColumn + key.length,
           value: valueDecorated.value,
+          valueStartColumn,
+          valueEndColumn: valueStartColumn + valueDecorated.value.length,
           path: [...itemPath, key],
           indent,
           suffix: parsed.suffix,
@@ -146,6 +165,10 @@ function parseYamlConfig(content: string) {
         lineIndex,
         key: `[${index}]`,
         value: decorated.value,
+        valueStartColumn: line.indexOf(decorated.value, indent.length + 1),
+        valueEndColumn:
+          line.indexOf(decorated.value, indent.length + 1) +
+          decorated.value.length,
         path: [...parentPath, `[${index}]`],
         indent,
         suffix: parsed.suffix,
@@ -192,6 +215,7 @@ function parseTomlConfig(content: string) {
       continue;
     }
     const key = match[2];
+    const keyStartColumn = line.indexOf(key, match[1].length);
     const sectionPath = currentSectionPath;
     const multiline = tomlMultilineValue(lines, lineIndex, match[3]);
     if (multiline) {
@@ -199,6 +223,8 @@ function parseTomlConfig(content: string) {
         lineIndex,
         lineEndIndex: multiline.endLineIndex,
         key,
+        keyStartColumn,
+        keyEndColumn: keyStartColumn + key.length,
         value: multiline.value,
         path: [...sectionPath, ...key.split(".").filter(Boolean)],
         section: currentSectionScope,
@@ -213,10 +239,18 @@ function parseTomlConfig(content: string) {
       continue;
     }
     const parsed = splitInlineComment(match[3]);
+    const valueStartColumn = line.indexOf(
+      parsed.value,
+      keyStartColumn + key.length,
+    );
     entries.push({
       lineIndex,
       key,
+      keyStartColumn,
+      keyEndColumn: keyStartColumn + key.length,
       value: parsed.value,
+      valueStartColumn,
+      valueEndColumn: valueStartColumn + parsed.value.length,
       path: [...sectionPath, ...key.split(".").filter(Boolean)],
       section: currentSectionScope,
       indent: match[1],

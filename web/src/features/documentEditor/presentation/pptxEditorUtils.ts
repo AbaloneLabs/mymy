@@ -10,6 +10,7 @@ import type {
   PptxTable,
   PptxText,
 } from "../shared/models";
+import type { PptxGeometryPatch, PptxSelectionKey } from "./pptxSelection";
 
 /**
  * PPTX editing represents slide objects as percentage-based geometry. These
@@ -27,6 +28,9 @@ export interface SlideDragState {
   startWidth: number;
   startHeight: number;
   rect: DOMRect;
+  startSelectedObjectKeys: PptxSelectionKey[];
+  startActiveObjectKey: PptxSelectionKey | null;
+  previewPatches?: Map<PptxSelectionKey, PptxGeometryPatch>;
   groupItems?: Array<{
     objectKind: "text" | "shape" | "image" | "table" | "chart";
     objectId: string;

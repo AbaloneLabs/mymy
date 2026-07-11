@@ -10,6 +10,7 @@ import type {
   MarkdownTableModel,
 } from "./markdownEditorUtils";
 import { MarkdownTablePanel } from "./markdownTablePanel";
+import { MarkdownReferenceField } from "./markdownReferenceField";
 import { ToolbarButton } from "../shared/shared";
 
 export type MarkdownSidePanelKind = "outline" | "frontmatter" | "references" | "table";
@@ -22,6 +23,7 @@ export function MarkdownSidePanel({
   table,
   frontmatter,
   frontmatterFields,
+  frontmatterStructuralBlockReason,
   newFrontmatterKey,
   newFrontmatterValue,
   onClose,
@@ -57,6 +59,7 @@ export function MarkdownSidePanel({
   table: MarkdownTableModel | null;
   frontmatter: MarkdownFrontmatter | null;
   frontmatterFields: FrontmatterField[];
+  frontmatterStructuralBlockReason: string | null;
   newFrontmatterKey: string;
   newFrontmatterValue: string;
   onClose: () => void;
@@ -143,6 +146,7 @@ export function MarkdownSidePanel({
         <MarkdownFrontmatterPanel
           frontmatter={frontmatter}
           fields={frontmatterFields}
+          structuralEditBlockReason={frontmatterStructuralBlockReason}
           newKey={newFrontmatterKey}
           newValue={newFrontmatterValue}
           onBodyChange={onFrontmatterBodyChange}
@@ -243,7 +247,8 @@ function MarkdownReferencesPanel({
                   {reference.kind}
                 </span>
               </div>
-              {reference.labelStart !== undefined &&
+              {reference.labelEditable &&
+                reference.labelStart !== undefined &&
                 reference.labelEnd !== undefined && (
                   <label className="mt-2 grid gap-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
                     <span>
@@ -253,43 +258,44 @@ function MarkdownReferencesPanel({
                           ? "Footnote"
                           : "Label"}
                     </span>
-                    <input
+                    <MarkdownReferenceField
                       value={markdownReferenceEditableLabel(reference)}
-                      onChange={(event) =>
-                        onLabelChange(reference, event.currentTarget.value)
-                      }
+                      onCommit={(value) => onLabelChange(reference, value)}
                       className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
                     />
                   </label>
                 )}
-              {reference.targetStart !== undefined &&
+              {reference.targetEditable &&
+                reference.targetStart !== undefined &&
                 reference.targetEnd !== undefined && (
                   <label className="mt-2 grid gap-1 text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
                     <span>
                       {reference.kind === "footnote" ? "Body" : "Target"}
                     </span>
                     {reference.kind === "footnote" ? (
-                      <textarea
+                      <MarkdownReferenceField
                         value={reference.target ?? ""}
+                        multiline
                         rows={Math.min(
                           6,
                           Math.max(2, (reference.target ?? "").split("\n").length),
                         )}
-                        onChange={(event) =>
-                          onTargetChange(reference, event.currentTarget.value)
-                        }
+                        onCommit={(value) => onTargetChange(reference, value)}
                         className="min-h-16 resize-y rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
                       />
                     ) : (
-                      <input
+                      <MarkdownReferenceField
                         value={reference.target ?? ""}
-                        onChange={(event) =>
-                          onTargetChange(reference, event.currentTarget.value)
-                        }
+                        onCommit={(value) => onTargetChange(reference, value)}
                         className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 font-mono text-xs normal-case tracking-normal text-[var(--text)] outline-none focus:border-[var(--accent)]"
                       />
                     )}
                   </label>
+              )}
+              {reference.preservationReason && (
+                <p className="mt-2 rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-2 py-1.5 text-[10px] leading-4 text-[var(--status-warning)]">
+                  {reference.preservationReason}
+                </p>
               )}
               <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[var(--text-faint)]">
                 <span>L{reference.line}</span>
@@ -319,6 +325,7 @@ function markdownReferenceEditableLabel(reference: MarkdownReference) {
 function MarkdownFrontmatterPanel({
   frontmatter,
   fields,
+  structuralEditBlockReason,
   newKey,
   newValue,
   onBodyChange,
@@ -332,6 +339,7 @@ function MarkdownFrontmatterPanel({
 }: {
   frontmatter: MarkdownFrontmatter | null;
   fields: FrontmatterField[];
+  structuralEditBlockReason: string | null;
   newKey: string;
   newValue: string;
   onBodyChange: (body: string) => void;
@@ -363,6 +371,12 @@ function MarkdownFrontmatterPanel({
             spellCheck={false}
             className="h-40 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 font-mono text-xs leading-5 text-[var(--text)] outline-none focus:border-[var(--accent)]"
           />
+          {structuralEditBlockReason && (
+            <p className="rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-2 py-1.5 text-[10px] leading-4 text-[var(--status-warning)]">
+              Structured add/delete is disabled: {structuralEditBlockReason}. Raw
+              source editing remains available.
+            </p>
+          )}
           {fields.length > 0 && (
             <div className="space-y-2">
               {fields.map((field) => (
@@ -374,11 +388,11 @@ function MarkdownFrontmatterPanel({
                     <span className="truncate text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
                       {field.parentLabel}
                     </span>
-                    <input
+                    <MarkdownReferenceField
                       value={field.key}
-                      disabled={!field.keyEditable}
-                      onChange={(event) =>
-                        onFieldChange(field.lineIndex, event.target.value, field.value)
+                      disabled={!field.keyEditable || Boolean(field.editBlockReason)}
+                      onCommit={(value) =>
+                        onFieldChange(field.lineIndex, value, field.value)
                       }
                       className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
                     />
@@ -388,27 +402,36 @@ function MarkdownFrontmatterPanel({
                       {field.entryKind}
                     </span>
                     {field.value.includes("\n") ? (
-                      <textarea
+                      <MarkdownReferenceField
                         value={field.value}
-                        onChange={(event) =>
-                          onFieldChange(field.lineIndex, field.key, event.target.value)
+                        multiline
+                        disabled={Boolean(field.editBlockReason)}
+                        onCommit={(value) =>
+                          onFieldChange(field.lineIndex, field.key, value)
                         }
                         className="min-h-20 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
                       />
                     ) : (
-                      <input
+                      <MarkdownReferenceField
                         value={field.value}
-                        onChange={(event) =>
-                          onFieldChange(field.lineIndex, field.key, event.target.value)
+                        disabled={Boolean(field.editBlockReason)}
+                        onCommit={(value) =>
+                          onFieldChange(field.lineIndex, field.key, value)
                         }
                         className="h-8 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
                       />
+                    )}
+                    {field.editBlockReason && (
+                      <span className="text-[10px] text-[var(--status-warning)]">
+                        {field.editBlockReason}
+                      </span>
                     )}
                   </label>
                   <ToolbarButton
                     icon={Trash2}
                     label={t("common.delete")}
                     onClick={() => onFieldDelete(field.lineIndex)}
+                    disabled={Boolean(structuralEditBlockReason)}
                   />
                 </div>
               ))}
@@ -431,7 +454,7 @@ function MarkdownFrontmatterPanel({
               icon={Plus}
               label={t("common.add")}
               onClick={onFieldAdd}
-              disabled={!newKey.trim()}
+              disabled={!newKey.trim() || Boolean(structuralEditBlockReason)}
             />
           </div>
           <button

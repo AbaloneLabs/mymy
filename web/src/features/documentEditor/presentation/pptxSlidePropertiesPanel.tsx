@@ -13,10 +13,10 @@ import type {
   PptxMedia,
   PptxModel,
   PptxSlide,
-  PptxText,
   PptxTheme,
   PptxTransition,
 } from "../shared/models";
+import { pptxSlideObjectRecords } from "./pptxSelection";
 
 type PptxSlidePropertiesPanelProps = {
   model: PptxModel;
@@ -39,13 +39,7 @@ type PptxSlidePropertiesPanelProps = {
   onResetSlideLayout: () => void;
   onSlideTransitionChange: (patch: Partial<PptxTransition>) => void;
   onThemeChange: (patch: Partial<PptxTheme>) => void;
-  onThemeColorChange: (key: string, color: string) => void;
   onMasterChange: (masterPath: string, patch: Partial<PptxMaster>) => void;
-  onMasterPlaceholderChange: (
-    masterPath: string,
-    placeholderIndex: number,
-    patch: Partial<PptxText>,
-  ) => void;
   onAnimationTimingChange: (
     animationId: string,
     patch: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">,
@@ -73,9 +67,7 @@ export function PptxSlidePropertiesPanel({
   onResetSlideLayout,
   onSlideTransitionChange,
   onThemeChange,
-  onThemeColorChange,
   onMasterChange,
-  onMasterPlaceholderChange,
   onAnimationTimingChange,
   onAddAnimation,
   onDeleteAnimation,
@@ -88,6 +80,13 @@ export function PptxSlidePropertiesPanel({
     (slide?.layoutPath
       ? model.layouts?.find((layout) => layout.path === slide.layoutPath)?.masterPath
       : undefined);
+  const resolvedShapeIds = new Set(
+    slide
+      ? pptxSlideObjectRecords(slide)
+          .map((record) => record.object.shapeId)
+          .filter((shapeId): shapeId is string => Boolean(shapeId))
+      : [],
+  );
 
   return (
     <>
@@ -259,20 +258,36 @@ export function PptxSlidePropertiesPanel({
         </label>
       </div>
       <PptxThemeEditor
+        key={JSON.stringify(activeTheme)}
         theme={activeTheme}
         disabled={!activeTheme}
+        affectedSlideCount={
+          activeTheme
+            ? model.slides.filter(
+                (item) => item.layoutThemePath === activeTheme.path,
+              ).length
+            : 0
+        }
         onThemeChange={onThemeChange}
-        onThemeColorChange={onThemeColorChange}
       />
       <PptxMasterEditor
+        key={`${activeMasterPath ?? "none"}:${JSON.stringify(model.masters)}`}
         masters={model.masters ?? []}
         activeMasterPath={activeMasterPath}
         disabled={(model.masters?.length ?? 0) === 0}
+        affectedSlideCounts={Object.fromEntries(
+          (model.masters ?? []).map((master) => [
+            master.path,
+            model.slides.filter(
+              (item) => item.layoutMasterPath === master.path,
+            ).length,
+          ]),
+        )}
         onMasterChange={onMasterChange}
-        onPlaceholderChange={onMasterPlaceholderChange}
       />
       <PptxAnimationInspector
         animations={slide?.animations ?? []}
+        resolvedShapeIds={resolvedShapeIds}
         disabled={!slide}
         onAdd={onAddAnimation}
         onDelete={onDeleteAnimation}

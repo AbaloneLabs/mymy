@@ -62,6 +62,7 @@ export function SpreadsheetObjectStrip({
   onPivotNameChange,
   onPivotFieldChange,
   onPivotDataFieldChange,
+  readOnly,
 }: {
   sheet: XlsxSheet | undefined;
   selectionRange: NormalizedCellRange | null;
@@ -104,6 +105,7 @@ export function SpreadsheetObjectStrip({
     fieldIndex: number,
     patch: Partial<XlsxPivotDataField>,
   ) => void;
+  readOnly: boolean;
 }) {
   const tables = sheet?.tables ?? [];
   const charts = sheet?.charts ?? [];
@@ -152,7 +154,10 @@ export function SpreadsheetObjectStrip({
         ))}
       </div>
       {(tables.length > 0 || charts.length > 0 || pivots.length > 0) && (
-        <div className="max-h-64 overflow-auto border-t border-[var(--border)] px-3 py-2">
+        <fieldset
+          disabled={readOnly}
+          className="max-h-64 overflow-auto border-t border-[var(--border)] px-3 py-2 disabled:opacity-60"
+        >
           <div className="grid gap-2">
             {tables.map((table) => (
               <SpreadsheetTableEditor
@@ -201,7 +206,7 @@ export function SpreadsheetObjectStrip({
               />
             ))}
           </div>
-        </div>
+        </fieldset>
       )}
     </div>
   );

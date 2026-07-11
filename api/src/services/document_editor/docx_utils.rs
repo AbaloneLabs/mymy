@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use super::{
-    append_before_or_end, attr_value, escape_xml, replace_tag_texts, set_first_xml_tag_attrs,
+    append_before_or_end, attr_value, escape_xml, find_xml_start, replace_tag_texts,
+    set_first_xml_tag_attrs,
 };
 
 pub(super) fn replace_docx_paragraph_text(paragraph: &str, text: &str) -> String {
@@ -56,7 +57,7 @@ pub(super) fn docx_body_segments(document: &str) -> Vec<String> {
 }
 
 pub(super) fn docx_tag_attr(xml: &str, marker: &str, attr: &str) -> Option<String> {
-    let start = xml.find(marker)?;
+    let start = find_xml_start(xml, marker)?;
     let after_start = &xml[start..];
     let end = after_start.find('>')?;
     attr_value(&after_start[..end], attr)
@@ -179,7 +180,7 @@ pub(super) fn docx_vertical_align(xml: &str) -> Option<String> {
 
 pub(super) fn docx_has_enabled_run_property(xml: &str, marker: &str) -> bool {
     let mut rest = xml;
-    while let Some(start) = rest.find(marker) {
+    while let Some(start) = find_xml_start(rest, marker) {
         let after_start = &rest[start..];
         let Some(end) = after_start.find('>') else {
             return true;
@@ -197,7 +198,7 @@ pub(super) fn docx_has_enabled_run_property(xml: &str, marker: &str) -> bool {
 
 pub(super) fn docx_has_enabled_underline(xml: &str) -> bool {
     let mut rest = xml;
-    while let Some(start) = rest.find("<w:u") {
+    while let Some(start) = find_xml_start(rest, "<w:u") {
         let after_start = &rest[start..];
         let Some(end) = after_start.find('>') else {
             return true;

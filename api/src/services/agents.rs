@@ -221,7 +221,7 @@ pub async fn delete_agent(state: &AppState, profile: &str) -> AppResult<DeleteAg
         return Err(AppError::NotFound(format!("agent {profile} not found")));
     }
 
-    match drive::archive_agent_workspace(state, &profile) {
+    match drive::archive_agent_workspace(state, &profile).await {
         Ok(()) => {}
         Err(err) => {
             tracing::warn!(

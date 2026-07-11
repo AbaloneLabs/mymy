@@ -16,6 +16,8 @@ export interface MarkdownHeadingAnchor {
 
 export interface MarkdownReference {
   kind: "link" | "image" | "footnote" | "definition" | "reference";
+  role?: "definition" | "reference";
+  identifier?: string;
   line: number;
   start: number;
   end: number;
@@ -25,14 +27,28 @@ export interface MarkdownReference {
   labelEnd?: number;
   targetStart?: number;
   targetEnd?: number;
+  labelEditable?: boolean;
+  targetEditable?: boolean;
+  targetWrapper?: "angle" | "bare";
+  preservationReason?: string;
+  labelPreservationReason?: string;
+  targetPreservationReason?: string;
 }
 
 export type MarkdownTableAlignment = "default" | "left" | "center" | "right";
+
+export interface MarkdownTableCellSpan {
+  start: number;
+  end: number;
+}
 
 export interface MarkdownTableModel {
   startLine: number;
   endLine: number;
   headers: string[];
+  headerSpans: MarkdownTableCellSpan[];
   alignments: MarkdownTableAlignment[];
+  alignmentSpans: MarkdownTableCellSpan[];
   rows: string[][];
+  rowSpans: MarkdownTableCellSpan[][];
 }

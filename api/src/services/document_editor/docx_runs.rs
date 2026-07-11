@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::{
     docx_font_size, docx_hex_color, docx_tag_attr, docx_text_with_breaks, docx_vertical_align,
-    escape_xml, extract_text_tags, xml_named_segments,
+    escape_xml, extract_text_tags, find_xml_start, xml_named_segments,
 };
 
 /// DOCX stores character styling at run granularity, while the editor also
@@ -83,7 +83,7 @@ fn valid_docx_runs<'a>(block: &'a Value, paragraph_text: &str) -> Option<&'a Vec
     Some(runs)
 }
 
-fn build_docx_run(run: &Value, text: &str) -> String {
+pub(super) fn build_docx_run(run: &Value, text: &str) -> String {
     let run_properties = docx_run_properties(run);
     let text_xml = docx_text_with_breaks(text);
     format!("<w:r>{run_properties}{text_xml}</w:r>")
@@ -169,9 +169,7 @@ fn docx_highlight_color(value: &str) -> &'static str {
 }
 
 fn docx_bool_run_property(run: &str, marker: &str) -> Option<bool> {
-    if !run.contains(marker) {
-        return None;
-    }
+    find_xml_start(run, marker)?;
     Some(
         !docx_tag_attr(run, marker, "w:val").is_some_and(|value| {
             matches!(value.to_ascii_lowercase().as_str(), "false" | "0" | "off")
@@ -180,9 +178,7 @@ fn docx_bool_run_property(run: &str, marker: &str) -> Option<bool> {
 }
 
 fn docx_underline_run_property(run: &str) -> Option<bool> {
-    if !run.contains("<w:u") {
-        return None;
-    }
+    find_xml_start(run, "<w:u")?;
     Some(
         !docx_tag_attr(run, "<w:u", "w:val")
             .is_some_and(|value| value.eq_ignore_ascii_case("none")),

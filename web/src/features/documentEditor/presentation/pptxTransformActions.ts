@@ -2,6 +2,10 @@ import type { Dispatch, SetStateAction } from "react";
 import { clampPercent, nextPptxGroupId } from "./pptxEditorUtils";
 import { duplicatePptxSelectedObjects } from "./pptxObjectDuplication";
 import {
+  pptxGroupingBlockReason,
+  pptxObjectDuplicationBlockReason,
+} from "./pptxReferenceGraph";
+import {
   patchPptxSlideObjects,
   pptxSelectionBounds,
   pptxSelectionKey,
@@ -73,6 +77,11 @@ export function createPptxTransformActions({
       duplicateActiveObject();
       return;
     }
+    const blockReason = pptxObjectDuplicationBlockReason(slide, selectedObjects);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
     const duplicated = duplicatePptxSelectedObjects(slide, selectedObjects);
     onChange({
       ...model,
@@ -94,11 +103,17 @@ export function createPptxTransformActions({
 
   function groupSelectedObjects() {
     if (!slide || selectedObjects.length < 2) return;
+    const blockReason = pptxGroupingBlockReason(slide);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
     const groupId = nextPptxGroupId(slide);
     const patches = new Map<PptxSelectionKey, PptxGeometryPatch>();
     selectedObjects.forEach((record) => {
       patches.set(pptxSelectionKey(record.objectKind, record.objectId), {
         groupId,
+        groupShapeId: undefined,
       });
     });
     updateObjectGeometries(patches);
@@ -106,6 +121,11 @@ export function createPptxTransformActions({
 
   function ungroupSelectedObjects() {
     if (!slide || selectedObjects.length === 0) return;
+    const blockReason = pptxGroupingBlockReason(slide);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
     const groupIds = new Set(
       selectedObjects
         .map((record) => record.object.groupId)
@@ -117,6 +137,7 @@ export function createPptxTransformActions({
       if (!record.object.groupId || !groupIds.has(record.object.groupId)) return;
       patches.set(pptxSelectionKey(record.objectKind, record.objectId), {
         groupId: undefined,
+        groupShapeId: undefined,
       });
     });
     updateObjectGeometries(patches);

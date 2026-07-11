@@ -2,9 +2,9 @@
 //!
 //! Local Drive remains the source of truth for agent workspaces. When an S3
 //! bucket is configured, Drive mutations enqueue durable jobs and this worker
-//! mirrors those changes to object storage. Failed jobs are kept in the table
-//! with their error message so the UI can show operational state without
-//! inventing placeholder data.
+//! mirrors those changes to object storage. Retry timing and leases live in
+//! PostgreSQL so a process crash cannot strand a `running` job and a temporary
+//! provider outage does not require another user save to resume delivery.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,12 +23,16 @@ use crate::state::AppState;
 
 const CLAIM_LIMIT: i64 = 5;
 const WORKER_INTERVAL_SECS: u64 = 15;
+const JOB_LEASE_SECS: i32 = 15 * 60;
+const MAX_ATTEMPTS: i32 = 8;
+const MAX_RETRY_DELAY_SECS: i64 = 5 * 60;
 
 #[derive(Debug, FromRow)]
 struct DriveSyncWorkRow {
     id: Uuid,
     drive_path: String,
     operation: String,
+    attempt_count: i32,
 }
 
 pub fn start_drive_sync_worker(state: Arc<AppState>) -> Option<JoinHandle<()>> {
@@ -60,7 +64,7 @@ async fn process_pending_jobs(state: &AppState) -> AppResult<()> {
         let result = perform_job(state, &client, bucket, &job).await;
         match result {
             Ok(()) => mark_job_done(state, job.id).await?,
-            Err(err) => mark_job_failed(state, job.id, &err.to_string()).await?,
+            Err(err) => mark_job_failed(state, job.id, job.attempt_count, &err.to_string()).await?,
         }
     }
     Ok(())
@@ -70,17 +74,26 @@ async fn claim_jobs(state: &AppState) -> AppResult<Vec<DriveSyncWorkRow>> {
     sqlx::query_as!(
         DriveSyncWorkRow,
         r#"UPDATE drive_sync_jobs
-           SET status = 'running', updated_at = now(), error = NULL
+           SET status = 'running',
+               attempt_count = attempt_count + 1,
+               lease_expires_at = now() + make_interval(secs => $2),
+               updated_at = now(),
+               error = NULL
            WHERE id IN (
                SELECT id
                FROM drive_sync_jobs
-               WHERE provider = 's3' AND status = 'pending'
+               WHERE provider = 's3'
+                 AND (
+                     (status = 'pending' AND next_attempt_at <= now())
+                     OR (status = 'running' AND lease_expires_at <= now())
+                 )
                ORDER BY created_at
                LIMIT $1
                FOR UPDATE SKIP LOCKED
            )
-           RETURNING id, drive_path, operation"#,
-        CLAIM_LIMIT
+           RETURNING id, drive_path, operation, attempt_count"#,
+        CLAIM_LIMIT,
+        f64::from(JOB_LEASE_SECS),
     )
     .fetch_all(&state.db)
     .await
@@ -224,7 +237,7 @@ fn collect_files(root: &Path, out: &mut Vec<PathBuf>) -> AppResult<()> {
 
 async fn mark_job_done(state: &AppState, id: Uuid) -> AppResult<()> {
     sqlx::query!(
-        "UPDATE drive_sync_jobs SET status = 'done', updated_at = now(), error = NULL WHERE id = $1",
+        "UPDATE drive_sync_jobs SET status = 'done', lease_expires_at = NULL, updated_at = now(), error = NULL WHERE id = $1",
         id
     )
     .execute(&state.db)
@@ -232,13 +245,131 @@ async fn mark_job_done(state: &AppState, id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
-async fn mark_job_failed(state: &AppState, id: Uuid, error: &str) -> AppResult<()> {
+async fn mark_job_failed(
+    state: &AppState,
+    id: Uuid,
+    attempt_count: i32,
+    error: &str,
+) -> AppResult<()> {
+    if attempt_count >= MAX_ATTEMPTS {
+        sqlx::query!(
+            r#"UPDATE drive_sync_jobs
+               SET status = 'failed', lease_expires_at = NULL,
+                   updated_at = now(), error = $2
+               WHERE id = $1"#,
+            id,
+            error,
+        )
+        .execute(&state.db)
+        .await?;
+        return Ok(());
+    }
+    let retry_delay_secs = retry_delay_secs(attempt_count);
     sqlx::query!(
-        "UPDATE drive_sync_jobs SET status = 'failed', updated_at = now(), error = $2 WHERE id = $1",
+        r#"UPDATE drive_sync_jobs
+           SET status = 'pending', lease_expires_at = NULL,
+               next_attempt_at = now() + make_interval(secs => $3),
+               updated_at = now(), error = $2
+           WHERE id = $1"#,
         id,
         error,
+        retry_delay_secs as f64,
     )
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+fn retry_delay_secs(attempt_count: i32) -> i64 {
+    let exponent = attempt_count.clamp(0, 16) as u32;
+    (1_i64 << exponent).min(MAX_RETRY_DELAY_SECS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn test_state(pool: sqlx::PgPool) -> AppState {
+        AppState::new(
+            pool,
+            Config {
+                database_url: "postgres://mymy:mymy@localhost/mymy".to_string(),
+                port: 0,
+                cors_origins: Vec::new(),
+                agent_data_dir: std::env::temp_dir(),
+                auth_cookie_secure: false,
+                cron_tick_interval_secs: 60,
+                cron_timezone: "UTC".to_string(),
+                cron_output_keep: 50,
+                drive_s3_bucket: Some("test-bucket".to_string()),
+                drive_s3_region: None,
+                drive_s3_endpoint: None,
+                sandbox_runner_url: None,
+                sandbox_preview_host: "127.0.0.1".to_string(),
+            },
+        )
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn failed_sync_jobs_retry_and_eventually_become_terminal(pool: sqlx::PgPool) {
+        let state = test_state(pool);
+        let id: Uuid = sqlx::query_scalar(
+            r#"INSERT INTO drive_sync_jobs
+                  (provider, drive_path, operation, status)
+               VALUES ('s3', '/drive/shared/report.docx', 'upload', 'pending')
+               RETURNING id"#,
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+        let claimed = claim_jobs(&state).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].attempt_count, 1);
+        mark_job_failed(&state, id, 1, "provider unavailable")
+            .await
+            .unwrap();
+        let retry: (String, i32, bool, bool) = sqlx::query_as(
+            r#"SELECT status, attempt_count,
+                      next_attempt_at > now(), lease_expires_at IS NULL
+               FROM drive_sync_jobs WHERE id = $1"#,
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(retry, ("pending".to_string(), 1, true, true));
+
+        mark_job_failed(&state, id, MAX_ATTEMPTS, "permanent failure")
+            .await
+            .unwrap();
+        let terminal: (String, bool) = sqlx::query_as(
+            "SELECT status, lease_expires_at IS NULL FROM drive_sync_jobs WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(terminal, ("failed".to_string(), true));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn expired_running_sync_job_is_reclaimed(pool: sqlx::PgPool) {
+        let state = test_state(pool);
+        sqlx::query(
+            r#"INSERT INTO drive_sync_jobs
+                  (provider, drive_path, operation, status, attempt_count, lease_expires_at)
+               VALUES ('s3', '/drive/shared/report.xlsx', 'upload', 'running', 2,
+                       now() - interval '1 second')"#,
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let claimed = claim_jobs(&state).await.unwrap();
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].attempt_count, 3);
+    }
 }

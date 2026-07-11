@@ -4,6 +4,7 @@ import type {
   ChunkedSourcePasteOptions,
 } from "./textSourceTypes";
 import { buildSearchRegex } from "./textSourceNavigation";
+import { advanceZeroWidthRegex } from "./textSearchSemantics";
 
 export function startChunkedSourcePaste({
   content,
@@ -77,9 +78,11 @@ export function startChunkedSearchCount({
     searchRegex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = searchRegex.exec(chunk))) {
-      if (match[0].length === 0) break;
       const absoluteStart = chunkStart + match.index;
-      if (absoluteStart >= minimumAbsoluteStart) count += 1;
+      if (absoluteStart >= minimumAbsoluteStart && absoluteStart < chunkEnd) {
+        count += 1;
+      }
+      if (match[0].length === 0) advanceZeroWidthRegex(searchRegex, chunk);
     }
     offset = chunkEnd;
     onProgress?.({ processed: offset, total: content.length, count });
@@ -139,7 +142,6 @@ export function startChunkedSearchRange({
     searchRegex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = searchRegex.exec(chunk))) {
-      if (match[0].length === 0) break;
       const absoluteStart = offset + match.index;
       if (absoluteStart >= offset && absoluteStart < acceptedEnd) {
         onDone({
@@ -148,6 +150,7 @@ export function startChunkedSearchRange({
         });
         return;
       }
+      if (match[0].length === 0) advanceZeroWidthRegex(searchRegex, chunk);
     }
 
     offset = acceptedEnd;

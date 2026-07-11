@@ -38,6 +38,40 @@ fn editor_kind_accepts_document_and_structured_text_formats() {
 }
 
 #[test]
+fn document_editor_capabilities_and_idempotency_keys_are_explicit() {
+    let capabilities = document_editor_capabilities(DocumentEditorKind::Docx);
+    assert!(capabilities.contains(&"document-revision-cas-v1".to_string()));
+    assert!(capabilities.contains(&"docx-run-model-v1".to_string()));
+    assert!(validate_document_editor_capabilities(DocumentEditorKind::Docx, &capabilities).is_ok());
+    assert!(validate_document_editor_capabilities(
+        DocumentEditorKind::Docx,
+        &["newer-ui-capability".to_string()]
+    )
+    .is_err());
+    assert!(validate_document_editor_idempotency_key("save_123-abc").is_ok());
+    assert!(validate_document_editor_idempotency_key("bad key").is_err());
+}
+
+#[test]
+fn document_save_request_hash_binds_revision_model_and_capabilities() {
+    let request = WriteDocumentEditorModelRequest {
+        path: "/drive/notes.md".to_string(),
+        editor_kind: DocumentEditorKind::Markdown,
+        model: json!({"content": "alpha"}),
+        model_schema_version: DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
+        required_capabilities: document_editor_capabilities(DocumentEditorKind::Markdown),
+        idempotency_key: "save-1".to_string(),
+        expected_fingerprint: "revision-1".to_string(),
+    };
+    let baseline = document_save_request_hash(&request).unwrap();
+    let changed = WriteDocumentEditorModelRequest {
+        model: json!({"content": "beta"}),
+        ..request
+    };
+    assert_ne!(baseline, document_save_request_hash(&changed).unwrap());
+}
+
+#[test]
 fn text_model_preserves_utf8_bom_and_line_ending_metadata() {
     let model = text_model(b"\xEF\xBB\xBFalpha\r\nbeta\r\n").expect("text model should parse");
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { PptxAnimation } from "../shared/models";
 import { pptxAnimationTimelineDuration, pptxFormatMilliseconds } from "./pptxAnimationTimingUtils";
@@ -14,6 +14,7 @@ type PptxTimelineDragState = {
   startDurationMs: number;
   timelineDurationMs: number;
   trackWidth: number;
+  previewPatch?: Pick<Partial<PptxAnimation>, "delayMs" | "durationMs">;
 };
 
 export function PptxAnimationTimeline({
@@ -33,11 +34,27 @@ export function PptxAnimationTimeline({
   ) => void;
 }) {
   const [dragState, setDragState] = useState<PptxTimelineDragState | null>(null);
-  const durationMs = pptxAnimationTimelineDuration(animations);
+  const previewAnimations = animations.map((animation) =>
+    animation.id === dragState?.animationId
+      ? { ...animation, ...dragState.previewPatch }
+      : animation,
+  );
+  const durationMs = pptxAnimationTimelineDuration(previewAnimations);
   const playheadPercent =
     playheadMs === undefined
       ? null
       : Math.min(100, Math.max(0, (playheadMs / durationMs) * 100));
+
+  useEffect(() => {
+    if (!dragState) return;
+    function cancelOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setDragState(null);
+    }
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => window.removeEventListener("keydown", cancelOnEscape);
+  }, [dragState]);
 
   function seekTimeline(event: ReactPointerEvent<HTMLElement>) {
     if (!onPlayheadChange || disabled || dragState) return;
@@ -80,8 +97,11 @@ export function PptxAnimationTimeline({
         dragState.timelineDurationMs,
     );
     if (dragState.mode === "move") {
-      onTimingChange(dragState.animationId, {
-        delayMs: clampTimelineMilliseconds(dragState.startDelayMs + deltaMs),
+      setDragState({
+        ...dragState,
+        previewPatch: {
+          delayMs: clampTimelineMilliseconds(dragState.startDelayMs + deltaMs),
+        },
       });
       return;
     }
@@ -91,23 +111,36 @@ export function PptxAnimationTimeline({
         originalEnd - 100,
         Math.max(0, dragState.startDelayMs + deltaMs),
       );
-      onTimingChange(dragState.animationId, {
-        delayMs: clampTimelineMilliseconds(nextDelay),
-        durationMs: clampTimelineMilliseconds(originalEnd - nextDelay, 100),
+      setDragState({
+        ...dragState,
+        previewPatch: {
+          delayMs: clampTimelineMilliseconds(nextDelay),
+          durationMs: clampTimelineMilliseconds(originalEnd - nextDelay, 100),
+        },
       });
       return;
     }
-    onTimingChange(dragState.animationId, {
-      durationMs: clampTimelineMilliseconds(
-        dragState.startDurationMs + deltaMs,
-        100,
-      ),
+    setDragState({
+      ...dragState,
+      previewPatch: {
+        durationMs: clampTimelineMilliseconds(
+          dragState.startDurationMs + deltaMs,
+          100,
+        ),
+      },
     });
   }
 
   function endTimelineDrag(event: ReactPointerEvent<HTMLElement>) {
     if (!dragState) return;
     event.currentTarget.releasePointerCapture(event.pointerId);
+    if (dragState.previewPatch) {
+      onTimingChange(dragState.animationId, dragState.previewPatch);
+    }
+    setDragState(null);
+  }
+
+  function cancelTimelineDrag() {
     setDragState(null);
   }
 
@@ -118,7 +151,7 @@ export function PptxAnimationTimeline({
         <span>{pptxFormatMilliseconds(durationMs)}</span>
       </div>
       <div className="grid gap-1.5">
-        {animations.map((animation, index) => {
+        {previewAnimations.map((animation, index) => {
           const start = Math.max(0, animation.delayMs ?? 0);
           const duration = Math.max(100, animation.durationMs ?? 500);
           const left = Math.min(96, (start / durationMs) * 100);
@@ -139,7 +172,8 @@ export function PptxAnimationTimeline({
                 onPointerDown={seekTimeline}
                 onPointerMove={updateTimelineDrag}
                 onPointerUp={endTimelineDrag}
-                onPointerCancel={endTimelineDrag}
+                onPointerCancel={cancelTimelineDrag}
+                onLostPointerCapture={cancelTimelineDrag}
                 className="relative h-5 overflow-hidden rounded bg-[var(--bg)]"
               >
                 <div

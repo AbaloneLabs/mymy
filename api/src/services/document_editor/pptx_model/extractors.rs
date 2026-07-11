@@ -26,12 +26,22 @@ pub(in crate::services::document_editor) fn pptx_shape_texts_for_size(
                 return None;
             }
             let text_index = extract_text_tags(&xml[..offset], "a:t").len();
+            let text_segment_count = extract_text_tags(&shape, "a:t").len();
+            let paragraph_count = xml_segments(&shape, "<a:p", "</a:p>").len();
+            let complex_text = text_segment_count != 1
+                || paragraph_count != 1
+                || shape.contains("<a:fld")
+                || shape.contains("<a:hlinkClick")
+                || shape.contains("<a:bu");
             let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&shape, slide_size);
             let run = pptx_run_properties_segment(&shape).unwrap_or_default();
             let mut value = json!({
                 "id": format!("t{}", index + 1),
+                "shapeId": docx_tag_attr(&shape, "<p:cNvPr", "id"),
                 "text": text,
                 "textIndex": text_index,
+                "textSegmentCount": text_segment_count,
+                "complexText": complex_text,
                 "x": x,
                 "y": y,
                 "width": width,
@@ -47,8 +57,12 @@ pub(in crate::services::document_editor) fn pptx_shape_texts_for_size(
                 "strikethrough": docx_tag_attr(&run, "<a:rPr", "strike").is_some_and(|value| value == "sngStrike"),
                 "align": pptx_paragraph_alignment(&shape)
             });
-            if let Some(group_id) = pptx_group_id_for_offset(&groups, offset) {
-                value["groupId"] = json!(group_id);
+            if let Some(placeholder_type) = docx_tag_attr(&shape, "<p:ph", "type") {
+                value["placeholderType"] = json!(placeholder_type);
+            }
+            if let Some(group) = pptx_group_for_offset(&groups, offset) {
+                value["groupId"] = json!(group.group_id);
+                value["groupShapeId"] = json!(group.shape_id.to_string());
             }
             Some(value)
         })
@@ -86,6 +100,7 @@ pub(in crate::services::document_editor) fn pptx_slide_shapes_for_size(
             let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&shape, slide_size);
             let mut value = json!({
                 "id": format!("s{}", index + 1),
+                "shapeId": docx_tag_attr(&shape, "<p:cNvPr", "id"),
                 "kind": kind.as_value(),
                 "x": x,
                 "y": y,
@@ -98,8 +113,9 @@ pub(in crate::services::document_editor) fn pptx_slide_shapes_for_size(
                 "lineStartArrow": pptx_shape_line_arrow(&shape, "tailEnd"),
                 "lineEndArrow": pptx_shape_line_arrow(&shape, "headEnd")
             });
-            if let Some(group_id) = pptx_group_id_for_offset(&groups, offset) {
-                value["groupId"] = json!(group_id);
+            if let Some(group) = pptx_group_for_offset(&groups, offset) {
+                value["groupId"] = json!(group.group_id);
+                value["groupShapeId"] = json!(group.shape_id.to_string());
             }
             Some(value)
         })
@@ -122,6 +138,7 @@ pub(in crate::services::document_editor) fn pptx_group_contexts(
         .into_iter()
         .filter_map(|(start, group)| {
             let shape_id = docx_tag_attr(&group, "<p:cNvPr", "id")?;
+            let numeric_shape_id = shape_id.parse::<usize>().ok().filter(|id| *id > 0)?;
             let group_id = docx_tag_attr(&group, "<p:cNvPr", "name")
                 .and_then(|name| name.strip_prefix("Group ").map(str::to_string))
                 .filter(|name| pptx_valid_group_id(name))
@@ -130,19 +147,19 @@ pub(in crate::services::document_editor) fn pptx_group_contexts(
                 start,
                 end: start + group.len(),
                 group_id,
+                shape_id: numeric_shape_id,
             })
         })
         .collect()
 }
 
-pub(in crate::services::document_editor) fn pptx_group_id_for_offset(
+pub(in crate::services::document_editor) fn pptx_group_for_offset(
     groups: &[PptxGroupContext],
     offset: usize,
-) -> Option<String> {
+) -> Option<&PptxGroupContext> {
     groups
         .iter()
         .find(|group| offset > group.start && offset < group.end)
-        .map(|group| group.group_id.clone())
 }
 
 pub(in crate::services::document_editor) fn pptx_valid_group_id(group_id: &str) -> bool {

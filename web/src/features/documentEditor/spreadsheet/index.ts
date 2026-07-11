@@ -1,11 +1,24 @@
 export { createSpreadsheetCellActions } from "./spreadsheetCellActions";
 export { copySpreadsheetSelection } from "./spreadsheetClipboard";
 export {
+  applyXlsxClipboardPayload,
+  buildXlsxClipboardPayload,
+  parseXlsxClipboardPayload,
+  serializeXlsxClipboardPayload,
+  xlsxClipboardPayloadFromDataTransfer,
+  XLSX_CLIPBOARD_MIME,
+} from "./spreadsheetXlsxClipboard";
+export type { XlsxClipboardPayload } from "./spreadsheetXlsxClipboard";
+export {
   clipboardDataToMatrix,
+  DELIMITED_MATRIX_MIME,
+  delimitedSortBlockReason,
   ensureDelimitedDisplayRows,
   ensureDelimitedRows,
   filteredDelimitedRows,
   rangeToClipboardText,
+  serializeInternalDelimitedMatrix,
+  sortedDelimitedRowIndexes,
   sortDelimitedRows,
   valuesFromDelimitedRange,
 } from "./spreadsheetData";
@@ -46,7 +59,12 @@ export {
   xlsxRangeFromRef,
 } from "./spreadsheetGeometry";
 export { SpreadsheetGrid } from "./spreadsheetGrid";
+export {
+  parsedXlsxMergedRanges,
+  xlsxMergeAwareSelectionTarget,
+} from "./spreadsheetMerges";
 export { handleSpreadsheetCellKeyDown } from "./spreadsheetKeyboardHandlers";
+export { renderedXlsxCellValue } from "./spreadsheetNumberFormat";
 export { createSpreadsheetObjectEditors } from "./spreadsheetObjectEditors";
 export {
   SpreadsheetColumnSpacer,
@@ -66,11 +84,19 @@ export {
   selectSpreadsheetReference,
 } from "./spreadsheetReferenceSelection";
 export { addSpreadsheetSelectionRange } from "./spreadsheetSelection";
-export { createSpreadsheetSheetActions } from "./spreadsheetSheetActions";
+export {
+  canHideXlsxSheet,
+  createSpreadsheetSheetActions,
+  xlsxSheetDuplicateBlockReason,
+} from "./spreadsheetSheetActions";
+export type { XlsxSheetDeletionPreview } from "./spreadsheetSheetActions";
+export { SpreadsheetSheetDeletionDialog } from "./spreadsheetSheetDeletionDialog";
 export { SpreadsheetSheetTabs } from "./spreadsheetSheetTabs";
+export { xlsxStructureEditBlockReason } from "./spreadsheetSheetStructureActions";
 export { SpreadsheetToolbar } from "./spreadsheetToolbar";
 export { recalculateXlsxModel } from "./spreadsheetXlsxCalculation";
 export {
+  xlsxSortBlockReason,
   xlsxColumnWidthPx,
   xlsxRowHeightPx,
 } from "./spreadsheetXlsxGridModel";

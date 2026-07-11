@@ -109,7 +109,9 @@ export function DocxTextToolbarControls({
       />
       <ToolbarButton
         icon={Link}
-        label={t("documentEditor.link")}
+        label={t("documentEditor.linkParagraph", {
+          defaultValue: "Link paragraph",
+        })}
         onClick={onOpenLinkEditor}
         active={Boolean(activeBlock?.target)}
         disabled={

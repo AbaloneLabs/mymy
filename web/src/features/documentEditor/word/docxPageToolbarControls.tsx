@@ -11,22 +11,36 @@ import type { DocxEditorToolbarProps } from "./docxEditorToolbarTypes";
 type DocxPageToolbarControlsProps = Pick<
   DocxEditorToolbarProps,
   | "onUpdatePage"
+  | "onApplyPageDraft"
+  | "onCancelPageDraft"
   | "onUpdatePageOrientation"
   | "onUpdatePagePreset"
   | "page"
+  | "pageDraftDirty"
+  | "pageScopeLabel"
 >;
 
 export function DocxPageToolbarControls({
+  onApplyPageDraft,
+  onCancelPageDraft,
   onUpdatePage,
   onUpdatePageOrientation,
   onUpdatePagePreset,
   page,
+  pageDraftDirty,
+  pageScopeLabel,
 }: DocxPageToolbarControlsProps) {
   const { t } = useTranslation();
 
   return (
     <>
       <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+      <span
+        className="max-w-44 truncate rounded bg-[var(--surface)] px-2 py-1 text-[10px] text-[var(--text-muted)]"
+        title={`${pageScopeLabel}. Page changes remain a draft until Apply.`}
+      >
+        {pageScopeLabel}
+      </span>
       <select
         value={docxPagePresetValue(page)}
         onChange={(event) => onUpdatePagePreset(event.target.value)}
@@ -110,6 +124,24 @@ export function DocxPageToolbarControls({
         value={page?.marginLeft}
         onChange={(marginLeft) => onUpdatePage({ marginLeft })}
       />
+      <button
+        type="button"
+        onClick={onApplyPageDraft}
+        disabled={!pageDraftDirty}
+        className="h-8 rounded-md border border-[var(--accent)] px-2 text-xs text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+        title={`Apply page settings to ${pageScopeLabel}`}
+      >
+        Apply
+      </button>
+      <button
+        type="button"
+        onClick={onCancelPageDraft}
+        disabled={!pageDraftDirty}
+        className="h-8 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-40"
+        title="Discard the page-setting draft and restore the original section"
+      >
+        Cancel
+      </button>
     </>
   );
 }

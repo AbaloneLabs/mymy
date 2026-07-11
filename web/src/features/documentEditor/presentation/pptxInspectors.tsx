@@ -12,6 +12,7 @@ export type PptxAnimationPresetClass = "entr" | "emph" | "exit";
 
 export function PptxAnimationInspector({
   animations,
+  resolvedShapeIds,
   disabled,
   onAdd,
   onDelete,
@@ -19,6 +20,7 @@ export function PptxAnimationInspector({
   onMove,
 }: {
   animations: PptxAnimation[];
+  resolvedShapeIds: ReadonlySet<string>;
   disabled: boolean;
   onAdd: (presetClass: PptxAnimationPresetClass) => void;
   onDelete: (animationId: string) => void;
@@ -52,7 +54,7 @@ export function PptxAnimationInspector({
     <div className="shrink-0 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          Animations
+          Animation timing metadata
         </span>
         <div className="flex items-center gap-1">
           <select
@@ -84,6 +86,10 @@ export function PptxAnimationInspector({
         </div>
       ) : (
         <div className="grid max-h-40 gap-1 overflow-auto">
+          <div className="rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-2 py-1 text-[10px] text-[var(--text-muted)]">
+            Preview shows timing only. Object motion is preserved for PowerPoint but is
+            not rendered on this canvas yet.
+          </div>
           {animations.map((animation, index) => (
             <div
               key={`${animation.id}:${index}`}
@@ -102,6 +108,14 @@ export function PptxAnimationInspector({
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
+                {(!animation.targetShapeId ||
+                  !resolvedShapeIds.has(animation.targetShapeId)) && (
+                  <div className="text-[10px] text-[var(--status-warning)]">
+                    {animation.targetShapeId
+                      ? `Preservation-only: unresolved target ${animation.targetShapeId}`
+                      : "Preservation-only: no resolved object target"}
+                  </div>
+                )}
               </div>
               <label className="grid gap-1 text-[11px] text-[var(--text-muted)]">
                 <span>Delay</span>
@@ -182,7 +196,7 @@ export function PptxAnimationInspector({
                 }}
                 disabled={disabled}
                 className="inline-flex h-7 w-7 items-center justify-center rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
-                title={playing ? "Pause animation preview" : "Play animation preview"}
+                title={playing ? "Pause timing preview" : "Play timing preview"}
               >
                 {playing ? (
                   <Pause className="h-3.5 w-3.5" strokeWidth={1.75} />

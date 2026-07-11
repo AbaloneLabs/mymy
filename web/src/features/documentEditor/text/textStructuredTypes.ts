@@ -11,7 +11,11 @@ export interface ConfigEntry {
   lineIndex: number;
   lineEndIndex?: number;
   key: string;
+  keyStartColumn?: number;
+  keyEndColumn?: number;
   value: string;
+  valueStartColumn?: number;
+  valueEndColumn?: number;
   path: string[];
   section?: string;
   indent: string;

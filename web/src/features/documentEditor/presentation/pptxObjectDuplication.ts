@@ -44,6 +44,9 @@ export function duplicatePptxSelectedObjects(
       const next = {
         ...source,
         id: nextPptxTextId(texts),
+        shapeId: undefined,
+        groupShapeId: undefined,
+        textIndex: undefined,
         groupId: allocateDuplicateGroupId(source.groupId),
         x: Math.min((source.x ?? 10) + 2, 100),
         y: Math.min((source.y ?? 12) + 2, 100),
@@ -55,6 +58,8 @@ export function duplicatePptxSelectedObjects(
       const next = {
         ...source,
         id: nextPptxShapeId(shapes),
+        shapeId: undefined,
+        groupShapeId: undefined,
         groupId: allocateDuplicateGroupId(source.groupId),
         x: Math.min((source.x ?? 24) + 2, 100),
         y: Math.min((source.y ?? 34) + 2, 100),
@@ -66,6 +71,8 @@ export function duplicatePptxSelectedObjects(
       const next = {
         ...source,
         id: nextPptxImageId(images),
+        shapeId: undefined,
+        groupShapeId: undefined,
         groupId: allocateDuplicateGroupId(source.groupId),
         relationshipId: undefined,
         x: Math.min((source.x ?? 24) + 2, 100),
@@ -78,6 +85,9 @@ export function duplicatePptxSelectedObjects(
       const next = {
         ...source,
         id: nextPptxTableId(tables),
+        shapeId: undefined,
+        groupShapeId: undefined,
+        textIndexStart: undefined,
         groupId: allocateDuplicateGroupId(source.groupId),
         x: Math.min((source.x ?? 18) + 2, 100),
         y: Math.min((source.y ?? 30) + 2, 100),
@@ -90,6 +100,8 @@ export function duplicatePptxSelectedObjects(
       const next = {
         ...source,
         id: nextPptxChartId(charts),
+        shapeId: undefined,
+        groupShapeId: undefined,
         groupId: allocateDuplicateGroupId(source.groupId),
         relationshipId: undefined,
         x: Math.min((source.x ?? 18) + 2, 100),

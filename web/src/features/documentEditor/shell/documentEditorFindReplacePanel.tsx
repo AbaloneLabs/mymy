@@ -8,6 +8,8 @@ export function FindReplacePanel({
   wholeWord,
   regexSearch,
   matchCount,
+  searchError,
+  scopeLabel,
   onQueryChange,
   onReplacementChange,
   onMatchCaseChange,
@@ -23,6 +25,8 @@ export function FindReplacePanel({
   wholeWord: boolean;
   regexSearch: boolean;
   matchCount: number;
+  searchError: string | null;
+  scopeLabel: string;
   onQueryChange: (query: string) => void;
   onReplacementChange: (replacement: string) => void;
   onMatchCaseChange: (matchCase: boolean) => void;
@@ -45,9 +49,12 @@ export function FindReplacePanel({
           autoFocus
         />
         <span className="min-w-16 text-right text-[11px] text-[var(--text-muted)]">
-          {query ? matchCount : 0}
+          {searchError ?? (query ? matchCount : 0)}
         </span>
       </div>
+      <span className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-faint)]">
+        {scopeLabel}
+      </span>
       <div className="flex min-w-56 flex-1 items-center gap-2">
         <Replace className="h-3.5 w-3.5 shrink-0 text-[var(--text-faint)]" strokeWidth={1.75} />
         <input
@@ -87,7 +94,7 @@ export function FindReplacePanel({
       <button
         type="button"
         onClick={onReplaceFirst}
-        disabled={!query || matchCount === 0}
+        disabled={!query || matchCount === 0 || Boolean(searchError)}
         className="inline-flex h-8 items-center rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       >
         {t("documentEditor.replace", { defaultValue: "Replace" })}
@@ -95,7 +102,7 @@ export function FindReplacePanel({
       <button
         type="button"
         onClick={onReplaceAll}
-        disabled={!query || matchCount === 0}
+        disabled={!query || matchCount === 0 || Boolean(searchError)}
         className="inline-flex h-8 items-center rounded-md bg-[var(--accent)] px-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       >
         {t("documentEditor.replaceAll", { defaultValue: "Replace all" })}

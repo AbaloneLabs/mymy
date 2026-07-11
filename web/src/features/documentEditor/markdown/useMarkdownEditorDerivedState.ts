@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import {
   countMarkdownSearchMatches,
+  frontmatterStructuralEditBlockReason,
   markdownHeadingAnchors,
   markdownOutlineFromAst,
   markdownReferences,
@@ -79,6 +80,16 @@ export function useMarkdownEditorDerivedState({
         : [],
     [frontmatter],
   );
+  const frontmatterStructuralBlockReason = useMemo(
+    () =>
+      frontmatter
+        ? frontmatterStructuralEditBlockReason(
+            frontmatter.content,
+            frontmatter.marker,
+          )
+        : null,
+    [frontmatter],
+  );
   const stats = useMemo(
     () => markdownStats(content, outline.length),
     [content, outline.length],
@@ -128,6 +139,7 @@ export function useMarkdownEditorDerivedState({
     foldRangeByStart,
     frontmatter,
     frontmatterFields,
+    frontmatterStructuralBlockReason,
     headingAnchors,
     lineCount,
     minimapLines,

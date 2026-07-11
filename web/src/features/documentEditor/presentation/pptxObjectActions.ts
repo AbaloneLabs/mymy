@@ -10,8 +10,13 @@ import {
 } from "./pptxEditorUtils";
 import { duplicatePptxSelectedObjects } from "./pptxObjectDuplication";
 import {
+  deletePptxObjectsWithDependents,
+  pptxDeletionImpact,
+  pptxObjectDeletionBlockReason,
+  pptxObjectDuplicationBlockReason,
+} from "./pptxReferenceGraph";
+import {
   parsePptxSelectionKey,
-  pptxSelectionKey,
   pptxSlideObjectRecords,
 } from "./pptxSelection";
 import type { PptxSelectionKey } from "./pptxSelection";
@@ -35,17 +40,18 @@ type PptxObjectActionParams = {
   activeShape: PptxShape | undefined;
   activeTable: PptxTable | undefined;
   activeText: PptxText | undefined;
+  applyLatestModel: (updater: (model: PptxModel) => PptxModel) => void;
   clearObjectSelection: () => void;
   model: PptxModel;
   onChange: (model: PptxModel) => void;
-  selectImage: (imageId: string | null, additive?: boolean) => void;
+  registerPendingInsertion: (label: string, cancel: () => void) => string;
+  finishPendingInsertion: (id: string, result?: string) => void;
   selectShape: (shapeId: string | null, additive?: boolean) => void;
   selectTable: (tableId: string | null, additive?: boolean) => void;
   selectText: (textId: string | null, additive?: boolean) => void;
   setSelectedObjectKeys: Dispatch<SetStateAction<PptxSelectionKey[]>>;
   slide: PptxSlide | undefined;
   slideAspectRatio: number;
-  updateSlide: (patch: Partial<PptxSlide>) => void;
 };
 
 export function createPptxObjectActions({
@@ -56,17 +62,18 @@ export function createPptxObjectActions({
   activeShape,
   activeTable,
   activeText,
+  applyLatestModel,
   clearObjectSelection,
   model,
   onChange,
-  selectImage,
+  registerPendingInsertion,
+  finishPendingInsertion,
   selectShape,
   selectTable,
   selectText,
   setSelectedObjectKeys,
   slide,
   slideAspectRatio,
-  updateSlide,
 }: PptxObjectActionParams) {
   function updateSlideTexts(
     slideId: string,
@@ -219,6 +226,15 @@ export function createPptxObjectActions({
 
   function updateActiveText(patch: Partial<PptxText>) {
     if (!slide || !activeText) return;
+    const styleKeys = Object.keys(patch).filter(
+      (key) => !["x", "y", "width", "height", "rotation", "groupId"].includes(key),
+    );
+    if (activeText.complexText && styleKeys.length > 0) {
+      window.alert(
+        "This rich text box is preservation-only until run-aware editing is available.",
+      );
+      return;
+    }
     updateTextById(activeText.id, patch);
   }
 
@@ -234,6 +250,12 @@ export function createPptxObjectActions({
 
   function updateActiveTable(patch: Partial<PptxTable>) {
     if (!slide || !activeTable) return;
+    if (activeTable.preservationOnly) {
+      window.alert(
+        "This rich or merged table is preservation-only with the current table model.",
+      );
+      return;
+    }
     updateTableById(activeTable.id, patch);
   }
 
@@ -306,26 +328,61 @@ export function createPptxObjectActions({
     if (!slide || !file.type.startsWith("image/")) return;
     const slideId = slide.id;
     const reader = new FileReader();
+    let cancelled = false;
+    let preview: HTMLImageElement | null = null;
+    const operationId = registerPendingInsertion(`Insert ${file.name}`, () => {
+      cancelled = true;
+      if (reader.readyState === FileReader.LOADING) reader.abort();
+      if (preview) preview.src = "";
+    });
+    const fail = (message: string) => {
+      if (!cancelled) finishPendingInsertion(operationId, message);
+    };
+    reader.onerror = () => fail(`Could not read ${file.name}`);
+    reader.onabort = () => finishPendingInsertion(operationId);
     reader.onload = () => {
+      if (cancelled) return;
       const dataUrl = typeof reader.result === "string" ? reader.result : null;
-      if (!dataUrl) return;
+      if (!dataUrl) {
+        fail(`Could not decode ${file.name}`);
+        return;
+      }
       const commitImage = (width: number, height: number) => {
-        const next: PptxImage = {
-          id: nextPptxImageId(slide.images ?? []),
-          mimeType: file.type || undefined,
-          dataUrl,
-          x: Math.max(0, (100 - width) / 2),
-          y: Math.max(0, (100 - height) / 2),
-          width,
-          height,
-          rotation: 0,
-          altText: file.name.replace(/\.[^.]+$/, ""),
-        };
-        updateSlideImages(slideId, (images) => [...images, next]);
-        selectImage(next.id);
+        if (cancelled) return;
+        let insertedId: string | null = null;
+        applyLatestModel((latest) => {
+          const target = latest.slides.find((item) => item.id === slideId);
+          if (!target) return latest;
+          const next: PptxImage = {
+            id: nextPptxImageId(target.images ?? []),
+            mimeType: file.type || undefined,
+            dataUrl,
+            x: Math.max(0, (100 - width) / 2),
+            y: Math.max(0, (100 - height) / 2),
+            width,
+            height,
+            rotation: 0,
+            altText: file.name.replace(/\.[^.]+$/, ""),
+          };
+          insertedId = next.id;
+          return {
+            ...latest,
+            slides: latest.slides.map((item) =>
+              item.id === slideId
+                ? { ...item, images: [...(item.images ?? []), next] }
+                : item,
+            ),
+          };
+        });
+        if (!insertedId) {
+          fail(`Image was not inserted because the target slide was deleted`);
+          return;
+        }
+        finishPendingInsertion(operationId, `Inserted ${file.name}`);
       };
-      const preview = new window.Image();
+      preview = new window.Image();
       preview.onload = () => {
+        if (cancelled || !preview) return;
         const aspect = preview.naturalWidth / Math.max(preview.naturalHeight, 1);
         const width = 38;
         const height = Math.min(70, Math.max(10, (width * slideAspectRatio) / aspect));
@@ -339,22 +396,54 @@ export function createPptxObjectActions({
 
   function setSlideBackgroundImage(file: File) {
     if (!slide || !file.type.startsWith("image/")) return;
+    const slideId = slide.id;
     const reader = new FileReader();
+    let cancelled = false;
+    const operationId = registerPendingInsertion(`Set ${file.name} as background`, () => {
+      cancelled = true;
+      if (reader.readyState === FileReader.LOADING) reader.abort();
+    });
+    reader.onerror = () =>
+      finishPendingInsertion(operationId, `Could not read ${file.name}`);
+    reader.onabort = () => finishPendingInsertion(operationId);
     reader.onload = () => {
+      if (cancelled) return;
       const dataUrl = typeof reader.result === "string" ? reader.result : null;
-      if (!dataUrl) return;
-      updateSlide({
-        backgroundKind: "image",
-        backgroundColor: undefined,
-        backgroundGradientStart: undefined,
-        backgroundGradientEnd: undefined,
-        backgroundGradientAngle: undefined,
-        backgroundImageRelationshipId: undefined,
-        backgroundImageMediaPath: undefined,
-        backgroundImageMimeType: file.type || undefined,
-        backgroundImageDataUrl: dataUrl,
-        backgroundSourceXml: undefined,
+      if (!dataUrl) {
+        finishPendingInsertion(operationId, `Could not decode ${file.name}`);
+        return;
+      }
+      let committed = false;
+      applyLatestModel((latest) => {
+        if (!latest.slides.some((item) => item.id === slideId)) return latest;
+        committed = true;
+        return {
+          ...latest,
+          slides: latest.slides.map((item) =>
+            item.id === slideId
+              ? {
+                  ...item,
+                  backgroundKind: "image",
+                  backgroundColor: undefined,
+                  backgroundGradientStart: undefined,
+                  backgroundGradientEnd: undefined,
+                  backgroundGradientAngle: undefined,
+                  backgroundImageRelationshipId: undefined,
+                  backgroundImageMediaPath: undefined,
+                  backgroundImageMimeType: file.type || undefined,
+                  backgroundImageDataUrl: dataUrl,
+                  backgroundSourceXml: undefined,
+                }
+              : item,
+          ),
+        };
       });
+      finishPendingInsertion(
+        operationId,
+        committed
+          ? `Updated the background on ${slide.name}`
+          : "Background was not changed because the target slide was deleted",
+      );
     };
     reader.readAsDataURL(file);
   }
@@ -367,6 +456,11 @@ export function createPptxObjectActions({
         item.objectKind === parsed.objectKind && item.objectId === parsed.objectId,
     );
     if (!record) return;
+    const blockReason = pptxObjectDuplicationBlockReason(slide, [record]);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
     const duplicated = duplicatePptxSelectedObjects(slide, [record]);
     onChange({
       ...model,
@@ -381,29 +475,26 @@ export function createPptxObjectActions({
 
   function deleteObjectKeys(keys: Set<PptxSelectionKey>) {
     if (!slide || keys.size === 0) return;
+    const blockReason = pptxObjectDeletionBlockReason(slide, keys);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
+    const impact = pptxDeletionImpact(slide, keys);
+    if (impact.animationIds.length > 0 || impact.mediaIds.length > 0) {
+      const confirmed = window.confirm(
+        [
+          "Deleting this object also removes its package dependents:",
+          `${impact.animationIds.length} animation target(s)`,
+          `${impact.mediaIds.length} media target(s)`,
+        ].join("\n"),
+      );
+      if (!confirmed) return;
+    }
     onChange({
       ...model,
       slides: model.slides.map((item) =>
-        item.id === slide.id
-          ? {
-              ...item,
-              texts: item.texts.filter(
-                (object) => !keys.has(pptxSelectionKey("text", object.id)),
-              ),
-              shapes: (item.shapes ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("shape", object.id)),
-              ),
-              images: (item.images ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("image", object.id)),
-              ),
-              tables: (item.tables ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("table", object.id)),
-              ),
-              charts: (item.charts ?? []).filter(
-                (object) => !keys.has(pptxSelectionKey("chart", object.id)),
-              ),
-            }
-          : item,
+        item.id === slide.id ? deletePptxObjectsWithDependents(item, keys) : item,
       ),
     });
     clearObjectSelection();

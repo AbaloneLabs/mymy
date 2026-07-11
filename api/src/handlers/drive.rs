@@ -16,8 +16,9 @@ use crate::models::drive::{
     CreateDriveFolderRequest, DriveFileResponse, DriveListResponse, DriveMutationResponse,
     DrivePathQuery, DriveProvidersResponse, DriveRestoreResponse, DriveSyncJobsResponse,
     DriveTrashResponse, DriveUploadResponse, MoveDrivePathRequest, MoveDrivePathResponse,
-    WriteDriveFileRequest,
+    WriteDriveFileRequest, WriteDriveFileResponse,
 };
+use crate::services::document_revisions::{record_document_revision, RevisionActor};
 use crate::services::drive as drive_service;
 use crate::state::AppState;
 
@@ -125,9 +126,36 @@ pub async fn read_drive_package(
 pub async fn write_drive_file(
     State(state): State<Arc<AppState>>,
     Json(req): Json<WriteDriveFileRequest>,
-) -> AppResult<Json<DriveMutationResponse>> {
-    drive_service::write_file(&state, &req.path, &req.content).await?;
-    Ok(Json(DriveMutationResponse { success: true }))
+) -> AppResult<Json<WriteDriveFileResponse>> {
+    let logical_path =
+        drive_service::resolve_drive_path(&state.config.agent_data_dir, &req.path)?.logical_path;
+    let fingerprint = drive_service::write_file_conditionally(
+        &state,
+        &req.path,
+        &req.content,
+        req.expected_fingerprint.as_deref(),
+    )
+    .await?;
+    if let Err(error) = record_document_revision(
+        &state,
+        &logical_path,
+        &fingerprint.hash,
+        RevisionActor::User,
+        "drive-text-api",
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            path = %logical_path,
+            error = %error,
+            "Drive write committed but revision provenance was not recorded"
+        );
+    }
+    Ok(Json(WriteDriveFileResponse {
+        success: true,
+        fingerprint: fingerprint.hash,
+    }))
 }
 
 pub async fn upload_drive_file(
@@ -135,6 +163,7 @@ pub async fn upload_drive_file(
     mut multipart: Multipart,
 ) -> AppResult<Json<DriveUploadResponse>> {
     let mut target_path = "/drive".to_string();
+    let mut idempotency_key: Option<String> = None;
     let mut files: Vec<(String, Bytes)> = Vec::new();
     while let Some(field) = multipart
         .next_field()
@@ -159,6 +188,13 @@ pub async fn upload_drive_file(
                     .map_err(|err| AppError::BadRequest(format!("upload file failed: {err}")))?;
                 files.push((file_name, bytes));
             }
+            "idempotencyKey" => {
+                let key = field.text().await.map_err(|err| {
+                    AppError::BadRequest(format!("upload idempotency key failed: {err}"))
+                })?;
+                validate_upload_idempotency_key(&key)?;
+                idempotency_key = Some(key);
+            }
             _ => {}
         }
     }
@@ -170,7 +206,13 @@ pub async fn upload_drive_file(
 
     let mut uploaded = Vec::new();
     for (file_name, bytes) in files {
-        let response = drive_service::upload_file(&state, &target_path, &file_name, &bytes).await?;
+        let upload_name = idempotency_key
+            .as_deref()
+            .map(|key| idempotent_upload_file_name(&file_name, key))
+            .transpose()?
+            .unwrap_or(file_name);
+        let response =
+            drive_service::upload_file(&state, &target_path, &upload_name, &bytes).await?;
         uploaded.extend(response.files);
     }
 
@@ -178,6 +220,37 @@ pub async fn upload_drive_file(
         success: true,
         files: uploaded,
     }))
+}
+
+fn validate_upload_idempotency_key(value: &str) -> AppResult<()> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(AppError::BadRequest(
+            "upload idempotency key must be 1-64 ASCII token characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn idempotent_upload_file_name(file_name: &str, key: &str) -> AppResult<String> {
+    validate_upload_idempotency_key(key)?;
+    let suffix = &key[..key.len().min(24)];
+    let extension_index = file_name
+        .rfind('.')
+        .filter(|index| *index > 0 && *index + 1 < file_name.len());
+    Ok(match extension_index {
+        Some(index) => format!(
+            "{}.mymy-{}.{}",
+            &file_name[..index],
+            suffix,
+            &file_name[index + 1..]
+        ),
+        None => format!("{file_name}.mymy-{suffix}"),
+    })
 }
 
 pub async fn create_drive_folder(
@@ -218,4 +291,21 @@ pub async fn purge_drive_trash(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<DriveMutationResponse>> {
     Ok(Json(drive_service::purge_trash(&state, id).await?))
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn upload_idempotency_key_produces_a_stable_collision_free_name() {
+        let first = idempotent_upload_file_name("diagram.png", "markdown-image-42").unwrap();
+        let retry = idempotent_upload_file_name("diagram.png", "markdown-image-42").unwrap();
+        let other = idempotent_upload_file_name("diagram.png", "markdown-image-43").unwrap();
+
+        assert_eq!(first, "diagram.mymy-markdown-image-42.png");
+        assert_eq!(retry, first);
+        assert_ne!(other, first);
+        assert!(idempotent_upload_file_name("diagram.png", "../bad").is_err());
+    }
 }

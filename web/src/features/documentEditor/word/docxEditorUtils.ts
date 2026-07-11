@@ -255,6 +255,10 @@ export function nextDocxNoteId(
   blocks.forEach((block) => {
     const id = block[key];
     if (id) usedIds.add(id);
+    const kind = key === "footnoteId" ? "footnote" : "endnote";
+    block.noteReferences
+      ?.filter((reference) => reference.kind === kind)
+      .forEach((reference) => usedIds.add(reference.id));
   });
   let index =
     Math.max(
@@ -274,6 +278,7 @@ export function nextDocxCommentId(comments: DocxComment[], blocks: DocxBlock[]) 
   comments.forEach((comment) => usedIds.add(comment.id));
   blocks.forEach((block) => {
     if (block.commentId) usedIds.add(block.commentId);
+    block.commentRanges?.forEach((range) => usedIds.add(range.commentId));
   });
   let index =
     Math.max(

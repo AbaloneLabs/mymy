@@ -78,7 +78,11 @@ export function PptxEditableTable({
         onKeyDown(event);
       }}
     >
-      {selected && (
+      {selected && table.preservationOnly ? (
+        <div className="absolute -top-7 left-0 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 shadow-sm">
+          Rich or merged table · preservation only
+        </div>
+      ) : selected ? (
         <div className="absolute -top-9 right-0 z-30 flex items-center gap-1 rounded-md border border-neutral-300 bg-white p-1 text-[10px] text-neutral-600 shadow-sm">
           <button
             type="button"
@@ -240,7 +244,7 @@ export function PptxEditableTable({
             <option value="right">Right</option>
           </select>
         </div>
-      )}
+      ) : null}
       <table className="h-full w-full table-fixed border-collapse text-xs">
         <PptxTableColumnGroup table={table} />
         <tbody>
@@ -259,6 +263,7 @@ export function PptxEditableTable({
                 >
                   <textarea
                     value={cell}
+                    readOnly={table.preservationOnly}
                     onFocus={() => {
                       onSelect();
                       setActiveCell({ row: rowIndex, column: columnIndex });
@@ -278,7 +283,7 @@ export function PptxEditableTable({
           ))}
         </tbody>
       </table>
-      {selected && (
+      {selected && !table.preservationOnly && (
         <button
           type="button"
           onPointerDown={onStartMove}
@@ -289,7 +294,7 @@ export function PptxEditableTable({
           Move
         </button>
       )}
-      {selected && (
+      {selected && !table.preservationOnly && (
         <button
           type="button"
           onPointerDown={onStartResize}

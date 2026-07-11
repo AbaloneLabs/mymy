@@ -18,6 +18,7 @@ mod docx_revisions;
 mod docx_runs;
 mod docx_styles;
 mod docx_tables;
+mod docx_text_anchors;
 mod docx_text_parts;
 mod docx_utils;
 mod kind;
@@ -29,6 +30,8 @@ mod pptx_manifest;
 mod pptx_model;
 mod pptx_notes;
 mod pptx_package;
+mod revision_snapshots;
+mod save_receipts;
 mod text_formats;
 mod validation;
 mod xlsx_model;
@@ -44,13 +47,20 @@ use std::path::Path;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
 use crate::models::document_editor::{
-    DocumentEditorKind, DocumentEditorModelResponse, WriteDocumentEditorModelRequest,
+    DocumentEditorKind, DocumentEditorModelResponse, DocumentEditorSyncStatus,
+    SaveDocumentEditorCopyRequest, ValidateDocumentEditorModelRequest,
+    ValidateDocumentEditorModelResponse, WriteDocumentEditorModelRequest,
+    DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
+};
+use crate::services::document_revisions::{
+    record_document_revision, revision_provenance, RevisionActor,
 };
 use crate::services::drive;
-use crate::services::file_observations::fingerprint_path;
+use crate::services::file_observations::{fingerprint_path, FileFingerprint};
 use crate::state::AppState;
 
 use self::compatibility::compatibility_warnings_for_bytes;
@@ -95,6 +105,7 @@ use self::docx_tables::{
     parse_docx_table_header_background, parse_docx_table_header_row, parse_docx_table_merged_cells,
     parse_docx_table_row_heights, parse_docx_table_rows, parse_docx_table_style,
 };
+use self::docx_text_anchors::{docx_comment_ranges, docx_hyperlink_ranges, docx_note_references};
 use self::docx_text_parts::{add_docx_text_part_replacements, docx_text_parts};
 use self::docx_utils::*;
 pub use self::kind::editor_kind_for_path;
@@ -138,6 +149,14 @@ use self::pptx_model::*;
 use self::pptx_model::{pptx_model, update_pptx};
 use self::pptx_notes::{add_pptx_notes_replacement, pptx_slide_notes};
 use self::pptx_package::{append_pptx_notes_content_types, pptx_slide_relationship_target};
+use self::revision_snapshots::{
+    load_revision_snapshot, pin_revision_snapshot, refresh_revision_snapshot_pin,
+    store_revision_snapshot,
+};
+use self::save_receipts::{
+    insert_pending_save_receipt, load_save_receipt, mark_save_receipt_committed,
+    refresh_pending_result_hash, DocumentSaveReceipt,
+};
 #[cfg(test)]
 use self::text_formats::parse_delimited;
 use self::text_formats::{delimited_bytes, delimited_model, text_bytes, text_model};
@@ -191,54 +210,148 @@ use crate::models::document_editor::{
 const PPTX_SLIDE_WIDTH_EMU: f64 = 9_144_000.0;
 const PPTX_SLIDE_HEIGHT_EMU: f64 = 5_143_500.0;
 const PPTX_DEFAULT_TABLE_STYLE_ID: &str = "{5940675A-B579-460E-94D1-54222C63F5DA}";
+const MAX_DOCUMENT_FILE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_DOCUMENT_MODEL_BYTES: usize = 128 * 1024 * 1024;
 
 pub async fn read_model(
     state: &AppState,
     logical_path: &str,
 ) -> AppResult<DocumentEditorModelResponse> {
+    let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
-    let metadata = std::fs::metadata(&resolved.physical_path)?;
-    if !metadata.is_file() {
-        return Err(AppError::BadRequest("Drive path is not a file".into()));
-    }
-    let kind = editor_kind_for_path(&resolved.physical_path);
-    if kind == DocumentEditorKind::Preview {
-        return Err(AppError::BadRequest("File type is not editable".into()));
-    }
-    let bytes = std::fs::read(&resolved.physical_path)?;
-    let model = model_from_bytes(kind, &bytes)?;
-    let compatibility_warnings = compatibility_warnings_for_bytes(kind, &bytes);
-    let fingerprint = fingerprint_token(&resolved.physical_path).await?;
-    Ok(DocumentEditorModelResponse {
-        path: resolved.logical_path,
-        name: resolved
-            .physical_path
-            .file_name()
-            .map(|value| value.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        editor_kind: kind,
-        mime_type: mime_type_for_editor(kind),
-        fingerprint,
-        compatibility_warnings,
-        model,
+    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
+    let _write_guard = write_lock.lock().await;
+    read_model_with_sync_unlocked(state, resolved.logical_path, resolved.physical_path).await
+}
+
+/// Read model bytes and their revision token while the caller holds the same
+/// path lock used by atomic writers. Without this shared critical section, an
+/// open could pair an old parsed model with the fingerprint of a newer file and
+/// later pass optimistic concurrency while overwriting unseen content.
+async fn read_model_unlocked(
+    logical_path: String,
+    physical_path: std::path::PathBuf,
+) -> AppResult<(DocumentEditorModelResponse, Vec<u8>)> {
+    let worker_path = physical_path.clone();
+    let (kind, model, compatibility_warnings, bytes) = tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&worker_path)?;
+        if !metadata.is_file() {
+            return Err(AppError::BadRequest("Drive path is not a file".into()));
+        }
+        validate_document_file_size(metadata.len())?;
+        let kind = editor_kind_for_path(&worker_path);
+        if kind == DocumentEditorKind::Preview {
+            return Err(AppError::BadRequest("File type is not editable".into()));
+        }
+        let bytes = std::fs::read(&worker_path)?;
+        let model = model_from_bytes(kind, &bytes)?;
+        let compatibility_warnings = compatibility_warnings_for_bytes(kind, &bytes);
+        Ok::<_, AppError>((kind, model, compatibility_warnings, bytes))
     })
+    .await
+    .map_err(|error| AppError::Internal(format!("document read worker failed: {error}")))??;
+    let fingerprint = fingerprint_token(&physical_path).await?;
+    Ok((
+        DocumentEditorModelResponse {
+            path: logical_path,
+            name: physical_path
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            editor_kind: kind,
+            mime_type: mime_type_for_editor(kind),
+            fingerprint,
+            model_schema_version: DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
+            capabilities: document_editor_capabilities(kind),
+            sync_status: DocumentEditorSyncStatus::LocalOnly,
+            revision_provenance: None,
+            compatibility_warnings,
+            model,
+        },
+        bytes,
+    ))
 }
 
 pub async fn write_model(
     state: &AppState,
     request: WriteDocumentEditorModelRequest,
 ) -> AppResult<DocumentEditorModelResponse> {
+    if request.model_schema_version != DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION {
+        return Err(AppError::BadRequest(format!(
+            "Document editor model schema changed (client {}, server {})",
+            request.model_schema_version, DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION
+        )));
+    }
+    validate_document_editor_capabilities(request.editor_kind, &request.required_capabilities)?;
+    validate_document_editor_idempotency_key(&request.idempotency_key)?;
+    let request_hash = document_save_request_hash(&request)?;
+    let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, &request.path)?;
+    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
+    let _write_guard = write_lock.lock().await;
     let metadata = std::fs::metadata(&resolved.physical_path)?;
     if !metadata.is_file() {
         return Err(AppError::BadRequest("Drive path is not a file".into()));
     }
+    let expected_fingerprint = request.expected_fingerprint.clone();
+    let idempotency_key = request.idempotency_key.clone();
+    let editor_kind_key = document_editor_kind_key(request.editor_kind).to_string();
+    let existing_receipt = load_save_receipt(state, &idempotency_key).await?;
+    if let Some(receipt) = existing_receipt.as_ref() {
+        validate_save_receipt_request(
+            receipt,
+            &resolved.logical_path,
+            &editor_kind_key,
+            &expected_fingerprint,
+            &request_hash,
+        )?;
+        let current_fingerprint = fingerprint_path(&resolved.physical_path)
+            .await
+            .map_err(AppError::Internal)?;
+        if current_fingerprint.hash == receipt.result_content_hash {
+            let current_token = fingerprint_value_token(&current_fingerprint);
+            if let Err(error) =
+                mark_save_receipt_committed(state, &idempotency_key, &current_token).await
+            {
+                tracing::warn!(
+                    idempotency_key = %idempotency_key,
+                    error = %error,
+                    "document save committed but receipt finalization failed"
+                );
+            }
+            if let Err(error) = record_document_revision(
+                state,
+                &resolved.logical_path,
+                &current_fingerprint.hash,
+                RevisionActor::User,
+                "document-editor",
+                Some(&idempotency_key),
+            )
+            .await
+            {
+                tracing::warn!(
+                    path = %resolved.logical_path,
+                    error = %error,
+                    "document save committed but revision provenance was not recorded"
+                );
+            }
+            return read_model_with_sync_unlocked(
+                state,
+                resolved.logical_path,
+                resolved.physical_path,
+            )
+            .await;
+        }
+        if receipt.status == "committed" {
+            return Err(AppError::Conflict(format!(
+                "Save {} committed as revision {} but the file changed again",
+                receipt.idempotency_key,
+                receipt.result_fingerprint.as_deref().unwrap_or("unknown")
+            )));
+        }
+    }
     let current = fingerprint_token(&resolved.physical_path).await?;
-    if request
-        .expected_fingerprint
-        .as_deref()
-        .is_some_and(|expected| expected != current)
-    {
+    if expected_fingerprint != current {
         return Err(AppError::Conflict(
             "File changed since the editor opened".to_string(),
         ));
@@ -249,23 +362,553 @@ pub async fn write_model(
             "Editor kind does not match file type".into(),
         ));
     }
-    let original = std::fs::read(&resolved.physical_path)?;
-    let updated = bytes_from_model(request.editor_kind, &original, &request.model)?;
-    validate_saved_document_bytes(expected_kind, &resolved.physical_path, &updated)?;
-    drive::write_file_bytes(state, &resolved.logical_path, &updated).await?;
-    read_model(state, &resolved.logical_path).await
+    validate_document_file_size(metadata.len())?;
+    let physical_path = resolved.physical_path.clone();
+    let editor_kind = request.editor_kind;
+    let model = request.model;
+    let (updated, original) = tokio::task::spawn_blocking(move || {
+        validate_document_model_size(&model)?;
+        let original = std::fs::read(&physical_path)?;
+        let updated = bytes_from_model(editor_kind, &original, &model)?;
+        validate_document_file_size(updated.len() as u64)?;
+        validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
+        Ok::<_, AppError>((updated, original))
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("document write worker failed: {error}")))??;
+    let result_content_hash = content_hash(&updated);
+    let before_replace = fingerprint_token(&resolved.physical_path).await?;
+    if before_replace != expected_fingerprint {
+        return Err(AppError::Conflict(
+            "File changed while the editor was preparing the save".to_string(),
+        ));
+    }
+    if existing_receipt.is_some() {
+        refresh_pending_result_hash(state, &idempotency_key, &result_content_hash).await?;
+    } else {
+        let receipt = DocumentSaveReceipt {
+            idempotency_key: idempotency_key.clone(),
+            drive_path: resolved.logical_path.clone(),
+            editor_kind: editor_kind_key,
+            expected_fingerprint: expected_fingerprint.clone(),
+            request_hash,
+            result_content_hash: result_content_hash.clone(),
+            result_fingerprint: None,
+            status: "pending".to_string(),
+        };
+        if !insert_pending_save_receipt(state, &receipt).await? {
+            let concurrent = load_save_receipt(state, &idempotency_key)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Internal(
+                        "Document save receipt conflicted but could not be loaded".into(),
+                    )
+                })?;
+            validate_save_receipt_request(
+                &concurrent,
+                &resolved.logical_path,
+                document_editor_kind_key(request.editor_kind),
+                &expected_fingerprint,
+                &receipt.request_hash,
+            )?;
+            if concurrent.result_content_hash != receipt.result_content_hash {
+                return Err(AppError::Conflict(
+                    "Document save idempotency key is already preparing different bytes".into(),
+                ));
+            }
+        }
+    }
+    store_revision_snapshot(
+        state,
+        &resolved.logical_path,
+        &content_hash(&original),
+        &original,
+    )
+    .await?;
+    let sync_status =
+        drive::write_file_bytes_unlocked(state, &resolved.logical_path, &updated).await?;
+    let logical_path = resolved.logical_path;
+    let (mut response, committed_bytes) =
+        read_model_unlocked(logical_path.clone(), resolved.physical_path).await?;
+    if let Err(error) = pin_revision_snapshot(
+        state,
+        &logical_path,
+        &content_hash(&committed_bytes),
+        &committed_bytes,
+    )
+    .await
+    {
+        tracing::warn!(
+            path = %logical_path,
+            error = %error,
+            "document save committed but its recovery snapshot was not recorded"
+        );
+    }
+    response.sync_status = sync_status;
+    if let Err(error) =
+        mark_save_receipt_committed(state, &idempotency_key, &response.fingerprint).await
+    {
+        tracing::warn!(
+            idempotency_key = %idempotency_key,
+            error = %error,
+            "document save succeeded but receipt finalization will require retry reconciliation"
+        );
+    }
+    if let Err(error) = record_document_revision(
+        state,
+        &logical_path,
+        &result_content_hash,
+        RevisionActor::User,
+        "document-editor",
+        Some(&idempotency_key),
+    )
+    .await
+    {
+        tracing::warn!(
+            path = %logical_path,
+            error = %error,
+            "document save committed but revision provenance was not recorded"
+        );
+    }
+    response.revision_provenance =
+        load_revision_provenance(state, &logical_path, &response.fingerprint).await;
+    Ok(response)
+}
+
+pub async fn save_copy(
+    state: &AppState,
+    request: SaveDocumentEditorCopyRequest,
+) -> AppResult<DocumentEditorModelResponse> {
+    if request.model_schema_version != DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION {
+        return Err(AppError::BadRequest(format!(
+            "Document editor model schema changed (client {}, server {})",
+            request.model_schema_version, DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION
+        )));
+    }
+    validate_document_editor_capabilities(request.editor_kind, &request.required_capabilities)?;
+    validate_document_editor_idempotency_key(&request.idempotency_key)?;
+    if request.source_path == request.target_path {
+        return Err(AppError::BadRequest(
+            "Conflict copy path must differ from the source path".into(),
+        ));
+    }
+    let request_hash = document_copy_request_hash(&request)?;
+    let receipt_expected = format!("copy:{}", request.base_fingerprint);
+    let _namespace_guard = state.drive_namespace_lock().read().await;
+    let source = drive::resolve_drive_path(&state.config.agent_data_dir, &request.source_path)?;
+    let target = drive::resolve_drive_path(&state.config.agent_data_dir, &request.target_path)?;
+    let expected_source_kind = editor_kind_for_path(&source.physical_path);
+    let target_kind = editor_kind_for_path(&target.physical_path);
+    if expected_source_kind != request.editor_kind || target_kind != request.editor_kind {
+        return Err(AppError::BadRequest(
+            "Conflict copy must keep the source document file type".into(),
+        ));
+    }
+    let target_lock = state.drive_write_lock(&target.physical_path).await;
+    let _target_guard = target_lock.lock().await;
+    let editor_kind_key = document_editor_kind_key(request.editor_kind).to_string();
+    if let Some(receipt) = load_save_receipt(state, &request.idempotency_key).await? {
+        validate_save_receipt_request(
+            &receipt,
+            &target.logical_path,
+            &editor_kind_key,
+            &receipt_expected,
+            &request_hash,
+        )?;
+        if target.physical_path.is_file() {
+            let fingerprint = fingerprint_path(&target.physical_path)
+                .await
+                .map_err(AppError::Internal)?;
+            if fingerprint.hash == receipt.result_content_hash {
+                return read_model_with_sync_unlocked(
+                    state,
+                    target.logical_path,
+                    target.physical_path,
+                )
+                .await;
+            }
+        }
+        return Err(AppError::Conflict(
+            "Conflict copy receipt exists but the target path contains different bytes".into(),
+        ));
+    }
+    if target.physical_path.exists() {
+        return Err(AppError::Conflict(
+            "Conflict copy target already exists; choose another name".into(),
+        ));
+    }
+    let base_hash = request
+        .base_fingerprint
+        .split(':')
+        .next()
+        .unwrap_or(&request.base_fingerprint);
+    let base_bytes = load_revision_snapshot(state, &source.logical_path, base_hash)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "The exact base revision is no longer available for a safe conflict copy".into(),
+            )
+        })?;
+    let model = request.model;
+    let target_path = target.physical_path.clone();
+    let editor_kind = request.editor_kind;
+    let updated = tokio::task::spawn_blocking(move || {
+        validate_document_model_size(&model)?;
+        let updated = bytes_from_model(editor_kind, &base_bytes, &model)?;
+        validate_document_file_size(updated.len() as u64)?;
+        validate_saved_document_bytes(editor_kind, &target_path, &updated)?;
+        Ok::<_, AppError>(updated)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("document copy worker failed: {error}")))??;
+    let result_content_hash = content_hash(&updated);
+    let receipt = DocumentSaveReceipt {
+        idempotency_key: request.idempotency_key.clone(),
+        drive_path: target.logical_path.clone(),
+        editor_kind: editor_kind_key,
+        expected_fingerprint: receipt_expected,
+        request_hash,
+        result_content_hash: result_content_hash.clone(),
+        result_fingerprint: None,
+        status: "pending".to_string(),
+    };
+    if !insert_pending_save_receipt(state, &receipt).await? {
+        return Err(AppError::Conflict(
+            "Conflict copy idempotency key is already in use".into(),
+        ));
+    }
+    let sync_status =
+        drive::write_file_bytes_unlocked(state, &target.logical_path, &updated).await?;
+    let (mut response, committed_bytes) =
+        read_model_unlocked(target.logical_path.clone(), target.physical_path).await?;
+    response.sync_status = sync_status;
+    if let Err(error) = pin_revision_snapshot(
+        state,
+        &target.logical_path,
+        &result_content_hash,
+        &committed_bytes,
+    )
+    .await
+    {
+        tracing::warn!(
+            path = %target.logical_path,
+            error = %error,
+            "document conflict copy committed but recovery snapshot recording failed"
+        );
+    }
+    if let Err(error) =
+        mark_save_receipt_committed(state, &request.idempotency_key, &response.fingerprint).await
+    {
+        tracing::warn!(
+            idempotency_key = %request.idempotency_key,
+            error = %error,
+            "document conflict copy committed but receipt finalization failed"
+        );
+    }
+    if let Err(error) = record_document_revision(
+        state,
+        &target.logical_path,
+        &result_content_hash,
+        RevisionActor::User,
+        "document-editor-copy",
+        Some(&request.idempotency_key),
+    )
+    .await
+    {
+        tracing::warn!(
+            path = %target.logical_path,
+            error = %error,
+            "document conflict copy committed but revision provenance was not recorded"
+        );
+    }
+    response.revision_provenance =
+        load_revision_provenance(state, &target.logical_path, &response.fingerprint).await;
+    Ok(response)
+}
+
+pub async fn validate_model(
+    state: &AppState,
+    request: ValidateDocumentEditorModelRequest,
+) -> AppResult<ValidateDocumentEditorModelResponse> {
+    if request.model_schema_version != DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION {
+        return Err(AppError::BadRequest(format!(
+            "Document editor model schema changed (client {}, server {})",
+            request.model_schema_version, DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION
+        )));
+    }
+    validate_document_editor_capabilities(request.editor_kind, &request.required_capabilities)?;
+    let _namespace_guard = state.drive_namespace_lock().read().await;
+    let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, &request.path)?;
+    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
+    let _write_guard = write_lock.lock().await;
+    let metadata = std::fs::metadata(&resolved.physical_path)?;
+    if !metadata.is_file() {
+        return Err(AppError::BadRequest("Drive path is not a file".into()));
+    }
+    let current = fingerprint_token(&resolved.physical_path).await?;
+    if current != request.expected_fingerprint {
+        return Err(AppError::Conflict(
+            "File changed while validating the editor draft".into(),
+        ));
+    }
+    let expected_kind = editor_kind_for_path(&resolved.physical_path);
+    if expected_kind != request.editor_kind || expected_kind == DocumentEditorKind::Preview {
+        return Err(AppError::BadRequest(
+            "Editor kind does not match file type".into(),
+        ));
+    }
+    validate_document_file_size(metadata.len())?;
+    let logical_path = resolved.logical_path.clone();
+    let physical_path = resolved.physical_path;
+    let editor_kind = request.editor_kind;
+    let model = request.model;
+    let (serialized_size, compatibility_warnings) = tokio::task::spawn_blocking(move || {
+        validate_document_model_size(&model)?;
+        let original = std::fs::read(&physical_path)?;
+        let updated = bytes_from_model(editor_kind, &original, &model)?;
+        validate_document_file_size(updated.len() as u64)?;
+        validate_saved_document_bytes(editor_kind, &physical_path, &updated)?;
+        let warnings = compatibility_warnings_for_bytes(editor_kind, &updated);
+        Ok::<_, AppError>((updated.len(), warnings))
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("document validation worker failed: {error}")))??;
+    let expected_hash = current.split(':').next().unwrap_or(&current);
+    if let Err(error) = refresh_revision_snapshot_pin(state, &logical_path, expected_hash).await {
+        tracing::warn!(
+            path = %logical_path,
+            error = %error,
+            "document draft validated but its base snapshot lease was not refreshed"
+        );
+    }
+    Ok(ValidateDocumentEditorModelResponse {
+        fingerprint: current,
+        serialized_size,
+        compatibility_warnings,
+    })
+}
+
+async fn read_model_with_sync_unlocked(
+    state: &AppState,
+    logical_path: String,
+    physical_path: std::path::PathBuf,
+) -> AppResult<DocumentEditorModelResponse> {
+    let (mut response, bytes) = read_model_unlocked(logical_path.clone(), physical_path).await?;
+    if let Err(error) =
+        pin_revision_snapshot(state, &logical_path, &content_hash(&bytes), &bytes).await
+    {
+        tracing::warn!(
+            path = %logical_path,
+            error = %error,
+            "document opened but its recovery snapshot was not recorded"
+        );
+    }
+    response.sync_status = match drive::document_sync_status(state, &logical_path).await {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::warn!(
+                path = %logical_path,
+                error = %error,
+                "document opened locally but sync status could not be loaded"
+            );
+            DocumentEditorSyncStatus::Failed
+        }
+    };
+    response.revision_provenance =
+        load_revision_provenance(state, &logical_path, &response.fingerprint).await;
+    Ok(response)
+}
+
+async fn load_revision_provenance(
+    state: &AppState,
+    logical_path: &str,
+    fingerprint: &str,
+) -> Option<crate::models::document_editor::DocumentRevisionProvenance> {
+    let content_hash = fingerprint.split(':').next().unwrap_or(fingerprint);
+    match revision_provenance(state, logical_path, content_hash).await {
+        Ok(provenance) => provenance,
+        Err(error) => {
+            tracing::warn!(
+                path = %logical_path,
+                error = %error,
+                "document revision provenance could not be loaded"
+            );
+            None
+        }
+    }
+}
+
+fn document_editor_capabilities(kind: DocumentEditorKind) -> Vec<String> {
+    let mut capabilities = vec![
+        "document-revision-cas-v1".to_string(),
+        "document-revision-provenance-v1".to_string(),
+        "document-conflict-copy-v1".to_string(),
+        "document-revision-snapshot-v1".to_string(),
+        "atomic-file-replace-v1".to_string(),
+        "normalized-model-schema-v1".to_string(),
+    ];
+    capabilities.push(
+        match kind {
+            DocumentEditorKind::Markdown => "markdown-source-model-v1",
+            DocumentEditorKind::Text => "text-source-model-v1",
+            DocumentEditorKind::Csv | DocumentEditorKind::Tsv => "delimited-table-model-v1",
+            DocumentEditorKind::Docx => "docx-run-model-v1",
+            DocumentEditorKind::Xlsx => "xlsx-workbook-model-v1",
+            DocumentEditorKind::Pptx => "pptx-stable-object-model-v1",
+            DocumentEditorKind::Preview => "preview-read-only-v1",
+        }
+        .to_string(),
+    );
+    capabilities
+}
+
+fn validate_document_editor_capabilities(
+    kind: DocumentEditorKind,
+    required: &[String],
+) -> AppResult<()> {
+    let supported = document_editor_capabilities(kind);
+    let missing = required
+        .iter()
+        .filter(|capability| !supported.contains(capability))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "Document editor capabilities are unavailable: {}",
+        missing.join(", ")
+    )))
+}
+
+fn validate_document_editor_idempotency_key(value: &str) -> AppResult<()> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(AppError::BadRequest(
+            "Document save idempotency key must be 1-64 ASCII letters, digits, '-' or '_'".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn document_save_request_hash(request: &WriteDocumentEditorModelRequest) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    hash_framed(&mut hasher, request.path.as_bytes());
+    hash_framed(
+        &mut hasher,
+        document_editor_kind_key(request.editor_kind).as_bytes(),
+    );
+    hash_framed(&mut hasher, &request.model_schema_version.to_be_bytes());
+    hash_framed(&mut hasher, request.expected_fingerprint.as_bytes());
+    for capability in &request.required_capabilities {
+        hash_framed(&mut hasher, capability.as_bytes());
+    }
+    let model = serde_json::to_vec(&request.model)
+        .map_err(|error| AppError::BadRequest(format!("Document model is invalid: {error}")))?;
+    hash_framed(&mut hasher, &model);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn document_copy_request_hash(request: &SaveDocumentEditorCopyRequest) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    hash_framed(&mut hasher, request.source_path.as_bytes());
+    hash_framed(&mut hasher, request.target_path.as_bytes());
+    hash_framed(
+        &mut hasher,
+        document_editor_kind_key(request.editor_kind).as_bytes(),
+    );
+    hash_framed(&mut hasher, &request.model_schema_version.to_be_bytes());
+    hash_framed(&mut hasher, request.base_fingerprint.as_bytes());
+    for capability in &request.required_capabilities {
+        hash_framed(&mut hasher, capability.as_bytes());
+    }
+    let model = serde_json::to_vec(&request.model)
+        .map_err(|error| AppError::BadRequest(format!("Document model is invalid: {error}")))?;
+    hash_framed(&mut hasher, &model);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_framed(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn document_editor_kind_key(kind: DocumentEditorKind) -> &'static str {
+    match kind {
+        DocumentEditorKind::Markdown => "markdown",
+        DocumentEditorKind::Text => "text",
+        DocumentEditorKind::Csv => "csv",
+        DocumentEditorKind::Tsv => "tsv",
+        DocumentEditorKind::Docx => "docx",
+        DocumentEditorKind::Xlsx => "xlsx",
+        DocumentEditorKind::Pptx => "pptx",
+        DocumentEditorKind::Preview => "preview",
+    }
+}
+
+fn validate_save_receipt_request(
+    receipt: &DocumentSaveReceipt,
+    path: &str,
+    editor_kind: &str,
+    expected_fingerprint: &str,
+    request_hash: &str,
+) -> AppResult<()> {
+    if receipt.drive_path == path
+        && receipt.editor_kind == editor_kind
+        && receipt.expected_fingerprint == expected_fingerprint
+        && receipt.request_hash == request_hash
+    {
+        return Ok(());
+    }
+    Err(AppError::Conflict(
+        "Document save idempotency key was already used for another logical save".into(),
+    ))
+}
+
+fn validate_document_file_size(size: u64) -> AppResult<()> {
+    if size > MAX_DOCUMENT_FILE_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "Document file exceeds the {} MiB editor limit",
+            MAX_DOCUMENT_FILE_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
+}
+
+fn validate_document_model_size(model: &Value) -> AppResult<()> {
+    let size = serde_json::to_vec(model)
+        .map_err(|error| AppError::BadRequest(format!("Document model is invalid: {error}")))?
+        .len();
+    if size > MAX_DOCUMENT_MODEL_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "Document model exceeds the {} MiB editor limit",
+            MAX_DOCUMENT_MODEL_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 async fn fingerprint_token(path: &Path) -> AppResult<String> {
     let fingerprint = fingerprint_path(path).await.map_err(AppError::Internal)?;
+    Ok(fingerprint_value_token(&fingerprint))
+}
+
+fn fingerprint_value_token(fingerprint: &FileFingerprint) -> String {
     let modified = fingerprint
         .modified_at
         .map(|value| value.timestamp_millis().to_string())
         .unwrap_or_else(|| "none".to_string());
-    Ok(format!(
-        "{}:{}:{}",
-        fingerprint.hash, fingerprint.size, modified
-    ))
+    format!("{}:{}:{}", fingerprint.hash, fingerprint.size, modified)
 }
 
 fn model_from_bytes(kind: DocumentEditorKind, bytes: &[u8]) -> AppResult<Value> {
@@ -287,6 +930,18 @@ fn bytes_from_model(
     original: &[u8],
     model: &Value,
 ) -> AppResult<Vec<u8>> {
+    if matches!(
+        kind,
+        DocumentEditorKind::Docx | DocumentEditorKind::Xlsx | DocumentEditorKind::Pptx
+    ) && model_from_bytes(kind, original)? == *model
+    {
+        // OOXML packages may contain producer-specific ordering, extension
+        // nodes, and ZIP metadata that are intentionally outside the editor's
+        // ownership. Returning the exact source package for a semantic no-op
+        // avoids manufacturing a package-level change and gives retries and
+        // explicit save-without-edit flows a lossless fixed point.
+        return Ok(original.to_vec());
+    }
     match kind {
         DocumentEditorKind::Markdown | DocumentEditorKind::Text => text_bytes(original, model),
         DocumentEditorKind::Csv => delimited_bytes(original, model, ','),
@@ -355,7 +1010,8 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
                 "id": format!("sect{}", index + 1),
                 "type": "sectionBreak",
                 "text": "",
-                "breakKind": docx_section_break_kind(&segment)
+                "breakKind": docx_section_break_kind(&segment),
+                "sectionPage": docx_page_settings(&segment)
             }));
             index += 1;
             continue;
@@ -386,8 +1042,9 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
             .as_ref()
             .and_then(|id| relationships.get(id))
             .cloned();
+        let block_id = format!("p{}", index + 1);
         let mut block = json!({
-            "id": format!("p{}", index + 1),
+            "id": block_id.clone(),
             "type": if heading_level.is_some() { "heading" } else { "paragraph" },
             "headingLevel": heading_level,
             "text": text,
@@ -443,11 +1100,23 @@ fn docx_model(bytes: &[u8]) -> AppResult<Value> {
         if let Some(comment_id) = docx_comment_id_from_paragraph(&segment) {
             block["commentId"] = json!(comment_id);
         }
+        let comment_ranges = docx_comment_ranges(&segment);
+        if !comment_ranges.is_empty() {
+            block["commentRanges"] = json!(comment_ranges);
+        }
+        let hyperlink_ranges = docx_hyperlink_ranges(&segment, &relationships, &block_id);
+        if !hyperlink_ranges.is_empty() {
+            block["hyperlinks"] = json!(hyperlink_ranges);
+        }
         if let Some(footnote_id) = docx_tag_attr(&segment, "<w:footnoteReference", "w:id") {
             block["footnoteId"] = json!(footnote_id);
         }
         if let Some(endnote_id) = docx_tag_attr(&segment, "<w:endnoteReference", "w:id") {
             block["endnoteId"] = json!(endnote_id);
+        }
+        let note_references = docx_note_references(&segment);
+        if !note_references.is_empty() {
+            block["noteReferences"] = json!(note_references);
         }
         let content_controls = docx_paragraph_content_controls(&segment);
         if !content_controls.is_empty() {

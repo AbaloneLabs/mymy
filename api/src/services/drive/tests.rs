@@ -87,6 +87,46 @@ async fn document_package_includes_document_and_uploaded_fonts() {
     let _ = fs::remove_dir_all(agent_data_dir);
 }
 
+#[tokio::test]
+async fn raw_drive_write_requires_and_rechecks_the_read_fingerprint() {
+    let agent_data_dir =
+        std::env::temp_dir().join(format!("mymy-drive-cas-test-{}", Uuid::new_v4()));
+    let path = agent_data_dir.join("drive/shared/state.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "first").unwrap();
+    let state = test_state(agent_data_dir.clone());
+
+    let opened = read_file(&state, "/drive/shared/state.txt").await.unwrap();
+    assert!(!opened.fingerprint.is_empty());
+    let missing =
+        write_file_conditionally(&state, "/drive/shared/state.txt", "unreviewed", None).await;
+    assert!(matches!(missing, Err(crate::error::AppError::Conflict(_))));
+
+    fs::write(&path, "external").unwrap();
+    let stale = write_file_conditionally(
+        &state,
+        "/drive/shared/state.txt",
+        "stale overwrite",
+        Some(&opened.fingerprint),
+    )
+    .await;
+    assert!(matches!(stale, Err(crate::error::AppError::Conflict(_))));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+
+    let refreshed = read_file(&state, "/drive/shared/state.txt").await.unwrap();
+    let committed = write_file_conditionally(
+        &state,
+        "/drive/shared/state.txt",
+        "committed",
+        Some(&refreshed.fingerprint),
+    )
+    .await
+    .unwrap();
+    assert_ne!(committed.hash, refreshed.fingerprint);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "committed");
+    let _ = fs::remove_dir_all(agent_data_dir);
+}
+
 fn test_state(agent_data_dir: PathBuf) -> AppState {
     let db = PgPoolOptions::new()
         .connect_lazy("postgres://mymy:mymy@localhost/mymy")

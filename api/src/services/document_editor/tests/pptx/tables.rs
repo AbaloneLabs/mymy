@@ -224,3 +224,32 @@ fn pptx_update_writes_slide_table_style_flags() {
         r#"<a:tblPr firstRow="0" firstCol="1" lastRow="1" lastCol="0" bandRow="0" bandCol="1">"#
     ));
 }
+
+#[test]
+fn pptx_rich_or_merged_table_is_preserved_on_unrelated_save() {
+    let slide_xml = pptx_test_slide_with_table_xml("Title", &[&["A1", "B1"]])
+        .replacen(
+            "<a:r><a:t>A1</a:t></a:r>",
+            "<a:r><a:rPr b=\"1\"/><a:t>A</a:t></a:r><a:r><a:rPr i=\"1\"/><a:t>1</a:t></a:r>",
+            1,
+        )
+        .replacen("<a:tc>", "<a:tc gridSpan=\"2\">", 1);
+    let package = test_ooxml_package(&[
+        ("[Content_Types].xml", pptx_test_content_types(false)),
+        ("ppt/presentation.xml", pptx_test_presentation_xml()),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            pptx_test_presentation_rels(),
+        ),
+        ("ppt/slides/slide1.xml", slide_xml.as_str()),
+    ]);
+    let model = pptx_model(&package).unwrap();
+    assert_eq!(model["slides"][0]["tables"][0]["preservationOnly"], true);
+
+    let updated = update_pptx(&package, &model).unwrap();
+    let saved = read_zip_text(&updated, "ppt/slides/slide1.xml").unwrap();
+
+    assert!(saved.contains(r#"<a:tc gridSpan="2">"#));
+    assert!(saved
+        .contains(r#"<a:r><a:rPr b="1"/><a:t>A</a:t></a:r><a:r><a:rPr i="1"/><a:t>1</a:t></a:r>"#));
+}

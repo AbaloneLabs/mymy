@@ -21,8 +21,10 @@
         "react-markdown": "^10.1.0",
         "react-router-dom": "^7.18.0",
         "remark-gfm": "^4.0.1",
+        "remark-parse": "^11.0.0",
         "shiki": "^4.3.1",
         "tailwind-merge": "^3.6.0",
+        "unified": "^11.0.5",
         "zustand": "^5.0.14",
       },
       "devDependencies": {

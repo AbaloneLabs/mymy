@@ -16,6 +16,7 @@ fn pptx_model_exposes_slide_images() {
     let model = pptx_model(&package).unwrap();
     let image = &model["slides"][0]["images"][0];
 
+    assert_eq!(image["shapeId"], "7");
     assert_eq!(image["relationshipId"], "rIdImage");
     assert_eq!(image["mediaPath"], "ppt/media/image1.png");
     assert_eq!(image["mimeType"], "image/png");

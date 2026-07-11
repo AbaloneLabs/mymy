@@ -11,6 +11,7 @@ import type {
   DriveUploadResponse,
   PreviewEndpoint,
   PreviewEndpointsResponse,
+  WriteDriveFileResponse,
 } from "@/types/drive";
 
 function driveQuery(path: string) {
@@ -51,8 +52,11 @@ export function useDriveSyncJobs() {
 export function useWriteDriveFile() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { path: string; content: string }) =>
-      api.put<{ success: boolean }>("/drive/file", body),
+    mutationFn: (body: {
+      path: string;
+      content: string;
+      expectedFingerprint?: string;
+    }) => api.put<WriteDriveFileResponse>("/drive/file", body),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["drive", "file", variables.path] });
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
@@ -94,13 +98,26 @@ export function useUploadDriveFiles() {
   });
 }
 
-export async function uploadDriveFiles(path: string, files: File[]) {
+export async function uploadDriveFiles(
+  path: string,
+  files: File[],
+  options: { idempotencyKey?: string; signal?: AbortSignal } = {},
+) {
   const form = new FormData();
   form.append("path", path);
+  if (options.idempotencyKey) {
+    form.append("idempotencyKey", options.idempotencyKey);
+  }
   for (const file of files) {
     form.append("file", file, file.name);
   }
-  return api.form<DriveUploadResponse>("/drive/upload", form);
+  return api.form<DriveUploadResponse>("/drive/upload", form, {
+    signal: options.signal,
+  });
+}
+
+export function deleteDrivePath(path: string) {
+  return api.delete<{ success: boolean }>(`/drive?${driveQuery(path)}`);
 }
 
 export function useDriveTrash() {

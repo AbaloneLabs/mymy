@@ -2,6 +2,11 @@ import type { CSSProperties } from "react";
 import { builtInFontFamilies } from "../shared/fonts";
 import type { DocxBlock, DocxRun, DocxStyle } from "../shared/models";
 import { headingFontSize, isDocxTextBlock, twipsToCssPixels } from "./docxEditorUtils";
+import {
+  docxBlockWithTransformedAnchors,
+  mergeDocxBlockAnchors,
+  splitDocxBlockAnchors,
+} from "./docxTextAnchors";
 
 type DocxInlineStyleKey = Exclude<keyof DocxRun, "text">;
 type DocxInlineStylePatch = Partial<Pick<DocxRun, DocxInlineStyleKey>>;
@@ -32,10 +37,10 @@ const DOCX_STYLE_INHERITED_KEYS = [
 ] as const;
 
 /**
- * DOCX run metadata is preserved only while the visible text still matches the
- * original run sequence. Once a contenteditable edit changes the text, the
- * editor intentionally falls back to block-level formatting so later saves do
- * not apply stale character ranges to new user content.
+ * DOCX run metadata remains authoritative while text mutations split and merge
+ * the affected ranges. Browser fallback and IME paths derive one contiguous
+ * replacement from the old and new text so unchanged neighboring runs are not
+ * flattened merely because a specific `beforeinput` type was unavailable.
  */
 export function docxRunsText(runs: DocxRun[] | undefined) {
   return runs?.map((run) => run.text).join("") ?? "";
@@ -54,7 +59,32 @@ export function docxTextEditPatch(
   block: DocxBlock,
   text: string,
 ): Partial<DocxBlock> {
-  return block.runs ? { text, runs: undefined } : { text };
+  return docxRunTextDiffPatch(block, text) ?? { text };
+}
+
+export function docxRunTextDiffPatch(block: DocxBlock, nextText: string) {
+  if (!isDocxTextBlock(block)) return null;
+  if (block.text === nextText) return { ...block };
+  let prefix = 0;
+  const prefixLimit = Math.min(block.text.length, nextText.length);
+  while (prefix < prefixLimit && block.text[prefix] === nextText[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < block.text.length - prefix &&
+    suffix < nextText.length - prefix &&
+    block.text[block.text.length - 1 - suffix] ===
+      nextText[nextText.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  return docxRunTextInputPatch(
+    block,
+    prefix,
+    block.text.length - suffix,
+    nextText.slice(prefix, nextText.length - suffix),
+  );
 }
 
 export function isDocxInlineStylePatch(patch: Partial<DocxBlock>) {
@@ -120,6 +150,12 @@ export function replaceDocxRunRange(
   const text = docxRunsText(runs);
   return {
     ...block,
+    ...docxBlockWithTransformedAnchors(
+      block,
+      rangeStart,
+      rangeEnd,
+      docxRunsText(replacementRuns).length,
+    ),
     text,
     runs: runs.length > 0 ? runs : undefined,
   };
@@ -132,7 +168,9 @@ export function docxRunTextInputPatch(
   text: string,
 ) {
   if (!isDocxTextBlock(block)) return null;
-  const replacementRuns = text ? [docxInsertionRun(block, start, text)] : [];
+  const replacementRuns = text
+    ? [docxInsertionRun(block, start, text, end > start)]
+    : [];
   return replaceDocxRunRange(block, start, end, replacementRuns);
 }
 
@@ -175,6 +213,104 @@ export function splitDocxRunsAroundRange(
     before: docxMergeRuns(before),
     after: docxMergeRuns(after),
   };
+}
+
+export function splitDocxTextBlockRuns(
+  block: DocxBlock,
+  offset: number,
+  nextId: string,
+): { before: DocxBlock; after: DocxBlock } | { reason: string } | null {
+  if (!isDocxTextBlock(block)) return null;
+  const reason = docxTextStructureBlockReason(block);
+  if (reason) return { reason };
+  const safeOffset = Math.max(0, Math.min(block.text.length, offset));
+  const { before, after } = splitDocxRunsAroundRange(
+    block,
+    safeOffset,
+    safeOffset,
+  );
+  const anchors = splitDocxBlockAnchors(block, safeOffset);
+  const nextIsParagraph = block.type === "heading";
+  return {
+    before: {
+      ...block,
+      ...anchors.before,
+      text: docxRunsText(before),
+      runs: before.length > 0 ? before : undefined,
+    },
+    after: {
+      ...block,
+      ...anchors.after,
+      id: nextId,
+      type: nextIsParagraph ? ("paragraph" as const) : block.type,
+      text: docxRunsText(after),
+      runs: after.length > 0 ? after : undefined,
+      headingLevel: nextIsParagraph ? undefined : block.headingLevel,
+      paragraphStyleId: nextIsParagraph ? undefined : block.paragraphStyleId,
+      paragraphStyleName: nextIsParagraph
+        ? undefined
+        : block.paragraphStyleName,
+      fontSize: nextIsParagraph ? "14" : block.fontSize,
+      sourceXml: undefined,
+    },
+  };
+}
+
+export function mergeDocxTextBlockRuns(
+  previous: DocxBlock,
+  current: DocxBlock,
+): { block: DocxBlock } | { reason: string } {
+  if (!isDocxTextBlock(previous) || !isDocxTextBlock(current)) {
+    return { reason: "Only text paragraphs can be merged" };
+  }
+  const reason =
+    docxTextStructureBlockReason(previous) ??
+    docxTextStructureBlockReason(current);
+  if (reason) return { reason };
+  if (previous.target !== current.target) {
+    return {
+      reason: "Paragraphs with different hyperlink targets cannot be merged safely",
+    };
+  }
+  const runs = docxMergeRuns([
+    ...splitDocxRuns(previous),
+    ...splitDocxRuns(current),
+  ]);
+  return {
+    block: {
+      ...previous,
+      ...mergeDocxBlockAnchors(previous, current),
+      text: docxRunsText(runs),
+      runs: runs.length > 0 ? runs : undefined,
+    },
+  };
+}
+
+export function docxTextStructureBlockReason(block: DocxBlock) {
+  if (block.bookmarkId || block.bookmarkName) {
+    return "Bookmarks need range anchors before split or merge";
+  }
+  if (block.commentId && !block.commentRanges) {
+    return "Comments need range anchors before split or merge";
+  }
+  if ((block.footnoteId || block.endnoteId) && !block.noteReferences) {
+    return "Note references need range anchors before split or merge";
+  }
+  if (block.fields?.length) return "Fields need range anchors before split or merge";
+  if (block.contentControls?.length) {
+    return "Content controls need stable range anchors before split or merge";
+  }
+  if (block.revisions?.length) {
+    return "Revision markup needs range anchors before split or merge";
+  }
+  return null;
+}
+
+export function docxTextEditingBlockReason(block: DocxBlock) {
+  if ((block.target || block.relationshipId) && !block.hyperlinks) {
+    return "Hyperlinked paragraph text needs run-level relationship anchors";
+  }
+  return docxTextStructureBlockReason(block);
 }
 
 export function toggleDocxInlineBooleanRange(
@@ -326,7 +462,12 @@ function baseDocxRun(block: DocxBlock, text: string): DocxRun {
   return run;
 }
 
-function docxInsertionRun(block: DocxBlock, offset: number, text: string) {
+function docxInsertionRun(
+  block: DocxBlock,
+  offset: number,
+  text: string,
+  preferFollowingRun = false,
+) {
   const safeOffset = Math.max(0, Math.min(block.text.length, offset));
   const runs = splitDocxRuns(block);
   let cursor = 0;
@@ -334,7 +475,10 @@ function docxInsertionRun(block: DocxBlock, offset: number, text: string) {
   for (const run of runs) {
     const runStart = cursor;
     const runEnd = runStart + run.text.length;
-    if (safeOffset >= runStart && safeOffset <= runEnd) {
+    if (
+      safeOffset >= runStart &&
+      (preferFollowingRun ? safeOffset < runEnd : safeOffset <= runEnd)
+    ) {
       fallback = run;
       break;
     }

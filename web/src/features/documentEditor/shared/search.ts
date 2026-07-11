@@ -6,6 +6,8 @@ import type {
   XlsxModel,
 } from "./models";
 import { isRecord } from "./models";
+import { docxRunTextDiffPatch } from "../word/docxTextRuns";
+import { docxTextEditingBlockReason } from "../word/docxTextRuns";
 
 export interface TextSearchOptions {
   query: string;
@@ -22,6 +24,11 @@ export interface TextReplacementResult {
 
 export function countModelMatches(model: unknown, options: TextSearchOptions) {
   return transformTextFields(model, options, "count").replacements;
+}
+
+export function modelSearchError(options: TextSearchOptions) {
+  if (!options.query || !options.regexSearch) return null;
+  return buildSearchRegex(options) ? null : "Invalid regular expression";
 }
 
 export function replaceFirstInModel(
@@ -78,6 +85,7 @@ function transformTextFields(
     let remainingMode = mode;
     let replacements = 0;
     const blocks = model.blocks.map((block) => {
+      if (docxTextEditingBlockReason(block)) return block;
       if (remainingMode === "first" && replacements > 0) return block;
       const result = transformString(block.text, options, remainingMode);
       replacements += result.replacements;
@@ -86,7 +94,10 @@ function transformTextFields(
       }
       return mode === "count" || result.replacements === 0
         ? block
-        : { ...block, text: result.value };
+        : (docxRunTextDiffPatch(block, result.value) ?? {
+            ...block,
+            text: result.value,
+          });
     });
     return {
       model: mode === "count" || replacements === 0 ? model : { ...model, blocks },
@@ -101,31 +112,16 @@ function transformTextFields(
       rows: sheet.rows.map((row) => ({
         ...row,
         cells: row.cells.map((cell) => {
+          if (cell.formula) return cell;
           if (remainingMode === "first" && replacements > 0) return cell;
-          const source = cell.formula ? `=${cell.formula}` : cell.value;
+          const source = cell.value;
           const result = transformString(source, options, remainingMode);
           replacements += result.replacements;
           if (remainingMode === "first" && result.replacements > 0) {
             remainingMode = "count";
           }
           if (mode === "count" || result.replacements === 0) return cell;
-          return result.value.startsWith("=")
-            ? {
-                ...cell,
-                value: "",
-                formula: result.value.slice(1),
-                formulaType: undefined,
-                formulaRef: undefined,
-                formulaSharedIndex: undefined,
-              }
-            : {
-                ...cell,
-                value: result.value,
-                formula: undefined,
-                formulaType: undefined,
-                formulaRef: undefined,
-                formulaSharedIndex: undefined,
-              };
+          return { ...cell, value: result.value };
         }),
       })),
     }));
@@ -140,6 +136,7 @@ function transformTextFields(
     const slides = model.slides.map((slide) => ({
       ...slide,
       texts: slide.texts.map((text) => {
+        if (text.complexText) return text;
         if (remainingMode === "first" && replacements > 0) return text;
         const result = transformString(text.text, options, remainingMode);
         replacements += result.replacements;
@@ -170,13 +167,17 @@ function transformString(
   if (mode === "count") {
     return { value, replacements: countMatches(value, pattern) };
   }
-  let replacements = 0;
   const replacement = options.replacement ?? "";
-  const next = value.replace(pattern, (match) => {
-    if (mode === "first" && replacements > 0) return match;
-    replacements += 1;
-    return replacement;
-  });
+  const replacementPattern =
+    mode === "first"
+      ? new RegExp(pattern.source, pattern.flags.replace("g", ""))
+      : pattern;
+  const replacements =
+    mode === "first" ? (pattern.test(value) ? 1 : 0) : countMatches(value, pattern);
+  pattern.lastIndex = 0;
+  const next = options.regexSearch
+    ? value.replace(replacementPattern, replacement)
+    : value.replace(replacementPattern, () => replacement);
   return { value: next, replacements };
 }
 
@@ -184,9 +185,11 @@ function buildSearchRegex(options: TextSearchOptions) {
   const query = options.query;
   if (!query) return null;
   const source = options.regexSearch ? query : escapeRegExp(query);
-  const wrapped = options.wholeWord ? `\\b(?:${source})\\b` : source;
+  const wrapped = options.wholeWord
+    ? `(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])`
+    : source;
   try {
-    return new RegExp(wrapped, options.matchCase ? "g" : "gi");
+    return new RegExp(wrapped, options.matchCase ? "gu" : "giu");
   } catch {
     return null;
   }
@@ -198,7 +201,10 @@ function countMatches(value: string, pattern: RegExp) {
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(value))) {
     count += 1;
-    if (match[0].length === 0) pattern.lastIndex += 1;
+    if (match[0].length === 0) {
+      const codePoint = value.codePointAt(pattern.lastIndex);
+      pattern.lastIndex += codePoint !== undefined && codePoint > 0xffff ? 2 : 1;
+    }
   }
   return count;
 }

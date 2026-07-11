@@ -20,6 +20,9 @@ import { buildDocxPasteResult } from "../word/docxRichPaste";
 import {
   applyDocxInlineStyleRange,
   isDocxInlineStylePatch,
+  mergeDocxTextBlockRuns,
+  splitDocxTextBlockRuns,
+  docxTextEditingBlockReason,
   toggleDocxInlineBooleanRange,
 } from "../word/docxTextRuns";
 import { builtInFontFamilies } from "../shared/fonts";
@@ -39,6 +42,19 @@ import { DocxDocumentCanvas } from "../word/docxDocumentCanvas";
 import { createDocxPartsActions } from "../word/docxPartsActions";
 import { runDocxEditorCommand } from "../word/docxEditorCommands";
 import { handleDocxBlockShortcut } from "../word/docxBlockShortcuts";
+import { insertDocxBlockAtStableAnchor } from "../word/docxAsyncInsertion";
+import { deleteDocxBlockAndUnreferencedParts } from "../word/docxReferenceCleanup";
+import {
+  addDocxCommentRange,
+  docxHyperlinkRanges,
+  docxNoteReferences,
+  setDocxHyperlinkRange,
+} from "../word/docxTextAnchors";
+import {
+  applyDocxPageDraft,
+  docxPageDraftEquals,
+  resolveDocxPageDraftTarget,
+} from "../word/docxPageDraft";
 
 export function DocxEditor({
   model,
@@ -59,14 +75,43 @@ export function DocxEditor({
   const [stylesOpen, setStylesOpen] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkDraft, setLinkDraft] = useState("");
+  const [pendingLinkSelection, setPendingLinkSelection] = useState<{
+    blockId: string;
+    start: number;
+    end: number;
+  } | null>(null);
   const [formatClipboard, setFormatClipboard] =
     useState<DocxFormatClipboard | null>(null);
+  const [interactionError, setInteractionError] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
+  const initialPageTarget = resolveDocxPageDraftTarget(model, activeBlockId);
+  const [storedPageDraftTarget, setStoredPageDraftTarget] = useState(initialPageTarget);
+  const [pageDraft, setPageDraft] = useState<DocxPageSettings>(initialPageTarget.page);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingImageReadersRef = useRef(new Map<string, FileReader>());
+  const pendingImageSequenceRef = useRef(0);
+  const latestModelRef = useRef(model);
   const handledCommandTokenRef = useRef<number | null>(null);
   const composingBlockIdRef = useRef<string | null>(null);
+  const pageOrientationDimensionsRef = useRef<{
+    targetId: string;
+    portrait?: { width?: number; height?: number };
+    landscape?: { width?: number; height?: number };
+  }>({ targetId: initialPageTarget.id });
   const activeBlock =
     model.blocks.find((block) => block.id === activeBlockId) ?? model.blocks[0];
-  const page = model.page;
+  const storedPageDraftDirty = !docxPageDraftEquals(
+    storedPageDraftTarget.page,
+    pageDraft,
+  );
+  const resolvedPageDraftTarget = resolveDocxPageDraftTarget(model, activeBlockId);
+  const pageDraftTarget = storedPageDraftDirty
+    ? storedPageDraftTarget
+    : resolvedPageDraftTarget;
+  const page = storedPageDraftDirty ? pageDraft : resolvedPageDraftTarget.page;
+  const pageDraftDirty = storedPageDraftDirty;
   const hasDocumentParts = Boolean(
     model.headers?.length ||
       model.footers?.length ||
@@ -82,12 +127,34 @@ export function DocxEditor({
   );
   const outlineItems = buildDocxOutlineItems(model.blocks);
 
+  useEffect(() => {
+    latestModelRef.current = model;
+  }, [model]);
+
   function updatePage(patch: Partial<DocxPageSettings>) {
-    onChange({ ...model, page: { ...model.page, ...patch } });
+    if (!storedPageDraftDirty) {
+      setStoredPageDraftTarget(resolvedPageDraftTarget);
+      setPageDraft({ ...resolvedPageDraftTarget.page, ...patch });
+      resetPageOrientationMemory(
+        resolvedPageDraftTarget.id,
+        resolvedPageDraftTarget.page,
+      );
+      return;
+    }
+    setPageDraft((current) => ({ ...current, ...patch }));
   }
 
   function updatePageOrientation(orientation: "portrait" | "landscape") {
-    const current = model.page;
+    const current = page;
+    if (pageOrientationDimensionsRef.current.targetId !== pageDraftTarget.id) {
+      resetPageOrientationMemory(pageDraftTarget.id, current);
+    }
+    const currentOrientation = current.orientation ?? "portrait";
+    pageOrientationDimensionsRef.current[currentOrientation] = {
+      width: current.width,
+      height: current.height,
+    };
+    const remembered = pageOrientationDimensionsRef.current[orientation];
     const shouldSwap =
       current?.width !== undefined &&
       current.height !== undefined &&
@@ -95,8 +162,8 @@ export function DocxEditor({
         (orientation === "portrait" && current.width > current.height));
     updatePage({
       orientation,
-      width: shouldSwap ? current?.height : current?.width,
-      height: shouldSwap ? current?.width : current?.height,
+      width: remembered?.width ?? (shouldSwap ? current?.height : current?.width),
+      height: remembered?.height ?? (shouldSwap ? current?.width : current?.height),
     });
   }
 
@@ -108,6 +175,42 @@ export function DocxEditor({
       width: orientation === "landscape" ? preset.height : preset.width,
       height: orientation === "landscape" ? preset.width : preset.height,
     });
+    pageOrientationDimensionsRef.current[orientation] = {
+      width: orientation === "landscape" ? preset.height : preset.width,
+      height: orientation === "landscape" ? preset.width : preset.height,
+    };
+  }
+
+  function applyPageDraft() {
+    if (!pageDraftDirty) return;
+    if (
+      pageDraftTarget.breakBlockId &&
+      !model.blocks.some((block) => block.id === pageDraftTarget.breakBlockId)
+    ) {
+      setInteractionError(
+        "Page settings were not applied because the target section break no longer exists.",
+      );
+      return;
+    }
+    const committedPage = { ...pageDraft };
+    const nextModel = applyDocxPageDraft(model, pageDraftTarget, committedPage);
+    setStoredPageDraftTarget({ ...pageDraftTarget, page: committedPage });
+    resetPageOrientationMemory(pageDraftTarget.id, committedPage);
+    setInteractionError(null);
+    onChange(nextModel);
+  }
+
+  function cancelPageDraft() {
+    setPageDraft({ ...pageDraftTarget.page });
+    resetPageOrientationMemory(pageDraftTarget.id, pageDraftTarget.page);
+  }
+
+  function resetPageOrientationMemory(targetId: string, value: DocxPageSettings) {
+    const orientation = value.orientation ?? "portrait";
+    pageOrientationDimensionsRef.current = {
+      targetId,
+      [orientation]: { width: value.width, height: value.height },
+    };
   }
 
   function updateBlock(index: number, patch: Partial<DocxBlock>) {
@@ -231,6 +334,7 @@ export function DocxEditor({
   } = createDocxPartsActions({
     model,
     onChange,
+    onMutationError: setInteractionError,
     updateBlock,
   });
 
@@ -263,6 +367,11 @@ export function DocxEditor({
   ) {
     const block = model.blocks[index];
     if (!isDocxTextBlock(block)) return;
+    const editingBlockReason = docxTextEditingBlockReason(block);
+    if (editingBlockReason) {
+      setInteractionError(`Formatting was not changed. ${editingBlockReason}`);
+      return;
+    }
     const element = document.querySelector<HTMLElement>(
       `[data-docx-block="${CSS.escape(block.id)}"]`,
     );
@@ -283,6 +392,13 @@ export function DocxEditor({
   }
 
   function updateActive(patch: Partial<DocxBlock>) {
+    if (activeBlock) {
+      const editingBlockReason = docxTextEditingBlockReason(activeBlock);
+      if (editingBlockReason) {
+        setInteractionError(`Paragraph formatting was not changed. ${editingBlockReason}`);
+        return;
+      }
+    }
     const index = model.blocks.findIndex((block) => block.id === activeBlock?.id);
     if (index >= 0 && !applyInlineStyleToSelection(index, patch)) {
       updateBlock(index, patch);
@@ -290,17 +406,50 @@ export function DocxEditor({
   }
 
   function openLinkEditor() {
-    setLinkDraft(activeBlock?.target ?? "");
+    if (!isDocxTextBlock(activeBlock)) return;
+    const range = docxBlockTextSelection(activeBlock) ?? {
+      start: 0,
+      end: activeBlock.text.length,
+    };
+    if (range.start === range.end) {
+      setInteractionError("Select text before changing a link.");
+      return;
+    }
+    setInteractionError(null);
+    const selectedLink = docxHyperlinkRanges(activeBlock).find(
+      (link) => link.start <= range.start && link.end >= range.end,
+    );
+    setPendingLinkSelection({ blockId: activeBlock.id, ...range });
+    setLinkDraft(selectedLink?.target ?? "");
     setLinkInputOpen(true);
   }
 
   function applyLinkDraft() {
+    if (!pendingLinkSelection) return;
+    const blockIndex = model.blocks.findIndex(
+      (block) => block.id === pendingLinkSelection.blockId,
+    );
+    const block = model.blocks[blockIndex];
+    if (!isDocxTextBlock(block)) {
+      setInteractionError("The paragraph selected for the link no longer exists.");
+      setLinkInputOpen(false);
+      setPendingLinkSelection(null);
+      return;
+    }
     const target = linkDraft.trim();
-    updateActive({
-      target: target || undefined,
-      relationshipId: target ? activeBlock?.relationshipId : undefined,
-    });
+    const result = setDocxHyperlinkRange(
+      block,
+      pendingLinkSelection,
+      target || undefined,
+    );
+    if ("reason" in result) {
+      setInteractionError(result.reason);
+      return;
+    }
+    updateBlock(blockIndex, result.block);
+    setInteractionError(null);
     setLinkInputOpen(false);
+    setPendingLinkSelection(null);
   }
 
   function applyNormalStyle() {
@@ -330,14 +479,30 @@ export function DocxEditor({
     const block = model.blocks[targetIndex];
     if (!isDocxTextBlock(block)) return;
     const noteKey = kind === "footnote" ? "footnotes" : "endnotes";
-    const blockKey = kind === "footnote" ? "footnoteId" : "endnoteId";
     const notes = model[noteKey] ?? [];
-    const noteId = block[blockKey] ?? nextDocxNoteId(notes, model.blocks, blockKey);
+    const offset = docxBlockTextSelection(block)?.end ?? block.text.length;
+    const existing = docxNoteReferences(block).find(
+      (reference) => reference.kind === kind && reference.offset === offset,
+    );
+    const blockKey = kind === "footnote" ? "footnoteId" : "endnoteId";
+    const noteId = existing?.id ?? nextDocxNoteId(notes, model.blocks, blockKey);
     const noteExists = notes.some((note) => note.id === noteId);
     onChange({
       ...model,
       blocks: model.blocks.map((item, index) =>
-        index === targetIndex ? { ...item, [blockKey]: noteId } : item,
+        index === targetIndex
+          ? {
+              ...item,
+              footnoteId: undefined,
+              endnoteId: undefined,
+              noteReferences: existing
+                ? docxNoteReferences(block)
+                : [
+                    ...docxNoteReferences(block),
+                    { id: noteId, kind, offset, affinity: "after" as const },
+                  ],
+            }
+          : item,
       ),
       [noteKey]: noteExists ? notes : [...notes, { id: noteId, kind, text: "" }],
     });
@@ -351,13 +516,23 @@ export function DocxEditor({
       model.blocks.findIndex((block) => block.id === activeBlock?.id);
     const block = model.blocks[targetIndex];
     if (!isDocxTextBlock(block)) return;
+    const range = docxBlockTextSelection(block) ?? {
+      start: 0,
+      end: block.text.length,
+    };
     const comments = model.comments ?? [];
-    const commentId = block.commentId ?? nextDocxCommentId(comments, model.blocks);
+    const commentId = nextDocxCommentId(comments, model.blocks);
+    const result = addDocxCommentRange(block, range, commentId);
+    if ("reason" in result) {
+      setInteractionError(result.reason);
+      return;
+    }
+    setInteractionError(null);
     const commentExists = comments.some((comment) => comment.id === commentId);
     onChange({
       ...model,
       blocks: model.blocks.map((item, index) =>
-        index === targetIndex ? { ...item, commentId } : item,
+        index === targetIndex ? result.block : item,
       ),
       comments: commentExists
         ? comments
@@ -436,38 +611,122 @@ export function DocxEditor({
     });
   }
 
+  /**
+   * Media reads carry only a stable block anchor. Completion rebases onto the
+   * latest model and remains explicitly cancellable while no package reference
+   * exists, preventing a stale FileReader closure from replacing later edits.
+   */
   function insertImageFile(file: File) {
     if (!file.type.startsWith("image/")) return;
+    pendingImageSequenceRef.current += 1;
+    const operationId = `docx-image-${pendingImageSequenceRef.current}`;
+    const anchorBlockId = activeBlock?.id ?? null;
     const reader = new FileReader();
+    pendingImageReadersRef.current.set(operationId, reader);
+    setPendingImages((current) => [
+      ...current,
+      { id: operationId, name: file.name },
+    ]);
     reader.onload = () => {
       const dataUrl = typeof reader.result === "string" ? reader.result : "";
-      if (!dataUrl) return;
-      readImageDisplaySize(dataUrl).then(({ width, height }) => {
-        insertBlockAfterActive({
-          id: nextDocxBlockId(model.blocks, "img"),
-          type: "image",
-          text: "",
-          dataUrl,
-          mimeType: file.type,
-          altText: file.name,
-          width,
-          height,
-          imageWrap: "inline",
+      if (!dataUrl) {
+        finishPendingImage(operationId);
+        return;
+      }
+      void readImageDisplaySize(dataUrl)
+        .then(({ width, height }) => {
+          if (!pendingImageReadersRef.current.has(operationId)) return;
+          const latest = latestModelRef.current;
+          const nextBlock: DocxBlock = {
+            id: nextDocxBlockId(latest.blocks, "img"),
+            type: "image",
+            text: "",
+            dataUrl,
+            mimeType: file.type,
+            altText: file.name,
+            width,
+            height,
+            imageWrap: "inline",
+          };
+          const rebased = insertDocxBlockAtStableAnchor(
+            latest,
+            anchorBlockId,
+            nextBlock,
+          );
+          if ("reason" in rebased) {
+            setInteractionError(
+              `Image ${file.name} was not inserted because its paragraph was deleted.`,
+            );
+            finishPendingImage(operationId);
+            return;
+          }
+          const nextModel = rebased.model;
+          latestModelRef.current = nextModel;
+          onChange(nextModel);
+          setActiveBlockId(nextBlock.id);
+          setInteractionError(null);
+          finishPendingImage(operationId);
+        })
+        .catch(() => {
+          if (!pendingImageReadersRef.current.has(operationId)) return;
+          setInteractionError(`Image ${file.name} could not be decoded.`);
+          finishPendingImage(operationId);
         });
-      });
+    };
+    reader.onerror = () => {
+      setInteractionError(`Image ${file.name} could not be read.`);
+      finishPendingImage(operationId);
+    };
+    reader.onabort = () => {
+      if (pendingImageReadersRef.current.has(operationId)) {
+        finishPendingImage(operationId);
+      }
     };
     reader.readAsDataURL(file);
   }
 
+  function finishPendingImage(operationId: string) {
+    pendingImageReadersRef.current.delete(operationId);
+    setPendingImages((current) =>
+      current.filter((operation) => operation.id !== operationId),
+    );
+  }
+
+  function cancelPendingImage(operationId: string) {
+    const reader = pendingImageReadersRef.current.get(operationId);
+    pendingImageReadersRef.current.delete(operationId);
+    if (reader?.readyState === FileReader.LOADING) reader.abort();
+    setPendingImages((current) =>
+      current.filter((operation) => operation.id !== operationId),
+    );
+  }
+
+  useEffect(
+    () => () => {
+      const readers = [...pendingImageReadersRef.current.values()];
+      pendingImageReadersRef.current.clear();
+      for (const reader of readers) {
+        if (reader.readyState === FileReader.LOADING) reader.abort();
+      }
+    },
+    [],
+  );
+
   function deleteActiveBlock() {
     if (!activeBlock) return;
-    const nextBlocks = model.blocks.filter((block) => block.id !== activeBlock.id);
-    onChange({ ...model, blocks: nextBlocks });
-    setActiveBlockId(nextBlocks[0]?.id ?? null);
+    const nextModel = deleteDocxBlockAndUnreferencedParts(model, activeBlock.id);
+    onChange(nextModel);
+    setActiveBlockId(nextModel.blocks[0]?.id ?? null);
   }
 
   function moveActiveBlock(direction: -1 | 1) {
     if (!activeBlock) return;
+    if (model.blocks.some((block) => docxTextEditingBlockReason(block))) {
+      setInteractionError(
+        "Blocks were not reordered because this document contains range-anchored complex paragraphs.",
+      );
+      return;
+    }
     const index = model.blocks.findIndex((block) => block.id === activeBlock.id);
     const nextIndex = index + direction;
     if (index < 0 || nextIndex < 0 || nextIndex >= model.blocks.length) return;
@@ -546,24 +805,23 @@ export function DocxEditor({
   function splitTextBlockAtCaret(index: number, element: HTMLElement) {
     const block = model.blocks[index];
     if (!isDocxTextBlock(block)) return;
-    const text = element.textContent ?? block.text;
     const offset = textOffsetWithin(element);
-    const before = text.slice(0, offset);
-    const after = text.slice(offset);
-    const next: DocxBlock = {
-      ...block,
-      id: nextDocxBlockId(model.blocks, "p"),
-      type: block.type === "heading" ? "paragraph" : block.type,
-      text: after,
-      runs: undefined,
-      headingLevel: undefined,
-      fontSize: block.type === "heading" ? "14" : block.fontSize,
-    };
+    const split = splitDocxTextBlockRuns(
+      block,
+      offset,
+      nextDocxBlockId(model.blocks, "p"),
+    );
+    if (!split) return;
+    if ("reason" in split) {
+      setInteractionError(`Paragraph was not split. ${split.reason}`);
+      return;
+    }
+    setInteractionError(null);
     replaceBlocks(
       model.blocks.flatMap((item, blockIndex) =>
-        blockIndex === index ? [{ ...item, text: before, runs: undefined }, next] : [item],
+        blockIndex === index ? [split.before, split.after] : [item],
       ),
-      next.id,
+      split.after.id,
     );
   }
 
@@ -574,12 +832,17 @@ export function DocxEditor({
     if (!isDocxTextBlock(current) || !isDocxTextBlock(previous)) {
       return false;
     }
-    const mergedText = `${previous.text}${current.text}`;
+    const merged = mergeDocxTextBlockRuns(previous, current);
+    if ("reason" in merged) {
+      setInteractionError(`Paragraphs were not merged. ${merged.reason}`);
+      return true;
+    }
+    setInteractionError(null);
     replaceBlocks(
       model.blocks
         .map((block, blockIndex) =>
           blockIndex === index - 1
-            ? { ...block, text: mergedText, runs: undefined }
+            ? merged.block
             : block,
         )
         .filter((_, blockIndex) => blockIndex !== index),
@@ -642,6 +905,8 @@ export function DocxEditor({
       <DocxEditorToolbar
         activeBlock={activeBlock}
         page={page}
+        pageDraftDirty={pageDraftDirty}
+        pageScopeLabel={pageDraftTarget.label}
         linkInputOpen={linkInputOpen}
         linkDraft={linkDraft}
         canPasteFormatting={Boolean(formatClipboard)}
@@ -667,6 +932,8 @@ export function DocxEditor({
         onUpdatePagePreset={updatePagePreset}
         onUpdatePageOrientation={updatePageOrientation}
         onUpdatePage={updatePage}
+        onApplyPageDraft={applyPageDraft}
+        onCancelPageDraft={cancelPageDraft}
         onToggleTextPartsOpen={() => setTextPartsOpen((current) => !current)}
         onToggleOutlineOpen={() => setOutlineOpen((current) => !current)}
         onToggleStylesOpen={() => setStylesOpen((current) => !current)}
@@ -677,6 +944,29 @@ export function DocxEditor({
         onInsertPageBreak={insertPageBreak}
         onInsertSectionBreak={insertSectionBreak}
       />
+      {interactionError && (
+        <div
+          role="alert"
+          className="shrink-0 border-b border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-3 py-1.5 text-xs text-[var(--status-warning)]"
+        >
+          {interactionError}
+        </div>
+      )}
+      {pendingImages.map((operation) => (
+        <div
+          key={operation.id}
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--accent)]/30 bg-[var(--accent)]/5 px-3 py-1.5 text-xs text-[var(--text-muted)]"
+        >
+          <span>Reading {operation.name} for insertion at its original paragraph…</span>
+          <button
+            type="button"
+            onClick={() => cancelPendingImage(operation.id)}
+            className="rounded border border-[var(--border)] px-2 py-0.5 hover:bg-[var(--surface-hover)]"
+          >
+            Cancel
+          </button>
+        </div>
+      ))}
       {stylesOpen && (
         <DocxStylePanel
           activeBlock={activeBlock}
@@ -717,6 +1007,7 @@ export function DocxEditor({
           />
         )}
         <DocxDocumentCanvas
+          activePage={pageDraft}
           activeBlockId={activeBlock?.id}
           composingBlockIdRef={composingBlockIdRef}
           model={model}
@@ -787,4 +1078,12 @@ function nextParagraphStyleId(styles: DocxStyle[], name: string) {
     index += 1;
   }
   return candidate;
+}
+
+function docxBlockTextSelection(block: DocxBlock) {
+  const element = document.querySelector<HTMLElement>(
+    `[data-docx-block="${CSS.escape(block.id)}"]`,
+  );
+  const range = element ? textSelectionOffsetsWithin(element) : null;
+  return range;
 }

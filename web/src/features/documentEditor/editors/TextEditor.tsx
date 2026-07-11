@@ -4,6 +4,7 @@ import type { EditorCommandRequest } from "../shared/commands";
 import type { TextModel } from "../shared/models";
 import {
   activeSourceFoldIds,
+  changedTextFileFormatKeys,
   ConfigPreview,
   countTextLines,
   cursorPosition,
@@ -19,6 +20,7 @@ import {
   languageServiceCompletions,
   languageServiceHover,
   languageForPath,
+  largeTextFilePolicy,
   LargeTextSourceViewer,
   lineCommentToken,
   moveSelectedLines,
@@ -29,6 +31,10 @@ import {
   sortJsonValue,
   StructuredJsonEditor,
   textEditorKind,
+  textFileFormatDraft,
+  textFileFormatImpact,
+  textFileFormatIssue,
+  TextFormatDraftBar,
   TextEditorDiagnosticsBar,
   TextEditorGoToLineBar,
   TextEditorLargeFileWarning,
@@ -43,15 +49,13 @@ import {
   toggleCommentLine,
   transformSelectedLines,
   type SourceFoldRange,
+  type TextFileFormatDraft,
   type TextEditorMode,
   useJsonSchemaRegistryControls,
   useTextEditorDerivedState,
   useTextEditorSearch,
   useTextSourceEditing,
 } from "../text";
-
-const LARGE_TEXT_FILE_CHAR_LIMIT = 1_000_000;
-const LARGE_TEXT_FILE_LINE_LIMIT = 50_000;
 
 export function PlainTextEditor({
   filePath,
@@ -78,11 +82,20 @@ export function PlainTextEditor({
   const [schemaOpen, setSchemaOpen] = useState(false);
   const [foldedSourceIds, setFoldedSourceIds] = useState<Set<string>>(() => new Set());
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [sourceScrollLeft, setSourceScrollLeft] = useState(0);
   const [sourceScrollTop, setSourceScrollTop] = useState(0);
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [regexSearch, setRegexSearch] = useState(false);
   const [languageAssistOpen, setLanguageAssistOpen] = useState(false);
+  const [formatEdit, setFormatEdit] = useState<{
+    baseline: TextFileFormatDraft;
+    draft: TextFileFormatDraft;
+  } | null>(null);
+  const [largeLineRequest, setLargeLineRequest] = useState<{
+    line: number;
+    token: number;
+  } | null>(null);
   const [cursor, setCursor] = useState({
     line: 1,
     column: 1,
@@ -95,9 +108,23 @@ export function PlainTextEditor({
   const structured = kind === "json" || kind === "yaml" || kind === "toml";
   const json = kind === "json";
   const lineCount = countTextLines(model.content);
-  const largeTextMode =
-    model.content.length > LARGE_TEXT_FILE_CHAR_LIMIT ||
-    lineCount > LARGE_TEXT_FILE_LINE_LIMIT;
+  const largeFilePolicy = largeTextFilePolicy(model.content.length, lineCount);
+  const largeTextMode = largeFilePolicy.mode !== "normal";
+  const largeTextReadOnly = largeFilePolicy.mode === "read-only";
+  const currentFileFormat = textFileFormatDraft(model);
+  const formatChangedKeys = formatEdit
+    ? changedTextFileFormatKeys(formatEdit.baseline, formatEdit.draft)
+    : [];
+  const formatIssue = formatEdit
+    ? textFileFormatIssue(model.content, formatEdit.draft)
+    : null;
+  const formatConflict = formatEdit
+    ? changedTextFileFormatKeys(formatEdit.baseline, currentFileFormat).length > 0
+    : false;
+  const formatImpact = textFileFormatImpact(
+    model.content,
+    formatEdit?.draft ?? currentFileFormat,
+  );
   const foldRanges = largeTextMode ? [] : sourceFoldRanges(model.content, language);
   const activeFoldedSourceIds = activeSourceFoldIds(foldedSourceIds, foldRanges);
   const {
@@ -171,6 +198,18 @@ export function PlainTextEditor({
     setMode((current) => (current === "preview" ? "source" : "preview"));
   }
 
+  function openFileFormatDraft() {
+    if (largeTextMode) return;
+    const baseline = textFileFormatDraft(model);
+    setFormatEdit({ baseline, draft: baseline });
+  }
+
+  function applyFileFormatDraft() {
+    if (!formatEdit || formatIssue || formatConflict || largeTextMode) return;
+    onChange({ ...model, ...formatEdit.draft });
+    setFormatEdit(null);
+  }
+
   function formatJson() {
     try {
       updateContent(`${JSON.stringify(JSON.parse(model.content), null, 2)}\n`);
@@ -218,6 +257,7 @@ export function PlainTextEditor({
   function syncLineNumberScroll() {
     if (!sourceRef.current || !lineNumberRef.current) return;
     lineNumberRef.current.scrollTop = sourceRef.current.scrollTop;
+    setSourceScrollLeft(sourceRef.current.scrollLeft);
     setSourceScrollTop(sourceRef.current.scrollTop);
   }
 
@@ -331,6 +371,14 @@ export function PlainTextEditor({
   }
 
   function focusSourceLine(line: number) {
+    if (largeTextMode) {
+      setMode("source");
+      setLargeLineRequest((current) => ({
+        line,
+        token: (current?.token ?? 0) + 1,
+      }));
+      return;
+    }
     unfoldSourceLine(line);
     const offset = offsetForTextLine(model.content, line);
     focusSourceRange(offset, offset);
@@ -344,12 +392,14 @@ export function PlainTextEditor({
   }
 
   const {
+    cancelLargeSearch,
     findNext,
     largeSearchNavigationForQuery,
     largeSearchRange,
     replaceAll,
     replaceNext,
     searchMatches,
+    searchError,
     streamingSearchCountForQuery,
   } = useTextEditorSearch({
     caseSensitive,
@@ -366,6 +416,7 @@ export function PlainTextEditor({
 
   const handleCommandRequest = useEffectEvent(
     (commandId: EditorCommandRequest["id"]) => {
+    if (largeTextMode && commandId !== "goToLine") return false;
     if (commandId === "indent") {
       indentSelection();
     } else if (commandId === "outdent") {
@@ -421,15 +472,16 @@ export function PlainTextEditor({
   return (
     <div
       className="flex h-full min-h-0 flex-col"
-      onKeyDown={(event) =>
+      onKeyDown={(event) => {
+        if (largeTextMode) return;
         handleTextEditorKeyDown(event, {
           json,
           setTableMode: () => setMode("table"),
           setTreeMode: () => setMode("tree"),
           structured,
           togglePreviewMode,
-        })
-      }
+        });
+      }}
     >
       <TextEditorToolbar
         activeMode={activeMode}
@@ -439,18 +491,18 @@ export function PlainTextEditor({
         goToLineOpen={goToLineOpen}
         json={json}
         language={language}
+        largeTextMode={largeTextMode}
         lineEnding={model.lineEnding}
         outlineOpen={outlineOpen}
         schemaOpen={schemaOpen}
         searchOpen={searchOpen}
         structured={structured}
         tableAvailable={tableAvailable}
-        onBomChange={(bom) => onChange({ ...model, bom })}
         onDuplicateSelection={duplicateSelection}
         onEnsureFinalNewline={ensureFinalNewline}
         onFormatJson={formatJson}
         onIndentSelection={indentSelection}
-        onLineEndingChange={(lineEnding) => onChange({ ...model, lineEnding })}
+        onOpenFileFormat={openFileFormatDraft}
         onMinifyJson={minifyJson}
         onMoveSelection={moveSelection}
         onOutdentSelection={outdentSelection}
@@ -468,6 +520,19 @@ export function PlainTextEditor({
         onToggleSearch={() => setSearchOpen((current) => !current)}
         onTrimTrailingWhitespace={trimTrailingWhitespace}
       />
+      {formatEdit && !largeTextMode && (
+        <TextFormatDraftBar
+          baseline={formatEdit.baseline}
+          draft={formatEdit.draft}
+          changedKeys={formatChangedKeys}
+          issue={formatIssue}
+          conflict={formatConflict}
+          impact={formatImpact}
+          onChange={(draft) => setFormatEdit({ ...formatEdit, draft })}
+          onApply={applyFileFormatDraft}
+          onCancel={() => setFormatEdit(null)}
+        />
+      )}
       {searchOpen && (
         <TextEditorSearchBar
           caseSensitive={caseSensitive}
@@ -477,9 +542,11 @@ export function PlainTextEditor({
           replaceDraft={replaceDraft}
           searchDraft={searchDraft}
           searchMatches={searchMatches}
+          searchError={searchError}
           streamingSearchCount={streamingSearchCountForQuery}
           wholeWord={wholeWord}
           onCaseSensitiveChange={setCaseSensitive}
+          onCancelLargeSearch={cancelLargeSearch}
           onFindNext={findNext}
           onRegexSearchChange={setRegexSearch}
           onReplaceAll={replaceAll}
@@ -515,7 +582,9 @@ export function PlainTextEditor({
           onStartNewSchema={schemaControls.startNewSchema}
         />
       )}
-      {largeTextMode && <TextEditorLargeFileWarning />}
+      {largeTextMode && (
+        <TextEditorLargeFileWarning policy={largeFilePolicy} />
+      )}
       {diagnostics.length > 0 && (
         <TextEditorDiagnosticsBar
           diagnostics={diagnostics}
@@ -555,8 +624,10 @@ export function PlainTextEditor({
             <LargeTextSourceViewer
               content={model.content}
               lineCount={lineCount}
+              readOnly={largeTextReadOnly}
               searchRange={largeSearchRange}
-              onChangeContent={updateContent}
+              targetLineRequest={largeLineRequest}
+              onChangeContent={largeTextReadOnly ? undefined : updateContent}
             />
           ) : (
             <TextSourcePane
@@ -569,6 +640,7 @@ export function PlainTextEditor({
               diagnosticsByLine={diagnosticsByLine}
               minimapLines={minimapLines}
               cursorLine={cursor.line}
+              sourceScrollLeft={sourceScrollLeft}
               sourceScrollTop={sourceScrollTop}
               selectionFragments={sourceSelectionFragments}
               bracketFragments={bracketPairFragments}

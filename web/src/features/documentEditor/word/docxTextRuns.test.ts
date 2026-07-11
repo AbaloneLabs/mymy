@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DocxBlock, DocxStyle } from "../shared/models";
-import { docxRunTextInputPatch, resolveDocxStyle } from "./docxTextRuns";
+import {
+  docxRunTextDiffPatch,
+  docxRunTextInputPatch,
+  mergeDocxTextBlockRuns,
+  resolveDocxStyle,
+  splitDocxTextBlockRuns,
+} from "./docxTextRuns";
 
 const baseBlock: DocxBlock = {
   id: "p1",
@@ -49,6 +55,34 @@ describe("DOCX text runs", () => {
 
     expect(next?.text).toBe("AlphaGamma");
     expect(next?.runs).toEqual([{ text: "AlphaGamma", bold: true }]);
+  });
+
+  it("preserves adjacent runs through IME and fallback text diffs", () => {
+    const next = docxRunTextDiffPatch(baseBlock, "Alpha한글Beta");
+
+    expect(next?.runs).toEqual([
+      { text: "Alpha한글", bold: true, fontFamily: "Noto Sans" },
+      { text: "Beta", italic: true, fontFamily: "Noto Serif" },
+    ]);
+  });
+
+  it("splits and merges rich paragraphs without flattening runs", () => {
+    const split = splitDocxTextBlockRuns(baseBlock, 5, "p2");
+    expect(split).toMatchObject({
+      before: { text: "Alpha", runs: [{ text: "Alpha", bold: true }] },
+      after: { id: "p2", text: "Beta", runs: [{ text: "Beta", italic: true }] },
+    });
+    if (!split || !("before" in split)) throw new Error("expected split result");
+    const merged = mergeDocxTextBlockRuns(split.before, split.after);
+    expect(merged).toMatchObject({
+      block: { text: "AlphaBeta", runs: baseBlock.runs },
+    });
+  });
+
+  it("blocks structural edits that would duplicate a block-level annotation", () => {
+    expect(
+      splitDocxTextBlockRuns({ ...baseBlock, commentId: "1" }, 5, "p2"),
+    ).toEqual({ reason: "Comments need range anchors before split or merge" });
   });
 
   it("resolves paragraph style inheritance while allowing child overrides", () => {

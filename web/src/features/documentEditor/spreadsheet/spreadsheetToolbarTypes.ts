@@ -22,6 +22,9 @@ export type SpreadsheetToolbarProps = {
   ) => void;
   onAddRow: () => void;
   onAddColumn: () => void;
+  canAddRow?: boolean;
+  canAddColumn?: boolean;
+  structureBlockReason?: string | null;
   onDeleteRow: () => void;
   onDeleteColumn: () => void;
   onClearCell: () => void;
@@ -87,4 +90,5 @@ export type SpreadsheetToolbarProps = {
   canHide?: boolean;
   canFormat?: boolean;
   canSort: boolean;
+  sortBlockReason?: string | null;
 };

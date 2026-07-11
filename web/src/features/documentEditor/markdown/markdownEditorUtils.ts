@@ -8,6 +8,7 @@ export {
   addFrontmatterFieldBody,
   deleteFrontmatterFieldBody,
   formatFrontmatterField,
+  frontmatterStructuralEditBlockReason,
   parseFrontmatter,
   parseFrontmatterFields,
   replaceFrontmatterBody,
@@ -28,6 +29,8 @@ export { markdownReferences } from "./markdownReferenceUtils";
 export {
   markdownTableAtLine,
   markdownTables,
+  patchMarkdownTableAlignment,
+  patchMarkdownTableCell,
   replaceMarkdownTable,
 } from "./markdownTableUtils";
 export {
@@ -51,6 +54,7 @@ export type {
   MarkdownHeadingLevel,
   MarkdownReference,
   MarkdownTableAlignment,
+  MarkdownTableCellSpan,
   MarkdownTableModel,
 } from "./markdownTypes";
 

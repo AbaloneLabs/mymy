@@ -67,6 +67,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             allowed_tools: sandbox_allowed_tools(config),
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),
+            app_state: config.app_state.clone(),
         }),
     });
 }
@@ -79,6 +80,7 @@ struct CodeExecTool {
     allowed_tools: HashSet<String>,
     db: Option<sqlx::PgPool>,
     agent_profile: Option<String>,
+    app_state: Option<Arc<crate::state::AppState>>,
 }
 
 #[async_trait]
@@ -154,6 +156,7 @@ impl CodeExecTool {
                     allowed_tools: self.allowed_tools.clone(),
                     db: self.db.clone(),
                     agent_profile: self.agent_profile.clone(),
+                    app_state: self.app_state.clone(),
                 }),
             )
             .await

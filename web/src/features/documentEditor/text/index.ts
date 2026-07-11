@@ -1,4 +1,7 @@
 export * from "./largeTextSourceViewer";
+export * from "./textLargeFilePolicy";
+export * from "./textFormatDraft";
+export * from "./textFormatDraftBar";
 export * from "./textConfigPreview";
 export * from "./textEditorPanels";
 export * from "./textEditorSchemaPanel";
@@ -6,6 +9,8 @@ export * from "./textEditorSearchBars";
 export * from "./textEditorSourceHandlers";
 export * from "./textEditorToolbar";
 export * from "./textFlatConfigEditor";
+export * from "./textFlatConfigCapability";
+export * from "./textSearchSemantics";
 export * from "./textJsonEditors";
 export * from "./textJsonUtils";
 export * from "./textLanguageService";

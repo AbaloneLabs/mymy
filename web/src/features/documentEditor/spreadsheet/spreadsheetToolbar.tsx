@@ -14,6 +14,9 @@ export function SpreadsheetToolbar({
   onActiveCellFormulaMetadataChange,
   onAddRow,
   onAddColumn,
+  canAddRow = true,
+  canAddColumn = true,
+  structureBlockReason,
   onDeleteRow,
   onDeleteColumn,
   onClearCell,
@@ -75,6 +78,7 @@ export function SpreadsheetToolbar({
   canHide = false,
   canFormat = false,
   canSort,
+  sortBlockReason,
 }: SpreadsheetToolbarProps) {
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] px-3 py-2">
@@ -141,9 +145,13 @@ export function SpreadsheetToolbar({
         canFillRight={canFillRight}
         canSetAutoFilter={canSetAutoFilter}
         canSort={canSort}
+        sortBlockReason={sortBlockReason}
         filterText={filterText}
         onAddColumn={onAddColumn}
         onAddRow={onAddRow}
+        canAddColumn={canAddColumn}
+        canAddRow={canAddRow}
+        structureBlockReason={structureBlockReason}
         onClearAutoFilter={onClearAutoFilter}
         onClearCell={onClearCell}
         onCopySelection={onCopySelection}

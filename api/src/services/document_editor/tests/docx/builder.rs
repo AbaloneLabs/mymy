@@ -158,6 +158,43 @@ fn docx_paragraph_builder_writes_comment_references() {
 }
 
 #[test]
+fn docx_paragraph_builder_writes_utf16_anchored_inline_features() {
+    let xml = build_docx_paragraph(&json!({
+        "id": "p1",
+        "type": "paragraph",
+        "text": "😀Alpha Beta",
+        "runs": [
+            { "text": "😀Alpha ", "bold": true },
+            { "text": "Beta", "italic": true }
+        ],
+        "commentRanges": [
+            { "commentId": "4", "start": 2, "end": 7 }
+        ],
+        "hyperlinks": [
+            {
+                "id": "p1-link-1",
+                "start": 8,
+                "end": 12,
+                "target": "https://example.com",
+                "relationshipId": "rId8"
+            }
+        ],
+        "noteReferences": [
+            { "id": "2", "kind": "footnote", "offset": 7 }
+        ]
+    }));
+
+    assert!(xml.contains("<w:t xml:space=\"preserve\">😀</w:t>"));
+    assert!(xml.contains(
+        r#"<w:commentRangeStart w:id="4"/><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Alpha</w:t></w:r><w:commentRangeEnd w:id="4"/>"#
+    ));
+    assert!(xml.contains(r#"<w:footnoteReference w:id="2"/>"#));
+    assert!(xml.contains(
+        r#"<w:hyperlink r:id="rId8"><w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve">Beta</w:t></w:r></w:hyperlink>"#
+    ));
+}
+
+#[test]
 fn docx_paragraph_builder_writes_bookmarks() {
     let xml = build_docx_paragraph(&json!({
         "type": "paragraph",

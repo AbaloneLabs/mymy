@@ -7,6 +7,8 @@ pub(in crate::services::document_editor) fn pptx_chart_specs(slide: &Value) -> V
         .into_iter()
         .flatten()
         .map(|chart| PptxChartSpec {
+            shape_id: pptx_shape_id_from_model(chart),
+            group_shape_id: pptx_group_shape_id_from_model(chart),
             relationship_id: chart
                 .get("relationshipId")
                 .and_then(Value::as_str)

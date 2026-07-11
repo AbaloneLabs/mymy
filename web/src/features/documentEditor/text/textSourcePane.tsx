@@ -4,6 +4,7 @@ import type {
   RefObject,
   UIEvent,
 } from "react";
+import { useLayoutEffect } from "react";
 import { cn } from "@/lib/utils";
 import type { SourceDiagnostic } from "./textStructuredUtils";
 import type {
@@ -30,6 +31,7 @@ export function TextSourcePane({
   bracketFragments = [],
   minimapLines,
   cursorLine,
+  sourceScrollLeft = 0,
   sourceScrollTop,
   onContentChange,
   onKeyDown,
@@ -50,6 +52,7 @@ export function TextSourcePane({
   bracketFragments?: SourceBracketPairFragment[];
   minimapLines: SourceMinimapLine[];
   cursorLine: number;
+  sourceScrollLeft?: number;
   sourceScrollTop: number;
   onContentChange: (content: string) => void;
   onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
@@ -59,6 +62,17 @@ export function TextSourcePane({
   onFocusLine: (line: number) => void;
   onToggleFold: (range: SourceFoldRange) => void;
 }) {
+  useLayoutEffect(() => {
+    const source = sourceRef.current;
+    if (source) {
+      source.scrollTop = sourceScrollTop;
+      source.scrollLeft = sourceScrollLeft;
+    }
+    if (lineNumberRef.current) {
+      lineNumberRef.current.scrollTop = sourceScrollTop;
+    }
+  }, [lineNumberRef, sourceRef, sourceScrollLeft, sourceScrollTop]);
+
   const selectionFragmentsByLine = new Map<number, SourceSelectionLineFragment[]>();
   selectionFragments.forEach((fragment) => {
     selectionFragmentsByLine.set(fragment.line, [

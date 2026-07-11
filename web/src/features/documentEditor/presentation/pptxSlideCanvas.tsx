@@ -52,6 +52,7 @@ export function PptxSlideCanvas({
   onCanvasKeyDown,
   onCanvasPointerMove,
   onCanvasPointerUp,
+  onCanvasPointerCancel,
   onCanvasPointerDown,
   onTextKeyDown,
   onSelectText,
@@ -86,6 +87,7 @@ export function PptxSlideCanvas({
   onCanvasKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onCanvasPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onCanvasPointerUp: () => void;
+  onCanvasPointerCancel: () => void;
   onCanvasPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onTextKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onSelectText: (textId: string | null, additive?: boolean) => void;
@@ -144,7 +146,8 @@ export function PptxSlideCanvas({
           onKeyDown={onCanvasKeyDown}
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
-          onPointerLeave={onCanvasPointerUp}
+          onPointerCancel={onCanvasPointerCancel}
+          onLostPointerCapture={onCanvasPointerCancel}
           onPointerDown={onCanvasPointerDown}
         >
           {showSnapGrid && (
@@ -410,12 +413,19 @@ export function PptxSlideCanvas({
                   </button>
                 )}
                 <div
-                  contentEditable
+                  contentEditable={!textItem.complexText}
                   suppressContentEditableWarning
                   onFocus={() => onSelectText(textItem.id)}
                   onKeyDown={onTextKeyDown}
-                  onInput={(event) =>
-                    onTextChange(index, event.currentTarget.textContent ?? "")
+                  onInput={(event) => {
+                    if (!textItem.complexText) {
+                      onTextChange(index, event.currentTarget.textContent ?? "");
+                    }
+                  }}
+                  title={
+                    textItem.complexText
+                      ? "Preservation-only rich text box"
+                      : "Edit entire text box"
                   }
                   className="h-full min-h-8 w-full px-2 py-1 outline-none"
                   style={{
@@ -437,6 +447,11 @@ export function PptxSlideCanvas({
                 >
                   {textItem.text}
                 </div>
+                {textItem.complexText && (
+                  <span className="pointer-events-none absolute bottom-1 left-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">
+                    Rich text · preservation only
+                  </span>
+                )}
                 {selected && (
                   <button
                     type="button"

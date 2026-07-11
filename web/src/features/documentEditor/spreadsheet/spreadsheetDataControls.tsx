@@ -17,6 +17,9 @@ import { cn } from "@/lib/utils";
 export function SpreadsheetDataControls({
   onAddRow,
   onAddColumn,
+  canAddRow,
+  canAddColumn,
+  structureBlockReason,
   onCopySelection,
   onFillDown,
   onFillRight,
@@ -34,6 +37,7 @@ export function SpreadsheetDataControls({
   canFillDown,
   canFillRight,
   canSort,
+  sortBlockReason,
   canSetAutoFilter = false,
   canClearCell,
   canDeleteRow,
@@ -41,6 +45,9 @@ export function SpreadsheetDataControls({
 }: {
   onAddRow: () => void;
   onAddColumn: () => void;
+  canAddRow: boolean;
+  canAddColumn: boolean;
+  structureBlockReason?: string | null;
   onCopySelection: () => void;
   onFillDown: () => void;
   onFillRight: () => void;
@@ -58,6 +65,7 @@ export function SpreadsheetDataControls({
   canFillDown: boolean;
   canFillRight: boolean;
   canSort: boolean;
+  sortBlockReason?: string | null;
   canSetAutoFilter?: boolean;
   canClearCell: boolean;
   canDeleteRow: boolean;
@@ -70,7 +78,9 @@ export function SpreadsheetDataControls({
       <button
         type="button"
         onClick={onAddRow}
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+        disabled={!canAddRow}
+        title={structureBlockReason ?? "Insert a row below the active cell"}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Table className="h-3.5 w-3.5" strokeWidth={1.75} />
         {t("documentEditor.addRow")}
@@ -78,7 +88,9 @@ export function SpreadsheetDataControls({
       <button
         type="button"
         onClick={onAddColumn}
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+        disabled={!canAddColumn}
+        title={structureBlockReason ?? "Insert a column after the active cell"}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Columns3 className="h-3.5 w-3.5" strokeWidth={1.75} />
         {t("documentEditor.addColumn")}
@@ -115,7 +127,7 @@ export function SpreadsheetDataControls({
         onClick={onSortAsc}
         disabled={!canSort}
         className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-        title="Sort ascending"
+        title={sortBlockReason ?? "Sort the selected range ascending"}
       >
         <ArrowUpAZ className="h-3.5 w-3.5" strokeWidth={1.75} />
       </button>
@@ -124,7 +136,7 @@ export function SpreadsheetDataControls({
         onClick={onSortDesc}
         disabled={!canSort}
         className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-        title="Sort descending"
+        title={sortBlockReason ?? "Sort the selected range descending"}
       >
         <ArrowDownAZ className="h-3.5 w-3.5" strokeWidth={1.75} />
       </button>

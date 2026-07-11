@@ -14,6 +14,8 @@ export function SpreadsheetSheetTabs({
   onRenameSheet,
   onSheetStateChange,
   onSheetTabColorChange,
+  duplicateSheetBlockReason,
+  canChangeActiveSheetVisibility,
 }: {
   sheets: XlsxSheet[];
   activeSheet: XlsxSheet | undefined;
@@ -25,6 +27,8 @@ export function SpreadsheetSheetTabs({
   onRenameSheet: (name: string) => void;
   onSheetStateChange: (state: XlsxSheet["state"]) => void;
   onSheetTabColorChange: (color: string) => void;
+  duplicateSheetBlockReason?: string | null;
+  canChangeActiveSheetVisibility: boolean;
 }) {
   const activeSheetIndex = activeSheet
     ? sheets.findIndex((item) => item.id === activeSheet.id)
@@ -67,9 +71,9 @@ export function SpreadsheetSheetTabs({
       <button
         type="button"
         onClick={onDuplicateSheet}
-        disabled={!activeSheet}
+        disabled={!activeSheet || Boolean(duplicateSheetBlockReason)}
         className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-        title="Duplicate sheet"
+        title={duplicateSheetBlockReason ?? "Duplicate sheet"}
       >
         <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
       </button>
@@ -111,11 +115,17 @@ export function SpreadsheetSheetTabs({
           />
           <select
             value={activeSheet.state ?? "visible"}
+            disabled={!canChangeActiveSheetVisibility}
             onChange={(event) =>
               onSheetStateChange(event.currentTarget.value as XlsxSheet["state"])
             }
-            className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
+            className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Sheet visibility"
+            title={
+              canChangeActiveSheetVisibility
+                ? "Sheet visibility"
+                : "At least one sheet must remain visible"
+            }
           >
             <option value="visible">Visible</option>
             <option value="hidden">Hidden</option>

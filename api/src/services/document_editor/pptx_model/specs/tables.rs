@@ -30,7 +30,13 @@ pub(in crate::services::document_editor) fn pptx_table_specs(slide: &Value) -> V
                 return None;
             }
             Some(PptxTableSpec {
+                shape_id: pptx_shape_id_from_model(table),
+                group_shape_id: pptx_group_shape_id_from_model(table),
                 text_index_start: value_as_usize(table.get("textIndexStart")),
+                preservation_only: table
+                    .get("preservationOnly")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 group_id: pptx_group_id_from_model(table),
                 rows,
                 cell_styles: pptx_table_cell_styles_from_model(table.get("cellStyles")),
@@ -156,6 +162,9 @@ pub(in crate::services::document_editor) fn apply_pptx_table_replacements(
     specs: &[PptxTableSpec],
 ) {
     for spec in specs {
+        if spec.preservation_only {
+            continue;
+        }
         let Some(text_index_start) = spec.text_index_start else {
             continue;
         };

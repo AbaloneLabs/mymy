@@ -8,6 +8,7 @@ export function MarkdownSearchBar({
   wholeWord,
   regexSearch,
   searchMatches,
+  searchError,
   onSearchDraftChange,
   onReplaceDraftChange,
   onFindNext,
@@ -23,6 +24,7 @@ export function MarkdownSearchBar({
   wholeWord: boolean;
   regexSearch: boolean;
   searchMatches: number;
+  searchError: string | null;
   onSearchDraftChange: (value: string) => void;
   onReplaceDraftChange: (value: string) => void;
   onFindNext: () => void;
@@ -48,13 +50,13 @@ export function MarkdownSearchBar({
         placeholder={t("documentEditor.replace", { defaultValue: "Replace" })}
         className="h-8 min-w-48 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
       />
-      <button type="button" onClick={onFindNext} className={markdownTextButtonClass()}>
+      <button type="button" onClick={onFindNext} disabled={Boolean(searchError)} className={markdownTextButtonClass()}>
         Next
       </button>
-      <button type="button" onClick={onReplaceNext} className={markdownTextButtonClass()}>
+      <button type="button" onClick={onReplaceNext} disabled={Boolean(searchError)} className={markdownTextButtonClass()}>
         Replace
       </button>
-      <button type="button" onClick={onReplaceAll} className={markdownTextButtonClass()}>
+      <button type="button" onClick={onReplaceAll} disabled={Boolean(searchError)} className={markdownTextButtonClass()}>
         All
       </button>
       <label className="inline-flex items-center gap-1 text-xs text-[var(--text-muted)]">
@@ -82,6 +84,9 @@ export function MarkdownSearchBar({
         .*
       </label>
       <span className="text-xs text-[var(--text-faint)]">{searchMatches} matches</span>
+      {searchError && (
+        <span className="text-xs text-[var(--status-error)]">{searchError}</span>
+      )}
     </div>
   );
 }

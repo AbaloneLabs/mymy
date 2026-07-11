@@ -41,6 +41,7 @@ type SpreadsheetRangeActionParams = {
   activeCell: CellPosition | null;
   columnCount: number;
   commitXlsxModel: (next: XlsxModel) => void;
+  commitSheetSettingsModel: (next: XlsxModel) => void;
   displayGridSheet: XlsxSheet | undefined;
   displayRowLimit: number;
   model: XlsxModel;
@@ -60,6 +61,7 @@ export function createSpreadsheetRangeActions({
   activeCell,
   columnCount,
   commitXlsxModel,
+  commitSheetSettingsModel,
   displayGridSheet,
   displayRowLimit,
   model,
@@ -402,7 +404,7 @@ export function createSpreadsheetRangeActions({
     pageSetup?: XlsxPageSetup;
   }) {
     if (!sheet) return;
-    commitXlsxModel({
+    commitSheetSettingsModel({
       sheets: model.sheets.map((item) =>
         item.id === sheet.id
           ? {

@@ -5,17 +5,20 @@ import type {
   DocxModel,
   DocxRevision,
 } from "../shared/models";
+import { docxRunTextInputPatch } from "./docxTextRuns";
 
 type DocxPartsActionOptions = {
   model: DocxModel;
   onChange: (model: DocxModel) => void;
   updateBlock: (index: number, patch: Partial<DocxBlock>) => void;
+  onMutationError?: (message: string | null) => void;
 };
 
 export function createDocxPartsActions({
   model,
   onChange,
   updateBlock,
+  onMutationError,
 }: DocxPartsActionOptions) {
   function updateFieldInstruction(
     blockIndex: number,
@@ -40,12 +43,18 @@ export function createDocxPartsActions({
     const block = model.blocks[blockIndex];
     const control = block?.contentControls?.[controlIndex];
     if (!block || !control) return;
+    const textChange =
+      typeof patch.text === "string"
+        ? docxContentControlTextChange(block, control, patch.text)
+        : { block };
+    if ("reason" in textChange) {
+      onMutationError?.(`Content control was not changed. ${textChange.reason}`);
+      return;
+    }
+    onMutationError?.(null);
     updateBlock(blockIndex, {
-      text:
-        typeof patch.text === "string"
-          ? docxTextAfterContentControlChange(block.text, control.text, patch.text)
-          : block.text,
-      contentControls: block.contentControls?.map((item, index) =>
+      ...textChange.block,
+      contentControls: textChange.block.contentControls?.map((item, index) =>
         index === controlIndex ? { ...item, ...patch } : item,
       ),
     });
@@ -97,7 +106,16 @@ export function createDocxPartsActions({
       ...model,
       blocks: comment
         ? model.blocks.map((block) =>
-            block.commentId === comment.id ? { ...block, commentId: undefined } : block,
+            block.commentId === comment.id ||
+            block.commentRanges?.some((range) => range.commentId === comment.id)
+              ? {
+                  ...block,
+                  commentId: undefined,
+                  commentRanges: block.commentRanges?.filter(
+                    (range) => range.commentId !== comment.id,
+                  ),
+                }
+              : block,
           )
         : model.blocks,
       comments: comments.filter((_, commentIndex) => commentIndex !== index),
@@ -123,10 +141,23 @@ export function createDocxPartsActions({
     const note = notes[index];
     if (!note) return;
     const blockKey = kind === "footnotes" ? "footnoteId" : "endnoteId";
+    const noteKind = kind === "footnotes" ? "footnote" : "endnote";
     onChange({
       ...model,
       blocks: model.blocks.map((block) =>
-        block[blockKey] === note.id ? { ...block, [blockKey]: undefined } : block,
+        block[blockKey] === note.id ||
+        block.noteReferences?.some(
+          (reference) => reference.id === note.id && reference.kind === noteKind,
+        )
+          ? {
+              ...block,
+              [blockKey]: undefined,
+              noteReferences: block.noteReferences?.filter(
+                (reference) =>
+                  reference.id !== note.id || reference.kind !== noteKind,
+              ),
+            }
+          : block,
       ),
       [kind]: notes.filter((_, noteIndex) => noteIndex !== index),
     });
@@ -144,14 +175,52 @@ export function createDocxPartsActions({
   };
 }
 
-function docxTextAfterContentControlChange(
-  blockText: string,
-  previousText: string | undefined,
+export function docxContentControlTextChange(
+  block: DocxBlock,
+  control: DocxContentControl,
   nextText: string,
 ) {
-  if (!previousText) return nextText;
-  if (blockText === previousText) return nextText;
-  const index = blockText.indexOf(previousText);
-  if (index < 0) return blockText;
-  return `${blockText.slice(0, index)}${nextText}${blockText.slice(index + previousText.length)}`;
+  if (
+    control.start !== undefined &&
+    control.end !== undefined &&
+    control.start >= 0 &&
+    control.end >= control.start &&
+    control.end <= block.text.length
+  ) {
+    const changed = docxRunTextInputPatch(
+      block,
+      control.start,
+      control.end,
+      nextText,
+    );
+    return changed
+      ? ({ block: changed } as const)
+      : ({ reason: "Control text is not editable" } as const);
+  }
+  const previousText = control.text;
+  if (!previousText) {
+    if (block.text !== "") {
+      return {
+        reason: "The control has no stable text range in a non-empty paragraph",
+      } as const;
+    }
+    const changed = docxRunTextInputPatch(block, 0, 0, nextText);
+    return changed ? { block: changed } as const : { reason: "Control text is not editable" } as const;
+  }
+  const first = block.text.indexOf(previousText);
+  if (first < 0) {
+    return { reason: "The control text no longer matches the paragraph" } as const;
+  }
+  if (block.text.indexOf(previousText, first + previousText.length) >= 0) {
+    return {
+      reason: "The same visible text occurs more than once and the model has no range anchor",
+    } as const;
+  }
+  const changed = docxRunTextInputPatch(
+    block,
+    first,
+    first + previousText.length,
+    nextText,
+  );
+  return changed ? { block: changed } as const : { reason: "Control text is not editable" } as const;
 }

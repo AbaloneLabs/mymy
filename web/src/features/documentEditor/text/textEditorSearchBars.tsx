@@ -13,6 +13,7 @@ type TextEditorSearchBarProps = {
   replaceDraft: string;
   searchDraft: string;
   searchMatches: number;
+  searchError: string | null;
   streamingSearchCount:
     | {
         complete: boolean;
@@ -23,6 +24,7 @@ type TextEditorSearchBarProps = {
   wholeWord: boolean;
   regexSearch: boolean;
   onCaseSensitiveChange: (value: boolean) => void;
+  onCancelLargeSearch: () => void;
   onFindNext: () => void;
   onRegexSearchChange: (value: boolean) => void;
   onReplaceAll: () => void;
@@ -39,10 +41,12 @@ export function TextEditorSearchBar({
   replaceDraft,
   searchDraft,
   searchMatches,
+  searchError,
   streamingSearchCount,
   wholeWord,
   regexSearch,
   onCaseSensitiveChange,
+  onCancelLargeSearch,
   onFindNext,
   onRegexSearchChange,
   onReplaceAll,
@@ -66,13 +70,13 @@ export function TextEditorSearchBar({
         placeholder={t("documentEditor.replace", { defaultValue: "Replace" })}
         className="h-8 min-w-48 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
       />
-      <button type="button" onClick={onFindNext} className={toolbarTextButtonClass(false)}>
+      <button type="button" onClick={onFindNext} disabled={Boolean(searchError)} className={toolbarTextButtonClass(false)}>
         Next
       </button>
       <button
         type="button"
         onClick={onReplaceNext}
-        disabled={largeTextMode}
+        disabled={largeTextMode || Boolean(searchError)}
         className={toolbarTextButtonClass(false)}
       >
         Replace
@@ -80,7 +84,7 @@ export function TextEditorSearchBar({
       <button
         type="button"
         onClick={onReplaceAll}
-        disabled={largeTextMode}
+        disabled={largeTextMode || Boolean(searchError)}
         className={toolbarTextButtonClass(false)}
       >
         All
@@ -110,6 +114,9 @@ export function TextEditorSearchBar({
         .*
       </label>
       <span className="text-xs text-[var(--text-faint)]">{searchMatches} matches</span>
+      {searchError && (
+        <span className="text-xs text-[var(--status-error)]">{searchError}</span>
+      )}
       {largeTextMode && streamingSearchCount && !streamingSearchCount.complete && (
         <span className="text-xs text-[var(--text-faint)]">
           scanning {Math.round((streamingSearchCount.processed / Math.max(1, streamingSearchCount.total)) * 100)}%
@@ -120,6 +127,17 @@ export function TextEditorSearchBar({
           locating {Math.round((largeSearchNavigation.processed / Math.max(1, largeSearchNavigation.total)) * 100)}%
         </span>
       )}
+      {largeTextMode &&
+        ((streamingSearchCount && !streamingSearchCount.complete) ||
+          largeSearchNavigation) && (
+          <button
+            type="button"
+            onClick={onCancelLargeSearch}
+            className="rounded border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+          >
+            Cancel scan
+          </button>
+        )}
     </div>
   );
 }

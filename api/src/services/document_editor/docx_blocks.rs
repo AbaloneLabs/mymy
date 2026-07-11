@@ -8,14 +8,18 @@ use super::docx_content_controls::replace_docx_content_control_states;
 use super::docx_fields::replace_docx_simple_field_instructions;
 use super::docx_notes::{docx_note_reference_run, docx_paragraph_needs_note_reference_rebuild};
 use super::docx_numbering::{DOCX_BULLET_NUM_ID, DOCX_NUMBER_NUM_ID};
+use super::docx_page::docx_section_properties_xml;
 use super::docx_revisions::{apply_docx_revision_actions, docx_revisions_have_actions};
 use super::docx_runs::build_docx_run_sequence;
 use super::docx_tables::build_docx_table;
+use super::docx_text_anchors::{
+    build_docx_anchored_run_sequence, docx_has_explicit_text_anchors, docx_text_anchors_match_model,
+};
 use super::ooxml_images::{build_docx_image_paragraph, docx_image_relationship_id};
 use super::{
     docx_bookmark_id, docx_bookmark_id_from_model, docx_bookmark_name,
-    docx_bookmark_name_from_model, docx_tag_attr, docx_u32_model_attr, escape_xml,
-    extract_text_tags, replace_tag_texts,
+    docx_bookmark_name_from_model, docx_tag_attr, docx_u32_model_attr,
+    docx_u32_model_attr_allow_zero, escape_xml, extract_text_tags, replace_tag_texts,
 };
 
 pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
@@ -64,6 +68,7 @@ pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
                 } else if docx_paragraph_has_complex_content(segment)
                     && !docx_paragraph_needs_note_reference_rebuild(segment, block)
                     && !docx_paragraph_needs_comment_reference_rebuild(segment, block)
+                    && docx_text_anchors_match_model(segment, block)
                     && docx_paragraph_bookmark_matches_model(segment, block)
                 {
                     let mut replacement = block
@@ -78,7 +83,18 @@ pub(super) fn replace_docx_blocks(document: &str, blocks: &[Value]) -> String {
                     }
                     let segment = replace_docx_content_control_states(&segment, block);
                     let segment = replace_docx_simple_field_instructions(&segment, block);
-                    output.push_str(&replace_tag_texts(&segment, "w:t", &[replacement]));
+                    let updated_visible_text = extract_text_tags(&segment, "w:t").join("");
+                    if replacement == updated_visible_text {
+                        // Metadata-only or no-op saves must retain the existing
+                        // run boundaries. Replacing every text tag with one
+                        // paragraph string would move all text into the first
+                        // run and silently erase later run formatting.
+                        output.push_str(&segment);
+                    } else if docx_has_explicit_text_anchors(block) {
+                        output.push_str(&build_docx_paragraph(block));
+                    } else {
+                        output.push_str(&replace_tag_texts(&segment, "w:t", &[replacement]));
+                    }
                 } else {
                     output.push_str(&build_docx_block(block));
                 }
@@ -184,7 +200,8 @@ fn build_docx_section_break(block: &Value) -> String {
         .and_then(Value::as_str)
         .filter(|value| matches!(*value, "nextPage" | "continuous" | "evenPage" | "oddPage"))
         .unwrap_or("nextPage");
-    format!(r#"<w:p><w:pPr><w:sectPr><w:type w:val="{break_kind}"/></w:sectPr></w:pPr></w:p>"#)
+    let section = docx_section_properties_xml(block.get("sectionPage"), break_kind);
+    format!(r#"<w:p><w:pPr>{section}</w:pPr></w:p>"#)
 }
 
 pub(super) fn build_docx_paragraph(block: &Value) -> String {
@@ -193,17 +210,26 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let style = docx_paragraph_properties(block);
-    let runs = build_docx_run_sequence(block, text);
-    let note_references = format!(
-        "{}{}",
-        docx_note_reference_run(
-            block,
-            "footnoteId",
-            "w:footnoteReference",
-            "FootnoteReference"
-        ),
-        docx_note_reference_run(block, "endnoteId", "w:endnoteReference", "EndnoteReference")
-    );
+    let has_explicit_anchors = docx_has_explicit_text_anchors(block);
+    let runs = if has_explicit_anchors {
+        build_docx_anchored_run_sequence(block, text)
+    } else {
+        build_docx_run_sequence(block, text)
+    };
+    let note_references = if has_explicit_anchors {
+        String::new()
+    } else {
+        format!(
+            "{}{}",
+            docx_note_reference_run(
+                block,
+                "footnoteId",
+                "w:footnoteReference",
+                "FootnoteReference"
+            ),
+            docx_note_reference_run(block, "endnoteId", "w:endnoteReference", "EndnoteReference")
+        )
+    };
     let bookmark_name = docx_bookmark_name_from_model(block);
     let bookmark_id = docx_bookmark_id_from_model(block).unwrap_or(0);
     let bookmark_start = bookmark_name.as_ref().map_or_else(String::new, |name| {
@@ -215,13 +241,25 @@ pub(super) fn build_docx_paragraph(block: &Value) -> String {
     let bookmark_end = bookmark_name.as_ref().map_or_else(String::new, |_| {
         format!(r#"<w:bookmarkEnd w:id="{bookmark_id}"/>"#)
     });
-    let comment_start = docx_comment_range_start(block);
-    let comment_end_and_reference = docx_comment_range_end_and_reference(block);
-    if let Some(relationship_id) = block
-        .get("relationshipId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let comment_start = if has_explicit_anchors {
+        String::new()
+    } else {
+        docx_comment_range_start(block)
+    };
+    let comment_end_and_reference = if has_explicit_anchors {
+        String::new()
+    } else {
+        docx_comment_range_end_and_reference(block)
+    };
+    if let Some(relationship_id) = (!has_explicit_anchors)
+        .then(|| {
+            block
+                .get("relationshipId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .flatten()
     {
         format!(
             r#"<w:p>{style}{bookmark_start}{comment_start}<w:hyperlink r:id="{}">{runs}</w:hyperlink>{comment_end_and_reference}{bookmark_end}{note_references}</w:p>"#,
@@ -313,7 +351,7 @@ fn docx_paragraph_properties(block: &Value) -> String {
     {
         props.push("<w:keepLines/>".to_string());
     }
-    if let Some(indent_left) = docx_u32_model_attr(block, "indentLeft", 31_680) {
+    if let Some(indent_left) = docx_u32_model_attr_allow_zero(block, "indentLeft", 31_680) {
         props.push(format!(r#"<w:ind w:left="{indent_left}"/>"#));
     }
     let spacing_before = docx_u32_model_attr(block, "spacingBefore", 31_680);

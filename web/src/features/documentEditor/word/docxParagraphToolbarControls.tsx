@@ -209,21 +209,21 @@ export function DocxParagraphToolbarControls({
       />
       <ToolbarButton
         icon={MessageSquare}
-        label="Comment"
+        label="Comment paragraph"
         onClick={onInsertCommentReference}
-        active={Boolean(activeBlock?.commentId)}
+        active={Boolean(activeBlock?.commentId || activeBlock?.commentRanges?.length)}
         disabled={!isDocxTextBlock(activeBlock)}
       />
       <ToolbarButton
         icon={FileText}
-        label="Footnote"
+        label="Footnote on paragraph"
         onClick={() => onInsertNoteReference("footnote")}
         active={Boolean(activeBlock?.footnoteId)}
         disabled={!isDocxTextBlock(activeBlock)}
       />
       <ToolbarButton
         icon={FileText}
-        label="Endnote"
+        label="Endnote on paragraph"
         onClick={() => onInsertNoteReference("endnote")}
         active={Boolean(activeBlock?.endnoteId)}
         disabled={!isDocxTextBlock(activeBlock)}

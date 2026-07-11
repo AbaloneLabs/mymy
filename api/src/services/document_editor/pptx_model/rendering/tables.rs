@@ -23,11 +23,15 @@ pub(in crate::services::document_editor) fn update_pptx_tables(
         let frame = &after_start[..end_index];
         if frame.contains("<a:tbl") {
             if let Some(spec) = specs.get(spec_index) {
-                output.push_str(&build_pptx_table_for_size(
-                    next_pptx_drawing_id(xml) + spec_index,
-                    spec,
-                    slide_size,
-                ));
+                if spec.preservation_only {
+                    output.push_str(frame);
+                } else {
+                    output.push_str(&build_pptx_table_for_size(
+                        next_pptx_drawing_id(xml) + spec_index,
+                        spec,
+                        slide_size,
+                    ));
+                }
             } else if !remove_missing {
                 output.push_str(frame);
             }

@@ -10,7 +10,9 @@ export type SpreadsheetCellActionParams = {
   columnCount: number;
   commitXlsxModel: (next: XlsxModel) => void;
   displaySheet: XlsxSheet | undefined;
+  filterText?: string;
   model: XlsxModel;
+  onMutationError?: (message: string | null) => void;
   selectedRanges: NormalizedCellRange[];
   selectionRange: NormalizedCellRange | null;
   setActiveCell: Dispatch<SetStateAction<CellPosition | null>>;

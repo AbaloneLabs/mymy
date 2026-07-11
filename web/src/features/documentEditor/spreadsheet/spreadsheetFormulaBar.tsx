@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Sigma } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { XlsxCell } from "../shared/models";
 import type { SpreadsheetFormulaFunction } from "./spreadsheetFormulaTypes";
+import { spreadsheetCellEditCommitValue } from "./spreadsheetCellEditTransaction";
 import {
   applySpreadsheetFormulaSuggestion,
   spreadsheetFormulaSuggestions,
@@ -37,14 +38,19 @@ export function SpreadsheetFormulaBar({
   const { t } = useTranslation();
   const [formulaHelpOpen, setFormulaHelpOpen] = useState(false);
   const [formulaSuggestionIndex, setFormulaSuggestionIndex] = useState(0);
-  const formulaSuggestions = spreadsheetFormulaSuggestions(activeCellValue);
+  const [editingFormula, setEditingFormula] = useState(false);
+  const [formulaDraft, setFormulaDraft] = useState(activeCellValue);
+  const formulaOriginalRef = useRef(activeCellValue);
+  const formulaCancelledRef = useRef(false);
+  const effectiveFormulaValue = editingFormula ? formulaDraft : activeCellValue;
+  const formulaSuggestions = spreadsheetFormulaSuggestions(effectiveFormulaValue);
   const formulaType = activeCellFormulaMetadata?.formulaType ?? "";
   const formulaRef = activeCellFormulaMetadata?.formulaRef ?? "";
   const formulaSharedIndex = activeCellFormulaMetadata?.formulaSharedIndex ?? "";
   const formulaMetadataVisible =
     !activeCellDisabled &&
     Boolean(
-      activeCellValue.startsWith("=") ||
+      effectiveFormulaValue.startsWith("=") ||
         formulaType ||
         formulaRef ||
         formulaSharedIndex,
@@ -53,8 +59,8 @@ export function SpreadsheetFormulaBar({
     formulaHelpOpen && !activeCellDisabled && formulaSuggestions.length > 0;
 
   function applyFormulaSuggestion(suggestion: SpreadsheetFormulaFunction) {
-    onActiveCellChange(
-      applySpreadsheetFormulaSuggestion(activeCellValue, suggestion.name),
+    setFormulaDraft(
+      applySpreadsheetFormulaSuggestion(effectiveFormulaValue, suggestion.name),
     );
     setFormulaHelpOpen(false);
     setFormulaSuggestionIndex(0);
@@ -82,25 +88,43 @@ export function SpreadsheetFormulaBar({
       </form>
       <div className="relative min-w-72 flex-1">
         <input
-          value={activeCellValue}
+          value={effectiveFormulaValue}
           onChange={(event) => {
-            onActiveCellChange(event.target.value);
+            setFormulaDraft(event.target.value);
             setFormulaHelpOpen(true);
             setFormulaSuggestionIndex(0);
           }}
-          onFocus={() => setFormulaHelpOpen(true)}
-          onBlur={() => setFormulaHelpOpen(false)}
+          onFocus={() => {
+            formulaOriginalRef.current = activeCellValue;
+            formulaCancelledRef.current = false;
+            setFormulaDraft(activeCellValue);
+            setEditingFormula(true);
+            setFormulaHelpOpen(true);
+          }}
+          onBlur={() => {
+            const committed = spreadsheetCellEditCommitValue(
+              formulaOriginalRef.current,
+              formulaDraft,
+              formulaCancelledRef.current,
+            );
+            formulaCancelledRef.current = false;
+            setEditingFormula(false);
+            setFormulaHelpOpen(false);
+            if (committed !== null) onActiveCellChange(committed);
+          }}
           onKeyDown={(event) => {
-            if (!formulaPopoverOpen) return;
-            if (event.key === "ArrowDown") {
+            if (formulaPopoverOpen && event.key === "ArrowDown") {
               event.preventDefault();
               setFormulaSuggestionIndex((current) =>
                 Math.min(current + 1, formulaSuggestions.length - 1),
               );
-            } else if (event.key === "ArrowUp") {
+            } else if (formulaPopoverOpen && event.key === "ArrowUp") {
               event.preventDefault();
               setFormulaSuggestionIndex((current) => Math.max(current - 1, 0));
-            } else if (event.key === "Enter" || event.key === "Tab") {
+            } else if (
+              formulaPopoverOpen &&
+              (event.key === "Enter" || event.key === "Tab")
+            ) {
               event.preventDefault();
               applyFormulaSuggestion(
                 formulaSuggestions[
@@ -108,7 +132,14 @@ export function SpreadsheetFormulaBar({
                 ],
               );
             } else if (event.key === "Escape") {
+              event.preventDefault();
+              formulaCancelledRef.current = true;
+              setFormulaDraft(formulaOriginalRef.current);
               setFormulaHelpOpen(false);
+              event.currentTarget.blur();
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              event.currentTarget.blur();
             }
           }}
           disabled={activeCellDisabled}

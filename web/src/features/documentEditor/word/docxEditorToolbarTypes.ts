@@ -9,6 +9,8 @@ export type DocxInsertableBlockType = Exclude<
 export interface DocxEditorToolbarProps {
   activeBlock: DocxBlock | undefined;
   page: DocxPageSettings | undefined;
+  pageDraftDirty: boolean;
+  pageScopeLabel: string;
   linkInputOpen: boolean;
   linkDraft: string;
   canPasteFormatting: boolean;
@@ -36,6 +38,8 @@ export interface DocxEditorToolbarProps {
   onUpdatePagePreset: (value: string) => void;
   onUpdatePageOrientation: (orientation: "portrait" | "landscape") => void;
   onUpdatePage: (patch: Partial<DocxPageSettings>) => void;
+  onApplyPageDraft: () => void;
+  onCancelPageDraft: () => void;
   onToggleTextPartsOpen: () => void;
   onToggleOutlineOpen: () => void;
   onToggleStylesOpen: () => void;

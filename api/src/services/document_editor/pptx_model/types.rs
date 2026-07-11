@@ -32,8 +32,12 @@ impl PptxSlideSize {
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxTextSpec {
+    pub(in crate::services::document_editor) shape_id: Option<usize>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) text: String,
     pub(in crate::services::document_editor) text_index: Option<usize>,
+    pub(in crate::services::document_editor) text_segment_count: usize,
+    pub(in crate::services::document_editor) complex_text: bool,
     pub(in crate::services::document_editor) group_id: Option<String>,
     pub(in crate::services::document_editor) x: f64,
     pub(in crate::services::document_editor) y: f64,
@@ -162,8 +166,10 @@ impl PptxLineArrowKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::services::document_editor) struct PptxShapeSpec {
+    pub(in crate::services::document_editor) shape_id: Option<usize>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) kind: PptxShapeKind,
     pub(in crate::services::document_editor) group_id: Option<String>,
     pub(in crate::services::document_editor) x: f64,
@@ -180,7 +186,10 @@ pub(in crate::services::document_editor) struct PptxShapeSpec {
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxTableSpec {
+    pub(in crate::services::document_editor) shape_id: Option<usize>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) text_index_start: Option<usize>,
+    pub(in crate::services::document_editor) preservation_only: bool,
     pub(in crate::services::document_editor) group_id: Option<String>,
     pub(in crate::services::document_editor) rows: Vec<Vec<String>>,
     pub(in crate::services::document_editor) cell_styles: Vec<Vec<PptxTableCellStyle>>,
@@ -211,6 +220,8 @@ pub(in crate::services::document_editor) struct PptxTableCellStyle {
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxImageSpec {
+    pub(in crate::services::document_editor) shape_id: Option<usize>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) relationship_id: Option<String>,
     pub(in crate::services::document_editor) data_url: Option<String>,
     pub(in crate::services::document_editor) group_id: Option<String>,
@@ -228,6 +239,8 @@ pub(in crate::services::document_editor) struct PptxImageSpec {
 
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxChartSpec {
+    pub(in crate::services::document_editor) shape_id: Option<usize>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) relationship_id: Option<String>,
     pub(in crate::services::document_editor) path: Option<String>,
     pub(in crate::services::document_editor) group_id: Option<String>,
@@ -319,6 +332,7 @@ pub(in crate::services::document_editor) struct PptxObjectBounds {
 #[derive(Debug, Clone)]
 pub(in crate::services::document_editor) struct PptxRenderableObject {
     pub(in crate::services::document_editor) group_id: Option<String>,
+    pub(in crate::services::document_editor) group_shape_id: Option<usize>,
     pub(in crate::services::document_editor) bounds: PptxObjectBounds,
     pub(in crate::services::document_editor) xml: String,
 }
@@ -328,4 +342,5 @@ pub(in crate::services::document_editor) struct PptxGroupContext {
     pub(in crate::services::document_editor) start: usize,
     pub(in crate::services::document_editor) end: usize,
     pub(in crate::services::document_editor) group_id: String,
+    pub(in crate::services::document_editor) shape_id: usize,
 }

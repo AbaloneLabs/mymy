@@ -15,6 +15,8 @@ pub(in crate::services::document_editor) fn pptx_shape_specs(slide: &Value) -> V
                     let default_height = if kind.is_line_like() { 0.0 } else { 20.0 };
                     let min_height = if kind.is_line_like() { 0.0 } else { 1.0 };
                     Some(PptxShapeSpec {
+                        shape_id: pptx_shape_id_from_model(item),
+                        group_shape_id: pptx_group_shape_id_from_model(item),
                         kind,
                         group_id: pptx_group_id_from_model(item),
                         x: item

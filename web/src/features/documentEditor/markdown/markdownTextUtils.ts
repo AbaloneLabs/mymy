@@ -1,5 +1,6 @@
 import { parseFrontmatter } from "./markdownFrontmatter";
 import type { MarkdownHeadingLevel } from "./markdownTypes";
+import { advanceZeroWidthRegex } from "../text/textSearchSemantics";
 
 export function stripInlineMarkdown(value: string) {
   return value
@@ -125,9 +126,11 @@ export function buildMarkdownSearchRegex(
 ) {
   if (!query) return null;
   const source = options.regexSearch ? query : escapeRegExp(query);
-  const wrapped = options.wholeWord ? `\\b(?:${source})\\b` : source;
+  const wrapped = options.wholeWord
+    ? `(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])`
+    : source;
   try {
-    return new RegExp(wrapped, options.matchCase ? "g" : "gi");
+    return new RegExp(wrapped, options.matchCase ? "gu" : "giu");
   } catch {
     return null;
   }
@@ -143,8 +146,8 @@ export function countMarkdownSearchMatches(
   let count = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(content))) {
-    if (match[0].length === 0) break;
     count += 1;
+    if (match[0].length === 0 && !advanceZeroWidthRegex(regex, content)) break;
   }
   return count;
 }
@@ -167,7 +170,7 @@ export function nextMarkdownSearchRange(
     regex.lastIndex = 0;
     match = regex.exec(content);
   }
-  if (!match || match[0].length === 0) return null;
+  if (!match) return null;
   return {
     start: match.index,
     end: match.index + match[0].length,

@@ -8,7 +8,10 @@ import {
   pptxSlideAspectRatio,
 } from "../presentation/pptxEditorUtils";
 import type { PptxSnapGuide, SlideDragState } from "../presentation/pptxEditorUtils";
-import { pptxSelectionKey } from "../presentation/pptxSelection";
+import {
+  patchPptxSlideObjects,
+  pptxSelectionKey,
+} from "../presentation/pptxSelection";
 import type {
   PptxSelectionBox,
   PptxSelectionKey,
@@ -31,6 +34,8 @@ import { createPptxObjectActions } from "../presentation/pptxObjectActions";
 import { createPptxTransformActions } from "../presentation/pptxTransformActions";
 import { createPptxKeyboardHandlers } from "../presentation/pptxKeyboardHandlers";
 import { usePptxPointerHandlers } from "../presentation/pptxPointerHandlers";
+import { createPptxAsyncInsertionCoordinator } from "../presentation/pptxAsyncInsertion";
+import type { PptxPendingInsertion } from "../presentation/pptxAsyncInsertion";
 
 export function PptxEditor({
   model,
@@ -57,9 +62,21 @@ export function PptxEditor({
   const [selectionBox, setSelectionBox] = useState<PptxSelectionBox | null>(null);
   const [snapGuides, setSnapGuides] = useState<PptxSnapGuide[]>([]);
   const [presentingIndex, setPresentingIndex] = useState<number | null>(null);
+  const [pendingInsertions, setPendingInsertions] = useState<
+    PptxPendingInsertion[]
+  >([]);
+  const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
+  const [asyncInsertionCoordinator] = useState(() =>
+    createPptxAsyncInsertionCoordinator({
+      initialModel: model,
+      onCommit: onChange,
+      onPendingChange: setPendingInsertions,
+      onResult: setOperationMessage,
+    }),
+  );
   const {
     activeChart,
     activeImage,
@@ -93,6 +110,19 @@ export function PptxEditor({
     selectionBox,
   });
   const slideAspectRatio = pptxSlideAspectRatio(model);
+  const previewSlide =
+    slide && dragState?.previewPatches
+      ? patchPptxSlideObjects(slide, dragState.previewPatches)
+      : slide;
+
+  useEffect(() => {
+    asyncInsertionCoordinator.sync(model, onChange);
+  }, [asyncInsertionCoordinator, model, onChange]);
+
+  useEffect(
+    () => () => asyncInsertionCoordinator.cancelAll(),
+    [asyncInsertionCoordinator],
+  );
 
   useEffect(() => {
     function handlePresentationShortcut(event: KeyboardEvent) {
@@ -142,15 +172,14 @@ export function PptxEditor({
     toggleSlideHidden,
     updateAnimationTiming,
     updateMaster,
-    updateMasterPlaceholder,
     updatePresentation,
     updateSlide,
     updateSlideLayout,
     updateSlideNotes,
     updateSlideTransition,
     updateTheme,
-    updateThemeColor,
   } = createPptxSlideActions({
+    activeObjectShapeId: activeObject?.shapeId,
     clearObjectSelection,
     model,
     onChange,
@@ -179,17 +208,12 @@ export function PptxEditor({
     updateActiveShape,
     updateActiveTable,
     updateActiveText,
-    updateChartById,
-    updateImageById,
     updateMediaById,
-    updateShapeById,
-    updateTableById,
     updateTableCell,
     updateTableCellStyle,
     updateTableColumnWidth,
     updateTableRowHeight,
     updateText,
-    updateTextById,
   } = createPptxObjectActions({
     activateObjectKey,
     activeChart,
@@ -198,17 +222,18 @@ export function PptxEditor({
     activeShape,
     activeTable,
     activeText,
+    applyLatestModel: asyncInsertionCoordinator.applyLatest,
     clearObjectSelection,
     model,
     onChange,
-    selectImage,
+    registerPendingInsertion: asyncInsertionCoordinator.register,
+    finishPendingInsertion: asyncInsertionCoordinator.finish,
     selectShape,
     selectTable,
     selectText,
     setSelectedObjectKeys,
     slide,
     slideAspectRatio,
-    updateSlide,
   });
 
   const {
@@ -281,6 +306,7 @@ export function PptxEditor({
     handleCanvasPointerDown,
     handleCanvasPointerMove,
     handleCanvasPointerUp,
+    cancelCanvasPointerTransaction,
     startObjectDrag,
   } = usePptxPointerHandlers({
     activateObjectKey,
@@ -304,13 +330,25 @@ export function PptxEditor({
     setSelectionBox,
     setSnapGuides,
     slide,
-    updateChartById,
-    updateImageById,
     updateObjectGeometries,
-    updateShapeById,
-    updateTableById,
-    updateTextById,
   });
+  const cancelStalePointerTransaction = useEffectEvent(() =>
+    cancelCanvasPointerTransaction(),
+  );
+
+  useEffect(() => {
+    if (!dragState) return;
+    const targetStillExists = slide
+      ? [
+          ...slide.texts.map((item) => `text:${item.id}`),
+          ...(slide.shapes ?? []).map((item) => `shape:${item.id}`),
+          ...(slide.images ?? []).map((item) => `image:${item.id}`),
+          ...(slide.tables ?? []).map((item) => `table:${item.id}`),
+          ...(slide.charts ?? []).map((item) => `chart:${item.id}`),
+        ].includes(`${dragState.objectKind}:${dragState.objectId}`)
+      : false;
+    if (!targetStillExists) cancelStalePointerTransaction();
+  }, [dragState, slide]);
 
   function movePresentation(delta: -1 | 1) {
     setPresentingIndex((current) => {
@@ -393,6 +431,43 @@ export function PptxEditor({
         onUpdateActiveTable={updateActiveTable}
         onUpdateActiveChart={updateActiveChart}
       />
+      {(pendingInsertions.length > 0 || operationMessage) && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+          {pendingInsertions.map((operation) => (
+            <span
+              key={operation.id}
+              className="inline-flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1"
+            >
+              {operation.label}
+              <button
+                type="button"
+                onClick={() => {
+                  operation.cancel();
+                  asyncInsertionCoordinator.finish(
+                    operation.id,
+                    `Cancelled ${operation.label}`,
+                  );
+                }}
+                className="rounded px-1 text-[var(--status-danger)] hover:bg-[var(--surface-hover)]"
+              >
+                Cancel
+              </button>
+            </span>
+          ))}
+          {operationMessage && (
+            <span className="inline-flex items-center gap-2">
+              {operationMessage}
+              <button
+                type="button"
+                onClick={() => setOperationMessage(null)}
+                className="rounded px-1 hover:bg-[var(--surface-hover)]"
+              >
+                Dismiss
+              </button>
+            </span>
+          )}
+        </div>
+      )}
       {presentingSlide && presentingIndex !== null && (
         <PptxPresentationOverlay
           slides={model.slides}
@@ -413,6 +488,7 @@ export function PptxEditor({
             t("documentEditor.slideLabel", { index: index + 1 })
           }
           onSelect={(slideId) => {
+            cancelCanvasPointerTransaction();
             setPreferredSlideId(slideId);
             clearObjectSelection();
           }}
@@ -420,7 +496,7 @@ export function PptxEditor({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface)]">
           <PptxSlideCanvas
             canvasRef={canvasRef}
-            slide={slide}
+            slide={previewSlide}
             slideAspectRatio={slideAspectRatio}
             selectionBoxBounds={selectionBoxBounds}
             snapGuides={snapGuides}
@@ -431,9 +507,17 @@ export function PptxEditor({
             activeTableId={activeTableId}
             activeChartId={activeChartId}
             selectedKeys={selectedObjectKeySet}
-            onCanvasKeyDown={handleCanvasKeyDown}
+            onCanvasKeyDown={(event) => {
+              if (event.key === "Escape" && (dragState || selectionBox)) {
+                event.preventDefault();
+                cancelCanvasPointerTransaction();
+                return;
+              }
+              handleCanvasKeyDown(event);
+            }}
             onCanvasPointerMove={handleCanvasPointerMove}
             onCanvasPointerUp={handleCanvasPointerUp}
+            onCanvasPointerCancel={cancelCanvasPointerTransaction}
             onCanvasPointerDown={handleCanvasPointerDown}
             onTextKeyDown={handleTextKeyDown}
             onSelectText={selectText}
@@ -472,12 +556,7 @@ export function PptxEditor({
               if (!activeTheme) return;
               updateTheme(activeTheme.path, patch);
             }}
-            onThemeColorChange={(key, color) => {
-              if (!activeTheme) return;
-              updateThemeColor(activeTheme.path, key, color);
-            }}
             onMasterChange={updateMaster}
-            onMasterPlaceholderChange={updateMasterPlaceholder}
             onAnimationTimingChange={updateAnimationTiming}
             onAddAnimation={addAnimation}
             onDeleteAnimation={deleteAnimation}

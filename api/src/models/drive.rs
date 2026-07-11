@@ -45,6 +45,8 @@ pub struct DriveFileResponse {
     pub mime_type: String,
     pub size: u64,
     pub updated_at: Option<String>,
+    /// SHA-256 content identity used for conditional raw-text writes.
+    pub fingerprint: String,
     pub content: String,
     pub editable: bool,
     pub editor_kind: DocumentEditorKind,
@@ -62,6 +64,9 @@ pub struct DrivePathQuery {
 pub struct WriteDriveFileRequest {
     pub path: String,
     pub content: String,
+    /// Required when the destination already exists. New-file creation keeps
+    /// this optional so creation does not need a fabricated revision token.
+    pub expected_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +93,13 @@ pub struct MoveDrivePathResponse {
 #[derive(Debug, Serialize)]
 pub struct DriveMutationResponse {
     pub success: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteDriveFileResponse {
+    pub success: bool,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Serialize)]

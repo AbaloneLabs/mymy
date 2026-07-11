@@ -17,9 +17,10 @@ use crate::services::agent_prompts::AgentPromptQuery;
 use crate::services::agents as agents_service;
 use crate::services::calendar::{self as calendar_service, EventQuery};
 use crate::services::chat::{self, SessionQuery};
+use crate::services::document_revisions::{record_document_revision, RevisionActor};
 use crate::services::drive as drive_service;
 use crate::services::file_observations::{
-    ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
+    ensure_file_not_changed_since_observed, record_file_observation_fingerprint, FileFingerprint,
     FileObservationSource,
 };
 use crate::services::goals::{self as goals_service, GoalQuery};
@@ -313,22 +314,25 @@ impl ToolHandler for AppDataTool {
                 let response = drive_service::read_file(&self.state, path)
                     .await
                     .map_err(app_error_to_tool)?;
-                let fingerprint = fingerprint_path(&resolved.physical_path)
-                    .await
-                    .map_err(ToolError::Execution)?;
-                record_file_observation(
-                    Some(&self.state.db),
-                    Some(&context.agent_profile),
+                let fingerprint = FileFingerprint {
+                    hash: response.fingerprint.clone(),
+                    size: response.size,
+                    modified_at: None,
+                };
+                record_file_observation_fingerprint(
+                    &self.state.db,
+                    &context.agent_profile,
                     &resolved.logical_path,
-                    &resolved.physical_path,
+                    &fingerprint,
                     FileObservationSource::Read,
                 )
                 .await
                 .map_err(ToolError::Execution)?;
+                let response_fingerprint = response.fingerprint.clone();
                 Ok(tool_result(&serde_json::json!({
                     "success": true,
                     "data": response,
-                    "fingerprint": fingerprint.hash,
+                    "fingerprint": response_fingerprint,
                 })))
             })
             .await;
@@ -347,32 +351,53 @@ impl ToolHandler for AppDataTool {
                 )
                 .await
                 .map_err(ToolError::Execution)?;
-                if resolved.physical_path.exists() {
-                    let expected = required_str(args, "expectedFingerprint")?;
-                    let current = fingerprint_path(&resolved.physical_path)
-                        .await
-                        .map_err(ToolError::Execution)?;
-                    if expected != current.hash {
-                        return Err(ToolError::Execution(
-                            "Drive file fingerprint changed before overwrite".to_string(),
-                        ));
-                    }
-                }
-                drive_service::write_file(&self.state, &req.path, &req.content)
-                    .await
-                    .map_err(app_error_to_tool)?;
-                record_file_observation(
-                    Some(&self.state.db),
-                    Some(&context.agent_profile),
+                let fingerprint = drive_service::write_file_conditionally(
+                    &self.state,
+                    &req.path,
+                    &req.content,
+                    req.expected_fingerprint.as_deref(),
+                )
+                .await
+                .map_err(app_error_to_tool)?;
+                let observation_recorded = record_file_observation_fingerprint(
+                    &self.state.db,
+                    &context.agent_profile,
                     &resolved.logical_path,
-                    &resolved.physical_path,
+                    &fingerprint,
                     FileObservationSource::Write,
                 )
                 .await
-                .map_err(ToolError::Execution)?;
+                .is_ok();
+                if !observation_recorded {
+                    tracing::warn!(
+                        path = %resolved.logical_path,
+                        agent = %context.agent_profile,
+                        "agent Drive write committed but observation recording failed"
+                    );
+                }
+                if let Err(error) = record_document_revision(
+                    &self.state,
+                    &resolved.logical_path,
+                    &fingerprint.hash,
+                    RevisionActor::Agent(&context.agent_profile),
+                    "agent-drive-tool",
+                    None,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        path = %resolved.logical_path,
+                        error = %error,
+                        "agent Drive write committed but revision provenance was not recorded"
+                    );
+                }
                 Ok(tool_result(&serde_json::json!({
                     "success": true,
-                    "data": { "path": resolved.logical_path },
+                    "data": {
+                        "path": resolved.logical_path,
+                        "fingerprint": fingerprint.hash,
+                    },
+                    "observationRecorded": observation_recorded,
                 })))
             })
             .await;

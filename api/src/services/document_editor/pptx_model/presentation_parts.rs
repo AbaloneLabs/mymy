@@ -182,9 +182,9 @@ pub(in crate::services::document_editor) fn pptx_table_style_models(
     Ok(xml_segments(&xml, "<a:tblStyle ", "</a:tblStyle>")
         .into_iter()
         .filter_map(|style| {
-            let style_id = docx_tag_attr(&style, "<a:tblStyle ", "styleId")?;
-            let name = docx_tag_attr(&style, "<a:tblStyle ", "styleName")
-                .or_else(|| docx_tag_attr(&style, "<a:tblStyle ", "name"));
+            let style_id = docx_tag_attr(&style, "<a:tblStyle", "styleId")?;
+            let name = docx_tag_attr(&style, "<a:tblStyle", "styleName")
+                .or_else(|| docx_tag_attr(&style, "<a:tblStyle", "name"));
             Some(json!({
                 "id": style_id,
                 "name": name,
@@ -283,6 +283,7 @@ pub(in crate::services::document_editor) fn pptx_layout_placeholder_texts(
             let run = pptx_run_properties_segment(&shape).unwrap_or_default();
             Some(json!({
                 "id": format!("layout-placeholder-{}", index + 1),
+                "shapeId": docx_tag_attr(&shape, "<p:cNvPr", "id"),
                 "text": text,
                 "placeholderType": placeholder_kind,
                 "x": x,

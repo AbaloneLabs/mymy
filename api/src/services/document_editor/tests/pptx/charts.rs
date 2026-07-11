@@ -23,6 +23,7 @@ fn pptx_model_exposes_slide_charts() {
     let model = pptx_model(&package).unwrap();
     let chart = &model["slides"][0]["charts"][0];
 
+    assert_eq!(chart["shapeId"], "8");
     assert_eq!(chart["relationshipId"], "rIdChart");
     assert_eq!(chart["path"], "ppt/charts/chart1.xml");
     assert_eq!(chart["type"], "bar");

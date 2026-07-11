@@ -75,10 +75,11 @@ export function nonOverlappingHyperlinks(
   hyperlinks: XlsxHyperlink[],
   selection: NormalizedCellRange,
 ) {
-  return hyperlinks.filter((hyperlink) =>
-    xlsxSqrefRanges(hyperlink.ref).every(
-      (range) => !rangesOverlap(range, selection),
-    ),
+  return hyperlinks.flatMap((hyperlink) =>
+    referencesWithoutSelection(hyperlink.ref, selection).map((ref) => ({
+      ...hyperlink,
+      ref,
+    })),
   );
 }
 
@@ -111,20 +112,22 @@ export function nonOverlappingComments(
   comments: XlsxComment[],
   selection: NormalizedCellRange,
 ) {
-  return comments.filter((comment) =>
-    xlsxSqrefRanges(comment.ref).every((range) => !rangesOverlap(range, selection)),
-  );
+  return comments.filter((comment) => {
+    const range = xlsxRangeFromRef(comment.ref);
+    return !range || !rangesOverlap(range, selection);
+  });
 }
 
 export function nonOverlappingDataValidations(
   validations: XlsxDataValidation[],
   selection: NormalizedCellRange,
 ) {
-  return validations.filter((validation) =>
-    xlsxSqrefRanges(validation.sqref).every(
-      (range) => !rangesOverlap(range, selection),
-    ),
-  );
+  return validations
+    .map((validation) => {
+      const sqref = referenceWithoutSelection(validation.sqref, selection);
+      return sqref ? { ...validation, sqref } : null;
+    })
+    .filter((validation): validation is XlsxDataValidation => validation !== null);
 }
 
 export function xlsxConditionalRuleForRange(
@@ -144,11 +147,15 @@ export function nonOverlappingConditionalFormattings(
   formattings: XlsxConditionalFormatting[],
   selection: NormalizedCellRange,
 ) {
-  return formattings.filter((formatting) =>
-    xlsxSqrefRanges(formatting.sqref).every(
-      (range) => !rangesOverlap(range, selection),
-    ),
-  );
+  return formattings
+    .map((formatting) => {
+      const sqref = referenceWithoutSelection(formatting.sqref, selection);
+      return sqref ? { ...formatting, sqref } : null;
+    })
+    .filter(
+      (formatting): formatting is XlsxConditionalFormatting =>
+        formatting !== null,
+    );
 }
 
 export function shiftXlsxConditionalFormattingsForRowInsert(
@@ -341,6 +348,81 @@ export function rangesOverlap(left: NormalizedCellRange, right: NormalizedCellRa
     left.bottom < right.top ||
     left.top > right.bottom
   );
+}
+
+/**
+ * Remove only the selected cells from a possibly multi-area OOXML reference.
+ * Metadata editors commonly replace one rectangular selection inside a much
+ * larger validation or formatting region. Dropping the entire source entry
+ * would make an apparently local action erase unrelated behavior, so every
+ * intersected rectangle is partitioned into the remaining disjoint strips.
+ * Opaque reference tokens are retained because we cannot safely conclude that
+ * they overlap; package validation can then preserve or report them.
+ */
+function referenceWithoutSelection(
+  reference: string,
+  selection: NormalizedCellRange,
+) {
+  const remaining = referencesWithoutSelection(reference, selection);
+  return remaining.length > 0 ? remaining.join(" ") : null;
+}
+
+function referencesWithoutSelection(
+  reference: string,
+  selection: NormalizedCellRange,
+) {
+  return reference.trim().split(/\s+/).filter(Boolean).flatMap((token) => {
+    const range = xlsxRangeFromRef(token);
+    if (!range) return [token];
+    return subtractRange(range, selection).map(rangeToA1);
+  });
+}
+
+function subtractRange(
+  source: NormalizedCellRange,
+  removed: NormalizedCellRange,
+) {
+  if (!rangesOverlap(source, removed)) return [source];
+  const intersection = {
+    top: Math.max(source.top, removed.top),
+    right: Math.min(source.right, removed.right),
+    bottom: Math.min(source.bottom, removed.bottom),
+    left: Math.max(source.left, removed.left),
+  };
+  const remaining: NormalizedCellRange[] = [];
+  if (source.top < intersection.top) {
+    remaining.push({
+      top: source.top,
+      right: source.right,
+      bottom: intersection.top - 1,
+      left: source.left,
+    });
+  }
+  if (intersection.bottom < source.bottom) {
+    remaining.push({
+      top: intersection.bottom + 1,
+      right: source.right,
+      bottom: source.bottom,
+      left: source.left,
+    });
+  }
+  if (source.left < intersection.left) {
+    remaining.push({
+      top: intersection.top,
+      right: intersection.left - 1,
+      bottom: intersection.bottom,
+      left: source.left,
+    });
+  }
+  if (intersection.right < source.right) {
+    remaining.push({
+      top: intersection.top,
+      right: source.right,
+      bottom: intersection.bottom,
+      left: intersection.right + 1,
+    });
+  }
+  return remaining;
 }
 
 function rangeContainsCell(range: NormalizedCellRange, row: number, column: number) {

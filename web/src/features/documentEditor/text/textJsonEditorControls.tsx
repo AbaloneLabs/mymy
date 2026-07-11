@@ -3,12 +3,19 @@ import { GripVertical, Minus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { JsonPathSegment } from "./textJsonUtils";
 
-export function JsonDeleteButton({ onClick }: { onClick: () => void }) {
+export function JsonDeleteButton({
+  disabled = false,
+  onClick,
+}: {
+  disabled?: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)]"
+      disabled={disabled}
+      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--text-faint)] hover:bg-[var(--status-error)]/10 hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-35"
       title="Delete"
     >
       <Minus className="h-3.5 w-3.5" strokeWidth={1.75} />

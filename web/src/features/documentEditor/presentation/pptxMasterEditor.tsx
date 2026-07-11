@@ -8,27 +8,32 @@ export function PptxMasterEditor({
   masters,
   activeMasterPath,
   disabled,
+  affectedSlideCounts,
   onMasterChange,
-  onPlaceholderChange,
 }: {
   masters: PptxMaster[];
   activeMasterPath?: string;
   disabled: boolean;
+  affectedSlideCounts: Readonly<Record<string, number>>;
   onMasterChange: (path: string, patch: Partial<PptxMaster>) => void;
-  onPlaceholderChange: (
-    path: string,
-    placeholderIndex: number,
-    patch: Partial<PptxText>,
-  ) => void;
 }) {
-  const [selectedMasterPath, setSelectedMasterPath] = useState("");
+  const initialMaster =
+    masters.find((master) => master.path === activeMasterPath) ?? masters[0];
+  const [selectedMasterPath, setSelectedMasterPath] = useState(
+    initialMaster?.path ?? "",
+  );
+  const [draftMaster, setDraftMaster] = useState<PptxMaster | undefined>(() =>
+    initialMaster ? structuredClone(initialMaster) : undefined,
+  );
   const [selectedPlaceholderIndex, setSelectedPlaceholderIndex] = useState(0);
   const effectiveMasterPath = selectedMasterPath || activeMasterPath || "";
   const selectedMaster =
     masters.find((master) => master.path === effectiveMasterPath) ??
     masters.find((master) => master.path === activeMasterPath) ??
     masters[0];
-  const placeholders = selectedMaster?.placeholderTexts ?? [];
+  const effectiveMaster =
+    draftMaster?.path === selectedMaster?.path ? draftMaster : selectedMaster;
+  const placeholders = effectiveMaster?.placeholderTexts ?? [];
   const selectedPlaceholder =
     placeholders[Math.min(selectedPlaceholderIndex, Math.max(0, placeholders.length - 1))];
   const activeIndex = selectedPlaceholder
@@ -45,18 +50,67 @@ export function PptxMasterEditor({
   );
 
   function updatePlaceholder(patch: Partial<PptxText>) {
-    if (!selectedMaster || !selectedPlaceholder) return;
-    onPlaceholderChange(selectedMaster.path, activeIndex, patch);
+    if (!effectiveMaster || !selectedPlaceholder) return;
+    setDraftMaster({
+      ...effectiveMaster,
+      placeholderTexts: placeholders.map((placeholder, index) =>
+        index === activeIndex ? { ...placeholder, ...patch } : placeholder,
+      ),
+    });
   }
+
+  const dirty = JSON.stringify(effectiveMaster) !== JSON.stringify(selectedMaster);
 
   return (
     <div className="grid shrink-0 gap-2 border-t border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-[11px] text-[var(--text-muted)] xl:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)_minmax(16rem,2fr)_minmax(14rem,1.3fr)]">
+      <div className="flex items-center justify-between gap-2 xl:col-span-4">
+        <span>
+          Global master draft · affects{" "}
+          {selectedMaster ? (affectedSlideCounts[selectedMaster.path] ?? 0) : 0} slide(s)
+        </span>
+        <span className="flex gap-1">
+          <button
+            type="button"
+            disabled={disabled || !dirty || !effectiveMaster || !selectedMaster}
+            onClick={() =>
+              effectiveMaster &&
+              selectedMaster &&
+              onMasterChange(selectedMaster.path, structuredClone(effectiveMaster))
+            }
+            className="rounded border border-[var(--border)] px-2 py-1 hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Apply
+          </button>
+          <button
+            type="button"
+            disabled={disabled || !dirty}
+            onClick={() =>
+              setDraftMaster(
+                selectedMaster ? structuredClone(selectedMaster) : undefined,
+              )
+            }
+            className="rounded border border-[var(--border)] px-2 py-1 hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Cancel
+          </button>
+        </span>
+      </div>
       <label className="grid min-w-0 gap-1">
         <span className="font-medium uppercase tracking-wide">Master</span>
         <select
           value={selectedMaster?.path ?? ""}
           onChange={(event) => {
+            const nextMaster = masters.find(
+              (master) => master.path === event.currentTarget.value,
+            );
+            if (
+              dirty &&
+              !window.confirm("Discard the unapplied master changes?")
+            ) {
+              return;
+            }
             setSelectedMasterPath(event.currentTarget.value);
+            setDraftMaster(nextMaster ? structuredClone(nextMaster) : undefined);
             setSelectedPlaceholderIndex(0);
           }}
           disabled={disabled || masters.length === 0}
@@ -76,10 +130,10 @@ export function PptxMasterEditor({
       <label className="grid min-w-0 gap-1">
         <span className="font-medium uppercase tracking-wide">Master name</span>
         <input
-          value={selectedMaster?.name ?? ""}
+          value={effectiveMaster?.name ?? ""}
           onChange={(event) => {
-            if (!selectedMaster) return;
-            onMasterChange(selectedMaster.path, { name: event.currentTarget.value });
+            if (!effectiveMaster) return;
+            setDraftMaster({ ...effectiveMaster, name: event.currentTarget.value });
           }}
           disabled={disabled || !selectedMaster}
           className="h-8 min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"

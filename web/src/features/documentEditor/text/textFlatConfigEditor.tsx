@@ -32,13 +32,17 @@ import {
   duplicateFlatConfigEntry,
   flatConfigEntryCanDuplicate,
   flatConfigEntryCanMove,
-  flatConfigLines,
   joinStructuredTextLines,
   moveFlatConfigEntry,
   parseFlatConfig,
   splitStructuredTextLines,
 } from "./textStructuredUtils";
 import type { ConfigEntry } from "./textStructuredUtils";
+import {
+  flatConfigEntryEditBlockReason,
+  flatConfigStructuralEditBlockReason,
+  patchLosslessFlatConfigScalar,
+} from "./textFlatConfigCapability";
 
 export function FlatConfigEditor({
   kind,
@@ -57,19 +61,22 @@ export function FlatConfigEditor({
     () => new Set(),
   );
   const parsed = parseFlatConfig(content, kind);
+  const structuralEditBlockReason = flatConfigStructuralEditBlockReason({
+    ...parsed,
+    content,
+    kind,
+  });
   const tree = useMemo(() => buildConfigTree(parsed.entries), [parsed.entries]);
 
   function updateLine(entry: ConfigEntry, key: string, value: string) {
-    const cleanKey = key.trim();
-    if (entry.keyEditable && !cleanKey) return;
-    const lines = splitStructuredTextLines(content);
-    const range = configEntryLineRange(entry);
-    lines.splice(
-      range.start,
-      range.end - range.start,
-      ...flatConfigLines(entry, cleanKey, value, kind),
-    );
-    onChangeContent(joinStructuredTextLines(lines, content));
+    const next = patchLosslessFlatConfigScalar({
+      content,
+      entry,
+      key,
+      value,
+      kind,
+    });
+    if (next !== null) onChangeContent(next);
   }
 
   function updateInlineArrayItem(
@@ -148,6 +155,7 @@ export function FlatConfigEditor({
   }
 
   function deleteEntry(entry: ConfigEntry) {
+    if (structuralEditBlockReason) return;
     const lines = splitStructuredTextLines(content);
     const range = configEntryLineRange(entry);
     lines.splice(range.start, range.end - range.start);
@@ -155,14 +163,17 @@ export function FlatConfigEditor({
   }
 
   function duplicateEntry(entry: ConfigEntry) {
+    if (structuralEditBlockReason) return;
     onChangeContent(duplicateFlatConfigEntry(content, entry, kind));
   }
 
   function moveEntry(entry: ConfigEntry, direction: -1 | 1) {
+    if (structuralEditBlockReason) return;
     onChangeContent(moveFlatConfigEntry(content, parsed.entries, entry, direction));
   }
 
   function addEntry() {
+    if (structuralEditBlockReason) return;
     const cleanKey = newKey.trim();
     if (!cleanKey || !newValue.trim()) return;
     onChangeContent(
@@ -184,6 +195,7 @@ export function FlatConfigEditor({
   }
 
   function deleteGroup(path: string[]) {
+    if (structuralEditBlockReason) return;
     onChangeContent(deleteFlatConfigGroup(content, kind, path));
   }
 
@@ -200,6 +212,7 @@ export function FlatConfigEditor({
   }
 
   function renderEntry(entry: ConfigEntry, depth: number) {
+    const editBlockReason = flatConfigEntryEditBlockReason(entry, kind);
     return (
       <div
         key={`${entry.lineIndex}:${entry.key}`}
@@ -209,7 +222,8 @@ export function FlatConfigEditor({
         <input
           value={entry.key}
           onChange={(event) => updateLine(entry, event.target.value, entry.value)}
-          disabled={!entry.keyEditable}
+          disabled={!entry.keyEditable || Boolean(editBlockReason)}
+          title={editBlockReason ?? undefined}
           className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs font-medium text-[var(--accent)] outline-none focus:border-[var(--accent)] disabled:text-[var(--text-faint)]"
         />
         <div className="min-w-0 space-y-1">
@@ -228,6 +242,8 @@ export function FlatConfigEditor({
             <textarea
               value={entry.value}
               onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+              disabled={Boolean(editBlockReason)}
+              title={editBlockReason ?? undefined}
               rows={Math.min(8, Math.max(3, entry.value.split("\n").length))}
               className="min-w-0 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
@@ -235,47 +251,69 @@ export function FlatConfigEditor({
             <input
               value={entry.value}
               onChange={(event) => updateLine(entry, entry.key, event.target.value)}
+              disabled={Boolean(editBlockReason)}
+              title={editBlockReason ?? undefined}
               className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
           )}
-          <InlineArrayEditor
-            entry={entry}
-            onAdd={() => addInlineArrayItem(entry)}
-            onDelete={(itemIndex) => deleteInlineArrayItem(entry, itemIndex)}
-            onUpdate={(itemIndex, value) =>
-              updateInlineArrayItem(entry, itemIndex, value)
-            }
-          />
-          <InlineObjectEditor
-            entry={entry}
-            kind={kind}
-            onAdd={(key, value) => addInlineObjectEntry(entry, key, value)}
-            onDelete={(entryIndex) => deleteInlineObjectEntry(entry, entryIndex)}
-            onUpdate={(entryIndex, patch) =>
-              updateInlineObjectEntry(entry, entryIndex, patch)
-            }
-          />
+          {editBlockReason ? (
+            <span className="text-[10px] text-[var(--status-warning)]">
+              {editBlockReason}
+            </span>
+          ) : (
+            <>
+              <InlineArrayEditor
+                entry={entry}
+                onAdd={() => addInlineArrayItem(entry)}
+                onDelete={(itemIndex) => deleteInlineArrayItem(entry, itemIndex)}
+                onUpdate={(itemIndex, value) =>
+                  updateInlineArrayItem(entry, itemIndex, value)
+                }
+              />
+              <InlineObjectEditor
+                entry={entry}
+                kind={kind}
+                onAdd={(key, value) => addInlineObjectEntry(entry, key, value)}
+                onDelete={(entryIndex) => deleteInlineObjectEntry(entry, entryIndex)}
+                onUpdate={(entryIndex, patch) =>
+                  updateInlineObjectEntry(entry, entryIndex, patch)
+                }
+              />
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <JsonIconButton
-            disabled={!flatConfigEntryCanMove(parsed.entries, entry, -1)}
+            disabled={
+              Boolean(structuralEditBlockReason) ||
+              !flatConfigEntryCanMove(parsed.entries, entry, -1)
+            }
             icon={ArrowUp}
             label="Move entry up"
             onClick={() => moveEntry(entry, -1)}
           />
           <JsonIconButton
-            disabled={!flatConfigEntryCanMove(parsed.entries, entry, 1)}
+            disabled={
+              Boolean(structuralEditBlockReason) ||
+              !flatConfigEntryCanMove(parsed.entries, entry, 1)
+            }
             icon={ArrowDown}
             label="Move entry down"
             onClick={() => moveEntry(entry, 1)}
           />
           <JsonIconButton
-            disabled={!flatConfigEntryCanDuplicate(entry)}
+            disabled={
+              Boolean(structuralEditBlockReason) ||
+              !flatConfigEntryCanDuplicate(entry)
+            }
             icon={Copy}
             label="Duplicate entry"
             onClick={() => duplicateEntry(entry)}
           />
-          <JsonDeleteButton onClick={() => deleteEntry(entry)} />
+          <JsonDeleteButton
+            disabled={Boolean(structuralEditBlockReason)}
+            onClick={() => deleteEntry(entry)}
+          />
         </div>
       </div>
     );
@@ -309,11 +347,15 @@ export function FlatConfigEditor({
             {child.entries.length + child.children.length}
           </span>
           <JsonIconButton
+            disabled={Boolean(structuralEditBlockReason)}
             icon={Plus}
             label="Add child entry"
             onClick={() => prepareChildEntry(child.path)}
           />
-          <JsonDeleteButton onClick={() => deleteGroup(child.path)} />
+          <JsonDeleteButton
+            disabled={Boolean(structuralEditBlockReason)}
+            onClick={() => deleteGroup(child.path)}
+          />
         </div>,
         ...(collapsed
           ? []
@@ -359,7 +401,7 @@ export function FlatConfigEditor({
         <button
           type="button"
           onClick={addEntry}
-          disabled={!canAddEntry}
+          disabled={!canAddEntry || Boolean(structuralEditBlockReason)}
           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--border)] px-2 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus className="h-3.5 w-3.5" strokeWidth={1.75} />
@@ -368,6 +410,11 @@ export function FlatConfigEditor({
         {parsed.unsupportedCount > 0 && (
           <span className="text-xs text-[var(--text-faint)]">
             {parsed.unsupportedCount} preserved source lines
+          </span>
+        )}
+        {structuralEditBlockReason && (
+          <span className="text-xs text-[var(--status-warning)]">
+            Structural edits disabled: {structuralEditBlockReason}
           </span>
         )}
       </div>

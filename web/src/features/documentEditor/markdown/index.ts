@@ -17,6 +17,7 @@ export * from "./markdownSearchActions";
 export * from "./markdownSearchBars";
 export * from "./markdownSidePanel";
 export * from "./markdownSourceActions";
+export * from "./markdownSourceAnchor";
 export * from "./markdownTableActions";
 export * from "./markdownTablePanel";
 export * from "./markdownTableUtils";

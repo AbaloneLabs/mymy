@@ -1,9 +1,11 @@
 import {
   appendFlatConfigEntry,
   configEntryLineRange,
-  flatConfigLines,
+  flatConfigEntryEditBlockReason,
+  flatConfigStructuralEditBlockReason,
   joinStructuredTextLines,
   parseFlatConfig,
+  patchLosslessFlatConfigScalar,
   splitStructuredTextLines,
 } from "../text";
 import type { ConfigEntry } from "../text";
@@ -24,7 +26,11 @@ export interface FrontmatterField {
   lineIndex: number;
   lineEndIndex?: number;
   key: string;
+  keyStartColumn?: number;
+  keyEndColumn?: number;
   value: string;
+  valueStartColumn?: number;
+  valueEndColumn?: number;
   path: string[];
   parentLabel: string;
   keyEditable: boolean;
@@ -43,6 +49,7 @@ export interface FrontmatterField {
   jsonKeyEnd?: number;
   jsonValueStart?: number;
   jsonValueEnd?: number;
+  editBlockReason?: string;
 }
 
 export type MarkdownFrontmatterFormat = "yaml" | "toml" | "json";
@@ -91,8 +98,26 @@ export function parseFrontmatterFields(content: string, marker: "---" | "+++") {
   const format = frontmatterFormat(marker, content);
   if (format === "json") return parseJsonFrontmatterFields(content);
   return parseFlatConfig(content, format).entries.map((entry) =>
-    frontmatterFieldFromConfigEntry(entry, format),
+    frontmatterFieldFromConfigEntry(
+      entry,
+      format,
+      flatConfigEntryEditBlockReason(entry, format) ?? undefined,
+    ),
   );
+}
+
+export function frontmatterStructuralEditBlockReason(
+  content: string,
+  marker: "---" | "+++",
+) {
+  const format = frontmatterFormat(marker, content);
+  if (format === "json") return null;
+  const parsed = parseFlatConfig(content, format);
+  return flatConfigStructuralEditBlockReason({
+    ...parsed,
+    content,
+    kind: format,
+  });
 }
 
 export function formatFrontmatterField(key: string, value: string, marker: "---" | "+++") {
@@ -110,17 +135,11 @@ export function updateFrontmatterFieldBody(
   if (format === "json") {
     return updateJsonFrontmatterField(content, field, key, value);
   }
-  const lines = splitStructuredTextLines(content);
-  const cleanKey = field.keyEditable ? key.trim() : field.key;
-  if (!cleanKey) return content;
   const entry = frontmatterConfigEntry(field);
-  const range = configEntryLineRange(entry);
-  lines.splice(
-    range.start,
-    range.end - range.start,
-    ...flatConfigLines(entry, cleanKey, value, format),
+  return (
+    patchLosslessFlatConfigScalar({ content, entry, key, value, kind: format }) ??
+    content
   );
-  return joinStructuredTextLines(lines, content);
 }
 
 export function deleteFrontmatterFieldBody(
@@ -180,13 +199,18 @@ function frontmatterFormat(
 function frontmatterFieldFromConfigEntry(
   entry: ConfigEntry,
   format: "yaml" | "toml",
+  editBlockReason?: string,
 ): FrontmatterField {
   return {
     documentIndex: entry.documentIndex,
     lineIndex: entry.lineIndex,
     lineEndIndex: entry.lineEndIndex,
     key: entry.key,
+    keyStartColumn: entry.keyStartColumn,
+    keyEndColumn: entry.keyEndColumn,
     value: entry.value,
+    valueStartColumn: entry.valueStartColumn,
+    valueEndColumn: entry.valueEndColumn,
     path: entry.path,
     parentLabel:
       entry.path.length > 1 ? entry.path.slice(0, -1).join(".") : entry.section || "root",
@@ -201,6 +225,7 @@ function frontmatterFieldFromConfigEntry(
     valueHeader: entry.valueHeader,
     valueIndent: entry.valueIndent,
     valueStyle: entry.valueStyle,
+    editBlockReason,
   };
 }
 
@@ -210,7 +235,11 @@ function frontmatterConfigEntry(field: FrontmatterField): ConfigEntry {
     documentIndex: field.documentIndex,
     lineEndIndex: field.lineEndIndex,
     key: field.key,
+    keyStartColumn: field.keyStartColumn,
+    keyEndColumn: field.keyEndColumn,
     value: field.value,
+    valueStartColumn: field.valueStartColumn,
+    valueEndColumn: field.valueEndColumn,
     path: field.path,
     section: field.section,
     indent: field.indent ?? "",

@@ -86,7 +86,7 @@ export function normalizeXlsxCells(
   cells: XlsxCell[],
   columnCount: number,
   rowIndex: string,
-) {
+): XlsxCell[] {
   if (cells.length >= columnCount) return cells;
   return [
     ...cells,

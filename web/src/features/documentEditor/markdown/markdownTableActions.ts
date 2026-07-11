@@ -1,4 +1,6 @@
 import {
+  patchMarkdownTableAlignment,
+  patchMarkdownTableCell,
   replaceMarkdownTable,
 } from "./markdownEditorUtils";
 import type {
@@ -17,19 +19,23 @@ export function createMarkdownTableActions({
   content,
   updateContent,
 }: MarkdownTableActionParams) {
-  function updateMarkdownTable(nextTable: MarkdownTableModel) {
+  function updateMarkdownTable(nextTable: MarkdownTableModel, description: string) {
     if (!activeTable) return;
+    if (
+      !window.confirm(
+        `${description} requires normalizing this table's source formatting. Continue?`,
+      )
+    ) {
+      return;
+    }
     updateContent(replaceMarkdownTable(content, activeTable, nextTable));
   }
 
   function updateMarkdownTableHeader(columnIndex: number, value: string) {
     if (!activeTable) return;
-    updateMarkdownTable({
-      ...activeTable,
-      headers: activeTable.headers.map((header, index) =>
-        index === columnIndex ? value : header,
-      ),
-    });
+    updateContent(
+      patchMarkdownTableCell(content, activeTable.headerSpans[columnIndex], value),
+    );
   }
 
   function updateMarkdownTableAlignment(
@@ -37,12 +43,13 @@ export function createMarkdownTableActions({
     alignment: MarkdownTableAlignment,
   ) {
     if (!activeTable) return;
-    updateMarkdownTable({
-      ...activeTable,
-      alignments: activeTable.alignments.map((item, index) =>
-        index === columnIndex ? alignment : item,
+    updateContent(
+      patchMarkdownTableAlignment(
+        content,
+        activeTable.alignmentSpans[columnIndex],
+        alignment,
       ),
-    });
+    );
   }
 
   function updateMarkdownTableCell(
@@ -51,16 +58,13 @@ export function createMarkdownTableActions({
     value: string,
   ) {
     if (!activeTable) return;
-    updateMarkdownTable({
-      ...activeTable,
-      rows: activeTable.rows.map((row, index) =>
-        index === rowIndex
-          ? row.map((cell, currentColumn) =>
-              currentColumn === columnIndex ? value : cell,
-            )
-          : row,
+    updateContent(
+      patchMarkdownTableCell(
+        content,
+        activeTable.rowSpans[rowIndex]?.[columnIndex],
+        value,
       ),
-    });
+    );
   }
 
   function addMarkdownTableRow(afterRowIndex?: number) {
@@ -71,7 +75,7 @@ export function createMarkdownTableActions({
         : Math.min(activeTable.rows.length, afterRowIndex + 1);
     const rows = activeTable.rows.map((row) => [...row]);
     rows.splice(insertAt, 0, Array(activeTable.headers.length).fill(""));
-    updateMarkdownTable({ ...activeTable, rows });
+    updateMarkdownTable({ ...activeTable, rows }, "Adding a row");
   }
 
   function duplicateMarkdownTableRow(rowIndex: number) {
@@ -83,7 +87,7 @@ export function createMarkdownTableActions({
         [...(activeTable.rows[rowIndex] ?? [])],
         ...activeTable.rows.slice(rowIndex + 1),
       ],
-    });
+    }, "Duplicating a row");
   }
 
   function moveMarkdownTableRow(rowIndex: number, direction: -1 | 1) {
@@ -93,7 +97,7 @@ export function createMarkdownTableActions({
     const rows = activeTable.rows.map((row) => [...row]);
     const [moved] = rows.splice(rowIndex, 1);
     rows.splice(nextIndex, 0, moved);
-    updateMarkdownTable({ ...activeTable, rows });
+    updateMarkdownTable({ ...activeTable, rows }, "Moving a row");
   }
 
   function deleteMarkdownTableRow(rowIndex: number) {
@@ -101,7 +105,7 @@ export function createMarkdownTableActions({
     updateMarkdownTable({
       ...activeTable,
       rows: activeTable.rows.filter((_, index) => index !== rowIndex),
-    });
+    }, "Deleting a row");
   }
 
   function addMarkdownTableColumn(afterColumnIndex?: number) {
@@ -123,7 +127,7 @@ export function createMarkdownTableActions({
         next.splice(insertAt, 0, "");
         return next;
       }),
-    });
+    }, "Adding a column");
   }
 
   function duplicateMarkdownTableColumn(columnIndex: number) {
@@ -145,7 +149,7 @@ export function createMarkdownTableActions({
         row[columnIndex] ?? "",
         ...row.slice(columnIndex + 1),
       ]),
-    });
+    }, "Duplicating a column");
   }
 
   function moveMarkdownTableColumn(columnIndex: number, direction: -1 | 1) {
@@ -163,7 +167,7 @@ export function createMarkdownTableActions({
       headers: move(activeTable.headers),
       alignments: move(activeTable.alignments),
       rows: activeTable.rows.map((row) => move(row)),
-    });
+    }, "Moving a column");
   }
 
   function deleteMarkdownTableColumn(columnIndex: number) {
@@ -175,7 +179,7 @@ export function createMarkdownTableActions({
       rows: activeTable.rows.map((row) =>
         row.filter((_, index) => index !== columnIndex),
       ),
-    });
+    }, "Deleting a column");
   }
 
   return {

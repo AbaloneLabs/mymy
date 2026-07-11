@@ -3,6 +3,10 @@ import {
   buildMarkdownSearchRegex,
   nextMarkdownSearchRange,
 } from "./markdownEditorUtils";
+import {
+  regexSearchError,
+  replaceSearchMatches,
+} from "../text/textSearchSemantics";
 
 type MarkdownSearchActionParams = {
   content: string;
@@ -27,6 +31,7 @@ export function useMarkdownSearchActions({
   updateContent,
   wholeWord,
 }: MarkdownSearchActionParams) {
+  const searchError = regexSearchError(searchDraft, regexSearch);
   function findNext() {
     const start = sourceRef.current?.selectionEnd ?? 0;
     const range = nextMarkdownSearchRange(content, searchDraft, {
@@ -51,8 +56,14 @@ export function useMarkdownSearchActions({
       regex.lastIndex = 0;
       const match = regex.exec(selected);
       if (match && match.index === 0 && match[0].length === selected.length) {
-        const next = `${content.slice(0, textarea.selectionStart)}${selected.replace(regex, replaceDraft)}${content.slice(textarea.selectionEnd)}`;
-        const caret = textarea.selectionStart + replaceDraft.length;
+        const replacement = replaceSearchMatches(
+          selected,
+          regex,
+          replaceDraft,
+          regexSearch,
+        );
+        const next = `${content.slice(0, textarea.selectionStart)}${replacement}${content.slice(textarea.selectionEnd)}`;
+        const caret = textarea.selectionStart + replacement.length;
         updateContent(next);
         requestAnimationFrame(() => focusSourceRange(caret, caret));
         return;
@@ -68,12 +79,13 @@ export function useMarkdownSearchActions({
       regexSearch,
     });
     if (!regex) return;
-    updateContent(content.replace(regex, replaceDraft));
+    updateContent(replaceSearchMatches(content, regex, replaceDraft, regexSearch));
   }
 
   return {
     findNext,
     replaceAll,
     replaceNext,
+    searchError,
   };
 }

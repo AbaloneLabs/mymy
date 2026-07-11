@@ -14,7 +14,7 @@ const XLSX_VALIDATION_TYPES: Array<{
   { label: "Date", value: "date" },
   { label: "Time", value: "time" },
   { label: "Text length", value: "textLength" },
-  { label: "Custom formula", value: "custom" },
+  { label: "Custom formula (preserve only)", value: "custom" },
 ];
 
 const XLSX_VALIDATION_OPERATORS: Array<{
@@ -168,7 +168,7 @@ export function SpreadsheetValidationControls({
               }
               className="h-3.5 w-3.5 accent-[var(--accent)]"
             />
-            Error
+            Enforce
           </label>
           <input
             value={validation?.errorTitle ?? ""}

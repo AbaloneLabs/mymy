@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { EditorCommandRequest } from "../shared/commands";
@@ -13,7 +13,8 @@ import {
   insertOrUpdateMarkdownToc,
   lineForOffset,
   markdownPreviewComponents,
-  markdownPreviewLineElements,
+  markdownPreviewLineForScroll,
+  markdownPreviewScrollTopForLine,
   MarkdownActiveReferenceBar,
   MarkdownEditorStatusBar,
   MarkdownEditorToolbar,
@@ -21,8 +22,8 @@ import {
   MarkdownSearchBar,
   MarkdownSidePanel,
   nextMarkdownFootnoteId,
-  nearestMarkdownPreviewLineElement,
   offsetForLine,
+  rebaseMarkdownSourceAnchor,
   runMarkdownEditorCommand,
   useMarkdownImageActions,
   useMarkdownSearchActions,
@@ -37,6 +38,14 @@ import {
 } from "../text";
 import type { TextModel } from "../shared/models";
 import { useMarkdownEditorDerivedState } from "../markdown/useMarkdownEditorDerivedState";
+
+interface MarkdownSourceViewSnapshot {
+  selectionStart: number;
+  selectionEnd: number;
+  topOffset: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
 
 export function MarkdownRichEditor({
   filePath,
@@ -59,6 +68,15 @@ export function MarkdownRichEditor({
   const imageFileInputRef = useRef<HTMLInputElement>(null);
   const handledCommandTokenRef = useRef<number | null>(null);
   const pendingPreviewScrollLineRef = useRef<number | null>(null);
+  const previewEntryLineRef = useRef<number | null>(null);
+  const [sourceViewSnapshot, setSourceViewSnapshot] =
+    useState<MarkdownSourceViewSnapshot>({
+    selectionStart: 0,
+    selectionEnd: 0,
+    topOffset: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+    });
   const [mode, setMode] = useState<"source" | "preview">("source");
   const [sidePanel, setSidePanel] = useState<MarkdownSidePanelKind | null>(null);
   const [linkDraft, setLinkDraft] = useState("");
@@ -80,6 +98,7 @@ export function MarkdownRichEditor({
     offset: 0,
   });
   const [foldedSourceIds, setFoldedSourceIds] = useState<Set<string>>(() => new Set());
+  const [sourceScrollLeft, setSourceScrollLeft] = useState(0);
   const [sourceScrollTop, setSourceScrollTop] = useState(0);
   const [previewMappedLine, setPreviewMappedLine] = useState<number | null>(null);
   const foldRanges = useMemo(
@@ -116,6 +135,7 @@ export function MarkdownRichEditor({
     foldRangeByStart,
     frontmatter,
     frontmatterFields,
+    frontmatterStructuralBlockReason,
     headingAnchors,
     lineCount,
     minimapLines,
@@ -137,37 +157,25 @@ export function MarkdownRichEditor({
     sourceSelectionRanges,
     wholeWord,
   });
-  const toggleTaskListAtLine = useCallback(
-    (line: number) => {
-      const lines = model.content.split("\n");
-      const index = line - 1;
-      const current = lines[index];
-      if (!current) return;
-      const next = current.replace(
-        /^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s+)/,
-        (_match, prefix: string, checked: string, suffix: string) =>
-          `${prefix}${checked.toLowerCase() === "x" ? " " : "x"}${suffix}`,
-      );
-      if (next === current) return;
-      lines[index] = next;
-      const content = lines.join("\n");
-      onChange({
-        ...model,
-        content,
-        trailingNewline: hasTrailingTextNewline(content),
-      });
-    },
-    [model, onChange],
-  );
-  const previewComponents = useMemo(
-    () =>
-      markdownPreviewComponents(
-        filePath,
-        toggleTaskListAtLine,
-        headingAnchors,
-        onOpenDocument,
-      ),
-    [filePath, headingAnchors, onOpenDocument, toggleTaskListAtLine],
+  function toggleTaskListAtLine(line: number) {
+    const lines = model.content.split("\n");
+    const index = line - 1;
+    const current = lines[index];
+    if (!current) return;
+    const next = current.replace(
+      /^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s+)/,
+      (_match, prefix: string, checked: string, suffix: string) =>
+        `${prefix}${checked.toLowerCase() === "x" ? " " : "x"}${suffix}`,
+    );
+    if (next === current) return;
+    lines[index] = next;
+    updateContent(lines.join("\n"), { allowFolded: true });
+  }
+  const previewComponents = markdownPreviewComponents(
+    filePath,
+    toggleTaskListAtLine,
+    headingAnchors,
+    onOpenDocument,
   );
   const {
     addMarkdownTableColumn,
@@ -197,6 +205,7 @@ export function MarkdownRichEditor({
     content: model.content,
     frontmatter,
     frontmatterFields,
+    structuralEditBlockReason: frontmatterStructuralBlockReason,
     newFrontmatterKey,
     newFrontmatterValue,
     setMode,
@@ -237,7 +246,7 @@ export function MarkdownRichEditor({
     updateContent,
     updateCursor,
   });
-  const { findNext, replaceAll, replaceNext } = useMarkdownSearchActions({
+  const { findNext, replaceAll, replaceNext, searchError } = useMarkdownSearchActions({
     content: model.content,
     focusSourceRange,
     matchCase,
@@ -249,30 +258,111 @@ export function MarkdownRichEditor({
     wholeWord,
   });
   const {
+    cancelImageOperation,
     imageAltDraft,
     imageDraft,
     imageInputOpen,
+    imageOperationMessage,
     imageUploadError,
+    pendingImageOperations,
+    rebasePendingImageOperations,
     setImageAltDraft,
     setImageDraft,
     setImageInputOpen,
+    setImageOperationMessage,
     submitImage,
     uploadAndInsertImage,
     uploadingImage,
   } = useMarkdownImageActions({
+    content: model.content,
     filePath,
+    sourceRef,
     insertSourceInline,
+    commitUploadedContent: (content) =>
+      updateContent(content, { allowFolded: true }),
   });
+
+  function captureSourceViewSnapshot() {
+    const source = sourceRef.current;
+    if (!source) return sourceViewSnapshot;
+    const visibleRow = Math.max(0, Math.floor(source.scrollTop / 24));
+    const topLine = visibleSourceLines[visibleRow]?.line ?? cursor.line;
+    const snapshot = {
+      selectionStart: source.selectionStart,
+      selectionEnd: source.selectionEnd,
+      topOffset: offsetForLine(model.content, topLine),
+      scrollLeft: source.scrollLeft,
+      scrollTop: source.scrollTop,
+    };
+    setSourceViewSnapshot(snapshot);
+    return snapshot;
+  }
+
+  function rebaseHiddenSourceView(before: string, after: string) {
+    if (mode !== "preview" || before === after) return;
+    setSourceViewSnapshot((snapshot) => {
+      const collapsed = snapshot.selectionStart === snapshot.selectionEnd;
+      const selectionStart = rebaseMarkdownSourceAnchor(
+        {
+          start: snapshot.selectionStart,
+          end: snapshot.selectionStart,
+          affinity: collapsed ? "right" : "left",
+        },
+        before,
+        after,
+      ).start;
+      const selectionEnd = rebaseMarkdownSourceAnchor(
+        {
+          start: snapshot.selectionEnd,
+          end: snapshot.selectionEnd,
+          affinity: "right",
+        },
+        before,
+        after,
+      ).start;
+      const topOffset = rebaseMarkdownSourceAnchor(
+        {
+          start: snapshot.topOffset,
+          end: snapshot.topOffset,
+          affinity: "left",
+        },
+        before,
+        after,
+      ).start;
+      const pixelWithinLine = snapshot.scrollTop % 24;
+      return {
+        ...snapshot,
+        selectionStart,
+        selectionEnd,
+        topOffset,
+        scrollTop:
+          Math.max(0, lineForOffset(after, topOffset) - 1) * 24 +
+          pixelWithinLine,
+      };
+    });
+  }
 
   function updateContent(
     content: string,
-    options: { preserveSourceSelections?: boolean } = {},
+    options: {
+      preserveSourceSelections?: boolean;
+      allowFolded?: boolean;
+    } = {},
   ) {
-    if (mode === "source" && activeFoldedSourceIds.size > 0) {
+    if (
+      mode === "source" &&
+      activeFoldedSourceIds.size > 0 &&
+      !options.allowFolded
+    ) {
       setFoldedSourceIds(new Set());
       return;
     }
+    if (options.allowFolded && activeFoldedSourceIds.size > 0) {
+      setFoldedSourceIds(new Set());
+    }
     if (!options.preserveSourceSelections) clearSourceSelections();
+    rebaseHiddenSourceView(model.content, content);
+    rebasePendingImageOperations(model.content, content);
     onChange({ ...model, content, trailingNewline: hasTrailingTextNewline(content) });
   }
 
@@ -372,19 +462,50 @@ export function MarkdownRichEditor({
 
   function togglePreview() {
     if (mode === "source") {
-      const line = cursor.line;
+      const snapshot = captureSourceViewSnapshot();
+      const line = lineForOffset(model.content, snapshot.topOffset);
       pendingPreviewScrollLineRef.current = line;
+      previewEntryLineRef.current = line;
       setPreviewMappedLine(line);
       setMode("preview");
       return;
     }
-    focusSourceLine(previewMappedLine ?? cursor.line);
+    restoreSourceViewFromPreview();
+  }
+
+  function restoreSourceViewFromPreview() {
+    const snapshot = sourceViewSnapshot;
+    const mappedLine = previewMappedLine ?? previewEntryLineRef.current;
+    const previewMoved =
+      mappedLine !== null && mappedLine !== previewEntryLineRef.current;
+    const scrollTop = previewMoved
+      ? Math.max(0, (mappedLine - 1) * 24)
+      : snapshot.scrollTop;
+    setSourceScrollLeft(snapshot.scrollLeft);
+    setSourceScrollTop(scrollTop);
+    setMode("source");
+    requestAnimationFrame(() => {
+      const source = sourceRef.current;
+      if (!source) return;
+      source.scrollLeft = snapshot.scrollLeft;
+      source.scrollTop = scrollTop;
+      if (activeFoldedSourceIds.size === 0) {
+        const start = Math.max(0, Math.min(model.content.length, snapshot.selectionStart));
+        const end = Math.max(start, Math.min(model.content.length, snapshot.selectionEnd));
+        source.setSelectionRange(start, end);
+      }
+      source.focus();
+      if (lineNumberRef.current) lineNumberRef.current.scrollTop = scrollTop;
+      updateCursor();
+    });
   }
 
   function syncLineNumberScroll() {
     if (!sourceRef.current || !lineNumberRef.current) return;
     lineNumberRef.current.scrollTop = sourceRef.current.scrollTop;
+    setSourceScrollLeft(sourceRef.current.scrollLeft);
     setSourceScrollTop(sourceRef.current.scrollTop);
+    captureSourceViewSnapshot();
   }
 
   function updateCursor() {
@@ -408,6 +529,7 @@ export function MarkdownRichEditor({
       selection: Math.abs(end - start),
       offset: start,
     });
+    captureSourceViewSnapshot();
   }
 
   const handleCommandRequest = useEffectEvent(
@@ -435,15 +557,8 @@ export function MarkdownRichEditor({
   function updatePreviewScrollLine() {
     const preview = previewRef.current;
     if (!preview) return;
-    const blocks = markdownPreviewLineElements(preview);
-    if (blocks.length === 0) return;
-    const previewTop = preview.getBoundingClientRect().top;
-    const current =
-      blocks
-        .filter((block) => block.getBoundingClientRect().top <= previewTop + 32)
-        .at(-1) ?? blocks[0];
-    const line = Number(current.dataset.markdownLine);
-    if (Number.isFinite(line)) setPreviewMappedLine(line);
+    const line = markdownPreviewLineForScroll(preview);
+    if (line !== null) setPreviewMappedLine(line);
   }
 
   useEffect(() => {
@@ -454,9 +569,11 @@ export function MarkdownRichEditor({
     window.requestAnimationFrame(() => {
       const preview = previewRef.current;
       if (!preview) return;
-      const target = nearestMarkdownPreviewLineElement(preview, targetLine);
-      target.element?.scrollIntoView({ block: "start" });
-      if (target.line !== null) setPreviewMappedLine(target.line);
+      const scrollTop = markdownPreviewScrollTopForLine(preview, targetLine);
+      if (scrollTop !== null) {
+        preview.scrollTop = Math.max(0, scrollTop);
+        setPreviewMappedLine(targetLine);
+      }
     });
   }, [mode, model.content]);
 
@@ -520,6 +637,38 @@ export function MarkdownRichEditor({
         onImageAltDraftChange={setImageAltDraft}
         onUploadImageFile={(file) => void uploadAndInsertImage(file)}
       />
+      {(pendingImageOperations.length > 0 || imageOperationMessage) && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+          {pendingImageOperations.map((operation) => (
+            <span
+              key={operation.id}
+              className="inline-flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1"
+            >
+              {operation.label} · {operation.status}
+              <button
+                type="button"
+                disabled={operation.status === "cancelling"}
+                onClick={() => cancelImageOperation(operation.id)}
+                className="rounded px-1 text-[var(--status-danger)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+              >
+                Cancel
+              </button>
+            </span>
+          ))}
+          {imageOperationMessage && (
+            <span className="inline-flex items-center gap-2">
+              {imageOperationMessage}
+              <button
+                type="button"
+                onClick={() => setImageOperationMessage(null)}
+                className="rounded px-1 hover:bg-[var(--surface-hover)]"
+              >
+                Dismiss
+              </button>
+            </span>
+          )}
+        </div>
+      )}
       {searchOpen && (
         <MarkdownSearchBar
           searchDraft={searchDraft}
@@ -528,6 +677,7 @@ export function MarkdownRichEditor({
           wholeWord={wholeWord}
           regexSearch={regexSearch}
           searchMatches={searchMatches}
+          searchError={searchError}
           onSearchDraftChange={setSearchDraft}
           onReplaceDraftChange={setReplaceDraft}
           onFindNext={findNext}
@@ -583,6 +733,7 @@ export function MarkdownRichEditor({
               bracketFragments={bracketPairFragments}
               minimapLines={minimapLines}
               cursorLine={cursor.line}
+              sourceScrollLeft={sourceScrollLeft}
               sourceScrollTop={sourceScrollTop}
               onContentChange={updateContent}
               onKeyDown={(event) =>
@@ -642,6 +793,7 @@ export function MarkdownRichEditor({
             table={activeTable}
             frontmatter={frontmatter}
             frontmatterFields={frontmatterFields}
+            frontmatterStructuralBlockReason={frontmatterStructuralBlockReason}
             newFrontmatterKey={newFrontmatterKey}
             newFrontmatterValue={newFrontmatterValue}
             onClose={() => setSidePanel(null)}

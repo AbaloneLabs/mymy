@@ -7,6 +7,8 @@ pub(in crate::services::document_editor) fn pptx_image_specs(slide: &Value) -> V
         .into_iter()
         .flatten()
         .map(|image| PptxImageSpec {
+            shape_id: pptx_shape_id_from_model(image),
+            group_shape_id: pptx_group_shape_id_from_model(image),
             relationship_id: image
                 .get("relationshipId")
                 .and_then(Value::as_str)
@@ -58,6 +60,8 @@ pub(in crate::services::document_editor) fn pptx_background_image_specs(
         return Vec::new();
     }
     vec![PptxImageSpec {
+        shape_id: None,
+        group_shape_id: None,
         relationship_id: slide
             .get("backgroundImageRelationshipId")
             .and_then(Value::as_str)

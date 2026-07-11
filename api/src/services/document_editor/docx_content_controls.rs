@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::{
     attr_value, docx_tag_attr, escape_xml, extract_text_tags, find_xml_start, replace_tag_texts,
-    set_xml_attr, xml_named_empty_elements, xml_named_segments,
+    set_xml_attr, xml_named_empty_elements,
 };
 
 /// DOCX content controls wrap user-editable form-like regions inside regular
@@ -11,11 +11,29 @@ use super::{
 /// application-specific metadata that must survive a round trip even when mymy
 /// only understands part of the control.
 pub(super) fn docx_paragraph_content_controls(paragraph: &str) -> Vec<Value> {
-    xml_named_segments(paragraph, "w:sdt")
-        .into_iter()
-        .enumerate()
-        .map(|(index, segment)| docx_content_control_model(&segment, index))
-        .collect()
+    let mut controls = Vec::new();
+    let mut rest = paragraph;
+    let mut absolute_offset = 0usize;
+    while let Some(relative_start) = find_xml_start(rest, "<w:sdt") {
+        let start = absolute_offset + relative_start;
+        let after_start = &paragraph[start..];
+        let Some(relative_end) = after_start.find("</w:sdt>") else {
+            break;
+        };
+        let end = start + relative_end + "</w:sdt>".len();
+        let segment = &paragraph[start..end];
+        let range_start = docx_visible_utf16_len(&paragraph[..start]);
+        let range_end = range_start + docx_visible_utf16_len(segment);
+        controls.push(docx_content_control_model(
+            segment,
+            controls.len(),
+            range_start,
+            range_end,
+        ));
+        absolute_offset = end;
+        rest = &paragraph[end..];
+    }
+    controls
 }
 
 pub(super) fn replace_docx_content_control_states(paragraph: &str, block: &Value) -> String {
@@ -61,12 +79,17 @@ fn replace_docx_content_control_segment(segment: &str, control: &Value) -> Strin
     updated
 }
 
-fn docx_content_control_model(segment: &str, index: usize) -> Value {
+fn docx_content_control_model(segment: &str, index: usize, start: usize, end: usize) -> Value {
     let kind = docx_content_control_kind(segment);
+    let control_id = docx_tag_attr(segment, "<w:id", "w:val");
     let mut item = json!({
-        "id": format!("control{}", index + 1),
+        "id": control_id
+            .as_ref()
+            .map_or_else(|| format!("control{}", index + 1), |id| format!("control-{id}")),
         "kind": kind,
-        "text": extract_text_tags(segment, "w:t").join("")
+        "text": extract_text_tags(segment, "w:t").join(""),
+        "start": start,
+        "end": end,
     });
     if let Some(alias) = docx_tag_attr(segment, "<w:alias", "w:val") {
         item["alias"] = json!(alias);
@@ -74,7 +97,7 @@ fn docx_content_control_model(segment: &str, index: usize) -> Value {
     if let Some(tag) = docx_tag_attr(segment, "<w:tag", "w:val") {
         item["tag"] = json!(tag);
     }
-    if let Some(control_id) = docx_tag_attr(segment, "<w:id", "w:val") {
+    if let Some(control_id) = control_id {
         item["controlId"] = json!(control_id);
     }
     let items = docx_dropdown_items(segment);
@@ -85,6 +108,13 @@ fn docx_content_control_model(segment: &str, index: usize) -> Value {
         item["checked"] = json!(docx_checkbox_checked(segment));
     }
     item
+}
+
+fn docx_visible_utf16_len(xml: &str) -> usize {
+    extract_text_tags(xml, "w:t")
+        .iter()
+        .map(|text| text.encode_utf16().count())
+        .sum()
 }
 
 fn docx_content_control_kind(segment: &str) -> &'static str {

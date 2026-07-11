@@ -20,10 +20,13 @@ use crate::agent::tools::{
     ToolRegistry,
 };
 use crate::services::audit::log_security_denial_safe;
+use crate::services::document_revisions::{record_document_revision, RevisionActor};
+use crate::services::file_mutations::atomic_replace_file;
 use crate::services::file_observations::{
     ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
-    FileObservationSource,
+    record_file_observation_fingerprint, FileFingerprint, FileObservationSource,
 };
+use crate::state::AppState;
 
 const MAX_READ_LINES: usize = 1_000;
 const DEFAULT_READ_LINES: usize = 500;
@@ -56,6 +59,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),
+            app_state: config.app_state.clone(),
         }),
     });
 
@@ -103,6 +107,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             paths: Arc::clone(&paths),
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),
+            app_state: config.app_state.clone(),
         }),
     });
 
@@ -129,15 +134,16 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             paths,
             db: config.db.clone(),
             agent_profile: config.agent_profile.clone(),
+            app_state: config.app_state.clone(),
         }),
     });
 }
 
-#[derive(Debug)]
 struct ReadFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
     agent_profile: Option<String>,
+    app_state: Option<Arc<AppState>>,
 }
 
 #[async_trait]
@@ -154,7 +160,25 @@ impl ToolHandler for ReadFileTool {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_READ_LINES as u64)
             .clamp(1, MAX_READ_LINES as u64) as usize;
+        // Hold namespace and file locks across content, fingerprint, and
+        // observation reads. Otherwise the tool could return text from one
+        // revision with the fingerprint of the next revision and authorize a
+        // later overwrite the agent never actually reviewed.
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self.paths.resolve_existing_with_logical(path)?;
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         if let Err(err) = ensure_read_allowed(&resolved.physical) {
             audit_guardrail_denial(self.db.as_ref(), "read", &resolved.physical, &err).await;
             return Err(err);
@@ -198,6 +222,7 @@ struct WriteFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
     agent_profile: Option<String>,
+    app_state: Option<Arc<AppState>>,
 }
 
 #[async_trait]
@@ -211,11 +236,25 @@ impl WriteFileTool {
     async fn write(&self, args: &Value) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self.paths.resolve_for_write_with_logical(path)?;
         if let Err(err) = ensure_write_allowed(&resolved.physical) {
             audit_guardrail_denial(self.db.as_ref(), "write", &resolved.physical, &err).await;
             return Err(err);
         }
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -243,27 +282,24 @@ impl WriteFileTool {
                 ));
             }
         }
-        if let Some(parent) = resolved.physical.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|err| ToolError::Execution(format!("create parent failed: {err}")))?;
-        }
-        tokio::fs::write(&resolved.physical, content)
+        atomic_replace_file(&resolved.physical, content.as_bytes())
             .await
             .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
-        record_file_observation(
+        let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
+            self.app_state.as_deref(),
             &resolved.logical,
             &resolved.physical,
-            FileObservationSource::Write,
+            "native-file-tool",
         )
-        .await
-        .map_err(ToolError::Execution)?;
+        .await?;
         Ok(tool_result(&serde_json::json!({
             "path": resolved.logical,
             "bytes_written": content.len(),
             "lines_written": content.lines().count(),
+            "fingerprint": fingerprint.hash,
+            "observationRecorded": observation_recorded,
         })))
     }
 }
@@ -272,6 +308,7 @@ struct PatchFileTool {
     paths: Arc<WorkspacePathPolicy>,
     db: Option<sqlx::PgPool>,
     agent_profile: Option<String>,
+    app_state: Option<Arc<AppState>>,
 }
 
 #[async_trait]
@@ -286,11 +323,25 @@ impl PatchFileTool {
         let path = required_str(args, "path")?;
         let old_string = required_str(args, "old_string")?;
         let new_string = required_str(args, "new_string")?;
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self.paths.resolve_existing_with_logical(path)?;
         if let Err(err) = ensure_write_allowed(&resolved.physical) {
             audit_guardrail_denial(self.db.as_ref(), "patch", &resolved.physical, &err).await;
             return Err(err);
         }
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -318,21 +369,23 @@ impl PatchFileTool {
             )));
         }
         let updated = content.replacen(old_string, new_string, 1);
-        tokio::fs::write(&resolved.physical, updated)
+        atomic_replace_file(&resolved.physical, updated.as_bytes())
             .await
             .map_err(|err| ToolError::Execution(format!("write failed: {err}")))?;
-        record_file_observation(
+        let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
+            self.app_state.as_deref(),
             &resolved.logical,
             &resolved.physical,
-            FileObservationSource::Write,
+            "native-patch-tool",
         )
-        .await
-        .map_err(ToolError::Execution)?;
+        .await?;
         Ok(tool_result(&serde_json::json!({
             "path": resolved.logical,
             "replacements": 1,
+            "fingerprint": fingerprint.hash,
+            "observationRecorded": observation_recorded,
         })))
     }
 }
@@ -460,9 +513,62 @@ async fn audit_guardrail_denial(
     }
 }
 
+async fn record_committed_agent_file(
+    db: Option<&sqlx::PgPool>,
+    agent_profile: Option<&str>,
+    state: Option<&AppState>,
+    logical_path: &str,
+    physical_path: &Path,
+    source: &str,
+) -> Result<(FileFingerprint, bool), ToolError> {
+    let fingerprint = fingerprint_path(physical_path)
+        .await
+        .map_err(ToolError::Execution)?;
+    let observation_recorded = match (db, agent_profile) {
+        (Some(db), Some(agent_profile)) => record_file_observation_fingerprint(
+            db,
+            agent_profile,
+            logical_path,
+            &fingerprint,
+            FileObservationSource::Write,
+        )
+        .await
+        .is_ok(),
+        _ => true,
+    };
+    if !observation_recorded {
+        tracing::warn!(
+            path = %logical_path,
+            agent = agent_profile.unwrap_or("unknown"),
+            "agent file write committed but observation recording failed"
+        );
+    }
+    if let (Some(state), Some(agent_profile)) = (state, agent_profile) {
+        if let Err(error) = record_document_revision(
+            state,
+            logical_path,
+            &fingerprint.hash,
+            RevisionActor::Agent(agent_profile),
+            source,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                path = %logical_path,
+                error = %error,
+                "agent file write committed but revision provenance was not recorded"
+            );
+        }
+    }
+    Ok((fingerprint, observation_recorded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn path_policy_rejects_workspace_escape() {
@@ -483,6 +589,79 @@ mod tests {
         assert!(ensure_read_allowed(&resolved).is_err());
 
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[tokio::test]
+    async fn write_and_patch_share_one_fingerprint_critical_section() {
+        let temp_root =
+            std::env::temp_dir().join(format!("mymy-file-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let path = temp_root.join("state.txt");
+        std::fs::write(&path, "first").unwrap();
+        let fingerprint = fingerprint_path(&path).await.unwrap().hash;
+        let paths = Arc::new(WorkspacePathPolicy::new(temp_root.clone(), Vec::new()));
+        let state = Arc::new(test_state(temp_root.clone()));
+        let writer = WriteFileTool {
+            paths: Arc::clone(&paths),
+            db: None,
+            agent_profile: None,
+            app_state: Some(Arc::clone(&state)),
+        };
+        let patcher = PatchFileTool {
+            paths,
+            db: None,
+            agent_profile: None,
+            app_state: Some(state),
+        };
+        let write_args = serde_json::json!({
+            "path": "state.txt",
+            "content": "written",
+            "expectedFingerprint": fingerprint.clone(),
+        });
+        let patch_args = serde_json::json!({
+            "path": "state.txt",
+            "old_string": "first",
+            "new_string": "patched",
+            "expectedFingerprint": fingerprint,
+        });
+
+        let (write_result, patch_result) =
+            tokio::join!(writer.write(&write_args), patcher.patch(&patch_args));
+
+        assert_ne!(write_result.is_ok(), patch_result.is_ok());
+        let committed = std::fs::read_to_string(&path).unwrap();
+        assert!(matches!(committed.as_str(), "written" | "patched"));
+        let temporary_files = std::fs::read_dir(&temp_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".mymy-"))
+            .count();
+        assert_eq!(temporary_files, 0);
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    fn test_state(agent_data_dir: std::path::PathBuf) -> AppState {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://mymy:mymy@localhost/mymy")
+            .unwrap();
+        AppState::new(
+            db,
+            Config {
+                database_url: "postgres://mymy:mymy@localhost/mymy".to_string(),
+                port: 0,
+                cors_origins: Vec::new(),
+                agent_data_dir,
+                auth_cookie_secure: false,
+                cron_tick_interval_secs: 60,
+                cron_timezone: "UTC".to_string(),
+                cron_output_keep: 50,
+                drive_s3_bucket: None,
+                drive_s3_region: None,
+                drive_s3_endpoint: None,
+                sandbox_runner_url: None,
+                sandbox_preview_host: "127.0.0.1".to_string(),
+            },
+        )
     }
 
     #[cfg(unix)]

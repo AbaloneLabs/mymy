@@ -33,6 +33,7 @@ pub(in crate::services::document_editor) fn pptx_slide_charts(
                 .unwrap_or_else(|| json!([]));
             let mut value = json!({
                 "id": format!("chart{}", index + 1),
+                "shapeId": docx_tag_attr(&frame, "<p:cNvPr", "id"),
                 "relationshipId": relationship_id,
                 "path": chart_path,
                 "type": ooxml_chart_type(&chart_xml),
@@ -48,8 +49,9 @@ pub(in crate::services::document_editor) fn pptx_slide_charts(
                 "series": series
             });
             pptx_extend_chart_axis_model(&mut value, &chart_xml);
-            if let Some(group_id) = pptx_group_id_for_offset(&groups, offset) {
-                value["groupId"] = json!(group_id);
+            if let Some(group) = pptx_group_for_offset(&groups, offset) {
+                value["groupId"] = json!(group.group_id);
+                value["groupShapeId"] = json!(group.shape_id.to_string());
             }
             Some(value)
         })

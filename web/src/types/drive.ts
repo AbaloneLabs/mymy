@@ -25,9 +25,15 @@ export interface DriveFileResponse {
   mimeType: string;
   size: number;
   updatedAt?: string;
+  fingerprint: string;
   content: string;
   editable: boolean;
   editorKind: DocumentEditorKind;
+}
+
+export interface WriteDriveFileResponse {
+  success: boolean;
+  fingerprint: string;
 }
 
 export interface DriveProviderStatus {

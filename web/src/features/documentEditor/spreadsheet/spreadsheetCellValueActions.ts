@@ -14,15 +14,17 @@ import {
   xlsxCellFromInput,
   xlsxFillInputFromCell,
 } from "./spreadsheetXlsxGridModel";
-import { normalizeXlsxCells } from "../shared/models";
+import { columnName, normalizeXlsxCells } from "../shared/models";
 import type { XlsxCell } from "../shared/models";
 import type { SpreadsheetCellActionParams } from "./spreadsheetCellActionTypes";
+import { validateXlsxCellInput } from "./spreadsheetValidation";
 
 export function createSpreadsheetCellValueActions({
   activeCell,
   columnCount,
   commitXlsxModel,
   model,
+  onMutationError,
   selectedRanges,
   selectionRange,
   setActiveCell,
@@ -32,6 +34,18 @@ export function createSpreadsheetCellValueActions({
 }: SpreadsheetCellActionParams) {
   function updateCell(rowIndex: number, cellIndex: number, value: string) {
     if (!sheet) return;
+    const validation = validateXlsxCellInput(
+      model,
+      sheet,
+      rowIndex,
+      cellIndex,
+      value,
+    );
+    if (!validation.valid) {
+      onMutationError?.(`${cellReference(rowIndex, cellIndex)}: ${validation.reason}`);
+      return;
+    }
+    onMutationError?.(null);
     commitXlsxModel({
       sheets: model.sheets.map((item) =>
         item.id === sheet.id
@@ -106,6 +120,27 @@ export function createSpreadsheetCellValueActions({
     matrix: string[][],
   ) {
     if (!sheet || matrix.length === 0) return;
+    for (let rowOffset = 0; rowOffset < matrix.length; rowOffset += 1) {
+      const values = matrix[rowOffset] ?? [];
+      for (let columnOffset = 0; columnOffset < values.length; columnOffset += 1) {
+        const rowIndex = startRow + rowOffset;
+        const cellIndex = startColumn + columnOffset;
+        const validation = validateXlsxCellInput(
+          model,
+          sheet,
+          rowIndex,
+          cellIndex,
+          values[columnOffset] ?? "",
+        );
+        if (!validation.valid) {
+          onMutationError?.(
+            `${cellReference(rowIndex, cellIndex)}: ${validation.reason}`,
+          );
+          return;
+        }
+      }
+    }
+    onMutationError?.(null);
     const requiredRows = startRow + matrix.length;
     const requiredColumns = Math.max(
       columnCount,
@@ -268,6 +303,10 @@ export function createSpreadsheetCellValueActions({
     updateCellFormulaMetadata,
     updateCellsFromMatrix,
   };
+}
+
+function cellReference(rowIndex: number, cellIndex: number) {
+  return `${columnName(cellIndex)}${rowIndex + 1}`;
 }
 
 function xlsxCellFromInputWithPreservedFormulaMetadata(

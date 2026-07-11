@@ -35,6 +35,10 @@ export function TextEditorSchemaPanel({
 }: TextEditorSchemaPanelProps) {
   return (
     <div className="grid shrink-0 gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 lg:grid-cols-[220px_minmax(0,1fr)_minmax(180px,260px)]">
+      <div className="rounded border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-2 py-1 text-[11px] text-[var(--text-muted)] lg:col-span-3">
+        Schema registry and selection are stored in this browser only. They are not
+        workspace metadata and are not visible to agents or other devices.
+      </div>
       <div className="grid gap-2 rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-xs">
         <select
           value={selectedSchemaId}

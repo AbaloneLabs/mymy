@@ -1,5 +1,8 @@
 import { useTranslation } from "react-i18next";
-import type { DocumentEditorKind } from "@/types/documentEditor";
+import type {
+  DocumentEditorKind,
+  DocumentEditorSyncStatus,
+} from "@/types/documentEditor";
 import {
   documentEditorKindLabel,
   documentEditorStatusItems,
@@ -15,6 +18,8 @@ export function DocumentEditorStatusBar({
   isSaving,
   isSaveQueued,
   warningCount,
+  syncStatus,
+  validatedDraftSerializedSize,
 }: {
   kind: DocumentEditorKind;
   model: unknown;
@@ -25,6 +30,8 @@ export function DocumentEditorStatusBar({
   isSaving: boolean;
   isSaveQueued: boolean;
   warningCount: number;
+  syncStatus: DocumentEditorSyncStatus;
+  validatedDraftSerializedSize: number | null;
 }) {
   const { t } = useTranslation();
   const statusItems = documentEditorStatusItems(kind, model);
@@ -46,6 +53,26 @@ export function DocumentEditorStatusBar({
         {t("documentEditor.revision", { defaultValue: "rev" })}{" "}
         {fingerprint.slice(0, 10)}
       </span>
+      <span
+        className={
+          syncStatus === "failed"
+            ? "text-[var(--status-warning)]"
+            : "text-[var(--text-faint)]"
+        }
+      >
+        {syncStatus === "localOnly"
+          ? "Local only"
+          : syncStatus === "pending"
+            ? "Remote sync pending"
+            : syncStatus === "synced"
+              ? "Remote synced"
+              : "Remote sync unavailable"}
+      </span>
+      {validatedDraftSerializedSize !== null && (
+        <span className="text-[var(--text-faint)]">
+          Validated output {validatedDraftSerializedSize.toLocaleString()} bytes
+        </span>
+      )}
       <span>
         {t("documentEditor.operations", {
           defaultValue: "{{count}} operations",

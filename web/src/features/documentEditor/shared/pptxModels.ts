@@ -1,5 +1,9 @@
 export interface PptxText {
   id: string;
+  shapeId?: string;
+  groupShapeId?: string;
+  textSegmentCount?: number;
+  complexText?: boolean;
   groupId?: string;
   text: string;
   placeholderType?: string;
@@ -45,6 +49,8 @@ export type PptxShapeKind =
 
 export interface PptxShape {
   id: string;
+  shapeId?: string;
+  groupShapeId?: string;
   groupId?: string;
   kind: PptxShapeKind;
   x?: number;
@@ -61,6 +67,9 @@ export interface PptxShape {
 
 export interface PptxTable {
   id: string;
+  shapeId?: string;
+  groupShapeId?: string;
+  preservationOnly?: boolean;
   groupId?: string;
   textIndexStart?: number;
   rows: string[][];
@@ -91,6 +100,8 @@ export interface PptxTableCellStyle {
 
 export interface PptxImage {
   id: string;
+  shapeId?: string;
+  groupShapeId?: string;
   groupId?: string;
   relationshipId?: string;
   mediaPath?: string;
@@ -138,6 +149,8 @@ export interface PptxChartSeries {
 
 export interface PptxChart {
   id: string;
+  shapeId?: string;
+  groupShapeId?: string;
   groupId?: string;
   relationshipId?: string;
   path?: string;

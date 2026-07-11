@@ -38,6 +38,17 @@ fn docx_complex_paragraph_preserves_non_text_markup_when_replacing_text() {
 }
 
 #[test]
+fn docx_complex_paragraph_noop_preserves_every_run_boundary() {
+    let paragraph = r#"<w:p><w:hyperlink r:id="rId1"><w:r><w:rPr><w:b/></w:rPr><w:t>Bold</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>Italic</w:t></w:r></w:hyperlink></w:p>"#;
+    let document = format!("<w:document><w:body>{paragraph}</w:body></w:document>");
+    let blocks = vec![json!({ "text": "BoldItalic", "relationshipId": "rId1" })];
+
+    let updated = replace_docx_blocks(&document, &blocks);
+
+    assert!(updated.contains(paragraph));
+}
+
+#[test]
 fn docx_complex_paragraph_preserves_content_control_when_replacing_text() {
     let document = r#"<w:document><w:body><w:p><w:sdt><w:sdtPr><w:tag w:val="ClientName"/></w:sdtPr><w:sdtContent><w:r><w:t>Old</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body></w:document>"#;
     let blocks = vec![json!({ "text": "New", "italic": true })];
@@ -65,11 +76,16 @@ fn docx_model_exposes_content_controls() {
     assert_eq!(checkbox["alias"], "Approval");
     assert_eq!(checkbox["tag"], "ApprovalTag");
     assert_eq!(checkbox["controlId"], "42");
+    assert_eq!(checkbox["id"], "control-42");
+    assert_eq!(checkbox["start"], 0);
+    assert_eq!(checkbox["end"], 2);
     assert_eq!(checkbox["checked"], false);
     assert_eq!(checkbox["text"], "No");
     assert_eq!(dropdown["kind"], "dropdown");
     assert_eq!(dropdown["items"][0]["displayText"], "One");
     assert_eq!(dropdown["items"][1]["value"], "2");
+    assert_eq!(dropdown["start"], 0);
+    assert_eq!(dropdown["end"], 3);
 }
 
 #[test]

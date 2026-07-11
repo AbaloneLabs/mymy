@@ -1,10 +1,12 @@
 //! Shared application state passed to all handlers.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Weak;
 
 use sqlx::PgPool;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use uuid::Uuid;
 
 use crate::agent::clarify::ClarifyGate;
@@ -40,6 +42,16 @@ pub struct AppState {
     /// authoritative; entries are keyed by lease epoch so an expired worker
     /// cannot unregister or signal a newer owner accidentally.
     pub run_cancellations: Arc<RwLock<HashMap<(Uuid, i64), RunCancellation>>>,
+    /// Serializes writes to the same Drive file across UI, agent, and sync
+    /// entry points in this API process. The weak registry avoids retaining a
+    /// mutex for every historical path while still making the fingerprint
+    /// check and atomic replacement one indivisible critical section.
+    drive_write_locks: Arc<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>>,
+    /// Coordinates file-level operations with namespace mutations such as
+    /// move, trash, and restore. Ordinary reads/writes take a shared guard;
+    /// namespace mutations take an exclusive guard so a parent rename cannot
+    /// race an editor save to a child path.
+    drive_namespace_lock: Arc<RwLock<()>>,
 }
 
 impl AppState {
@@ -52,7 +64,29 @@ impl AppState {
             clarify_gate: Arc::new(ClarifyGate::new()),
             agent_run_notify: Arc::new(Notify::new()),
             run_cancellations: Arc::new(RwLock::new(HashMap::new())),
+            drive_write_locks: Arc::new(Mutex::new(HashMap::new())),
+            drive_namespace_lock: Arc::new(RwLock::new(())),
         }
+    }
+
+    /// Return the process-local lock for a physical Drive path.
+    ///
+    /// Callers must resolve and boundary-check logical paths before requesting
+    /// a lock. Keeping lock allocation on shared state makes independently
+    /// implemented write surfaces participate in the same revision protocol.
+    pub async fn drive_write_lock(&self, path: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self.drive_write_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+        lock
+    }
+
+    pub(crate) fn drive_namespace_lock(&self) -> &RwLock<()> {
+        &self.drive_namespace_lock
     }
 
     pub async fn register_run_cancellation(

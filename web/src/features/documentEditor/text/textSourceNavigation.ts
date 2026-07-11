@@ -4,6 +4,7 @@ import type {
   SourceOutlineItem,
   SourceVisibleLine,
 } from "./textSourceTypes";
+import { advanceZeroWidthRegex } from "./textSearchSemantics";
 
 export function cursorPosition(content: string, start: number, end: number) {
   const before = content.slice(0, start);
@@ -216,9 +217,11 @@ function outlineStructuredText(
 export function buildSearchRegex(query: string, options: SearchOptions) {
   if (!query) return null;
   const source = options.regexSearch ? query : escapeRegExp(query);
-  const wrapped = options.wholeWord ? `\\b(?:${source})\\b` : source;
+  const wrapped = options.wholeWord
+    ? `(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])`
+    : source;
   try {
-    return new RegExp(wrapped, options.caseSensitive ? "g" : "gi");
+    return new RegExp(wrapped, options.caseSensitive ? "gu" : "giu");
   } catch {
     return null;
   }
@@ -230,8 +233,8 @@ export function countSearchMatches(content: string, query: string, options: Sear
   let count = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(content))) {
-    if (match[0].length === 0) break;
     count += 1;
+    if (match[0].length === 0 && !advanceZeroWidthRegex(regex, content)) break;
   }
   return count;
 }
@@ -249,7 +252,7 @@ export function nextSearchRange(
     regex.lastIndex = 0;
     match = regex.exec(content);
   }
-  if (!match || match[0].length === 0) return null;
+  if (!match) return null;
   return {
     start: match.index,
     end: match.index + match[0].length,

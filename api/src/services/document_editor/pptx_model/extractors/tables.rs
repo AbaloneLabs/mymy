@@ -13,6 +13,19 @@ pub(in crate::services::document_editor) fn pptx_slide_tables(
                 return None;
             }
             let text_index_start = extract_text_tags(&xml[..offset], "a:t").len();
+            let preservation_only = frame.contains("<a:gridSpan")
+                || frame.contains("<a:hMerge")
+                || frame.contains("<a:vMerge")
+                || frame.contains(" gridSpan=")
+                || frame.contains(" rowSpan=")
+                || frame.contains(" hMerge=")
+                || frame.contains(" vMerge=")
+                || xml_segments(&frame, "<a:tc", "</a:tc>").iter().any(|cell| {
+                    extract_text_tags(cell, "a:t").len() > 1
+                        || xml_segments(cell, "<a:p", "</a:p>").len() > 1
+                        || cell.contains("<a:fld")
+                        || cell.contains("<a:hlinkClick")
+                });
             let (x, y, width, height, rotation) = pptx_shape_geometry_for_size(&frame, slide_size);
             let mut rows = Vec::new();
             let mut cell_styles = Vec::new();
@@ -36,7 +49,9 @@ pub(in crate::services::document_editor) fn pptx_slide_tables(
             }
             let mut value = json!({
                 "id": format!("tbl{}", index + 1),
+                "shapeId": docx_tag_attr(&frame, "<p:cNvPr", "id"),
                 "textIndexStart": text_index_start,
+                "preservationOnly": preservation_only,
                 "x": x,
                 "y": y,
                 "width": width,
@@ -54,8 +69,9 @@ pub(in crate::services::document_editor) fn pptx_slide_tables(
                 "bandedRows": pptx_table_bool_attr(&frame, "bandRow"),
                 "bandedColumns": pptx_table_bool_attr(&frame, "bandCol")
             });
-            if let Some(group_id) = pptx_group_id_for_offset(&groups, offset) {
-                value["groupId"] = json!(group_id);
+            if let Some(group) = pptx_group_for_offset(&groups, offset) {
+                value["groupId"] = json!(group.group_id);
+                value["groupShapeId"] = json!(group.shape_id.to_string());
             }
             Some(value)
         })

@@ -107,6 +107,14 @@ fn describe() {
         "mymy_agent_event_append_duration_seconds",
         "Durable event append latency"
     );
+    metrics::describe_counter!(
+        "mymy_document_editor_mutations_total",
+        "Document save and conflict-copy outcomes by bounded operation and editor kind"
+    );
+    metrics::describe_histogram!(
+        "mymy_document_editor_mutation_duration_seconds",
+        "Document save and conflict-copy latency by bounded outcome"
+    );
     metrics::describe_gauge!("mymy_agent_runs", "Current durable run count by status");
     metrics::describe_gauge!(
         "mymy_agent_runs_stale",

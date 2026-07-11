@@ -24,6 +24,7 @@ fn test_tool(workspace: PathBuf, scratch: PathBuf) -> CodeExecTool {
             .collect(),
         db: None,
         agent_profile: None,
+        app_state: None,
     }
 }
 
@@ -123,6 +124,7 @@ async fn python_rpc_can_write_shared_logical_drive_path() {
             .collect(),
         db: None,
         agent_profile: None,
+        app_state: None,
     };
 
     let output = tool

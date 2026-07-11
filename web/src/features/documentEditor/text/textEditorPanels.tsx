@@ -9,11 +9,19 @@ import type {
 } from "./textSourceUtils";
 import { lineEndingLabel } from "./textSourceUtils";
 import type { SourceDiagnostic } from "./textStructuredUtils";
+import type { LargeTextFilePolicy } from "./textLargeFilePolicy";
 
-export function TextEditorLargeFileWarning() {
+export function TextEditorLargeFileWarning({
+  policy,
+}: {
+  policy: LargeTextFilePolicy;
+}) {
+  const size = `${(policy.contentLength / 1_000_000).toFixed(1)} MB`;
   return (
     <div className="shrink-0 border-b border-[var(--status-warning)]/30 bg-[var(--status-warning)]/10 px-3 py-2 text-xs text-[var(--status-warning)]">
-      Large file mode: only the visible line window is editable to keep rendering bounded.
+      {policy.mode === "read-only"
+        ? `Large file (${size}, ${policy.lineCount.toLocaleString()} lines): read-only because it exceeds the 10 MB / 500,000-line edit limit. Search and navigation remain available.`
+        : `Large file (${size}, ${policy.lineCount.toLocaleString()} lines): edit one visible window as an Apply/Cancel transaction. Whole-file format, replace, structured views, and metadata conversion are disabled.`}
     </div>
   );
 }

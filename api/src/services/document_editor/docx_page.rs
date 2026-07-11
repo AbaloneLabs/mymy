@@ -92,6 +92,16 @@ pub(super) fn update_docx_page_settings(document: &str, page: Option<&Value>) ->
     }
 }
 
+pub(super) fn docx_section_properties_xml(page: Option<&Value>, break_kind: &str) -> String {
+    let page = page.filter(|value| value.is_object());
+    let page_size = page.and_then(docx_page_size_xml).unwrap_or_default();
+    let page_margins = page.and_then(docx_page_margins_xml).unwrap_or_default();
+    let columns = page.and_then(docx_columns_xml).unwrap_or_default();
+    format!(
+        r#"<w:sectPr><w:type w:val="{break_kind}"/>{page_size}{page_margins}{columns}</w:sectPr>"#
+    )
+}
+
 fn docx_columns_xml(page: &Value) -> Option<String> {
     let count = docx_u32_model_attr(page, "columnCount", 12);
     let spacing = docx_u32_model_attr_allow_zero(page, "columnSpacing", 14_400);
@@ -158,7 +168,10 @@ fn docx_page_margins_xml(page: &Value) -> Option<String> {
 }
 
 fn docx_section_properties(document: &str) -> Option<(usize, usize, String)> {
-    let start = document.find("<w:sectPr")?;
+    // The body-level/final section is the last sectPr. Intermediate sectPr
+    // elements live in section-break paragraphs and must not be overwritten
+    // when the document-level page draft is applied.
+    let start = document.rfind("<w:sectPr")?;
     let after_start = &document[start..];
     let open_end = after_start.find('>')?;
     if after_start[..=open_end].ends_with("/>") {

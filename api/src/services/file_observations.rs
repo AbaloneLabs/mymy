@@ -69,6 +69,21 @@ pub async fn record_file_observation(
         return Ok(());
     };
     let fingerprint = fingerprint_path(physical_path).await?;
+    record_file_observation_fingerprint(db, agent_profile, logical_path, &fingerprint, source).await
+}
+
+/// Record the exact revision returned by a locked read or write operation.
+///
+/// Re-reading a path after its lock is released can accidentally attribute a
+/// later user's revision to the agent. Callers with an authoritative result
+/// fingerprint use this form to keep the knowledge boundary truthful.
+pub async fn record_file_observation_fingerprint(
+    db: &PgPool,
+    agent_profile: &str,
+    logical_path: &str,
+    fingerprint: &FileFingerprint,
+    source: FileObservationSource,
+) -> Result<(), String> {
     sqlx::query(
         r#"
         INSERT INTO agent_file_observations

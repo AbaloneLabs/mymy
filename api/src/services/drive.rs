@@ -12,8 +12,9 @@ mod trash;
 mod workspace;
 
 pub use content::{document_package, mime_type_for_path};
+pub(crate) use operations::write_file_bytes_unlocked;
 pub use operations::{
-    blob_path, create_folder, list, move_path, read_file, upload_file, write_file, write_file_bytes,
+    blob_path, create_folder, list, move_path, read_file, upload_file, write_file_conditionally,
 };
 pub use paths::{
     agent_agents_md_path, agent_soul_md_path, logical_agent_file_path, logical_agent_path,
@@ -21,6 +22,7 @@ pub use paths::{
     physical_path_for_logical_drive_path, resolve_drive_path, AGENTS_MD_FILE, DRIVE_PREFIX,
     SOUL_MD_FILE,
 };
+pub(crate) use sync::document_sync_status;
 pub use sync::{list_sync_jobs, physical_path_for_sync, s3_object_key};
 pub use trash::{delete_path, list_trash, purge_trash, restore_trash};
 pub use workspace::{

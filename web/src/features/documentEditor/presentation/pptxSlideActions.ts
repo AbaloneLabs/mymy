@@ -13,13 +13,15 @@ import type {
   PptxMaster,
   PptxModel,
   PptxSlide,
-  PptxText,
   PptxTheme,
   PptxTransition,
 } from "../shared/models";
 import type { PptxAnimationPresetClass } from "./pptxInspectors";
+import { resetPptxSlideToLayout } from "./pptxLayoutReset";
+import { pptxSlideDuplicationBlockReason } from "./pptxReferenceGraph";
 
 type PptxSlideActionParams = {
+  activeObjectShapeId?: string;
   clearObjectSelection: () => void;
   model: PptxModel;
   onChange: (model: PptxModel) => void;
@@ -29,6 +31,7 @@ type PptxSlideActionParams = {
 };
 
 export function createPptxSlideActions({
+  activeObjectShapeId,
   clearObjectSelection,
   model,
   onChange,
@@ -62,48 +65,11 @@ export function createPptxSlideActions({
     });
   }
 
-  function updateThemeColor(themePath: string, key: string, color: string) {
-    onChange({
-      ...model,
-      themes: (model.themes ?? []).map((theme) =>
-        theme.path === themePath
-          ? {
-              ...theme,
-              colors: {
-                ...(theme.colors ?? {}),
-                [key]: color,
-              },
-            }
-          : theme,
-      ),
-    });
-  }
-
   function updateMaster(masterPath: string, patch: Partial<PptxMaster>) {
     onChange({
       ...model,
       masters: (model.masters ?? []).map((master) =>
         master.path === masterPath ? { ...master, ...patch } : master,
-      ),
-    });
-  }
-
-  function updateMasterPlaceholder(
-    masterPath: string,
-    placeholderIndex: number,
-    patch: Partial<PptxText>,
-  ) {
-    onChange({
-      ...model,
-      masters: (model.masters ?? []).map((master) =>
-        master.path === masterPath
-          ? {
-              ...master,
-              placeholderTexts: (master.placeholderTexts ?? []).map((placeholder, index) =>
-                index === placeholderIndex ? { ...placeholder, ...patch } : placeholder,
-              ),
-            }
-          : master,
       ),
     });
   }
@@ -150,15 +116,23 @@ export function createPptxSlideActions({
   function resetSlideLayout() {
     if (!slide?.layoutPath) return;
     const layout = model.layouts?.find((item) => item.path === slide.layoutPath);
-    const placeholders = layout?.placeholderTexts ?? [];
-    if (placeholders.length === 0) return;
-    updateSlide({
-      texts: placeholders.map((text, index) => ({
-        ...text,
-        id: `t${index + 1}`,
-        textIndex: undefined,
-      })),
-    });
+    if (!layout || (layout.placeholderTexts?.length ?? 0) === 0) return;
+    if (slide.texts.some((text) => text.placeholderType && text.complexText)) {
+      window.alert(
+        "Layout reset is unavailable because a placeholder contains preserved rich text.",
+      );
+      return;
+    }
+    const reset = resetPptxSlideToLayout(slide, layout);
+    const confirmed = window.confirm(
+      [
+        `Reset ${reset.preview.matchedPlaceholderCount} matched placeholder(s).`,
+        `Create ${reset.preview.createdPlaceholderCount} missing placeholder(s).`,
+        `Preserve ${reset.preview.preservedObjectCount} user or unmatched object(s).`,
+      ].join("\n"),
+    );
+    if (!confirmed) return;
+    updateSlide({ texts: reset.slide.texts });
     clearObjectSelection();
   }
 
@@ -193,9 +167,15 @@ export function createPptxSlideActions({
   }
 
   function addAnimation(presetClass: PptxAnimationPresetClass) {
+    if (!activeObjectShapeId) {
+      window.alert(
+        "Select a saved slide object with a stable OOXML shape id before adding animation.",
+      );
+      return;
+    }
     updateSlideAnimations((animations) => {
       const id = nextPptxAnimationId(animations);
-      const animation = createPptxAnimation(id, presetClass);
+      const animation = createPptxAnimation(id, presetClass, activeObjectShapeId);
       return [...animations, animation];
     });
   }
@@ -246,6 +226,11 @@ export function createPptxSlideActions({
 
   function duplicateSlide() {
     if (!slide) return;
+    const blockReason = pptxSlideDuplicationBlockReason(slide);
+    if (blockReason) {
+      window.alert(blockReason);
+      return;
+    }
     const path = nextPptxSlidePath(model);
     const next = {
       ...slide,
@@ -254,24 +239,47 @@ export function createPptxSlideActions({
       texts: slide.texts.map((text, index) => ({
         ...text,
         id: nextPptxTextId(slide.texts, index + 1),
+        shapeId: undefined,
+        groupShapeId: undefined,
+        textIndex: undefined,
       })),
       shapes: (slide.shapes ?? []).map((shape, index) => ({
         ...shape,
         id: nextPptxShapeId(slide.shapes ?? [], index + 1),
+        shapeId: undefined,
+        groupShapeId: undefined,
       })),
       tables: (slide.tables ?? []).map((table, index) => ({
         ...table,
         id: nextPptxTableId(slide.tables ?? [], index + 1),
+        shapeId: undefined,
+        groupShapeId: undefined,
+        textIndexStart: undefined,
+        rows: table.rows.map((row) => [...row]),
+        cellStyles: table.cellStyles?.map((row) =>
+          row.map((cell) => ({ ...cell })),
+        ),
       })),
       images: (slide.images ?? []).map((image, index) => ({
         ...image,
         id: nextPptxImageId(slide.images ?? [], index + 1),
+        shapeId: undefined,
+        groupShapeId: undefined,
         relationshipId: undefined,
         mediaPath: undefined,
       })),
       charts: (slide.charts ?? []).map((chart, index) => ({
         ...chart,
         id: nextPptxChartId(slide.charts ?? [], index + 1),
+        shapeId: undefined,
+        groupShapeId: undefined,
+        relationshipId: undefined,
+        series: chart.series?.map((series) => ({
+          ...series,
+          categories: series.categories ? [...series.categories] : undefined,
+          values: series.values ? [...series.values] : undefined,
+        })),
+        categories: chart.categories ? [...chart.categories] : undefined,
       })),
     };
     onChange({ ...model, slides: [...model.slides, next] });
@@ -310,14 +318,12 @@ export function createPptxSlideActions({
     toggleSlideHidden,
     updateAnimationTiming,
     updateMaster,
-    updateMasterPlaceholder,
     updatePresentation,
     updateSlide,
     updateSlideLayout,
     updateSlideNotes,
     updateSlideTransition,
     updateTheme,
-    updateThemeColor,
   };
 }
 
@@ -335,16 +341,16 @@ function nextPptxAnimationId(animations: PptxAnimation[]) {
 function createPptxAnimation(
   id: string,
   presetClass: PptxAnimationPresetClass,
+  targetShapeId: string,
 ): PptxAnimation {
   const durationMs = presetClass === "emph" ? 700 : 500;
-  const sourceXml = `<p:cTn id="${id}" nodeType="clickEffect" presetClass="${presetClass}" presetID="1" delay="0" dur="${durationMs}"/>`;
   return {
     id,
     nodeType: "clickEffect",
     presetClass,
     presetId: "1",
+    targetShapeId,
     delayMs: 0,
     durationMs,
-    sourceXml,
   };
 }

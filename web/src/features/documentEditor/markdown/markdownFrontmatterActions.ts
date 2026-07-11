@@ -15,6 +15,7 @@ type MarkdownFrontmatterActionParams = {
   content: string;
   frontmatter: MarkdownFrontmatter | null;
   frontmatterFields: FrontmatterField[];
+  structuralEditBlockReason: string | null;
   newFrontmatterKey: string;
   newFrontmatterValue: string;
   setMode: Dispatch<SetStateAction<"source" | "preview">>;
@@ -28,6 +29,7 @@ export function createMarkdownFrontmatterActions({
   content,
   frontmatter,
   frontmatterFields,
+  structuralEditBlockReason,
   newFrontmatterKey,
   newFrontmatterValue,
   setMode,
@@ -60,7 +62,7 @@ export function createMarkdownFrontmatterActions({
   }
 
   function deleteFrontmatterField(lineIndex: number) {
-    if (!frontmatter) return;
+    if (!frontmatter || structuralEditBlockReason) return;
     const field = frontmatterFields.find((item) => item.lineIndex === lineIndex);
     if (!field) return;
     updateFrontmatterBody(
@@ -69,7 +71,7 @@ export function createMarkdownFrontmatterActions({
   }
 
   function addFrontmatterField() {
-    if (!frontmatter) return;
+    if (!frontmatter || structuralEditBlockReason) return;
     const cleanKey = newFrontmatterKey.trim();
     if (!cleanKey) return;
     updateFrontmatterBody(
@@ -86,6 +88,13 @@ export function createMarkdownFrontmatterActions({
 
   function removeFrontmatter() {
     if (!frontmatter) return;
+    if (
+      !globalThis.confirm(
+        "Remove the complete frontmatter block? The document body will remain unchanged.",
+      )
+    ) {
+      return;
+    }
     updateContent(
       `${content.slice(0, frontmatter.start)}${content.slice(frontmatter.end)}`.replace(
         /^\s*\n/,

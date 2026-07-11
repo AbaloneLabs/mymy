@@ -2,11 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
+use crate::models::document_editor::DocumentEditorSyncStatus;
 use crate::models::drive::{
     DriveEntry, DriveEntryKind, DriveFileResponse, DriveListResponse, DriveProviderKind,
     DriveUploadResponse, MoveDrivePathResponse,
 };
 use crate::services::document_editor::editor_kind_for_path;
+use crate::services::file_mutations::atomic_replace_file;
+use crate::services::file_observations::{fingerprint_path, FileFingerprint};
 use crate::state::AppState;
 
 use super::content::{is_editable, mime_type_for_path, read_preview_content};
@@ -81,7 +84,10 @@ pub async fn list(state: &AppState, logical_path: Option<&str>) -> AppResult<Dri
 }
 
 pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveFileResponse> {
+    let _namespace_guard = state.drive_namespace_lock().read().await;
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
+    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
+    let _write_guard = write_lock.lock().await;
     let metadata = fs::metadata(&resolved.physical_path)?;
     if !metadata.is_file() {
         return Err(AppError::BadRequest("Drive path is not a file".into()));
@@ -89,6 +95,9 @@ pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveF
 
     let mime_type = mime_type_for_path(&resolved.physical_path).to_string();
     let content = read_preview_content(&resolved.physical_path, &metadata, &mime_type)?;
+    let fingerprint = fingerprint_path(&resolved.physical_path)
+        .await
+        .map_err(AppError::Internal)?;
 
     Ok(DriveFileResponse {
         path: resolved.logical_path,
@@ -100,6 +109,7 @@ pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveF
         mime_type,
         size: metadata.len(),
         updated_at: metadata_updated_at(&metadata),
+        fingerprint: fingerprint.hash,
         editable: is_editable(&resolved.physical_path),
         editor_kind: editor_kind_for_path(&resolved.physical_path),
         content,
@@ -116,11 +126,60 @@ pub fn blob_path(state: &AppState, logical_path: &str) -> AppResult<(PathBuf, St
     Ok((resolved.physical_path, mime_type))
 }
 
-pub async fn write_file(state: &AppState, logical_path: &str, content: &str) -> AppResult<()> {
-    write_file_bytes(state, logical_path, content.as_bytes()).await
+/// Conditionally replace a raw Drive file under the same lock used by the
+/// document editor and native-agent tools.
+///
+/// Lightweight text surfaces do not exchange the normalized document model,
+/// but they still need the same compare-and-swap boundary. The content hash is
+/// therefore checked inside the critical section immediately before the
+/// atomic replacement.
+pub async fn write_file_conditionally(
+    state: &AppState,
+    logical_path: &str,
+    content: &str,
+    expected_fingerprint: Option<&str>,
+) -> AppResult<FileFingerprint> {
+    let _namespace_guard = state.drive_namespace_lock().read().await;
+    ensure_drive_root(state)?;
+    let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
+    let write_lock = state.drive_write_lock(&resolved.physical_path).await;
+    let _write_guard = write_lock.lock().await;
+    if resolved.physical_path.exists() {
+        let expected = expected_fingerprint.ok_or_else(|| {
+            AppError::Conflict(
+                "Existing Drive files require the fingerprint returned by the latest read"
+                    .to_string(),
+            )
+        })?;
+        let current = fingerprint_path(&resolved.physical_path)
+            .await
+            .map_err(AppError::Internal)?;
+        if current.hash != expected {
+            return Err(AppError::Conflict(
+                "Drive file changed since it was read".to_string(),
+            ));
+        }
+    } else if expected_fingerprint.is_some() {
+        return Err(AppError::Conflict(
+            "Drive file no longer exists at the reviewed path".to_string(),
+        ));
+    }
+    write_file_bytes_unlocked(state, &resolved.logical_path, content.as_bytes()).await?;
+    fingerprint_path(&resolved.physical_path)
+        .await
+        .map_err(AppError::Internal)
 }
 
-pub async fn write_file_bytes(state: &AppState, logical_path: &str, bytes: &[u8]) -> AppResult<()> {
+/// Write bytes while the caller holds the shared lock for the resolved path.
+///
+/// Document-editor saves need this lower-level entry point so their optimistic
+/// fingerprint check, package conversion, validation, and replacement all stay
+/// inside one critical section. Other callers must use `write_file_bytes`.
+pub(crate) async fn write_file_bytes_unlocked(
+    state: &AppState,
+    logical_path: &str,
+    bytes: &[u8],
+) -> AppResult<DocumentEditorSyncStatus> {
     ensure_drive_root(state)?;
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     if let Some(parent) = resolved.physical_path.parent() {
@@ -129,9 +188,23 @@ pub async fn write_file_bytes(state: &AppState, logical_path: &str, bytes: &[u8]
     if resolved.physical_path.exists() && fs::metadata(&resolved.physical_path)?.is_dir() {
         return Err(AppError::BadRequest("Cannot overwrite a directory".into()));
     }
-    fs::write(&resolved.physical_path, bytes)?;
-    enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await?;
-    Ok(())
+    atomic_replace_file(&resolved.physical_path, bytes).await?;
+    if state.config.drive_s3_bucket.is_none() {
+        return Ok(DocumentEditorSyncStatus::LocalOnly);
+    }
+    if let Err(error) = enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await {
+        // The local file is already durable at this point. Returning an error
+        // would tell the editor that the save failed and make a retry conflict
+        // with bytes that were in fact committed. Sync recovery remains a
+        // separate status concern and must never falsify local-save outcome.
+        tracing::error!(
+            path = %resolved.logical_path,
+            error = %error,
+            "local Drive write committed but S3 sync enqueue failed"
+        );
+        return Ok(DocumentEditorSyncStatus::Failed);
+    }
+    Ok(DocumentEditorSyncStatus::Pending)
 }
 
 pub async fn upload_file(
@@ -140,6 +213,7 @@ pub async fn upload_file(
     file_name: &str,
     bytes: &[u8],
 ) -> AppResult<DriveUploadResponse> {
+    let _namespace_guard = state.drive_namespace_lock().read().await;
     ensure_drive_root(state)?;
     let safe_name = validate_file_name(file_name)?;
     let target_dir = resolve_drive_path(&state.config.agent_data_dir, target_directory)?;
@@ -151,8 +225,16 @@ pub async fn upload_file(
     fs::create_dir_all(&target_dir.physical_path)?;
     let logical_path = logical_child_path(&target_dir.logical_path, &safe_name);
     let physical_path = target_dir.physical_path.join(&safe_name);
-    fs::write(&physical_path, bytes)?;
-    enqueue_s3_sync_job(state, &logical_path, "upload").await?;
+    let write_lock = state.drive_write_lock(&physical_path).await;
+    let _write_guard = write_lock.lock().await;
+    atomic_replace_file(&physical_path, bytes).await?;
+    if let Err(error) = enqueue_s3_sync_job(state, &logical_path, "upload").await {
+        tracing::error!(
+            path = %logical_path,
+            error = %error,
+            "local Drive upload committed but S3 sync enqueue failed"
+        );
+    }
 
     Ok(DriveUploadResponse {
         success: true,
@@ -172,6 +254,7 @@ pub async fn move_path(
     source_path: &str,
     destination_path: &str,
 ) -> AppResult<MoveDrivePathResponse> {
+    let _namespace_guard = state.drive_namespace_lock().write().await;
     let source = resolve_drive_path(&state.config.agent_data_dir, source_path)?;
     let destination = resolve_drive_path(&state.config.agent_data_dir, destination_path)?;
     if source.logical_path == DRIVE_PREFIX {

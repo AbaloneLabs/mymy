@@ -41,6 +41,8 @@ export interface DocxContentControl {
   text?: string;
   checked?: boolean;
   items?: DocxContentControlItem[];
+  start?: number;
+  end?: number;
 }
 
 export interface DocxRevision {
@@ -51,6 +53,35 @@ export interface DocxRevision {
   date?: string;
   text: string;
   action?: "accept" | "reject";
+}
+
+export type DocxTextAnchorAffinity = "before" | "after";
+
+export interface DocxCommentRange {
+  commentId: string;
+  start: number;
+  end: number;
+  startsHere?: boolean;
+  endsHere?: boolean;
+  startAffinity?: DocxTextAnchorAffinity;
+  endAffinity?: DocxTextAnchorAffinity;
+}
+
+export interface DocxHyperlinkRange {
+  id: string;
+  start: number;
+  end: number;
+  target: string;
+  relationshipId?: string;
+  startAffinity?: DocxTextAnchorAffinity;
+  endAffinity?: DocxTextAnchorAffinity;
+}
+
+export interface DocxNoteReference {
+  id: string;
+  kind: "footnote" | "endnote";
+  offset: number;
+  affinity?: DocxTextAnchorAffinity;
 }
 
 export interface DocxBlock {
@@ -82,6 +113,9 @@ export interface DocxBlock {
   commentId?: string;
   footnoteId?: string;
   endnoteId?: string;
+  commentRanges?: DocxCommentRange[];
+  hyperlinks?: DocxHyperlinkRange[];
+  noteReferences?: DocxNoteReference[];
   mediaPath?: string;
   mimeType?: string;
   dataUrl?: string;
@@ -123,6 +157,7 @@ export interface DocxBlock {
   keepWithNext?: boolean;
   keepLinesTogether?: boolean;
   breakKind?: "nextPage" | "continuous" | "evenPage" | "oddPage";
+  sectionPage?: DocxPageSettings;
 }
 
 export interface DocxStyle {

@@ -2,6 +2,39 @@ use super::super::super::*;
 use super::super::common::*;
 
 #[test]
+fn docx_run_properties_require_exact_element_names() {
+    let bytes = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:pPr><w:ind w:left="0"/></w:pPr><w:r><w:instrText>REF Item</w:instrText><w:t>Heading</w:t></w:r></w:p></w:body></w:document>"#,
+    )]);
+
+    let model = docx_model(&bytes).expect("DOCX run properties should parse");
+    let block = &model["blocks"][0];
+
+    assert_eq!(block["italic"], false);
+    assert_eq!(block["indentLeft"], 0);
+    assert!(block["runs"][0].get("italic").is_none());
+}
+
+#[test]
+fn docx_zero_indent_survives_an_edited_paragraph_round_trip() {
+    let original = test_ooxml_package(&[(
+        "word/document.xml",
+        r#"<w:document><w:body><w:p><w:pPr><w:ind w:left="0"/></w:pPr><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>"#,
+    )]);
+    let mut model = docx_model(&original).unwrap();
+    model["blocks"][0]["text"] = json!("After");
+    model["blocks"][0].as_object_mut().unwrap().remove("runs");
+
+    let updated = update_docx(&original, &model).unwrap();
+    let reopened = docx_model(&updated).unwrap();
+
+    assert_eq!(reopened["blocks"][0]["text"], "After");
+    assert_eq!(reopened["blocks"][0]["indentLeft"], 0);
+    assert_eq!(reopened["blocks"][0]["italic"], false);
+}
+
+#[test]
 fn docx_model_exposes_bookmarks() {
     let bytes = test_ooxml_package(&[(
         "word/document.xml",
@@ -374,13 +407,15 @@ fn docx_update_writes_page_break_blocks() {
 fn docx_model_exposes_section_breaks() {
     let bytes = test_ooxml_package(&[(
         "word/document.xml",
-        r#"<w:document><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p><w:p><w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>"#,
+        r#"<w:document><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p><w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:pPr></w:p><w:p><w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>"#,
     )]);
 
     let model = docx_model(&bytes).expect("DOCX section break model should parse");
 
     assert_eq!(model["blocks"][1]["type"], "sectionBreak");
     assert_eq!(model["blocks"][1]["breakKind"], "continuous");
+    assert_eq!(model["blocks"][1]["sectionPage"]["width"], 12240);
+    assert_eq!(model["blocks"][1]["sectionPage"]["marginLeft"], 1440);
 }
 
 #[test]
@@ -424,6 +459,62 @@ fn docx_model_exposes_hyperlink_targets() {
     assert_eq!(block["text"], "Docs");
     assert_eq!(block["relationshipId"], "rId5");
     assert_eq!(block["target"], "https://example.com/docs");
+    assert_eq!(block["hyperlinks"][0]["start"], 0);
+    assert_eq!(block["hyperlinks"][0]["end"], 4);
+    assert_eq!(block["hyperlinks"][0]["target"], "https://example.com/docs");
+}
+
+#[test]
+fn docx_anchored_ranges_parse_and_round_trip_with_utf16_offsets() {
+    let original = test_ooxml_package(&[
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:r><w:t>😀</w:t></w:r><w:commentRangeStart w:id="4"/><w:r><w:t>Intro</w:t></w:r><w:commentRangeEnd w:id="4"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="4"/></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:hyperlink r:id="rId5"><w:r><w:t>Link</w:t></w:r></w:hyperlink><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="2"/></w:r><w:r><w:t xml:space="preserve"> end</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>"#,
+        ),
+        (
+            "[Content_Types].xml",
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        ),
+    ]);
+    let mut model = docx_model(&original).expect("anchored DOCX model should parse");
+    let block = &model["blocks"][0];
+
+    assert_eq!(block["text"], "😀Intro Link end");
+    assert_eq!(block["commentRanges"][0]["start"], 2);
+    assert_eq!(block["commentRanges"][0]["end"], 7);
+    assert_eq!(block["hyperlinks"][0]["start"], 8);
+    assert_eq!(block["hyperlinks"][0]["end"], 12);
+    assert_eq!(block["noteReferences"][0]["offset"], 12);
+
+    model["blocks"][0]["text"] = json!("X😀Intro Link end");
+    model["blocks"][0]["runs"] = json!([{ "text": "X😀Intro Link end" }]);
+    model["blocks"][0]["commentId"] = Value::Null;
+    model["blocks"][0]["relationshipId"] = Value::Null;
+    model["blocks"][0]["target"] = Value::Null;
+    model["blocks"][0]["footnoteId"] = Value::Null;
+    model["blocks"][0]["commentRanges"][0]["start"] = json!(3);
+    model["blocks"][0]["commentRanges"][0]["end"] = json!(8);
+    model["blocks"][0]["hyperlinks"][0]["start"] = json!(9);
+    model["blocks"][0]["hyperlinks"][0]["end"] = json!(13);
+    model["blocks"][0]["noteReferences"][0]["offset"] = json!(13);
+
+    let updated = update_docx(&original, &model).expect("anchored DOCX should save");
+    let reopened = docx_model(&updated).expect("anchored DOCX should reopen");
+    let reopened_block = &reopened["blocks"][0];
+    assert_eq!(reopened_block["text"], "X😀Intro Link end");
+    assert_eq!(reopened_block["commentRanges"][0]["start"], 3);
+    assert_eq!(reopened_block["commentRanges"][0]["end"], 8);
+    assert_eq!(reopened_block["hyperlinks"][0]["start"], 9);
+    assert_eq!(reopened_block["hyperlinks"][0]["end"], 13);
+    assert_eq!(
+        reopened_block["hyperlinks"][0]["target"],
+        "https://example.com"
+    );
+    assert_eq!(reopened_block["noteReferences"][0]["offset"], 13);
 }
 
 #[test]

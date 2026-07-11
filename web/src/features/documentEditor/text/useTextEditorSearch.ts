@@ -7,6 +7,10 @@ import {
   startChunkedSearchRange,
 } from "./textSourceUtils";
 import type { SourceSelectionRange } from "./textSourceUtils";
+import {
+  regexSearchError,
+  replaceSearchMatches,
+} from "./textSearchSemantics";
 
 type LargeSearchSignature = {
   caseSensitive: boolean;
@@ -87,6 +91,7 @@ export function useTextEditorSearch({
         wholeWord,
         regexSearch,
       });
+  const searchError = regexSearchError(searchDraft, regexSearch);
 
   useEffect(() => {
     return () => {
@@ -163,7 +168,9 @@ export function useTextEditorSearch({
         caseSensitive,
         wholeWord,
         regexSearch,
-        start: largeSearchRange?.end ?? 0,
+        start: largeSearchRange
+          ? advanceLargeSearchOffset(content, largeSearchRange)
+          : 0,
         onProgress: (progress) =>
           setLargeSearchNavigation({
             ...progress,
@@ -200,8 +207,14 @@ export function useTextEditorSearch({
       regex.lastIndex = 0;
       const match = regex.exec(selected);
       if (match && match.index === 0 && match[0].length === selected.length) {
-        const next = `${content.slice(0, textarea.selectionStart)}${selected.replace(regex, replaceDraft)}${content.slice(textarea.selectionEnd)}`;
-        const caret = textarea.selectionStart + replaceDraft.length;
+        const replacement = replaceSearchMatches(
+          selected,
+          regex,
+          replaceDraft,
+          regexSearch,
+        );
+        const next = `${content.slice(0, textarea.selectionStart)}${replacement}${content.slice(textarea.selectionEnd)}`;
+        const caret = textarea.selectionStart + replacement.length;
         updateContent(next);
         requestAnimationFrame(() => focusSourceRange(caret, caret));
         return;
@@ -217,18 +230,38 @@ export function useTextEditorSearch({
       regexSearch,
     });
     if (!regex) return;
-    updateContent(content.replace(regex, replaceDraft));
+    updateContent(replaceSearchMatches(content, regex, replaceDraft, regexSearch));
+  }
+
+  function cancelLargeSearch() {
+    searchCountCancelRef.current?.();
+    searchRangeCancelRef.current?.();
+    searchCountCancelRef.current = null;
+    searchRangeCancelRef.current = null;
+    setStreamingSearchCount(null);
+    setLargeSearchNavigation(null);
   }
 
   return {
+    cancelLargeSearch,
     findNext,
     largeSearchNavigationForQuery,
     largeSearchRange,
     replaceAll,
     replaceNext,
     searchMatches,
+    searchError,
     streamingSearchCountForQuery,
   };
+}
+
+function advanceLargeSearchOffset(
+  content: string,
+  range: SourceSelectionRange,
+) {
+  if (range.end > range.start || range.end >= content.length) return range.end;
+  const codePoint = content.codePointAt(range.end);
+  return range.end + (codePoint !== undefined && codePoint > 0xffff ? 2 : 1);
 }
 
 function sameLargeSearchSignature(

@@ -14,32 +14,52 @@ pub(super) fn add_docx_hyperlink_relationships(
         if block.get("type").and_then(Value::as_str) == Some("image") {
             continue;
         }
-        let Some(target) = block
-            .get("target")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        let relationship_id = block
-            .get("relationshipId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                let id = format!("rId{next_relationship_id}");
-                next_relationship_id += 1;
-                block["relationshipId"] = json!(id.clone());
-                id
-            });
-        *relationships =
-            upsert_docx_hyperlink_relationship(relationships, &relationship_id, &target);
-        changed = true;
+        if ensure_hyperlink_relationship(block, relationships, &mut next_relationship_id) {
+            changed = true;
+        }
+        if let Some(hyperlinks) = block.get_mut("hyperlinks").and_then(Value::as_array_mut) {
+            for hyperlink in hyperlinks {
+                if ensure_hyperlink_relationship(
+                    hyperlink,
+                    relationships,
+                    &mut next_relationship_id,
+                ) {
+                    changed = true;
+                }
+            }
+        }
     }
     changed
+}
+
+fn ensure_hyperlink_relationship(
+    value: &mut Value,
+    relationships: &mut String,
+    next_relationship_id: &mut usize,
+) -> bool {
+    let Some(target) = value
+        .get("target")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(str::to_string)
+    else {
+        return false;
+    };
+    let relationship_id = value
+        .get("relationshipId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|relationship_id| !relationship_id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let id = format!("rId{next_relationship_id}");
+            *next_relationship_id += 1;
+            value["relationshipId"] = json!(id.clone());
+            id
+        });
+    *relationships = upsert_docx_hyperlink_relationship(relationships, &relationship_id, &target);
+    true
 }
 
 pub(super) fn ensure_docx_part_relationship(

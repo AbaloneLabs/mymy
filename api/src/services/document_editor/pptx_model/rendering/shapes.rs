@@ -133,7 +133,7 @@ pub(in crate::services::document_editor) fn update_pptx_shape_geometries_for_siz
     let mut output = String::new();
     let mut rest = xml;
     let mut text_shape_index = 0usize;
-    while let Some(start) = rest.find("<p:sp") {
+    while let Some(start) = find_xml_start(rest, "<p:sp") {
         output.push_str(&rest[..start]);
         let after_start = &rest[start..];
         let Some(end) = after_start.find("</p:sp>") else {
@@ -176,6 +176,9 @@ pub(in crate::services::document_editor) fn replace_pptx_shape_geometry(
         "rot",
         &pptx_rotation_unit(spec.rotation).to_string(),
     );
+    if spec.complex_text {
+        return shape;
+    }
     let shape = replace_pptx_run_properties(&shape, spec);
     replace_pptx_shape_fill(&shape, spec)
 }

@@ -36,6 +36,22 @@ fn docx_page_settings_read_and_update_section_properties() {
 }
 
 #[test]
+fn docx_document_page_update_targets_only_the_final_section() {
+    let document = r#"<w:document><w:body><w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="10000" w:h="20000"/></w:sectPr></w:pPr></w:p><w:p><w:r><w:t>Final</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12000" w:h="18000"/></w:sectPr></w:body></w:document>"#;
+
+    let page = docx_page_settings(document);
+    assert_eq!(page["width"], 12000);
+    assert_eq!(page["height"], 18000);
+
+    let updated = update_docx_page_settings(
+        document,
+        Some(&json!({ "width": 15840, "height": 12240, "orientation": "landscape" })),
+    );
+    assert!(updated.contains(r#"<w:pgSz w:w="10000" w:h="20000"/>"#));
+    assert_eq!(updated.matches(r#"w:w="15840""#).count(), 1);
+}
+
+#[test]
 fn docx_paragraph_builder_writes_basic_lists() {
     let bullet = build_docx_paragraph(&json!({
         "type": "paragraph",

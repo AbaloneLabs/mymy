@@ -63,8 +63,10 @@ pub(in crate::services::document_editor) fn pptx_basic_shape_renderable(
     spec: &PptxShapeSpec,
     slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
+    let shape_id = spec.shape_id.unwrap_or(shape_id);
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
+        group_shape_id: spec.group_shape_id,
         bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
         xml: build_pptx_basic_shape_for_size(shape_id, spec, slide_size),
     }
@@ -75,8 +77,10 @@ pub(in crate::services::document_editor) fn pptx_text_renderable(
     spec: &PptxTextSpec,
     slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
+    let shape_id = spec.shape_id.unwrap_or(shape_id);
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
+        group_shape_id: spec.group_shape_id,
         bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
         xml: build_pptx_text_shape_for_size(shape_id, spec, slide_size),
     }
@@ -87,8 +91,10 @@ pub(in crate::services::document_editor) fn pptx_table_renderable(
     spec: &PptxTableSpec,
     slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
+    let shape_id = spec.shape_id.unwrap_or(shape_id);
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
+        group_shape_id: spec.group_shape_id,
         bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
         xml: build_pptx_table_for_size(shape_id, spec, slide_size),
     }
@@ -99,8 +105,10 @@ pub(in crate::services::document_editor) fn pptx_image_renderable(
     spec: &PptxImageSpec,
     slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
+    let shape_id = spec.shape_id.unwrap_or(shape_id);
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
+        group_shape_id: spec.group_shape_id,
         bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
         xml: build_pptx_image_for_size(shape_id, spec, slide_size),
     }
@@ -111,8 +119,10 @@ pub(in crate::services::document_editor) fn pptx_chart_renderable(
     spec: &PptxChartSpec,
     slide_size: PptxSlideSize,
 ) -> PptxRenderableObject {
+    let shape_id = spec.shape_id.unwrap_or(shape_id);
     PptxRenderableObject {
         group_id: spec.group_id.clone(),
+        group_shape_id: spec.group_shape_id,
         bounds: pptx_bounds_from_percent(spec.x, spec.y, spec.width, spec.height, slide_size),
         xml: build_pptx_chart_frame_for_size(shape_id, spec, slide_size),
     }
@@ -149,12 +159,19 @@ pub(in crate::services::document_editor) fn render_pptx_objects(
             continue;
         }
         if emitted_groups.insert(group_id.to_string()) {
+            let preserved_group_shape_id = group_objects
+                .iter()
+                .filter_map(|object| object.group_shape_id)
+                .next();
+            let group_shape_id = preserved_group_shape_id.unwrap_or(next_group_shape_id);
             output.push_str(&build_pptx_group_shape(
-                next_group_shape_id,
+                group_shape_id,
                 group_id,
                 group_objects,
             ));
-            next_group_shape_id += 1;
+            if preserved_group_shape_id.is_none() {
+                next_group_shape_id += 1;
+            }
         }
     }
     output
@@ -305,6 +322,9 @@ pub(in crate::services::document_editor) fn regroup_pptx_slide_objects_for_size(
     charts: &[PptxChartSpec],
     slide_size: PptxSlideSize,
 ) -> String {
+    if tables.iter().any(|table| table.preservation_only) {
+        return slide_xml.to_string();
+    }
     if !pptx_specs_have_groups(texts, shapes, tables, images, charts) {
         return slide_xml.to_string();
     }
@@ -522,8 +542,10 @@ pub(in crate::services::document_editor) fn replace_pptx_basic_shapes_for_size(
 ) -> String {
     let mut output = String::new();
     let mut rest = xml;
-    let mut spec_index = 0usize;
-    let mut shape_id = 20_000usize;
+    let identity_aware = specs.iter().any(|spec| spec.shape_id.is_some());
+    let mut used_specs = vec![false; specs.len()];
+    let mut legacy_spec_index = 0usize;
+    let mut generated_shape_id = next_pptx_drawing_id(xml).max(20_000);
     while let Some((start, end_marker)) = next_pptx_basic_shape_segment(rest) {
         output.push_str(&rest[..start]);
         let after_start = &rest[start..];
@@ -534,22 +556,61 @@ pub(in crate::services::document_editor) fn replace_pptx_basic_shapes_for_size(
         let end_index = end + end_marker.len();
         let shape = &after_start[..end_index];
         if pptx_managed_basic_shape_segment(shape).is_some() {
-            if let Some(spec) = specs.get(spec_index) {
-                output.push_str(&build_pptx_basic_shape_for_size(shape_id, spec, slide_size));
-                shape_id += 1;
+            let existing_shape_id = docx_tag_attr(shape, "<p:cNvPr", "id")
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|id| *id > 0);
+            let matching_spec_index = if identity_aware {
+                existing_shape_id.and_then(|shape_id| {
+                    specs.iter().enumerate().position(|(index, spec)| {
+                        !used_specs[index] && spec.shape_id == Some(shape_id)
+                    })
+                })
+            } else {
+                let index = legacy_spec_index;
+                legacy_spec_index += 1;
+                specs.get(index).map(|_| index)
+            };
+            if let Some(spec_index) = matching_spec_index {
+                let spec = &specs[spec_index];
+                used_specs[spec_index] = true;
+                let shape_id = existing_shape_id.or(spec.shape_id).unwrap_or_else(|| {
+                    let allocated = generated_shape_id;
+                    generated_shape_id += 1;
+                    allocated
+                });
+                if identity_aware && pptx_basic_shape_spec_matches(shape, spec, slide_size) {
+                    output.push_str(shape);
+                } else {
+                    output.push_str(&build_pptx_basic_shape_for_size(shape_id, spec, slide_size));
+                }
             }
-            spec_index += 1;
         } else {
             output.push_str(shape);
         }
         rest = &after_start[end_index..];
     }
     output.push_str(rest);
-    if spec_index < specs.len() {
-        insert_pptx_basic_shapes(&output, &specs[spec_index..], shape_id, slide_size)
+    let remaining = specs
+        .iter()
+        .zip(used_specs)
+        .filter(|(_, used)| !used)
+        .map(|(spec, _)| spec.clone())
+        .collect::<Vec<_>>();
+    if !remaining.is_empty() {
+        insert_pptx_basic_shapes(&output, &remaining, generated_shape_id, slide_size)
     } else {
         output
     }
+}
+
+fn pptx_basic_shape_spec_matches(
+    shape: &str,
+    spec: &PptxShapeSpec,
+    slide_size: PptxSlideSize,
+) -> bool {
+    let shape_models = pptx_slide_shapes_for_size(shape, slide_size);
+    let parsed_specs = pptx_shape_specs(&json!({ "shapes": shape_models }));
+    parsed_specs.first() == Some(spec)
 }
 
 pub(in crate::services::document_editor) fn next_pptx_basic_shape_segment(

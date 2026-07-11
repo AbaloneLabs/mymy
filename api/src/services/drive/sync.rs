@@ -5,6 +5,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::models::document_editor::DocumentEditorSyncStatus;
 use crate::models::drive::{
     DriveProviderKind, DriveSyncJob, DriveSyncJobsResponse, DriveSyncOperation, DriveSyncStatus,
 };
@@ -61,6 +62,32 @@ pub async fn enqueue_s3_sync_job(
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn document_sync_status(
+    state: &AppState,
+    logical_path: &str,
+) -> AppResult<DocumentEditorSyncStatus> {
+    if state.config.drive_s3_bucket.is_none() {
+        return Ok(DocumentEditorSyncStatus::LocalOnly);
+    }
+    let path = normalize_logical_drive_path(logical_path)?;
+    let status = sqlx::query_scalar::<_, String>(
+        r#"SELECT status
+           FROM drive_sync_jobs
+           WHERE provider = 's3' AND drive_path = $1
+           ORDER BY created_at DESC
+           LIMIT 1"#,
+    )
+    .bind(path)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(match status.as_deref() {
+        Some("done") => DocumentEditorSyncStatus::Synced,
+        Some("pending" | "running") => DocumentEditorSyncStatus::Pending,
+        Some("failed") | None => DocumentEditorSyncStatus::Failed,
+        Some(_) => DocumentEditorSyncStatus::Failed,
+    })
 }
 
 pub fn physical_path_for_sync(state: &AppState, logical_path: &str) -> AppResult<PathBuf> {

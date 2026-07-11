@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -10,15 +11,20 @@ use crate::agent::security::{
     ensure_read_allowed, ensure_write_allowed, is_sensitive_path, redact_sensitive_text,
 };
 use crate::models::agent::AgentToolDomain;
+use crate::services::document_revisions::{record_document_revision, RevisionActor};
+use crate::services::file_mutations::atomic_replace_file;
 use crate::services::file_observations::{
-    ensure_file_not_changed_since_observed, record_file_observation, FileObservationSource,
+    ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
+    record_file_observation_fingerprint, FileFingerprint, FileObservationSource,
 };
+use crate::state::AppState;
 
 pub(super) struct CodeRpcHandler {
     pub(super) paths: WorkspacePathPolicy,
     pub(super) allowed_tools: HashSet<String>,
     pub(super) db: Option<sqlx::PgPool>,
     pub(super) agent_profile: Option<String>,
+    pub(super) app_state: Option<Arc<AppState>>,
 }
 
 #[async_trait]
@@ -50,10 +56,24 @@ impl CodeRpcHandler {
             .and_then(Value::as_u64)
             .unwrap_or(1)
             .max(1) as usize;
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self
             .paths
             .resolve_existing_with_logical(path)
             .map_err(|err| err.to_string())?;
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         ensure_read_allowed(&resolved.physical).map_err(|err| err.to_string())?;
         let content = tokio::fs::read_to_string(&resolved.physical)
             .await
@@ -108,11 +128,25 @@ impl CodeRpcHandler {
     async fn write_file(&self, args: Value) -> Result<Value, String> {
         let path = required_arg(&args, "path")?;
         let content = required_arg(&args, "content")?;
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self
             .paths
             .resolve_for_write_with_logical(path)
             .map_err(|err| err.to_string())?;
         ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -120,26 +154,24 @@ impl CodeRpcHandler {
             &resolved.physical,
         )
         .await?;
-        if let Some(parent) = resolved.physical.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|err| format!("create parent failed: {err}"))?;
-        }
-        tokio::fs::write(&resolved.physical, content)
+        atomic_replace_file(&resolved.physical, content.as_bytes())
             .await
             .map_err(|err| format!("write failed: {err}"))?;
-        record_file_observation(
+        let (fingerprint, observation_recorded) = record_code_rpc_write(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
+            self.app_state.as_deref(),
             &resolved.logical,
             &resolved.physical,
-            FileObservationSource::Write,
+            "agent-code-rpc-write",
         )
         .await?;
         Ok(serde_json::json!({
             "path": resolved.logical,
             "bytes_written": content.len(),
             "lines_written": content.lines().count(),
+            "fingerprint": fingerprint.hash,
+            "observationRecorded": observation_recorded,
         }))
     }
 
@@ -147,11 +179,25 @@ impl CodeRpcHandler {
         let path = required_arg(&args, "path")?;
         let old_string = required_arg(&args, "old_string")?;
         let new_string = required_arg(&args, "new_string")?;
+        let _namespace_guard = match self.app_state.as_deref() {
+            Some(state) => Some(state.drive_namespace_lock().read().await),
+            None => None,
+        };
         let resolved = self
             .paths
             .resolve_existing_with_logical(path)
             .map_err(|err| err.to_string())?;
         ensure_write_allowed(&resolved.physical).map_err(|err| err.to_string())?;
+        let _write_guard = match self.app_state.as_deref() {
+            Some(state) => Some(
+                state
+                    .drive_write_lock(&resolved.physical)
+                    .await
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         ensure_file_not_changed_since_observed(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -169,20 +215,23 @@ impl CodeRpcHandler {
             ));
         }
         let updated = content.replacen(old_string, new_string, 1);
-        tokio::fs::write(&resolved.physical, updated)
+        atomic_replace_file(&resolved.physical, updated.as_bytes())
             .await
             .map_err(|err| format!("write failed: {err}"))?;
-        record_file_observation(
+        let (fingerprint, observation_recorded) = record_code_rpc_write(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
+            self.app_state.as_deref(),
             &resolved.logical,
             &resolved.physical,
-            FileObservationSource::Write,
+            "agent-code-rpc-patch",
         )
         .await?;
         Ok(serde_json::json!({
             "path": resolved.logical,
             "replacements": 1,
+            "fingerprint": fingerprint.hash,
+            "observationRecorded": observation_recorded,
         }))
     }
 }
@@ -231,6 +280,55 @@ fn required_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("missing {key}"))
+}
+
+async fn record_code_rpc_write(
+    db: Option<&sqlx::PgPool>,
+    agent_profile: Option<&str>,
+    state: Option<&AppState>,
+    logical_path: &str,
+    physical_path: &Path,
+    source: &str,
+) -> Result<(FileFingerprint, bool), String> {
+    let fingerprint = fingerprint_path(physical_path).await?;
+    let observation_recorded = match (db, agent_profile) {
+        (Some(db), Some(agent_profile)) => record_file_observation_fingerprint(
+            db,
+            agent_profile,
+            logical_path,
+            &fingerprint,
+            FileObservationSource::Write,
+        )
+        .await
+        .is_ok(),
+        _ => true,
+    };
+    if !observation_recorded {
+        tracing::warn!(
+            path = %logical_path,
+            agent = agent_profile.unwrap_or("unknown"),
+            "agent code RPC write committed but observation recording failed"
+        );
+    }
+    if let (Some(state), Some(agent_profile)) = (state, agent_profile) {
+        if let Err(error) = record_document_revision(
+            state,
+            logical_path,
+            &fingerprint.hash,
+            RevisionActor::Agent(agent_profile),
+            source,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                path = %logical_path,
+                error = %error,
+                "agent code RPC write committed but revision provenance was not recorded"
+            );
+        }
+    }
+    Ok((fingerprint, observation_recorded))
 }
 
 fn search_dir(

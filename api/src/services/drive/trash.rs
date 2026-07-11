@@ -30,6 +30,7 @@ struct DriveTrashRow {
 }
 
 pub async fn delete_path(state: &AppState, logical_path: &str) -> AppResult<()> {
+    let _namespace_guard = state.drive_namespace_lock().write().await;
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     if resolved.logical_path == DRIVE_PREFIX {
         return Err(AppError::BadRequest("Cannot delete the Drive root".into()));
@@ -103,6 +104,7 @@ pub async fn list_trash(state: &AppState) -> AppResult<DriveTrashResponse> {
 }
 
 pub async fn restore_trash(state: &AppState, id: Uuid) -> AppResult<DriveRestoreResponse> {
+    let _namespace_guard = state.drive_namespace_lock().write().await;
     ensure_drive_root(state)?;
     let row = sqlx::query_as!(
         DriveTrashRow,
@@ -151,6 +153,7 @@ pub async fn restore_trash(state: &AppState, id: Uuid) -> AppResult<DriveRestore
 }
 
 pub async fn purge_trash(state: &AppState, id: Uuid) -> AppResult<DriveMutationResponse> {
+    let _namespace_guard = state.drive_namespace_lock().write().await;
     let row = sqlx::query_as!(
         DriveTrashRow,
         r#"SELECT id, original_path, trash_path, kind, size_bytes, deleted_at
