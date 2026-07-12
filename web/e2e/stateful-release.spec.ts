@@ -7,13 +7,12 @@ import {
 } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { releaseApiBase } from "./releaseRuntime";
+import { releaseRuntime } from "./releaseRuntime";
 
 const pin = process.env.MYMY_E2E_PIN;
 const harnessToken = process.env.MYMY_RELEASE_HARNESS_TOKEN;
-const apiBase = releaseApiBase();
-const webBase = process.env.MYMY_E2E_BASE_URL ?? "http://127.0.0.1:33696";
 const seed = releaseSeed();
+let apiBase: string;
 
 interface ReleaseFixture {
   fixtureRevision: string;
@@ -55,8 +54,8 @@ interface TrashResponse {
 
 test.describe.serial("stateful July 11 release journeys", () => {
   test.skip(
-    !pin || !harnessToken || apiBase.startsWith("/"),
-    "MYMY_E2E_PIN, MYMY_RELEASE_HARNESS_TOKEN, and an absolute MYMY_E2E_API_URL are required",
+    !pin || !harnessToken,
+    "MYMY_E2E_PIN and MYMY_RELEASE_HARNESS_TOKEN are required",
   );
 
   let harness: APIRequestContext;
@@ -64,10 +63,12 @@ test.describe.serial("stateful July 11 release journeys", () => {
   let activePath: string;
   let browserVersion: string;
 
-  test.beforeAll(async ({ browser }) => {
+  test.beforeAll(async ({ browser }, testInfo) => {
+    const runtime = releaseRuntime(testInfo);
+    apiBase = runtime.apiBase;
     browserVersion = browser.version();
     harness = await request.newContext({
-      extraHTTPHeaders: { Origin: new URL(webBase).origin },
+      extraHTTPHeaders: { Origin: new URL(runtime.webBase).origin },
     });
     const authenticated = await harness.post(apiUrl("/auth/verify"), {
       data: { pin },

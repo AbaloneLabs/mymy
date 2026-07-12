@@ -1,11 +1,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { releaseApiBase } from "./releaseRuntime";
+import { releaseRuntime } from "./releaseRuntime";
 
 const pin = process.env.MYMY_E2E_PIN;
-const apiBase = releaseApiBase();
-const webBase = process.env.MYMY_E2E_BASE_URL ?? "http://127.0.0.1:33696";
 
 interface DeliveryBudget {
   revision: string;
@@ -15,19 +13,20 @@ interface DeliveryBudget {
 
 test.describe("frontend delivery certification", () => {
   test.skip(
-    !pin || apiBase.startsWith("/"),
-    "MYMY_E2E_PIN and an absolute MYMY_E2E_API_URL are required",
+    !pin,
+    "MYMY_E2E_PIN is required",
   );
 
   test("keeps parse/execute bounded and recovers one failed lazy route", async ({
     browser,
     context,
     page,
-  }) => {
+  }, testInfo) => {
+    const { apiBase, webBase } = releaseRuntime(testInfo);
     const budget = JSON.parse(
       readFileSync(new URL("../performance-budgets.json", import.meta.url), "utf8"),
     ) as DeliveryBudget;
-    const authenticated = await context.request.post(apiUrl("/auth/verify"), {
+    const authenticated = await context.request.post(apiUrl("/auth/verify", apiBase), {
       headers: { Origin: new URL(webBase).origin },
       data: { pin },
     });
@@ -89,6 +88,6 @@ test.describe("frontend delivery certification", () => {
   });
 });
 
-function apiUrl(path: string) {
+function apiUrl(path: string, apiBase: string) {
   return `${apiBase.replace(/\/$/, "")}${path}`;
 }
