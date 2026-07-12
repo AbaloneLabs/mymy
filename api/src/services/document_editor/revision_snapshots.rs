@@ -67,26 +67,31 @@ async fn upsert_revision_snapshot(
     bytes: &[u8],
     pin: bool,
 ) -> AppResult<()> {
+    let resource_id =
+        crate::services::resource_identity::active_resource_id_for_path(&state.db, drive_path)
+            .await?;
     let mut transaction = state.db.begin().await?;
     sqlx::query(
         r#"INSERT INTO document_revision_snapshots
-              (drive_path, content_hash, content_bytes, content_size, pinned_until)
+              (drive_path, resource_id, content_hash, content_bytes, content_size, pinned_until)
            VALUES (
-               $1, $2, $3, $4,
-               CASE WHEN $5 THEN now() + make_interval(days => $6) ELSE NULL END
+               $1, $2, $3, $4, $5,
+               CASE WHEN $6 THEN now() + make_interval(days => $7) ELSE NULL END
            )
            ON CONFLICT (drive_path, content_hash)
            DO UPDATE SET
+               resource_id = COALESCE(EXCLUDED.resource_id, document_revision_snapshots.resource_id),
                last_used_at = now(),
                pinned_until = CASE
-                   WHEN $5 THEN GREATEST(
+                   WHEN $6 THEN GREATEST(
                        COALESCE(document_revision_snapshots.pinned_until, now()),
-                       now() + make_interval(days => $6)
+                       now() + make_interval(days => $7)
                    )
                    ELSE document_revision_snapshots.pinned_until
                END"#,
     )
     .bind(drive_path)
+    .bind(resource_id)
     .bind(content_hash)
     .bind(bytes)
     .bind(bytes.len() as i64)
@@ -120,6 +125,9 @@ pub(super) async fn load_revision_snapshot(
     drive_path: &str,
     content_hash: &str,
 ) -> AppResult<Option<Vec<u8>>> {
+    let resource_id =
+        crate::services::resource_identity::active_resource_id_for_path(&state.db, drive_path)
+            .await?;
     let snapshot = sqlx::query_as::<_, DocumentRevisionSnapshot>(
         r#"UPDATE document_revision_snapshots
            SET last_used_at = now(),
@@ -127,12 +135,14 @@ pub(super) async fn load_revision_snapshot(
                    COALESCE(pinned_until, now()),
                    now() + make_interval(days => $3)
                )
-           WHERE drive_path = $1 AND content_hash = $2
+           WHERE content_hash = $2
+             AND ((resource_id = $4) OR (resource_id IS NULL AND drive_path = $1))
            RETURNING content_bytes"#,
     )
     .bind(drive_path)
     .bind(content_hash)
     .bind(SNAPSHOT_PIN_DAYS)
+    .bind(resource_id)
     .fetch_optional(&state.db)
     .await?;
     Ok(snapshot.map(|value| value.content_bytes))

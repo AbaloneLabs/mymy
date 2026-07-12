@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
@@ -13,7 +13,6 @@ import {
   SandboxProcessesTab,
 } from "@/features/agents/components/AgentsNativePanels";
 import { CronTab } from "@/features/agents/components/AgentsCronTab";
-import { DecisionsTab } from "@/features/agents/components/AgentsDecisionsTab";
 import { MemoryTab } from "@/features/agents/components/AgentsMemoryTab";
 import { TabButton } from "@/features/agents/components/AgentsNativeShared";
 import {
@@ -69,6 +68,15 @@ export default function AgentsPage() {
   const requestedTab = searchParams.get("tab") as AgentsTab | null;
   const activeTab: AgentsTab =
     requestedTab && tabs.includes(requestedTab) ? requestedTab : tabs[0];
+
+  if (activeTab === "decisions") {
+    const destination = new URLSearchParams();
+    const decisionId = searchParams.get("decisionId");
+    if (decisionId) destination.set("decisionId", decisionId);
+    if (activeAgentProfile) destination.set("agent", activeAgentProfile);
+    const suffix = destination.toString();
+    return <Navigate to={`/decisions${suffix ? `?${suffix}` : ""}`} replace />;
+  }
 
   function selectTab(tab: AgentsTab) {
     setSearchParams({ tab }, { replace: true });
@@ -153,8 +161,6 @@ export default function AgentsPage() {
                 <AllAgentsTab agents={agents} onSelectAgent={selectAgent} />
               ) : activeTab === "sessions" ? (
                 <NativeSessionsTab profile={null} agents={agents} />
-              ) : activeTab === "decisions" ? (
-                <DecisionsTab profile={null} />
               ) : activeTab === "memory" ? (
                 <MemoryTab profile={null} />
               ) : (
@@ -175,8 +181,6 @@ export default function AgentsPage() {
               />
             ) : activeTab === "prompt" ? (
               <PromptTab profile={activeAgentProfile} />
-            ) : activeTab === "decisions" ? (
-              <DecisionsTab profile={activeAgentProfile} />
             ) : activeTab === "memory" ? (
               <MemoryTab profile={activeAgentProfile} />
             ) : (

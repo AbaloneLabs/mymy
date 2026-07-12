@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::fs;
 
+use crate::services::{drive, resource_identity};
+
 #[derive(Debug, Clone, Copy)]
 pub enum FileObservationSource {
     Read,
@@ -84,13 +86,19 @@ pub async fn record_file_observation_fingerprint(
     fingerprint: &FileFingerprint,
     source: FileObservationSource,
 ) -> Result<(), String> {
+    let logical_path = drive::normalize_logical_drive_path(logical_path)
+        .map_err(|_| "file observation path is invalid".to_string())?;
+    let resource_id = resource_identity::active_resource_id_for_path(db, &logical_path)
+        .await
+        .map_err(|_| "file observation identity lookup failed".to_string())?;
     sqlx::query(
         r#"
         INSERT INTO agent_file_observations
-            (agent_profile, logical_path, last_seen_hash, last_seen_size,
+            (agent_profile, logical_path, resource_id, last_seen_hash, last_seen_size,
              last_seen_modified_at, last_seen_source, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, now())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, now())
         ON CONFLICT (agent_profile, logical_path) DO UPDATE SET
+            resource_id = EXCLUDED.resource_id,
             last_seen_hash = EXCLUDED.last_seen_hash,
             last_seen_size = EXCLUDED.last_seen_size,
             last_seen_modified_at = EXCLUDED.last_seen_modified_at,
@@ -99,7 +107,8 @@ pub async fn record_file_observation_fingerprint(
         "#,
     )
     .bind(agent_profile)
-    .bind(logical_path)
+    .bind(&logical_path)
+    .bind(resource_id)
     .bind(&fingerprint.hash)
     .bind(fingerprint.size as i64)
     .bind(fingerprint.modified_at)
@@ -122,15 +131,24 @@ pub async fn ensure_file_not_changed_since_observed(
     if !physical_path.exists() {
         return Ok(());
     }
+    let logical_path = drive::normalize_logical_drive_path(logical_path)
+        .map_err(|_| "file observation path is invalid".to_string())?;
+    let resource_id = resource_identity::active_resource_id_for_path(db, &logical_path)
+        .await
+        .map_err(|_| "file observation identity lookup failed".to_string())?;
     let Some(row) = sqlx::query_as::<_, ObservationRow>(
         r#"
         SELECT last_seen_hash, last_seen_size
           FROM agent_file_observations
-         WHERE agent_profile = $1 AND logical_path = $2
+         WHERE agent_profile = $1
+           AND ((resource_id = $3) OR (resource_id IS NULL AND logical_path = $2))
+         ORDER BY (resource_id = $3) DESC, updated_at DESC
+         LIMIT 1
         "#,
     )
     .bind(agent_profile)
-    .bind(logical_path)
+    .bind(&logical_path)
+    .bind(resource_id)
     .fetch_optional(db)
     .await
     .map_err(|err| format!("file observation lookup failed: {err}"))?

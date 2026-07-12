@@ -32,6 +32,7 @@ pub struct SearchResultTask {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    pub updated_at: String,
 }
 
 /// A project search result.
@@ -43,6 +44,7 @@ pub struct SearchResultProject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub status: String,
+    pub updated_at: String,
 }
 
 /// A calendar event search result.
@@ -56,6 +58,7 @@ pub struct SearchResultEvent {
     pub end_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    pub updated_at: String,
 }
 
 /// A chat search result. Covers both chat sessions (matched by title) and
@@ -74,6 +77,8 @@ pub struct SearchResultMessage {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_role: Option<String>,
     pub updated_at: String,
 }
 
@@ -123,4 +128,116 @@ pub struct SearchQuery {
     pub project_id: Option<String>,
     /// Max results per entity group (default 5, clamped to 20).
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSearchScope {
+    CurrentProject,
+    CurrentPlusGlobal,
+    AllPermitted,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSearchDomain {
+    Sessions,
+    Tasks,
+    Notes,
+    Knowledge,
+    Drive,
+    Projects,
+    Calendar,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceSearchRequest {
+    pub query: String,
+    pub domains: Vec<WorkspaceSearchDomain>,
+    pub scope: WorkspaceSearchScope,
+    pub limit: i64,
+    pub cursor: Option<String>,
+}
+
+/// Browser OmniSearch uses the same adapter contract as agent discovery but
+/// supplies its current project explicitly. The authenticated local-owner
+/// principal and browser session are derived server-side and are deliberately
+/// absent from this request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserWorkspaceSearchRequest {
+    pub query: String,
+    pub domains: Vec<WorkspaceSearchDomain>,
+    pub scope: WorkspaceSearchScope,
+    pub project_id: Option<String>,
+    pub limit: i64,
+    pub cursor: Option<String>,
+}
+
+impl UserWorkspaceSearchRequest {
+    pub fn into_workspace_request(self) -> WorkspaceSearchRequest {
+        WorkspaceSearchRequest {
+            query: self.query,
+            domains: self.domains,
+            scope: self.scope,
+            limit: self.limit,
+            cursor: self.cursor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchHit {
+    pub domain: String,
+    pub resource_kind: String,
+    pub stable_id: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub project_id: Option<String>,
+    pub scope: String,
+    pub lifecycle_state: String,
+    pub freshness: Option<String>,
+    pub evidence_role: String,
+    pub source_link: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locations: Vec<WorkspaceSearchLocation>,
+    pub normalized_score: f64,
+    pub reason_codes: Vec<String>,
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchLocation {
+    pub kind: String,
+    pub label: Option<String>,
+    pub source_link: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchResponse {
+    pub ranker_version: &'static str,
+    pub scope: WorkspaceSearchScopeView,
+    pub hits: Vec<WorkspaceSearchHit>,
+    pub partial_failures: Vec<WorkspaceSearchPartialFailure>,
+    pub next_cursor: Option<String>,
+    pub snapshot_expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSearchScopeView {
+    CurrentProject,
+    CurrentPlusGlobal,
+    AllPermitted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchPartialFailure {
+    pub domain: String,
+    pub code: String,
 }

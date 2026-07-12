@@ -9,6 +9,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use axum::http::StatusCode;
 use sha2::{Digest, Sha256};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -20,6 +21,9 @@ use crate::models::document_editor::DocumentEditorSyncStatus;
 use crate::services::content_quarantine;
 use crate::services::drive;
 use crate::services::file_observations::{fingerprint_path, FileFingerprint};
+use crate::services::resource_identity::{
+    self, ArtifactClassification, ContentCommitProjection, PrepareContentOperation, ResourceActor,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Clone)]
@@ -27,6 +31,8 @@ pub struct AdmissionActor {
     pub kind: &'static str,
     pub id: Option<String>,
     pub agent_run_id: Option<Uuid>,
+    pub invocation_id: Option<String>,
+    pub source_session_id: Option<Uuid>,
     pub provider_ref: Option<String>,
 }
 
@@ -36,6 +42,8 @@ impl AdmissionActor {
             kind: "system",
             id: None,
             agent_run_id: None,
+            invocation_id: None,
+            source_session_id: None,
             provider_ref: None,
         }
     }
@@ -45,6 +53,8 @@ impl AdmissionActor {
             kind: "user",
             id: None,
             agent_run_id: None,
+            invocation_id: None,
+            source_session_id: None,
             provider_ref: None,
         }
     }
@@ -54,6 +64,8 @@ impl AdmissionActor {
             kind: "provider",
             id: None,
             agent_run_id: None,
+            invocation_id: None,
+            source_session_id: None,
             provider_ref: None,
         }
     }
@@ -63,7 +75,29 @@ impl AdmissionActor {
             kind: "agent",
             id: profile.map(str::to_string),
             agent_run_id: run_id,
+            invocation_id: None,
+            source_session_id: None,
             provider_ref: None,
+        }
+    }
+
+    pub fn with_invocation(mut self, invocation_id: Option<&str>) -> Self {
+        self.invocation_id = invocation_id.map(str::to_string);
+        self
+    }
+
+    pub fn with_source_session(mut self, session_id: Option<Uuid>) -> Self {
+        self.source_session_id = session_id;
+        self
+    }
+
+    fn resource_actor(&self) -> ResourceActor {
+        ResourceActor {
+            kind: self.kind.to_string(),
+            id: self.id.clone(),
+            run_id: self.agent_run_id,
+            invocation_id: self.invocation_id.clone(),
+            source_session_id: self.source_session_id,
         }
     }
 }
@@ -77,6 +111,8 @@ pub struct AdmissionRequest {
     pub expected_fingerprint: Option<String>,
     pub allow_overwrite: bool,
     pub enqueue_s3_sync: bool,
+    pub operation_key: Option<String>,
+    pub artifact: Option<ArtifactClassification>,
 }
 
 #[derive(Debug)]
@@ -84,6 +120,7 @@ pub enum AdmissionOutcome {
     Committed {
         fingerprint: FileFingerprint,
         sync_status: DocumentEditorSyncStatus,
+        operation_id: Uuid,
     },
     Quarantined {
         id: Uuid,
@@ -219,6 +256,7 @@ impl WorkspaceContentService {
                 let _namespace_guard = state.drive_namespace_lock().read().await;
                 let write_lock = state.drive_write_lock(&resolved.physical_path).await;
                 let _write_guard = write_lock.lock().await;
+                ensure_single_link_file(&resolved.physical_path).await?;
                 let target_fingerprint = if resolved.physical_path.is_file() {
                     Some(
                         fingerprint_path(&resolved.physical_path)
@@ -241,19 +279,17 @@ impl WorkspaceContentService {
                 Ok(AdmissionOutcome::Quarantined { id })
             }
             ContentSafetyVerdict::Pass | ContentSafetyVerdict::Restricted => {
-                let (fingerprint, sync_status) = self
-                    .commit_staged(
-                        state,
-                        &resolved.logical_path,
-                        &staged,
-                        request.expected_fingerprint.as_deref(),
-                        request.allow_overwrite,
-                        request.enqueue_s3_sync,
-                    )
-                    .await?;
+                let committed = self
+                    .commit_staged(state, &resolved.logical_path, &staged, &request)
+                    .await;
+                if committed.is_err() {
+                    remove_staged(&staged).await;
+                }
+                let (fingerprint, sync_status, operation_id) = committed?;
                 Ok(AdmissionOutcome::Committed {
                     fingerprint,
                     sync_status,
+                    operation_id,
                 })
             }
         }
@@ -267,8 +303,24 @@ impl WorkspaceContentService {
         staged: &StagedContent,
     ) -> AppResult<FileFingerprint> {
         let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, desired_path)?;
-        let (fingerprint, _) = self
-            .commit_staged(state, &resolved.logical_path, staged, None, false, true)
+        let request = AdmissionRequest {
+            desired_path: resolved.logical_path.clone(),
+            file_name: resolved
+                .physical_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("file")
+                .to_string(),
+            origin: ContentOrigin::UserUpload,
+            actor: AdmissionActor::user(),
+            expected_fingerprint: None,
+            allow_overwrite: false,
+            enqueue_s3_sync: true,
+            operation_key: None,
+            artifact: None,
+        };
+        let (fingerprint, _, _) = self
+            .commit_staged(state, &resolved.logical_path, staged, &request)
             .await?;
         Ok(fingerprint)
     }
@@ -288,12 +340,14 @@ impl WorkspaceContentService {
                       AND target_fingerprint IS NULL
                )"#,
         )
-        .bind(path)
+        .bind(&path)
         .fetch_one(&state.db)
         .await?;
         if pending {
             return Err(AppError::content_quarantined());
         }
+        let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, &path)?;
+        ensure_single_link_file(&resolved.physical_path).await?;
         Ok(())
     }
 
@@ -302,53 +356,183 @@ impl WorkspaceContentService {
         state: &AppState,
         logical_path: &str,
         staged: &StagedContent,
-        expected_fingerprint: Option<&str>,
-        allow_overwrite: bool,
-        enqueue_s3_sync: bool,
-    ) -> AppResult<(FileFingerprint, DocumentEditorSyncStatus)> {
+        request: &AdmissionRequest,
+    ) -> AppResult<(FileFingerprint, DocumentEditorSyncStatus, Uuid)> {
         let bytes = read_staged_bounded(state, staged).await?;
         let _namespace_guard = state.drive_namespace_lock().read().await;
         let resolved = drive::resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
         let write_lock = state.drive_write_lock(&resolved.physical_path).await;
         let _write_guard = write_lock.lock().await;
+        ensure_single_link_file(&resolved.physical_path).await?;
 
-        if resolved.physical_path.exists() {
+        let operation_key = request
+            .operation_key
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let actor = request.actor.resource_actor();
+        let prepared = resource_identity::prepare_content_operation(
+            state,
+            &PrepareContentOperation {
+                operation_key,
+                logical_path: resolved.logical_path.clone(),
+                expected_fingerprint: request.expected_fingerprint.clone(),
+                content_sha256: staged.sha256.clone(),
+                content_size: staged.size,
+                source: request.origin.as_str().to_string(),
+                actor: actor.clone(),
+                artifact: request.artifact.clone(),
+            },
+        )
+        .await?;
+        if prepared.state == "completed" {
+            remove_staged(staged).await;
+            let hash = prepared.committed_fingerprint.ok_or_else(|| {
+                AppError::Internal("completed operation is missing its fingerprint".to_string())
+            })?;
+            return Ok((
+                FileFingerprint {
+                    hash,
+                    size: staged.size,
+                    modified_at: None,
+                },
+                DocumentEditorSyncStatus::LocalOnly,
+                prepared.operation_id,
+            ));
+        }
+        if matches!(
+            prepared.state.as_str(),
+            "conflict" | "failed" | "compensation_required"
+        ) {
+            return Err(AppError::Conflict(format!(
+                "Content operation {} is already terminal in state {}",
+                prepared.operation_id, prepared.state
+            )));
+        }
+
+        let resume_after_commit = matches!(
+            prepared.state.as_str(),
+            "filesystem_committed" | "reconciling" | "projected" | "sync_pending"
+        );
+        if !resume_after_commit && resolved.physical_path.exists() {
             if resolved.physical_path.is_dir() {
+                resource_identity::mark_precommit_conflict(
+                    state,
+                    prepared.operation_id,
+                    "destination_not_file",
+                )
+                .await?;
                 return Err(AppError::BadRequest(
                     "Cannot replace a Drive directory with file content".to_string(),
                 ));
             }
-            if !allow_overwrite {
+            if !request.allow_overwrite {
+                resource_identity::mark_precommit_conflict(
+                    state,
+                    prepared.operation_id,
+                    "destination_exists",
+                )
+                .await?;
                 return Err(AppError::quarantine_destination_conflict());
             }
-            if let Some(expected) = expected_fingerprint {
+            if let Some(expected) = request.expected_fingerprint.as_deref() {
                 let expected_hash = expected.split(':').next().unwrap_or(expected);
                 let current = fingerprint_path(&resolved.physical_path)
                     .await
                     .map_err(AppError::Internal)?;
                 if current.hash != expected_hash {
+                    resource_identity::mark_precommit_conflict(
+                        state,
+                        prepared.operation_id,
+                        "revision_mismatch",
+                    )
+                    .await?;
                     return Err(AppError::Conflict(
                         "Drive file changed since it was read".to_string(),
                     ));
                 }
             }
-        } else if expected_fingerprint.is_some() {
+        } else if !resume_after_commit && request.expected_fingerprint.is_some() {
+            resource_identity::mark_precommit_conflict(
+                state,
+                prepared.operation_id,
+                "resource_missing",
+            )
+            .await?;
             return Err(AppError::Conflict(
                 "Drive file no longer exists at the reviewed path".to_string(),
             ));
         }
 
-        if let Some(parent) = resolved.physical_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+        if resume_after_commit {
+            let current = fingerprint_path(&resolved.physical_path)
+                .await
+                .map_err(AppError::Internal)?;
+            if current.hash != staged.sha256 {
+                return Err(AppError::Conflict(
+                    "reconciling operation no longer matches the committed filesystem bytes"
+                        .to_string(),
+                ));
+            }
+        } else {
+            if let Some(parent) = resolved.physical_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            atomic_replace_file(&resolved.physical_path, &bytes).await?;
         }
-        atomic_replace_file(&resolved.physical_path, &bytes).await?;
         let fingerprint = fingerprint_path(&resolved.physical_path)
             .await
             .map_err(AppError::Internal)?;
         remove_staged(staged).await;
 
-        if !enqueue_s3_sync || state.config.drive_s3_bucket.is_none() {
-            return Ok((fingerprint, DocumentEditorSyncStatus::LocalOnly));
+        if let Err(error) = resource_identity::mark_filesystem_committed(
+            state,
+            prepared.operation_id,
+            &resolved.logical_path,
+            &fingerprint.hash,
+        )
+        .await
+        {
+            tracing::error!(operation_id = %prepared.operation_id, error = %error, "filesystem commit receipt update failed");
+            return Err(AppError::coded(
+                "resource_operation_reconciling",
+                StatusCode::ACCEPTED,
+                format!("File bytes committed; operation {} requires reconciliation and must not be reapplied.", prepared.operation_id),
+            ));
+        }
+        if let Err(error) = resource_identity::project_content_commit(
+            state,
+            &prepared,
+            ContentCommitProjection {
+                logical_path: &resolved.logical_path,
+                fingerprint: &fingerprint.hash,
+                size: fingerprint.size,
+                source: request.origin.as_str(),
+                actor: &actor,
+                artifact: request.artifact.as_ref(),
+            },
+        )
+        .await
+        {
+            tracing::error!(operation_id = %prepared.operation_id, error = %error, "resource projection requires reconciliation");
+            let _ = resource_identity::mark_operation_reconciling(
+                state,
+                prepared.operation_id,
+                "projection_failed",
+            )
+            .await;
+            return Err(AppError::coded(
+                "resource_operation_reconciling",
+                StatusCode::ACCEPTED,
+                format!("File bytes committed; operation {} requires reconciliation and must not be reapplied.", prepared.operation_id),
+            ));
+        }
+
+        if !request.enqueue_s3_sync || state.config.drive_s3_bucket.is_none() {
+            return Ok((
+                fingerprint,
+                DocumentEditorSyncStatus::LocalOnly,
+                prepared.operation_id,
+            ));
         }
         if let Err(error) =
             drive::enqueue_s3_sync_job(state, &resolved.logical_path, "upload").await
@@ -358,9 +542,17 @@ impl WorkspaceContentService {
                 error = %error,
                 "workspace commit completed but S3 enqueue failed"
             );
-            return Ok((fingerprint, DocumentEditorSyncStatus::Failed));
+            return Ok((
+                fingerprint,
+                DocumentEditorSyncStatus::Failed,
+                prepared.operation_id,
+            ));
         }
-        Ok((fingerprint, DocumentEditorSyncStatus::Pending))
+        Ok((
+            fingerprint,
+            DocumentEditorSyncStatus::Pending,
+            prepared.operation_id,
+        ))
     }
 }
 
@@ -417,6 +609,33 @@ pub(crate) async fn remove_staged(staged: &StagedContent) {
             tracing::warn!(error = %error, "failed to remove private staged content");
         }
     }
+}
+
+/// Reject existing regular files with more than one directory entry.
+///
+/// Path normalization can prove that a Drive path does not traverse a
+/// symbolic link, but a hard link has no distinguished "target" path. An
+/// otherwise valid entry could therefore alias bytes outside the managed
+/// namespace or cause two logical resources to share one inode. The first
+/// release deliberately rejects that ambiguous state at the shared access and
+/// commit boundary instead of trying to infer which link is authoritative.
+async fn ensure_single_link_file(path: &Path) -> AppResult<()> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.nlink() > 1 {
+            return Err(AppError::drive_hardlink_rejected());
+        }
+    }
+    Ok(())
 }
 
 /// Replace a Drive file through a same-directory durable temporary file.
@@ -501,6 +720,30 @@ mod architecture_tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".mymy-"))
             .count();
         assert_eq!(temporary_files, 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hardlinked_files_are_rejected_at_the_workspace_boundary() {
+        let directory =
+            std::env::temp_dir().join(format!("mymy-workspace-hardlink-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let original = directory.join("original.txt");
+        let alias = directory.join("alias.txt");
+        std::fs::write(&original, b"shared").unwrap();
+        std::fs::hard_link(&original, &alias).unwrap();
+
+        let error = ensure_single_link_file(&alias).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            AppError::Coded {
+                code: "drive_hardlink_rejected",
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read(&original).unwrap(), b"shared");
         std::fs::remove_dir_all(directory).unwrap();
     }
 

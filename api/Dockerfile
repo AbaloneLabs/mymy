@@ -7,7 +7,7 @@
 # ============================================================
 
 # ---- Builder ----
-FROM rust:1.95-bookworm AS builder
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS builder
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ ENV DATABASE_URL=${DATABASE_URL}
 RUN cargo build --release --bin mymy-api --bin mymy-sandbox-runner
 
 # ---- Runtime ----
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 
 WORKDIR /app
 

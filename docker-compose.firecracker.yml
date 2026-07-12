@@ -1,0 +1,17 @@
+# Optional Firecracker runner profile.
+#
+# This overlay deliberately keeps host devices and broad Linux capabilities
+# out of the default bubblewrap deployment. Use it only on a dedicated host
+# after configuring the kernel, rootfs, SSH key, and network boundary:
+#
+# docker compose -f docker-compose.yml -f docker-compose.firecracker.yml up -d
+
+services:
+  sandbox-runner:
+    environment:
+      MYMY_SANDBOX_MODE: firecracker
+    devices:
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN

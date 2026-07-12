@@ -7,6 +7,7 @@ const PinScreen = lazy(() => import("@/routes/PinScreen"));
 const Dashboard = lazy(() => import("@/routes/Dashboard"));
 const Settings = lazy(() => import("@/routes/Settings"));
 const Chat = lazy(() => import("@/routes/Chat"));
+const DecisionsPage = lazy(() => import("@/routes/DecisionsPage"));
 const CalendarPage = lazy(() => import("@/routes/CalendarPage"));
 const NotesPage = lazy(() => import("@/routes/NotesPage"));
 const KnowledgePage = lazy(() => import("@/routes/KnowledgePage"));
@@ -23,6 +24,7 @@ const ShortcutsPage = lazy(() => import("@/routes/ShortcutsPage"));
 
 const protectedRoutes = [
   { path: "/", element: <Dashboard /> },
+  { path: "/decisions", element: <DecisionsPage /> },
   { path: "/chat", element: <Chat /> },
   { path: "/calendar", element: <CalendarPage /> },
   { path: "/notes", element: <NotesPage /> },

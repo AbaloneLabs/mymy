@@ -9,9 +9,9 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         serde_json::json!({
             "type":"object",
             "properties":{
-                "profile":{"type":"string"},
-                "scope":{"type":"string","enum":["all","general","project"]},
-                "projectId":{"type":"string"}
+                "profile":{"type":"string","description":"Optional agent profile identifier."},
+                "scope":{"type":"string","enum":["all","general","project"],"description":"Session scope: all permitted sessions, general sessions, or one project."},
+                "projectId":{"type":"string","description":"Project UUID required when scope is project."}
             }
         }),
         state,

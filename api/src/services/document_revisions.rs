@@ -40,15 +40,19 @@ pub async fn record_document_revision(
     source: &str,
     operation_key: Option<&str>,
 ) -> AppResult<()> {
+    let resource_id =
+        crate::services::resource_identity::active_resource_id_for_path(&state.db, drive_path)
+            .await?;
     sqlx::query(
         r#"
         INSERT INTO document_revision_events
-            (drive_path, fingerprint, actor_kind, actor_id, source, operation_key)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (drive_path, resource_id, fingerprint, actor_kind, actor_id, source, operation_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (operation_key) WHERE operation_key IS NOT NULL DO NOTHING
         "#,
     )
     .bind(drive_path)
+    .bind(resource_id)
     .bind(fingerprint)
     .bind(actor.kind())
     .bind(actor.id())
@@ -64,17 +68,22 @@ pub async fn revision_provenance(
     drive_path: &str,
     fingerprint: &str,
 ) -> AppResult<Option<DocumentRevisionProvenance>> {
+    let resource_id =
+        crate::services::resource_identity::active_resource_id_for_path(&state.db, drive_path)
+            .await?;
     let row = sqlx::query_as::<_, RevisionProvenanceRow>(
         r#"
         SELECT actor_kind, actor_id, source, created_at
           FROM document_revision_events
-         WHERE drive_path = $1 AND fingerprint = $2
+         WHERE fingerprint = $2
+           AND ((resource_id = $3) OR (resource_id IS NULL AND drive_path = $1))
          ORDER BY created_at DESC, id DESC
          LIMIT 1
         "#,
     )
     .bind(drive_path)
     .bind(fingerprint)
+    .bind(resource_id)
     .fetch_optional(&state.db)
     .await?;
     Ok(row.and_then(RevisionProvenanceRow::into_model))

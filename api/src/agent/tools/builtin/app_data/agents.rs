@@ -15,7 +15,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "agent_create",
         "agents_write",
         "Create a native agent.",
-        passthrough_schema(),
+        record_schema(&["profile", "name", "role", "description"], &["name"]),
         state,
         AppAction::AgentCreate,
     );
@@ -24,7 +24,11 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "agent_update",
         "agents_write",
         "Update a native agent by profile.",
-        serde_json::json!({"type":"object","properties":{"profile":{"type":"string"},"data":{"type":"object"}},"required":["profile","data"]}),
+        {
+            let mut data = record_schema(&["name", "role", "description", "toolPermissions"], &[]);
+            data["description"] = serde_json::json!("Native-agent fields to update.");
+            serde_json::json!({"type":"object","properties":{"profile":{"type":"string","description":"Stable native-agent profile identifier."},"data":data},"required":["profile","data"],"additionalProperties":false})
+        },
         state,
         AppAction::AgentUpdate,
     );
@@ -33,7 +37,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "agent_delete",
         "agents_write",
         "Delete a native agent by profile.",
-        serde_json::json!({"type":"object","properties":{"profile":{"type":"string"}},"required":["profile"]}),
+        serde_json::json!({"type":"object","properties":{"profile":{"type":"string","description":"Stable native-agent profile identifier."}},"required":["profile"]}),
         state,
         AppAction::AgentDelete,
     );

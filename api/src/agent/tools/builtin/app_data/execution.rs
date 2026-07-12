@@ -30,6 +30,7 @@ use crate::services::goals as goals_service;
 use crate::services::investments as investments_service;
 use crate::services::knowledge as knowledge_service;
 use crate::services::notes as notes_service;
+use crate::services::resource_identity::artifact_classification;
 use crate::services::sandbox;
 use crate::services::tasks::{self as tasks_service, TaskFilter};
 use crate::services::transactions as transactions_service;
@@ -166,14 +167,34 @@ impl ToolHandler for AppDataTool {
                 )
                 .await
                 .map_err(ToolError::Execution)?;
-                let fingerprint = drive_service::write_file_conditionally(
-                    &self.state,
-                    &req.path,
-                    &req.content,
-                    req.expected_fingerprint.as_deref(),
-                )
-                .await
-                .map_err(app_error_to_tool)?;
+                let artifact = match (req.artifact_type.as_deref(), req.artifact_title.as_deref()) {
+                    (None, None) => None,
+                    (Some(kind), Some(title)) => Some(
+                        artifact_classification(kind, title, &resolved.logical_path)
+                            .map_err(app_error_to_tool)?,
+                    ),
+                    _ => {
+                        return Err(ToolError::InvalidArgs(
+                            "artifactType and artifactTitle must be supplied together".to_string(),
+                        ));
+                    }
+                };
+                let (fingerprint, operation_id) =
+                    drive_service::write_file_conditionally_with_context(
+                        &self.state,
+                        &req.path,
+                        &req.content,
+                        req.expected_fingerprint.as_deref(),
+                        crate::services::workspace_content::AdmissionActor::agent(
+                            Some(&context.agent_profile),
+                            Some(context.run_id),
+                        )
+                        .with_invocation(Some(&context.invocation_id)),
+                        Some(context.invocation_id.clone()),
+                        artifact,
+                    )
+                    .await
+                    .map_err(app_error_to_tool)?;
                 let observation_recorded = record_file_observation_fingerprint(
                     &self.state.db,
                     &context.agent_profile,
@@ -211,9 +232,55 @@ impl ToolHandler for AppDataTool {
                     "data": {
                         "path": resolved.logical_path,
                         "fingerprint": fingerprint.hash,
+                        "operationId": operation_id,
                     },
                     "observationRecorded": observation_recorded,
                 })))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::DriveDelete) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let path = required_str(args, "path")?;
+                let actor = crate::services::resource_identity::ResourceActor {
+                    kind: "agent".to_string(),
+                    id: Some(context.agent_profile.clone()),
+                    run_id: Some(context.run_id),
+                    invocation_id: Some(context.invocation_id.clone()),
+                    source_session_id: None,
+                };
+                drive_service::delete_path_with_actor(
+                    &self.state,
+                    path,
+                    Some(&context.invocation_id),
+                    string_field(args, "expectedLifecycleRevision").as_deref(),
+                    actor,
+                )
+                .await
+                .map_err(app_error_to_tool)?;
+                Ok(tool_result(&serde_json::json!({"success": true})))
+            })
+            .await;
+        }
+        if matches!(self.action, AppAction::DriveRestore) {
+            return crate::services::audit::with_agent_audit_actor(context, async {
+                let actor = crate::services::resource_identity::ResourceActor {
+                    kind: "agent".to_string(),
+                    id: Some(context.agent_profile.clone()),
+                    run_id: Some(context.run_id),
+                    invocation_id: Some(context.invocation_id.clone()),
+                    source_session_id: None,
+                };
+                let response = drive_service::restore_trash_with_actor(
+                    &self.state,
+                    uuid_arg(args, "id")?,
+                    Some(&context.invocation_id),
+                    string_field(args, "expectedLifecycleRevision").as_deref(),
+                    actor,
+                )
+                .await
+                .map_err(app_error_to_tool)?;
+                Ok(tool_result(&response))
             })
             .await;
         }
@@ -423,14 +490,9 @@ impl AppDataTool {
                         .map(|_| serde_json::json!({"success": true, "path": req.path})),
                 )
             }
-            AppAction::DriveDelete => json_result(
-                drive_service::delete_path(state, required_str(args, "path")?)
-                    .await
-                    .map(|_| serde_json::json!({"success": true})),
-            ),
-            AppAction::DriveRestore => {
-                json_result(drive_service::restore_trash(state, uuid_arg(args, "id")?).await)
-            }
+            AppAction::DriveDelete | AppAction::DriveRestore => Err(ToolError::Execution(
+                "Drive lifecycle mutations require durable run execution context".to_string(),
+            )),
             AppAction::ProcessList { agent_profile } => json_result(
                 sandbox::list_processes(
                     state,

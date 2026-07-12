@@ -10,7 +10,7 @@ pub(super) fn register(
         "process_list",
         "processes_read",
         "List sandbox processes for this agent.",
-        serde_json::json!({"type":"object","properties":{"projectId":{"type":"string"}}}),
+        serde_json::json!({"type":"object","properties":{"projectId":{"type":"string","description":"Optional project UUID used to filter processes."}}}),
         state,
         AppAction::ProcessList {
             agent_profile: agent_profile.clone(),
@@ -21,7 +21,10 @@ pub(super) fn register(
         "process_start",
         "processes_write",
         "Start a sandbox process for this agent.",
-        passthrough_schema(),
+        record_schema(
+            &["projectId", "command", "cwd", "port", "label"],
+            &["command"],
+        ),
         state,
         AppAction::ProcessStart {
             agent_profile: agent_profile.clone(),

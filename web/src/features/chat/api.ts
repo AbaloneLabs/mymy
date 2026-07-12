@@ -158,6 +158,31 @@ export interface AgentRunEvent {
   createdAt: string;
 }
 
+export interface RunResourceEffect {
+  id: string;
+  resourceId: string;
+  artifactId?: string;
+  effectKind: string;
+  beforeReference?: string;
+  afterReference?: string;
+  observedRevision?: string;
+  resourceSequence: number;
+  lifecycleState: string;
+  currentPath?: string;
+  createdAt: string;
+}
+
+export interface RunArtifact {
+  id: string;
+  resourceId: string;
+  title: string;
+  artifactType: string;
+  mimeType: string;
+  lifecycleState: string;
+  lifecycleSequence: number;
+  currentPath?: string;
+}
+
 export interface SessionRunInput {
   id: string;
   sessionId: string;
@@ -272,6 +297,19 @@ export function useRunEventLog(runId: string | undefined) {
         ? 2_000
         : false;
     },
+  });
+}
+
+export function useRunProvenance(runId: string | undefined) {
+  return useQuery({
+    queryKey: ["agent-runs", runId, "provenance"],
+    queryFn: () =>
+      api.get<{ effects: RunResourceEffect[]; artifacts: RunArtifact[] }>(
+        `/agent-runs/${runId}/provenance`,
+      ),
+    enabled: Boolean(runId),
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: "always",
   });
 }
 

@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Search, Plus, Trash2, FileText, History as HistoryIcon } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { VersionHistoryPanel } from "@/components/VersionHistoryPanel";
@@ -19,11 +20,14 @@ import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/Work
 export default function NotesPage() {
   const { t } = useTranslation();
   const { selectedProjectId } = useProjectContext();
+  const [searchParams] = useSearchParams();
+  const requestedNoteId = searchParams.get("noteId");
+  const deepLinkAppliedRef = useRef(false);
 
   const [search, setSearch] = useState("");
   const [listScope, setListScope] = useState<WorkspaceListScope>("all");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(requestedNoteId);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -48,15 +52,34 @@ export default function NotesPage() {
     selectedProjectId ?? undefined,
     effectiveScope,
   );
-  const notes = isSearching
-    ? (searchData?.notes ?? [])
-    : (listData?.notes ?? []);
+  const notes = useMemo(
+    () => (isSearching ? (searchData?.notes ?? []) : (listData?.notes ?? [])),
+    [isSearching, listData?.notes, searchData?.notes],
+  );
 
   const createNote = useCreateNote();
   const updateNote = useUpdateNote();
   const deleteNote = useDeleteNote();
 
   const selected = notes.find((n) => n.id === selectedId) ?? null;
+
+  /* eslint-disable react-hooks/set-state-in-effect -- The URL target is
+     hydrated once after the authoritative scoped list arrives. Subsequent
+     edits use the normal dirty/save transition handlers. */
+  useEffect(() => {
+    if (!requestedNoteId || deepLinkAppliedRef.current) return;
+    const note = notes.find((candidate) => candidate.id === requestedNoteId);
+    if (!note) return;
+    deepLinkAppliedRef.current = true;
+    // The URL-selected note arrives after the scoped list request. Hydrate the
+    // editor once, then normal dirty/save guards own all later transitions.
+    setSelectedId(note.id);
+    setDraftTitle(note.title);
+    setDraftContent(note.content ?? "");
+    setDirty(false);
+    setSaveStatus("idle");
+  }, [notes, requestedNoteId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Debounced autosave — fires 800ms after the last keystroke.
   useEffect(() => {

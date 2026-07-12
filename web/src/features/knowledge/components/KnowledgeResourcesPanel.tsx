@@ -7,6 +7,7 @@ import {
   useDetachKnowledgeResource,
   useKnowledgeResources,
 } from "@/features/knowledge/api";
+import { ResourceRunLinks } from "@/features/artifacts/ResourceRunLinks";
 
 export function KnowledgeResourcesPanel({ knowledgeId }: { knowledgeId: string }) {
   const { t } = useTranslation();
@@ -71,21 +72,26 @@ export function KnowledgeResourcesPanel({ knowledgeId }: { knowledgeId: string }
               ) : (
                 <File className="h-4 w-4 shrink-0 text-[var(--text-faint)]" />
               )}
-              <button
-                type="button"
-                disabled={resource.status === "broken"}
-                onClick={() =>
-                  navigate(`/drive?file=${encodeURIComponent(resource.resourceRef)}`)
-                }
-                className="min-w-0 flex-1 text-left disabled:cursor-not-allowed"
-              >
-                <span className="block truncate text-xs font-medium text-[var(--text)]">
-                  {resource.title}
-                </span>
-                <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">
-                  {resource.resourceRef}
-                </span>
-              </button>
+              <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  disabled={resource.status === "broken"}
+                  onClick={() =>
+                    navigate(`/drive?file=${encodeURIComponent(resource.resourceRef)}`)
+                  }
+                  className="block w-full min-w-0 text-left disabled:cursor-not-allowed"
+                >
+                  <span className="block truncate text-xs font-medium text-[var(--text)]">
+                    {resource.title}
+                  </span>
+                  <span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">
+                    {resource.resourceRef}
+                  </span>
+                </button>
+                <div className="mt-1">
+                  <ResourceRunLinks resourceId={resource.driveResourceId} />
+                </div>
+              </div>
               <span className="rounded bg-[var(--surface-hover)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">
                 {resource.status === "broken"
                   ? t("knowledge.resources.broken")

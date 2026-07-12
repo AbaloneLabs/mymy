@@ -11,20 +11,21 @@
 //! - **PIN known + DB compromise**: full exposure. This is acceptable —
 //!   if the attacker has the PIN, they can already authenticate and use
 //!   the app normally.
-//! - **Runtime**: the derived key lives in memory only for the duration
-//!   of a request. It is never logged or persisted.
+//! - **Runtime**: the derived key lives only in the process memory cache while
+//!   the owner session is unlocked. It is never logged or persisted.
 //!
 //! ## Key derivation
 //!
-//! We use HKDF-SHA256 to derive a 256-bit AES key from the PIN. HKDF
-//! is preferred over raw SHA-256 because it provides proper key
-//! separation (the `info` parameter binds the key to this specific use).
+//! Version 2 uses Argon2id to derive a 256-bit AES key from the PIN, making an
+//! offline guess against a stolen database deliberately memory- and CPU-hard.
+//! Version 1 used HKDF and remains available only for authenticated migration.
 //!
 //! The database stores only encrypted credentials; plaintext keys are resolved
 //! only for the active authenticated request.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -33,9 +34,12 @@ use crate::error::{AppError, AppResult};
 /// HKDF info string — binds the derived key to "llm-provider-api-key"
 /// so the same PIN can't be reused for other purposes without derivation.
 const HKDF_INFO: &[u8] = b"mymy-llm-provider-api-key-v1";
-/// Salt for HKDF. Static is acceptable here because the PIN itself is the
-/// secret; the salt prevents certain precomputation attacks.
+/// Historical HKDF salt retained only to decrypt and migrate version-1 rows.
 const HKDF_SALT: &[u8] = b"mymy-llm-provider-salt";
+const ARGON2_KEY_SALT: &[u8] = b"mymy-provider-key-argon2id-v2";
+const ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+const ARGON2_ITERATIONS: u32 = 2;
+const ARGON2_PARALLELISM: u32 = 1;
 
 /// Encrypted key material stored in the DB.
 ///
@@ -48,11 +52,28 @@ pub struct EncryptedKey {
     pub nonce_hex: String,
 }
 
-/// Derive a 256-bit AES key from the user's PIN via HKDF-SHA256.
+/// Derive the current 256-bit AES key from the user's PIN via Argon2id.
 ///
 /// Called at login time; the result is cached in `AppState.encryption_key`
 /// for the session lifetime so we never need the PIN again.
 pub fn derive_key(pin: &str) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(key.len()),
+    )
+    .expect("static Argon2id key parameters are valid");
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(pin.as_bytes(), ARGON2_KEY_SALT, &mut key)
+        .expect("static Argon2id salt and 32-byte output are valid");
+    key
+}
+
+/// Reproduce the historical HKDF key only while rotating version-1 rows.
+/// New credentials must never be encrypted with this derivation.
+pub fn derive_legacy_key(pin: &str) -> [u8; 32] {
     let hkdf = Hkdf::<Sha256>::new(Some(HKDF_SALT), pin.as_bytes());
     let mut okm = [0u8; 32];
     // unwrap is safe: 32 bytes is well within HKDF max.
@@ -69,7 +90,7 @@ pub fn encrypt_api_key(key: &[u8; 32], plaintext_key: &str) -> AppResult<Encrypt
     let cipher =
         Aes256Gcm::new_from_slice(key).map_err(|e| AppError::Internal(format!("AES init: {e}")))?;
 
-    let nonce_bytes = generate_nonce();
+    let nonce_bytes = generate_nonce()?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -106,24 +127,14 @@ pub fn decrypt_api_key(key: &[u8; 32], encrypted: &EncryptedKey) -> AppResult<St
 
 /// Generate a 12-byte random nonce for AES-GCM.
 ///
-/// Uses a simple time + counter + pseudo-random mix. This is not
-/// cryptographically perfect, but for a local single-user tool it is
-/// sufficient. For production multi-user, use a proper CSPRNG.
-fn generate_nonce() -> [u8; 12] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+/// AES-GCM requires nonce uniqueness under a key; collision-prone timestamps
+/// or process-local counters can catastrophically reuse a keystream after a
+/// restart. Draw every nonce directly from the operating system CSPRNG.
+fn generate_nonce() -> AppResult<[u8; 12]> {
     let mut nonce = [0u8; 12];
-    // Mix nanosecond timestamp into the nonce bytes.
-    nonce[0..8].copy_from_slice(&now.to_le_bytes()[..8]);
-    // Fill remaining bytes with a pseudo-random value derived from the
-    // address of a stack variable (ASLR provides entropy).
-    let stack_var = 0u8;
-    let addr = &stack_var as *const u8 as u64;
-    nonce[8..12].copy_from_slice(&addr.to_le_bytes()[..4]);
-    nonce
+    getrandom::fill(&mut nonce)
+        .map_err(|error| AppError::Internal(format!("OS random source failed: {error}")))?;
+    Ok(nonce)
 }
 
 /// Produce a masked hint of an API key for display in the UI.
@@ -175,6 +186,17 @@ mod tests {
             decrypt_api_key(&key, &enc1).unwrap(),
             decrypt_api_key(&key, &enc2).unwrap()
         );
+    }
+
+    #[test]
+    fn nonce_generation_has_no_collision_in_a_concurrent_sized_batch() {
+        let key = derive_key("nonce-test-pin");
+        let mut nonces = std::collections::HashSet::new();
+        for index in 0..4_096 {
+            let encrypted = encrypt_api_key(&key, &format!("credential-{index}"))
+                .expect("OS CSPRNG should be available");
+            assert!(nonces.insert(encrypted.nonce_hex));
+        }
     }
 
     #[test]

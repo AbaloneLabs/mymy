@@ -32,6 +32,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/agent-runs/{id}/children", get(get_children))
         .route("/api/agent-runs/{id}/checklist", get(get_checklist))
         .route("/api/agent-runs/{id}/event-log", get(get_event_log))
+        .route("/api/agent-runs/{id}/provenance", get(get_provenance))
         .route("/api/agent-runs/{id}/events", get(stream_events))
         .route("/api/agent-runs/{id}/cancel", post(cancel_run))
         .route("/api/chat/sessions/{id}/runtime", get(get_session_runtime))
@@ -54,6 +55,15 @@ async fn get_event_log(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<crate::models::agent_run::AgentRunEventsResponse>> {
     Ok(Json(agent_runs::list_run_events(&state, id, 0).await?))
+}
+
+async fn get_provenance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::models::artifact::RunProvenanceResponse>> {
+    Ok(Json(
+        crate::services::artifacts::list_run_provenance(&state, id).await?,
+    ))
 }
 
 async fn list_runs(

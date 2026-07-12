@@ -27,6 +27,8 @@ export function SecuritySection() {
   const [conflictId, setConflictId] = useState<string>();
   const [destinations, setDestinations] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<string>();
+  const quarantineItems =
+    quarantine.data?.pages.flatMap((page) => page.items) ?? [];
 
   const rows = [
     {
@@ -163,12 +165,12 @@ export function SecuritySection() {
           )}
           {!quarantine.isLoading &&
             !quarantine.isError &&
-            (quarantine.data?.items.length ?? 0) === 0 && (
+            quarantineItems.length === 0 && (
               <div className="py-4 text-xs text-[var(--text-muted)]">
                 {t("settings.security.noPendingReviews")}
               </div>
             )}
-          {(quarantine.data?.items ?? []).map((item) => (
+          {quarantineItems.map((item) => (
             <QuarantineCard
               key={item.id}
               item={item}
@@ -193,7 +195,7 @@ export function SecuritySection() {
                   {
                     onSuccess: () => setConflictId(undefined),
                     onError: (error) => {
-  const code = settingsApiErrorCode(error);
+                      const code = settingsApiErrorCode(error);
                       if (code === "quarantine_destination_conflict") {
                         setConflictId(item.id);
                         setActionError(
@@ -203,6 +205,8 @@ export function SecuritySection() {
                         setActionError(t("settings.security.staleReview"));
                       } else if (code === "content_policy_changed") {
                         setActionError(t("settings.security.policyChanged"));
+                      } else if (code === "step_up_required") {
+                        setActionError(t("settings.security.reauthRequired"));
                       } else {
                         setActionError(t("settings.security.reviewActionError"));
                       }
@@ -226,6 +230,18 @@ export function SecuritySection() {
               }}
             />
           ))}
+          {quarantine.hasNextPage && (
+            <button
+              type="button"
+              disabled={quarantine.isFetchingNextPage}
+              onClick={() => void quarantine.fetchNextPage()}
+              className="w-full rounded-md border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] disabled:opacity-50"
+            >
+              {quarantine.isFetchingNextPage
+                ? t("common.loading")
+                : t("common.showMore")}
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CalendarGrid } from "@/components/CalendarGrid";
 import { EventDetailPanel } from "@/components/EventDetailPanel";
 import { AppLayout } from "@/components/AppLayout";
@@ -14,12 +15,15 @@ import { useCalendarEvents } from "@/features/calendar/api";
  * per design: calendar events aren't agent-scoped).
  */
 export default function CalendarPage() {
+  const [searchParams] = useSearchParams();
+  const focusedEventId = searchParams.get("eventId");
+  const linkedDate = searchDate(searchParams.get("date"));
   const { selectedProjectId } = useProjectContext();
   const { data: projectsData } = useProjects();
   const projects = projectsData?.projects ?? [];
 
-  const [cursor, setCursor] = useState(() => new Date());
-  const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
+  const [cursor, setCursor] = useState(() => linkedDate);
+  const [selectedDate, setSelectedDate] = useState<Date>(() => linkedDate);
 
   // Month range for fetching.
   const rangeStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -56,9 +60,16 @@ export default function CalendarPage() {
             projectId={selectedProjectId ?? undefined}
             projects={projects}
             openSignal={createNonce}
+            focusEventId={focusedEventId}
           />
         </div>
       </div>
     </AppLayout>
   );
+}
+
+function searchDate(value: string | null) {
+  if (!value) return new Date();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }

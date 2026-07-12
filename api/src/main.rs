@@ -9,6 +9,8 @@ mod error;
 mod handlers;
 mod middleware;
 mod models;
+#[cfg(test)]
+mod release_scope;
 mod services;
 mod state;
 
@@ -31,6 +33,8 @@ type BackgroundWorkers = (
     JoinHandle<()>,
     JoinHandle<()>,
     Option<JoinHandle<()>>,
+    JoinHandle<()>,
+    JoinHandle<()>,
     JoinHandle<()>,
 );
 
@@ -55,17 +59,40 @@ fn init_tracing() {
 
 async fn run(cfg: Config) -> anyhow::Result<()> {
     agent::security::verify_ca_bundle()?;
+    cfg.validate_network_security()
+        .map_err(anyhow::Error::msg)?;
     tracing::info!(port = cfg.port, "starting mymy-api");
 
     let pool = connect_database(&cfg).await?;
     apply_migrations(&pool).await?;
+    services::auth::initialize_auth_state(&pool, cfg.initial_pin().as_deref()).await?;
     let port = cfg.port;
     let state = Arc::new(AppState::new(pool, cfg));
+    agent::tools::builtin::validate_builtin_catalog(state.clone())?;
+    match services::resource_identity::reconcile_pending_operations(&state, 10_000).await {
+        Ok(count) => tracing::info!(
+            count,
+            "reconciled incomplete resource operations at startup"
+        ),
+        Err(error) => {
+            tracing::error!(error = %error, "resource operation startup reconciliation failed")
+        }
+    }
+    match services::resource_identity::reconcile_existing_drive(&state, 10_000).await {
+        Ok(count) => tracing::info!(count, "reconciled existing Drive resource identities"),
+        Err(error) => {
+            tracing::error!(error = %error, "Drive resource identity reconciliation failed")
+        }
+    }
+    match services::resource_identity::reconcile_existing_trash(&state, 10_000).await {
+        Ok(count) => tracing::info!(count, "reconciled historical Drive trash identities"),
+        Err(error) => tracing::error!(error = %error, "Drive trash identity reconciliation failed"),
+    }
     services::cron::quarantine_legacy_jobs(&state).await?;
     let _background_workers = start_background_workers(state.clone());
     let app = build_router(state.clone(), &state.config);
 
-    serve_http(app, port).await
+    serve_http(app, &state.config.bind_host(), port).await
 }
 
 async fn connect_database(cfg: &Config) -> anyhow::Result<PgPool> {
@@ -96,14 +123,20 @@ fn start_background_workers(state: Arc<AppState>) -> BackgroundWorkers {
         services::proactive::start_proactive_coordinator(state.clone()),
         services::runtime_metrics::start_runtime_metrics_collector(state.clone()),
         services::drive_sync::start_drive_sync_worker(state.clone()),
-        services::content_quarantine::start_worker(state),
+        services::content_quarantine::start_worker(state.clone()),
+        services::resource_identity::start_worker(state.clone()),
+        services::runtime_memory::start_extraction_worker(state),
     )
 }
 
-async fn serve_http(app: Router, port: u16) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+async fn serve_http(app: Router, bind_host: &str, port: u16) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind((bind_host, port)).await?;
     tracing::info!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -165,6 +198,10 @@ fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(handlers::routes())
         .merge(handlers::metrics_routes())
         .layer(from_fn_with_state(state.clone(), middleware::require_auth))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::require_same_origin,
+        ))
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
@@ -175,7 +212,7 @@ mod tests {
     use super::*;
 
     use axum::body::{to_bytes, Body};
-    use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+    use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
     use axum::http::{Method, Request, StatusCode};
     use tower::util::ServiceExt;
 
@@ -238,6 +275,21 @@ mod tests {
             .expect("request should complete");
         assert_eq!(authorized.status(), StatusCode::OK);
 
+        let cross_origin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/logout")
+                    .header(COOKIE, &session_cookie)
+                    .header(ORIGIN, "https://attacker.invalid")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should complete");
+        assert_eq!(cross_origin.status(), StatusCode::FORBIDDEN);
+
         let logout = app
             .clone()
             .oneshot(
@@ -245,6 +297,7 @@ mod tests {
                     .method(Method::POST)
                     .uri("/api/auth/logout")
                     .header(COOKIE, &session_cookie)
+                    .header(ORIGIN, "http://localhost")
                     .body(Body::empty())
                     .expect("request should build"),
             )
@@ -332,6 +385,83 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn user_workspace_search_is_authenticated_and_session_bound(pool: sqlx::PgPool) {
+        let pin = "2468";
+        seed_pin(&pool, pin).await;
+        for index in 0..2 {
+            sqlx::query("INSERT INTO notes(title, content) VALUES ($1, 'HTTP search evidence')")
+                .bind(format!("HTTP federated result {index}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let cfg = test_config();
+        let state = Arc::new(AppState::new(pool, cfg.clone()));
+        let app = build_router(state, &cfg);
+        let body = r#"{"query":"HTTP federated","domains":["notes"],"scope":"all_permitted","projectId":null,"limit":1,"cursor":null}"#;
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/search/workspace")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let first_cookie = authenticate_http(&app, pin).await;
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/search/workspace")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, &first_cookie)
+                    .header(ORIGIN, "http://localhost")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(first.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(first_json["hits"].as_array().unwrap().len(), 1);
+        let cursor = first_json["nextCursor"].as_str().unwrap();
+
+        let second_cookie = authenticate_http(&app, pin).await;
+        let continuation_body = serde_json::json!({
+            "query": "HTTP federated",
+            "domains": ["notes"],
+            "scope": "all_permitted",
+            "projectId": null,
+            "limit": 1,
+            "cursor": cursor,
+        });
+        let cross_session = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/search/workspace")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, second_cookie)
+                    .header(ORIGIN, "http://localhost")
+                    .body(Body::from(continuation_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_session.status(), StatusCode::CONFLICT);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn authenticated_http_cannot_create_or_update_a_removed_no_agent_job(pool: sqlx::PgPool) {
         let pin = "2468";
         seed_pin(&pool, pin).await;
@@ -380,6 +510,7 @@ mod tests {
                     .uri("/api/cron/jobs")
                     .header(CONTENT_TYPE, "application/json")
                     .header(COOKIE, &session_cookie)
+                    .header(ORIGIN, "http://localhost")
                     .body(Body::from(
                         r#"{"title":"Blocked","prompt":"hidden","schedule":"every 1h","agentProfile":"cron-security-test","mode":"no_agent"}"#,
                     ))
@@ -397,6 +528,7 @@ mod tests {
                     .uri("/api/cron/jobs")
                     .header(CONTENT_TYPE, "application/json")
                     .header(COOKIE, &session_cookie)
+                    .header(ORIGIN, "http://localhost")
                     .body(Body::from(
                         r#"{"title":"Agent job","prompt":"Review tasks","schedule":"every 1h","agentProfile":"cron-security-test"}"#,
                     ))
@@ -421,6 +553,7 @@ mod tests {
                     .uri(format!("/api/cron/jobs/{job_id}"))
                     .header(CONTENT_TYPE, "application/json")
                     .header(COOKIE, session_cookie)
+                    .header(ORIGIN, "http://localhost")
                     .body(Body::from(r#"{"mode":"no_agent"}"#))
                     .expect("request should build"),
             )
@@ -465,11 +598,34 @@ mod tests {
             .expect("pin failures should be cleared");
     }
 
+    async fn authenticate_http(app: &Router, pin: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/auth/verify")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"pin":"{pin}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response
+            .headers()
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .expect("authentication should set a session cookie")
+            .to_string()
+    }
+
     fn test_config() -> Config {
         Config {
             database_url: "postgres://sqlx-test".to_string(),
             port: 0,
-            cors_origins: Vec::new(),
+            cors_origins: vec!["http://localhost".to_string()],
             agent_data_dir: std::env::temp_dir().join("mymy-test-agent"),
             auth_cookie_secure: false,
             cron_tick_interval_secs: 60,

@@ -40,7 +40,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "processes_write".to_string(),
         schema: tool_schema(
             "terminal",
-            "Execute a shell command in the agent sandbox. Drive mounts are read-only; use read_file, write_file, or patch_file for workspace content. Set background=true for long-running servers.",
+            "Execute a foreground shell command in the agent sandbox, or set background=true to create a managed long-running process. Drive mounts are read-only; use read_file, write_file, or patch_file for workspace content and process tools to inspect or stop background work.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -76,7 +76,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PROCESS_ROWS }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_PROCESS_ROWS, "description": "Maximum number of recent processes to return." }
                 }
             }),
         ),

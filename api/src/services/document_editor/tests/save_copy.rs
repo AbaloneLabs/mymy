@@ -44,6 +44,7 @@ async fn conflict_copy_uses_the_opened_snapshot_and_is_idempotent(pool: PgPool) 
         required_capabilities: document_editor_capabilities(DocumentEditorKind::Markdown),
         idempotency_key: "copy-operation-1".to_string(),
         base_fingerprint: opened.fingerprint.clone(),
+        source_session_id: None,
     };
 
     let copied = save_copy(&state, request()).await.unwrap();

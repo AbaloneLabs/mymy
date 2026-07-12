@@ -78,10 +78,17 @@ export interface AgentMemory {
   sourceRunId?: string;
   sourceRunSnapshotId?: string;
   sourceDecisionId?: string;
+  sourceSessionId?: string;
+  sourceMessageStart?: string;
+  sourceMessageEnd?: string;
   agentProfile: string;
   projectId?: string;
-  memoryType: "preference" | "convention" | "decision" | "fact";
-  origin: "explicit_user" | "agent_proposed" | "decision";
+  memoryType: "preference" | "convention" | "decision" | "fact" | "temporal";
+  origin: "explicit_user" | "agent_proposed" | "decision" | "conversation_inferred";
+  scopeKind: "user_global" | "agent_profile" | "project" | "session";
+  scopeId?: string;
+  tier: "working" | "durable" | "curated";
+  evidenceRole: "user_asserted" | "agent_observed_from_durable_result" | "external_source_claim" | "system_inferred";
   content: string;
   confidence: number;
   status:
@@ -96,6 +103,17 @@ export interface AgentMemory {
   validUntil?: string;
   supersededBy?: string;
   createdAt: string;
+  contentRevision: number;
+  lifecycleRevision: number;
+}
+
+export interface MemoryExport {
+  schemaVersion: "mymy-memory-export-v1";
+  generatedAt: string;
+  agentProfile: string;
+  memories: AgentMemory[];
+  deletedContentRetained: false;
+  remoteDataShared: false;
 }
 
 export interface RunSummary {
@@ -119,4 +137,13 @@ export interface MemoryEmbeddingSettings {
   includeFinancial: boolean;
   remoteDataShared: false;
   disclosure: string;
+}
+
+export interface MemoryRuntimeSettings {
+  agentProfile: string;
+  automaticRecallEnabled: boolean;
+  inferredExtractionEnabled: boolean;
+  semanticIndexingEnabled: boolean;
+  settingsRevision: number;
+  updatedAt: string;
 }

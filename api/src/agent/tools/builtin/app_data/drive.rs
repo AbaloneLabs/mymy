@@ -24,7 +24,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "drive_write",
         "drive_write",
         "Write a text file to Drive by /drive/... path.",
-        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"A /drive/... logical path."},"content":{"type":"string"},"expectedFingerprint":{"type":"string","description":"Fingerprint returned by drive_read; required for existing files."}},"required":["path","content"]}),
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"A /drive/... logical path."},"content":{"type":"string","description":"Complete UTF-8 content to write."},"expectedFingerprint":{"type":"string","description":"Fingerprint returned by drive_read; required for existing files."},"artifactTitle":{"type":"string","maxLength":200,"description":"Optional user-facing title only for a newly created, user-meaningful output."},"artifactType":{"type":"string","enum":["document","report","image","archive","attachment","export"],"description":"Artifact category required with artifactTitle; omit for routine files."}},"required":["path","content"]}),
         state,
         AppAction::DriveWrite,
     );
@@ -42,7 +42,14 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "drive_delete",
         "drive_write",
         "Move a Drive path to trash.",
-        path_schema(true),
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "path":{"type":"string","description":"Existing /drive/... logical path to move to Trash."},
+                "expectedLifecycleRevision":{"type":"string","description":"Optional lifecycle revision returned by a current lifecycle read; stale values are rejected."}
+            },
+            "required":["path"]
+        }),
         state,
         AppAction::DriveDelete,
     );
@@ -51,7 +58,14 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "drive_restore",
         "drive_write",
         "Restore a Drive trash entry by id.",
-        id_schema("Trash entry id."),
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "id":{"type":"string","description":"Trash entry UUID from the current Trash list."},
+                "expectedLifecycleRevision":{"type":"string","description":"Lifecycle revision from the current Trash entry; stale values are rejected."}
+            },
+            "required":["id"]
+        }),
         state,
         AppAction::DriveRestore,
     );

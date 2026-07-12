@@ -7,11 +7,12 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::agent::prompt::sanitize_prompt_block;
 use crate::agent::security::ThreatScope;
@@ -70,6 +71,8 @@ pub struct MemoryStore {
     memory_entries: Vec<String>,
     user_entries: Vec<String>,
     snapshot: MemorySnapshot,
+    memory_revision: String,
+    user_revision: String,
     consolidation_failures: u32,
 }
 
@@ -103,11 +106,15 @@ impl MemoryStore {
             memory: render_snapshot(MemoryTarget::Memory, &memory_entries),
             user: render_snapshot(MemoryTarget::User, &user_entries),
         };
+        let memory_revision = file_revision(&dir.join(MemoryTarget::Memory.file_name()))?;
+        let user_revision = file_revision(&dir.join(MemoryTarget::User.file_name()))?;
         Ok(Self {
             dir,
             memory_entries,
             user_entries,
             snapshot,
+            memory_revision,
+            user_revision,
             consolidation_failures: 0,
         })
     }
@@ -135,7 +142,13 @@ impl MemoryStore {
                 self.consolidation_error(target, "adding this entry would exceed the memory limit")
             );
         }
-        self.persist(target, entries)?;
+        if let Some(backup) = self.commit_entries(target, entries)? {
+            return Ok(self.error_result(
+                target,
+                "external memory drift detected; mutation refused",
+                Some(backup),
+            ));
+        }
         self.consolidation_failures = 0;
         Ok(self.success_result(target, "Entry added."))
     }
@@ -146,13 +159,6 @@ impl MemoryStore {
         old_text: &str,
         new_content: &str,
     ) -> io::Result<MemoryResult> {
-        if let Some(backup) = self.detect_drift(target)? {
-            return Ok(self.error_result(
-                target,
-                "external memory drift detected; mutation refused",
-                Some(backup),
-            ));
-        }
         let mut entries = self.entries(target).to_vec();
         let Some(index) = unique_match(&entries, old_text) else {
             return Ok(self.error_with_entries(target, "old_text did not match exactly one entry"));
@@ -163,25 +169,30 @@ impl MemoryStore {
                 self.consolidation_error(target, "replacement would exceed the memory limit")
             );
         }
-        self.persist(target, entries)?;
-        self.consolidation_failures = 0;
-        Ok(self.success_result(target, "Entry replaced."))
-    }
-
-    pub fn remove(&mut self, target: MemoryTarget, old_text: &str) -> io::Result<MemoryResult> {
-        if let Some(backup) = self.detect_drift(target)? {
+        if let Some(backup) = self.commit_entries(target, entries)? {
             return Ok(self.error_result(
                 target,
                 "external memory drift detected; mutation refused",
                 Some(backup),
             ));
         }
+        self.consolidation_failures = 0;
+        Ok(self.success_result(target, "Entry replaced."))
+    }
+
+    pub fn remove(&mut self, target: MemoryTarget, old_text: &str) -> io::Result<MemoryResult> {
         let mut entries = self.entries(target).to_vec();
         let Some(index) = unique_match(&entries, old_text) else {
             return Ok(self.error_with_entries(target, "old_text did not match exactly one entry"));
         };
         entries.remove(index);
-        self.persist(target, entries)?;
+        if let Some(backup) = self.commit_entries(target, entries)? {
+            return Ok(self.error_result(
+                target,
+                "external memory drift detected; mutation refused",
+                Some(backup),
+            ));
+        }
         self.consolidation_failures = 0;
         Ok(self.success_result(target, "Entry removed."))
     }
@@ -194,14 +205,6 @@ impl MemoryStore {
         if operations.is_empty() {
             return Ok(self.error_result(target, "operations cannot be empty", None));
         }
-        if let Some(backup) = self.detect_drift(target)? {
-            return Ok(self.error_result(
-                target,
-                "external memory drift detected; mutation refused",
-                Some(backup),
-            ));
-        }
-
         let mut entries = self.entries(target).to_vec();
         for operation in operations {
             match operation.action.as_str() {
@@ -244,7 +247,13 @@ impl MemoryStore {
                 self.consolidation_error(target, "batch update would exceed the memory limit")
             );
         }
-        self.persist(target, entries)?;
+        if let Some(backup) = self.commit_entries(target, entries)? {
+            return Ok(self.error_result(
+                target,
+                "external memory drift detected; mutation refused",
+                Some(backup),
+            ));
+        }
         self.consolidation_failures = 0;
         Ok(self.success_result(target, "Batch applied."))
     }
@@ -267,29 +276,47 @@ impl MemoryStore {
         self.dir.join(target.file_name())
     }
 
-    fn persist(&mut self, target: MemoryTarget, entries: Vec<String>) -> io::Result<()> {
-        let path = self.path(target);
-        write_file_atomic(&path, &serialize_entries(&entries))?;
-        *self.entries_mut(target) = entries;
-        Ok(())
+    fn expected_revision(&self, target: MemoryTarget) -> &str {
+        match target {
+            MemoryTarget::Memory => &self.memory_revision,
+            MemoryTarget::User => &self.user_revision,
+        }
     }
 
-    fn detect_drift(&self, target: MemoryTarget) -> io::Result<Option<String>> {
+    fn set_revision(&mut self, target: MemoryTarget, revision: String) {
+        match target {
+            MemoryTarget::Memory => self.memory_revision = revision,
+            MemoryTarget::User => self.user_revision = revision,
+        }
+    }
+
+    fn commit_entries(
+        &mut self,
+        target: MemoryTarget,
+        entries: Vec<String>,
+    ) -> io::Result<Option<String>> {
         let path = self.path(target);
-        if !path.exists() {
-            return Ok(None);
+        fs::create_dir_all(&self.dir)?;
+        let lock_path = self.dir.join(format!(".{}.lock", target.file_name()));
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        set_private_permissions(&lock_path)?;
+        lock.lock()?;
+        let current_revision = file_revision(&path)?;
+        if current_revision != self.expected_revision(target) {
+            let backup = preserve_drift_backup(&path, target)?;
+            lock.unlock()?;
+            return Ok(backup);
         }
-        let raw = fs::read_to_string(&path)?;
-        let parsed = read_entries(&path)?;
-        let round_trip = serialize_entries(&parsed);
-        let entry_overflow = parsed
-            .iter()
-            .any(|entry| entry.chars().count() > target.char_limit());
-        if raw != round_trip || entry_overflow {
-            let backup = path.with_extension(format!("md.bak.{}", Utc::now().timestamp()));
-            fs::copy(&path, &backup)?;
-            return Ok(Some(backup.display().to_string()));
-        }
+        let serialized = serialize_entries(&entries);
+        write_file_atomic(&path, &serialized)?;
+        *self.entries_mut(target) = entries;
+        self.set_revision(target, revision_for_bytes(serialized.as_bytes()));
+        lock.unlock()?;
         Ok(None)
     }
 
@@ -427,8 +454,77 @@ fn write_file_atomic(path: &Path, content: &str) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
-    fs::write(&tmp, content)?;
-    fs::rename(tmp, path)?;
+    let result: io::Result<()> = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)?;
+        set_private_permissions(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)?;
+        set_private_permissions(path)?;
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(())
+}
+
+fn file_revision(path: &Path) -> io::Result<String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(revision_for_bytes(&bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(revision_for_bytes(b"<missing>"))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn revision_for_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn preserve_drift_backup(path: &Path, target: MemoryTarget) -> io::Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let backup = path.with_extension(format!(
+        "md.bak.{}.{}",
+        Utc::now().timestamp(),
+        uuid::Uuid::new_v4()
+    ));
+    fs::copy(path, &backup)?;
+    set_private_permissions(&backup)?;
+    let mut backups = fs::read_dir(path.parent().unwrap_or_else(|| Path::new(".")))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&format!("{}.bak.", target.file_name())))
+        })
+        .collect::<Vec<_>>();
+    backups.sort();
+    let remove_count = backups.len().saturating_sub(3);
+    for stale in backups.into_iter().take(remove_count) {
+        let _ = fs::remove_file(stale);
+    }
+    Ok(Some(backup.display().to_string()))
+}
+
+fn set_private_permissions(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -477,6 +573,56 @@ mod tests {
         let store = MemoryStore::load(dir.clone()).unwrap();
         assert!(store.snapshot().memory.contains("Blocked MEMORY.md"));
         assert!(store.snapshot().user.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn valid_external_edit_is_preserved_and_reported_as_drift() {
+        let dir = temp_dir();
+        let mut store = MemoryStore::load(dir.clone()).unwrap();
+        assert!(
+            store
+                .add(MemoryTarget::Memory, "Initial preference")
+                .unwrap()
+                .success
+        );
+        fs::write(dir.join("MEMORY.md"), "External valid preference").unwrap();
+
+        let result = store
+            .add(MemoryTarget::Memory, "Stale writer preference")
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.done);
+        assert!(result.backup_path.is_some());
+        assert_eq!(
+            fs::read_to_string(dir.join("MEMORY.md")).unwrap(),
+            "External valid preference"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn two_store_instances_use_revision_cas_under_the_file_lock() {
+        let dir = temp_dir();
+        let mut first = MemoryStore::load(dir.clone()).unwrap();
+        let mut second = MemoryStore::load(dir.clone()).unwrap();
+
+        assert!(
+            first
+                .add(MemoryTarget::User, "First committed identity")
+                .unwrap()
+                .success
+        );
+        let stale = second
+            .add(MemoryTarget::User, "Second stale identity")
+            .unwrap();
+
+        assert!(!stale.success);
+        assert_eq!(
+            fs::read_to_string(dir.join("USER.md")).unwrap(),
+            "First committed identity"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

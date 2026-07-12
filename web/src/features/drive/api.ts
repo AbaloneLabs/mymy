@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE } from "@/lib/api";
 import type {
   CreatePreviewEndpointInput,
@@ -56,6 +56,7 @@ export function useWriteDriveFile() {
       path: string;
       content: string;
       expectedFingerprint?: string;
+      idempotencyKey?: string;
     }) => api.put<WriteDriveFileResponse>("/drive/file", body),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["drive", "file", variables.path] });
@@ -121,21 +122,42 @@ export function deleteDrivePath(path: string) {
 }
 
 export function useDriveTrash() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ["drive", "trash"],
-    queryFn: () => api.get<DriveTrashResponse>("/drive/trash"),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => {
+      const query = new URLSearchParams({ limit: "50" });
+      if (pageParam) query.set("cursor", pageParam);
+      return api.get<DriveTrashResponse>(`/drive/trash?${query.toString()}`);
+    },
+    getNextPageParam: (page) => page.nextCursor,
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: "always",
   });
 }
 
 export function useRestoreDriveTrash() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      api.post<DriveRestoreResponse>(`/drive/trash/${id}/restore`),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      idempotencyKey,
+      expectedLifecycleRevision,
+    }: {
+      id: string;
+      idempotencyKey: string;
+      expectedLifecycleRevision?: string;
+    }) => {
+      const query = new URLSearchParams({ idempotencyKey });
+      if (expectedLifecycleRevision) query.set("expectedLifecycleRevision", expectedLifecycleRevision);
+      return api.post<DriveRestoreResponse>(`/drive/trash/${id}/restore?${query.toString()}`);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["drive", "list"] });
       qc.invalidateQueries({ queryKey: ["drive", "trash"] });
       qc.invalidateQueries({ queryKey: ["drive", "sync-jobs"] });
+      qc.invalidateQueries({ queryKey: ["artifacts"] });
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
     },
   });
 }
@@ -143,8 +165,26 @@ export function useRestoreDriveTrash() {
 export function usePurgeDriveTrash() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete<{ success: boolean }>(`/drive/trash/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["drive", "trash"] }),
+    mutationFn: ({
+      id,
+      idempotencyKey,
+      expectedLifecycleRevision,
+    }: {
+      id: string;
+      idempotencyKey: string;
+      expectedLifecycleRevision?: string;
+    }) => {
+      const query = new URLSearchParams({ idempotencyKey });
+      if (expectedLifecycleRevision) query.set("expectedLifecycleRevision", expectedLifecycleRevision);
+      return api.delete<{ success: boolean }>(`/drive/trash/${id}?${query.toString()}`);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["drive", "list"] });
+      qc.invalidateQueries({ queryKey: ["drive", "file"] });
+      qc.invalidateQueries({ queryKey: ["drive", "trash"] });
+      qc.invalidateQueries({ queryKey: ["artifacts"] });
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
+    },
   });
 }
 

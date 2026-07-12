@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::models::decision::{
-    DecisionResponse, DecisionsQuery, DecisionsResponse, ResolveDecisionRequest,
-    ResolveDecisionResponse,
+    DecisionPendingCountResponse, DecisionResponse, DecisionsQuery, DecisionsResponse,
+    ResolveDecisionRequest, ResolveDecisionResponse,
 };
 use crate::services::decisions;
 use crate::state::AppState;
@@ -18,6 +18,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/decisions", get(list_decisions))
+        .route("/api/decisions/pending-count", get(pending_count))
         .route("/api/decisions/{id}", get(get_decision))
         .route("/api/decisions/{id}/resolve", post(resolve_decision))
         .route("/api/decisions/{id}/dismiss", post(dismiss_decision))
@@ -27,8 +28,15 @@ async fn list_decisions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<DecisionsQuery>,
 ) -> AppResult<Json<DecisionsResponse>> {
-    Ok(Json(DecisionsResponse {
-        decisions: decisions::list_decisions(&state, query).await?,
+    Ok(Json(decisions::list_decisions(&state, query).await?))
+}
+
+async fn pending_count(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<DecisionPendingCountResponse>> {
+    Ok(Json(DecisionPendingCountResponse {
+        count: decisions::pending_decision_count(&state).await?,
+        observed_at: chrono::Utc::now().to_rfc3339(),
     }))
 }
 

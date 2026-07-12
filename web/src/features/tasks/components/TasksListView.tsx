@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AddStatusDialog } from "@/features/tasks/components/AddStatusDialog";
@@ -18,6 +18,7 @@ export type StatusFilter = "all" | TaskStatus;
 
 export function ListView({
   tasks,
+  focusTaskId,
   statuses,
   statusFilter,
   setStatusFilter,
@@ -26,6 +27,7 @@ export function ListView({
   onUpdate,
 }: {
   tasks: Task[];
+  focusTaskId?: string | null;
   statuses: TaskStatusDef[];
   statusFilter: StatusFilter;
   setStatusFilter: (s: StatusFilter) => void;
@@ -41,6 +43,7 @@ export function ListView({
 }) {
   const { t } = useTranslation();
   const [showAddStatus, setShowAddStatus] = useState(false);
+  const deepLinkAppliedRef = useRef(false);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
@@ -56,6 +59,24 @@ export function ListView({
         : tasks.filter((task) => task.status === statusFilter),
     [tasks, statusFilter],
   );
+
+  /* eslint-disable react-hooks/set-state-in-effect -- A deep link resolves only
+     after the authoritative task list arrives; initializing the existing
+     multi-field editor state is one bounded navigation transition. */
+  useEffect(() => {
+    if (!focusTaskId || deepLinkAppliedRef.current) return;
+    const task = tasks.find((candidate) => candidate.id === focusTaskId);
+    if (!task) return;
+    deepLinkAppliedRef.current = true;
+    setStatusFilter("all");
+    setExpandedId(task.id);
+    setDraftTitle(task.title);
+    setDraftDescription(task.description);
+    setDraftStatus(task.status);
+    setDraftPriority(task.priority);
+    setDraftDueDate(task.dueDate ? task.dueDate.slice(0, 10) : "");
+  }, [focusTaskId, setStatusFilter, tasks]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function handleExpand(task: Task) {
     if (expandedId === task.id) {

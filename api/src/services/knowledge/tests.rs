@@ -286,10 +286,20 @@ async fn drive_resource_link_survives_move_and_exposes_trash_breakage(pool: sqlx
     )
     .await
     .expect("supported Drive document should attach");
+    let attached_resource_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT drive_resource_id FROM knowledge_resources WHERE knowledge_id = $1",
+    )
+    .bind(node)
+    .fetch_one(&state.db)
+    .await
+    .expect("attached Wiki resource should expose its stable Drive identity")
+    .expect("new Wiki links must dual-write a Drive resource id");
     drive::move_path(
         &state,
         "/drive/shared/report.md",
         "/drive/shared/renamed.md",
+        None,
+        None,
     )
     .await
     .expect("Drive move should reconcile Wiki links");
@@ -298,8 +308,16 @@ async fn drive_resource_link_survives_move_and_exposes_trash_breakage(pool: sqlx
         .expect("resources should list after move");
     assert_eq!(moved.resources[0].resource_ref, "/drive/shared/renamed.md");
     assert_eq!(moved.resources[0].status, "linked");
+    let moved_resource_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT drive_resource_id FROM knowledge_resources WHERE knowledge_id = $1",
+    )
+    .bind(node)
+    .fetch_one(&state.db)
+    .await
+    .expect("moved Wiki resource should retain its stable identity");
+    assert_eq!(moved_resource_id, Some(attached_resource_id));
 
-    drive::delete_path(&state, "/drive/shared/renamed.md")
+    drive::delete_path(&state, "/drive/shared/renamed.md", None, None)
         .await
         .expect("Drive delete should move the file to trash");
     let broken = super::resources::list_resources(&state, node)
@@ -311,13 +329,21 @@ async fn drive_resource_link_survives_move_and_exposes_trash_breakage(pool: sqlx
         .await
         .expect("trash entry should be visible");
     let trash_id = Uuid::parse_str(&trash.entries[0].id).expect("trash id should be valid");
-    drive::restore_trash(&state, trash_id)
+    drive::restore_trash(&state, trash_id, None, None)
         .await
         .expect("restoring should reconcile Wiki links");
     let restored = super::resources::list_resources(&state, node)
         .await
         .expect("restored resource should list");
     assert_eq!(restored.resources[0].status, "linked");
+    let restored_resource_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT drive_resource_id FROM knowledge_resources WHERE knowledge_id = $1",
+    )
+    .bind(node)
+    .fetch_one(&state.db)
+    .await
+    .expect("restored Wiki resource should retain its stable identity");
+    assert_eq!(restored_resource_id, Some(attached_resource_id));
 
     let _ = std::fs::remove_dir_all(agent_data_dir);
 }

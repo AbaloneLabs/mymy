@@ -145,6 +145,39 @@ fn request_body_includes_tools_when_provided() {
 }
 
 #[test]
+fn provider_visible_tool_contract_preserves_canonical_constraints() {
+    let parameters = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "target": {
+                "description": "One exact target.",
+                "oneOf": [
+                    {"type": "string", "minLength": 1},
+                    {"type": "integer", "minimum": 1}
+                ]
+            }
+        },
+        "required": ["target"]
+    });
+    let tool = ToolSchema {
+        tool_type: "function".to_string(),
+        function: super::super::FunctionSchema {
+            name: "contract_probe".to_string(),
+            description: Some("Probe provider contract lowering.".to_string()),
+            parameters: parameters.clone(),
+        },
+    };
+    let body = ChatCompletionsRequest::build("gpt-4o", 1024, "", &[], &[tool]);
+    let value = serde_json::to_value(body).unwrap();
+    assert_eq!(value["tools"][0]["function"]["parameters"], parameters);
+    assert_eq!(
+        value["tools"][0]["function"]["description"],
+        "Probe provider contract lowering."
+    );
+}
+
+#[test]
 fn models_list_response_parses() {
     let json = r#"{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}"#;
     let parsed: ModelsListResponse = serde_json::from_str(json).unwrap();

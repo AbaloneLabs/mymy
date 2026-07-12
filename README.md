@@ -36,7 +36,7 @@ It's designed for the **one-person business** — the developer-founder who wear
 
 | | Feature | Description |
 |---|---------|-------------|
-| 🔐 | **PIN Authentication** | Server-side PIN sessions with an HttpOnly cookie. Default PIN `mymy`, changeable in settings. |
+| 🔐 | **PIN Authentication** | Server-side PIN sessions with an HttpOnly cookie and an explicit first-run owner credential. |
 | 🤖 | **Native Agent Management** | Create/delete agents, edit prompts, select the active agent globally, and run chat sessions against registered LLM providers. |
 | 📁 | **Drive Workspace** | Browse, edit, upload, delete, restore, and purge files under `/drive/projects`, `/drive/agents`, and `/drive/shared`; view md, docx text, images, audio, video, and PDFs. |
 | 🧱 | **Sandbox Runner** | Agent file-write, terminal, code, and long-running jobs execute through a dedicated runner with bubblewrap isolation by default. |
@@ -128,7 +128,45 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Open **http://localhost:33696** and enter PIN: **`mymy`**
+Before the first start, set a private owner PIN with at least eight characters:
+
+```bash
+cp .env.example .env
+# Set MYMY_INITIAL_PIN in .env, start the stack once, then remove the value.
+docker compose up -d
+```
+
+The default stack runs the sandbox runner on an internal-only Docker network,
+uses a separate user namespace for commands, and exposes no runner host port.
+The API and runner share a generated purpose-bound control token stored outside
+the mountable agent data root; untrusted commands never receive it. Foreground
+commands also use a separate network namespace. Long-running preview processes
+share the runner network only so their selected port can be forwarded, and
+unauthenticated access to the runner control API is rejected.
+On the supported Docker/AppArmor host, bubblewrap still requires `SYS_ADMIN`
+plus seccomp/AppArmor exceptions for namespace mount operations; treat the
+runner container as a privileged boundary. Host KVM/TUN devices and
+`NET_ADMIN` remain absent. Firecracker adds those only through the explicit
+`docker-compose.firecracker.yml` overlay and requires a dedicated host security
+review; it is not enabled by the normal command.
+
+Open **http://localhost:33696** and enter the PIN you selected. Fresh installs
+without `MYMY_INITIAL_PIN` remain bootstrap-locked, and upgrades that still use
+the legacy published PIN are locked until the variable is supplied once.
+Provider credentials are encrypted with AES-256-GCM using OS-generated nonces
+and an Argon2id PIN-derived key. A successful owner login upgrades historical
+HKDF-encrypted rows atomically before the session becomes usable.
+
+### Memory lifecycle and export
+
+Automatic recall is scoped to the active agent and project and treats recalled
+text as untrusted evidence, never as action authority. Conversation extraction
+is local-only, disabled by default, and does not backfill turns from disabled
+periods. Deleting a memory scrubs its content and source links atomically while
+retaining a non-content tombstone, idempotency receipt, and deletion watermark
+to prevent delayed work from restoring it. The Agents memory view can export
+the complete lifecycle ledger for one profile; deleted source content is never
+included in that export.
 
 ### Local Development
 
@@ -197,7 +235,8 @@ resolve paths only inside the current agent workspace plus explicitly granted
 shared/project roots. Other agents' private folders are not granted as tool
 roots.
 
-The Docker stack starts a separate `sandbox-runner` service on port `33698`.
+The Docker stack starts a separate `sandbox-runner` service on container port
+`33698`; the default profile does not publish that port to the host.
 The API sends terminal commands, code execution, and long-running sandbox
 processes to this runner when `MYMY_SANDBOX_RUNNER_URL` is configured. Native
 agents receive only the tools allowed by their per-domain permissions. Dangerous
@@ -214,8 +253,13 @@ UTS, and mount isolation, mounts the selected agent workspace plus shared/projec
 roots at logical `/drive/...` paths, and keeps process logs under the Drive data
 volume. The bubblewrap child receives only minimal `/dev` nodes (`null`, `zero`,
 `full`, `random`, `urandom`) instead of the runner container's device surface.
-User namespaces can be enabled separately when the deployment provides an
-idmapped/rootfs setup that can write Drive data.
+Commands run in a separate user namespace by default. The supported Docker
+kernel does not allow that nested namespace to mount procfs, so the child sees
+an empty `/proc`; runner-owned process APIs provide status and termination
+without exposing the outer container process table. The generated runner
+control token is stored in the separate runner-control volume at
+`/run/mymy/runner-control.token`, outside `MYMY_RUNNER_DATA_ROOT`, with mode
+`0600`. Workspace exports do not include that control volume.
 
 Firecracker mode is available when the deployment provides a Firecracker binary,
 guest kernel, ext4 rootfs, and SSH key. The runner creates one VM per foreground
@@ -227,8 +271,9 @@ uses bubblewrap because Firecracker needs host KVM and guest assets:
 
 ```bash
 MYMY_SANDBOX_MODE=bubblewrap
-MYMY_SANDBOX_UNSHARE_USER=false
+MYMY_SANDBOX_UNSHARE_USER=true
 MYMY_SANDBOX_RUNNER_URL=http://sandbox-runner:33698
+MYMY_SANDBOX_RUNNER_TOKEN_FILE=/run/mymy/runner-control.token
 MYMY_SANDBOX_PREVIEW_HOST=sandbox-runner
 ```
 
@@ -301,7 +346,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 |---------|------|
 | Web (frontend) | `33696` |
 | API (Rust) | `33697` |
-| Sandbox runner | `33698` |
+| Sandbox runner | `33698` (internal only) |
 | PostgreSQL | `33432` |
 
 ## 🗺️ Roadmap

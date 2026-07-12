@@ -25,6 +25,7 @@ struct ResourceRow {
     knowledge_id: Uuid,
     resource_type: String,
     resource_ref: String,
+    drive_resource_id: Option<Uuid>,
     title: String,
     sort_order: i32,
     status: String,
@@ -101,26 +102,71 @@ pub async fn attach_resource(
             "resource title must not exceed 255 characters".to_string(),
         ));
     }
-    let row = sqlx::query_as::<_, ResourceRow>(
-        r#"INSERT INTO knowledge_resources
-             (knowledge_id, resource_type, resource_ref, title, sort_order,
-              status, broken_at)
-           VALUES ($1, 'drive_file', $2, $3, $4, 'linked', NULL)
-           ON CONFLICT (knowledge_id, resource_type, resource_ref) DO UPDATE SET
-             title = EXCLUDED.title,
-             sort_order = EXCLUDED.sort_order,
-             status = 'linked',
-             broken_at = NULL,
-             updated_at = now()
-           RETURNING id, knowledge_id, resource_type, resource_ref, title,
-                     sort_order, status, created_at, updated_at"#,
+    let drive_resource_id =
+        crate::services::resource_identity::ensure_existing_resource(state, &resource_ref, "file")
+            .await?;
+    let mut tx = state.db.begin().await?;
+    let existing_id = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT id FROM knowledge_resources
+           WHERE knowledge_id = $1 AND drive_resource_id = $2
+           FOR UPDATE"#,
     )
     .bind(knowledge_id)
-    .bind(resource_ref)
-    .bind(title)
-    .bind(request.sort_order)
-    .fetch_one(&state.db)
+    .bind(drive_resource_id)
+    .fetch_optional(&mut *tx)
     .await?;
+    let row = if let Some(existing_id) = existing_id {
+        sqlx::query(
+            r#"DELETE FROM knowledge_resources
+               WHERE knowledge_id = $1 AND resource_type = 'drive_file'
+                 AND resource_ref = $2 AND id <> $3"#,
+        )
+        .bind(knowledge_id)
+        .bind(&resource_ref)
+        .bind(existing_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query_as::<_, ResourceRow>(
+            r#"UPDATE knowledge_resources
+               SET resource_ref = $2, title = $3, sort_order = $4,
+                   status = 'linked', broken_at = NULL, updated_at = now()
+               WHERE id = $1
+               RETURNING id, knowledge_id, resource_type, resource_ref,
+                         drive_resource_id, title, sort_order, status,
+                         created_at, updated_at"#,
+        )
+        .bind(existing_id)
+        .bind(&resource_ref)
+        .bind(title)
+        .bind(request.sort_order)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        sqlx::query_as::<_, ResourceRow>(
+            r#"INSERT INTO knowledge_resources
+                 (knowledge_id, resource_type, resource_ref, drive_resource_id,
+                  title, sort_order, status, broken_at)
+               VALUES ($1, 'drive_file', $2, $3, $4, $5, 'linked', NULL)
+               ON CONFLICT (knowledge_id, resource_type, resource_ref) DO UPDATE SET
+                 drive_resource_id = EXCLUDED.drive_resource_id,
+                 title = EXCLUDED.title,
+                 sort_order = EXCLUDED.sort_order,
+                 status = 'linked',
+                 broken_at = NULL,
+                 updated_at = now()
+               RETURNING id, knowledge_id, resource_type, resource_ref,
+                         drive_resource_id, title, sort_order, status,
+                         created_at, updated_at"#,
+        )
+        .bind(knowledge_id)
+        .bind(&resource_ref)
+        .bind(drive_resource_id)
+        .bind(title)
+        .bind(request.sort_order)
+        .fetch_one(&mut *tx)
+        .await?
+    };
+    tx.commit().await?;
     Ok(row_to_resource(row))
 }
 
@@ -244,8 +290,9 @@ async fn resource_rows(
     knowledge_id: Option<Uuid>,
 ) -> AppResult<Vec<ResourceRow>> {
     Ok(sqlx::query_as::<_, ResourceRow>(
-        r#"SELECT id, knowledge_id, resource_type, resource_ref, title,
-                  sort_order, status, created_at, updated_at
+        r#"SELECT id, knowledge_id, resource_type, resource_ref,
+                  drive_resource_id, title, sort_order, status,
+                  created_at, updated_at
            FROM knowledge_resources
            WHERE ($1::uuid IS NULL OR knowledge_id = $1)
            ORDER BY sort_order, created_at"#,
@@ -261,18 +308,60 @@ async fn reconcile_rows(
 ) -> AppResult<Vec<KnowledgeResource>> {
     let mut resources = Vec::with_capacity(rows.len());
     for mut row in rows {
-        let linked = drive::resolve_drive_path(&state.config.agent_data_dir, &row.resource_ref)
-            .is_ok_and(|resolved| resolved.physical_path.is_file());
+        let stored_ref = row.resource_ref.clone();
+        let stored_resource_id = row.drive_resource_id;
+        let projection = if let Some(resource_id) = row.drive_resource_id {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT lifecycle_state, current_path FROM drive_resources WHERE id = $1",
+            )
+            .bind(resource_id)
+            .fetch_optional(&state.db)
+            .await?
+        } else {
+            None
+        };
+        if let Some((lifecycle, Some(current_path))) = projection.as_ref() {
+            if lifecycle == "active" && row.resource_ref != *current_path {
+                row.resource_ref = current_path.clone();
+            }
+        }
+        let linked = projection
+            .as_ref()
+            .is_some_and(|(lifecycle, current_path)| {
+                lifecycle == "active"
+                    && current_path.as_deref().is_some_and(|path| {
+                        drive::resolve_drive_path(&state.config.agent_data_dir, path)
+                            .is_ok_and(|resolved| resolved.physical_path.is_file())
+                    })
+            })
+            || (row.drive_resource_id.is_none()
+                && drive::resolve_drive_path(&state.config.agent_data_dir, &row.resource_ref)
+                    .is_ok_and(|resolved| resolved.physical_path.is_file()));
+        if linked && row.drive_resource_id.is_none() {
+            row.drive_resource_id = Some(
+                crate::services::resource_identity::ensure_existing_resource(
+                    state,
+                    &row.resource_ref,
+                    "file",
+                )
+                .await?,
+            );
+        }
         let next_status = if linked { "linked" } else { "broken" };
-        if row.status != next_status {
+        if row.status != next_status
+            || stored_ref != row.resource_ref
+            || stored_resource_id != row.drive_resource_id
+        {
             sqlx::query(
                 r#"UPDATE knowledge_resources
-                   SET status = $2,
-                       broken_at = CASE WHEN $2 = 'broken' THEN now() ELSE NULL END,
+                   SET resource_ref = $2, drive_resource_id = $3, status = $4,
+                       broken_at = CASE WHEN $4 = 'broken' THEN COALESCE(broken_at, now()) ELSE NULL END,
                        updated_at = now()
                    WHERE id = $1"#,
             )
             .bind(row.id)
+            .bind(&row.resource_ref)
+            .bind(row.drive_resource_id)
             .bind(next_status)
             .execute(&state.db)
             .await?;
@@ -288,6 +377,7 @@ fn row_to_resource(row: ResourceRow) -> KnowledgeResource {
     KnowledgeResource {
         id: row.id.to_string(),
         knowledge_id: row.knowledge_id.to_string(),
+        drive_resource_id: row.drive_resource_id.map(|id| id.to_string()),
         resource_type: row.resource_type,
         editor_kind: document_editor::editor_kind_for_path(Path::new(&row.resource_ref)),
         resource_ref: row.resource_ref,

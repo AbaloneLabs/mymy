@@ -21,7 +21,8 @@ use crate::agent::security::{
     detect_dangerous_command, redact_sensitive_text, redact_terminal_output, SecretString, Severity,
 };
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    dynamic_tool_schema, tool_result, tool_schema, ToolCapability, ToolEntry, ToolError,
+    ToolHandler, ToolRegistry,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -52,11 +53,11 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
 
 pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionConfig>) {
     for extension in extensions.into_iter().filter(|extension| extension.enabled) {
-        match extension.settings.clone() {
-            ExtensionSettings::Webhook { .. } => registry.register(ToolEntry {
+        let entry = match extension.settings.clone() {
+            ExtensionSettings::Webhook { .. } => Some(ToolEntry {
                 name: extension.name.clone(),
                 toolset: "extensions".to_string(),
-                schema: tool_schema(
+                schema: dynamic_tool_schema(
                     &extension.name,
                     &extension.description,
                     extension.parameters.clone(),
@@ -64,10 +65,10 @@ pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionCo
                 capability: ToolCapability::external("extension_webhook"),
                 handler: Arc::new(WebhookExtensionTool { extension }),
             }),
-            ExtensionSettings::Script { .. } => registry.register(ToolEntry {
+            ExtensionSettings::Script { .. } => Some(ToolEntry {
                 name: extension.name.clone(),
                 toolset: "extensions".to_string(),
-                schema: tool_schema(
+                schema: dynamic_tool_schema(
                     &extension.name,
                     &extension.description,
                     extension.parameters.clone(),
@@ -75,7 +76,12 @@ pub fn register_configs(registry: &mut ToolRegistry, extensions: Vec<ExtensionCo
                 capability: ToolCapability::process(),
                 handler: Arc::new(ScriptExtensionTool { extension }),
             }),
-            ExtensionSettings::McpServer { .. } => {}
+            ExtensionSettings::McpServer { .. } => None,
+        };
+        if let Some(entry) = entry {
+            if let Err(error) = registry.register_dynamic(entry) {
+                tracing::warn!(error = %error, "extension tool contract rejected");
+            }
         }
     }
 }

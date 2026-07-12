@@ -1,37 +1,53 @@
-import type {
-  SearchResultEvent,
-  SearchResultKnowledge,
-  SearchResultMessage,
-  SearchResultNote,
-  SearchResultProject,
-  SearchResultTask,
-  SearchResults,
-} from "@/types/search";
+import type { WorkspaceSearchHit } from "@/types/search";
 
-export type FlatSearchResult =
-  | { type: "note"; item: SearchResultNote }
-  | { type: "task"; item: SearchResultTask }
-  | { type: "project"; item: SearchResultProject }
-  | { type: "event"; item: SearchResultEvent }
-  | { type: "message"; item: SearchResultMessage }
-  | { type: "knowledge"; item: SearchResultKnowledge };
-
-export function flattenSearchResults(results: SearchResults): FlatSearchResult[] {
-  return [
-    ...results.notes.map((item) => ({ type: "note" as const, item })),
-    ...results.tasks.map((item) => ({ type: "task" as const, item })),
-    ...results.projects.map((item) => ({ type: "project" as const, item })),
-    ...results.events.map((item) => ({ type: "event" as const, item })),
-    ...results.messages.map((item) => ({ type: "message" as const, item })),
-    ...results.knowledge.map((item) => ({ type: "knowledge" as const, item })),
-  ];
+export function workspaceSearchHitKey(hit: WorkspaceSearchHit) {
+  return `${hit.domain}:${hit.resourceKind}:${hit.stableId}`;
 }
 
-export function findFlatSearchResultIndex(
-  results: FlatSearchResult[],
-  target: FlatSearchResult,
-) {
-  return results.findIndex(
-    (result) => result.type === target.type && result.item.id === target.item.id,
-  );
+export function workspaceSearchHitRoute(hit: WorkspaceSearchHit) {
+  const id = hit.sourceLink.id ?? hit.stableId;
+  switch (hit.sourceLink.kind) {
+    case "note":
+      return `/notes?noteId=${encodeURIComponent(id)}`;
+    case "task":
+      return `/tasks?taskId=${encodeURIComponent(id)}`;
+    case "project":
+      return `/projects/${encodeURIComponent(id)}`;
+    case "calendar_event":
+      return `/calendar?eventId=${encodeURIComponent(id)}${
+        hit.freshness ? `&date=${encodeURIComponent(hit.freshness)}` : ""
+      }`;
+    case "chat_session":
+      return `/chat?sessionId=${encodeURIComponent(id)}`;
+    case "knowledge":
+      return `/knowledge?id=${encodeURIComponent(id)}`;
+    case "drive": {
+      const path = hit.sourceLink.path;
+      if (path?.startsWith("/drive/")) {
+        return `/drive?file=${encodeURIComponent(path)}`;
+      }
+      return "/drive";
+    }
+    default:
+      return fallbackRoute(hit.domain);
+  }
+}
+
+function fallbackRoute(domain: WorkspaceSearchHit["domain"]) {
+  switch (domain) {
+    case "notes":
+      return "/notes";
+    case "tasks":
+      return "/tasks";
+    case "projects":
+      return "/";
+    case "calendar":
+      return "/calendar";
+    case "sessions":
+      return "/chat";
+    case "knowledge":
+      return "/knowledge";
+    case "drive":
+      return "/drive";
+  }
 }

@@ -34,7 +34,7 @@ pub fn register(registry: &mut ToolRegistry) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string" }
+                    "url": { "type": "string", "description": "Absolute HTTP or HTTPS page URL to fetch." }
                 },
                 "required": ["url"]
             }),
@@ -52,8 +52,8 @@ pub fn register(registry: &mut ToolRegistry) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
+                    "query": { "type": "string", "description": "Web search query." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Maximum number of web results to return." }
                 },
                 "required": ["query"]
             }),

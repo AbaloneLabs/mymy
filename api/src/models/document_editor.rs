@@ -31,10 +31,29 @@ pub struct DocumentEditorModelResponse {
     pub fingerprint: String,
     pub model_schema_version: u32,
     pub capabilities: Vec<String>,
+    /// Versioned document-specific capability classification. Preservation
+    /// policy can evolve independently from the normalized JSON model shape.
+    pub capability_revision: String,
+    pub editing_mode: DocumentEditingMode,
+    pub lifecycle_state: DocumentEditorLifecycleState,
     pub sync_status: DocumentEditorSyncStatus,
     pub revision_provenance: Option<DocumentRevisionProvenance>,
     pub compatibility_warnings: Vec<DocumentCompatibilityWarning>,
     pub model: Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentEditingMode {
+    Editable,
+    PartiallyEditable,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentEditorLifecycleState {
+    Active,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -97,6 +116,10 @@ pub struct WriteDocumentEditorModelRequest {
     /// decision on. Document editor writes always replace an existing file, so
     /// omitting this token would turn every save into a blind overwrite.
     pub expected_fingerprint: String,
+    /// Chat session from which this artifact editor was opened. The server
+    /// validates the existing artifact link and never substitutes the session
+    /// currently selected in another browser surface.
+    pub source_session_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +137,7 @@ pub struct SaveDocumentEditorCopyRequest {
     /// conflict copy must preserve unsupported parts from this snapshot, not
     /// borrow them from a newer external revision.
     pub base_fingerprint: String,
+    pub source_session_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

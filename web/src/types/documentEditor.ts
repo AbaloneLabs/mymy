@@ -16,6 +16,9 @@ export interface DocumentEditorModelResponse {
   fingerprint: string;
   modelSchemaVersion: number;
   capabilities: string[];
+  capabilityRevision: string;
+  editingMode: "editable" | "partially_editable" | "read_only";
+  lifecycleState: "active";
   syncStatus: DocumentEditorSyncStatus;
   revisionProvenance?: DocumentRevisionProvenance;
   compatibilityWarnings: DocumentCompatibilityWarning[];
@@ -53,6 +56,7 @@ export interface WriteDocumentEditorModelRequest {
   requiredCapabilities: string[];
   idempotencyKey: string;
   expectedFingerprint: string;
+  sourceSessionId?: string;
 }
 
 export interface SaveDocumentEditorCopyRequest {
@@ -64,6 +68,7 @@ export interface SaveDocumentEditorCopyRequest {
   requiredCapabilities: string[];
   idempotencyKey: string;
   baseFingerprint: string;
+  sourceSessionId?: string;
 }
 
 export interface ValidateDocumentEditorModelRequest {

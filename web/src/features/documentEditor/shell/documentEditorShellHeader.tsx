@@ -150,6 +150,7 @@ export function DocumentEditorToolbar({
         </span>
       )}
       <button
+        data-testid="document-editor-save"
         type="button"
         onClick={onSave}
         disabled={!dirty || isSaving}

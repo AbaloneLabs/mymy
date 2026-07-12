@@ -28,6 +28,7 @@ const CONTEXT_CREATE_ROUTES: Record<string, string> = {
 /** Resolve a navigation action id to its route path. */
 const NAV_PATHS: Record<string, string> = {
   "navigate.home": "/",
+  "navigate.decisions": "/decisions",
   "navigate.chat": "/chat",
   "navigate.calendar": "/calendar",
   "navigate.notes": "/notes",

@@ -15,7 +15,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "task_create",
         "tasks_write",
         "Create a task.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "projectId",
+                "title",
+                "description",
+                "status",
+                "priority",
+                "dueDate",
+            ],
+            &["title"],
+        ),
         state,
         AppAction::TaskCreate,
     );
@@ -24,7 +34,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "task_update",
         "tasks_write",
         "Update a task by id.",
-        id_body_schema("Task id."),
+        id_body_schema(
+            "Task id.",
+            &[
+                "projectId",
+                "title",
+                "description",
+                "status",
+                "priority",
+                "dueDate",
+            ],
+        ),
         state,
         AppAction::TaskUpdate,
     );

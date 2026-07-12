@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LayoutGrid, List as ListIcon, Loader2, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useProjectContext } from "@/store/projectContext";
@@ -41,6 +42,8 @@ import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/Work
 
 export default function TasksPage() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const requestedTaskId = searchParams.get("taskId");
   const { selectedProjectId } = useProjectContext();
   const view = useTasksViewStore((s) => s.view);
   const setView = useTasksViewStore((s) => s.setView);
@@ -225,6 +228,7 @@ export default function TasksPage() {
         ) : view === "list" ? (
           <ListView
             tasks={allTasks}
+            focusTaskId={requestedTaskId}
             statuses={statuses}
             statusFilter={statusFilter}
             setStatusFilter={setStatusFilter}
@@ -235,6 +239,7 @@ export default function TasksPage() {
         ) : (
           <BoardView
             tasks={allTasks}
+            focusTaskId={requestedTaskId}
             statuses={statuses}
             onToggle={handleToggle}
             onDelete={handleDelete}

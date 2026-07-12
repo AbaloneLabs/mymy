@@ -1,7 +1,7 @@
 /**
  * TanStack Query hooks for this domain.
  */
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import type {
   AppSettings,
@@ -42,12 +42,17 @@ export function useSecurityStatus() {
 }
 
 export function usePendingQuarantine() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: settingsQueryKeys.pendingQuarantine,
-    queryFn: () =>
-      api.get<QuarantineListResponse>(
-        "/settings/security/quarantine?status=pending",
-      ),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ status: "pending" });
+      if (pageParam) params.set("cursor", pageParam);
+      return api.get<QuarantineListResponse>(
+        `/settings/security/quarantine?${params.toString()}`,
+      );
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor,
     refetchInterval: () =>
       typeof document === "undefined" || document.visibilityState === "visible"
         ? 5_000

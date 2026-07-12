@@ -3,33 +3,60 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { SearchResponse } from "@/types/search";
+import type {
+  WorkspaceSearchDomain,
+  WorkspaceSearchResponse,
+  WorkspaceSearchScope,
+} from "@/types/search";
 
 /* -------------------------------------------------- OmniSearch */
 
 /**
- * Unified full-text search across notes, tasks, projects, calendar events,
- * and chat (sessions + messages).
+ * User OmniSearch over the same normalized domain adapters used by agent
+ * workspace discovery. The server derives the local-owner/auth-session
+ * principal; browser code supplies only the visible project context.
  *
  * @param query     The (already debounced) search term. Empty/whitespace
  *                  disables the query.
  * @param projectId Optional project scope filter.
- * @param limit     Max results per entity group (default 5).
+ * @param enabled   Whether the dropdown currently permits a request.
+ * @param limit     Maximum merged results in the first atomic response.
  */
 export function useOmniSearch(
   query: string,
   projectId?: string | null,
-  limit = 5,
+  enabled = true,
+  limit = 20,
 ) {
+  const scope: WorkspaceSearchScope = projectId
+    ? "current_plus_global"
+    : "all_permitted";
+  const domains: WorkspaceSearchDomain[] = [
+    "sessions",
+    "tasks",
+    "notes",
+    "knowledge",
+    "drive",
+    "projects",
+    "calendar",
+  ];
   return useQuery({
-    queryKey: ["search", query, projectId ?? "all", limit],
-    queryFn: () => {
-      const params = new URLSearchParams({ q: query });
-      if (projectId) params.set("projectId", projectId);
-      if (limit) params.set("limit", String(limit));
-      return api.get<SearchResponse>(`/search?${params.toString()}`);
-    },
-    enabled: query.trim().length > 0,
-    staleTime: 30_000,
+    queryKey: ["workspace-search", query, projectId ?? "all", limit],
+    queryFn: ({ signal }) =>
+      api.post<WorkspaceSearchResponse>(
+        "/search/workspace",
+        {
+          query,
+          domains,
+          scope,
+          projectId: projectId ?? null,
+          limit,
+          cursor: null,
+        },
+        { signal },
+      ),
+    enabled: enabled && query.trim().length > 0,
+    staleTime: 0,
+    gcTime: 0,
   });
 }

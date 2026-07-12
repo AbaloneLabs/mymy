@@ -1,4 +1,4 @@
-import { FolderPlus, Loader2 } from "lucide-react";
+import { FolderPlus, Loader2, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DriveEntry } from "@/types/drive";
 import { ROOT_PATH } from "@/features/drive/utils";
@@ -17,6 +17,10 @@ export function DriveBrowserPane({
   onCreateFolder,
   onOpenEntry,
   onDeleteEntry,
+  trashActive,
+  trashCount,
+  trashCountFailed,
+  onOpenTrash,
 }: {
   path: string;
   entries: DriveEntry[];
@@ -29,6 +33,10 @@ export function DriveBrowserPane({
   onCreateFolder: () => void;
   onOpenEntry: (entry: DriveEntry) => void;
   onDeleteEntry: (path: string) => void;
+  trashActive: boolean;
+  trashCount: number | undefined;
+  trashCountFailed: boolean;
+  onOpenTrash: () => void;
 }) {
   const { t } = useTranslation();
   const folders = entries.filter((entry) => entry.kind === "directory");
@@ -89,6 +97,26 @@ export function DriveBrowserPane({
           onDelete={onDeleteEntry}
         />
       </div>
+      <button
+        type="button"
+        aria-current={trashActive ? "page" : undefined}
+        onClick={onOpenTrash}
+        className={`flex shrink-0 items-center gap-2 border-t border-[var(--border)] px-3 py-3 text-sm ${
+          trashActive
+            ? "bg-[var(--surface-hover)] text-[var(--text)]"
+            : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+        }`}
+      >
+        <Trash2 className="h-4 w-4" />
+        <span className="flex-1 text-left">{t("drive.trash")}</span>
+        {trashCountFailed ? (
+          <span className="text-[10px] text-[var(--status-warning)]">!</span>
+        ) : trashCount !== undefined ? (
+          <span className="rounded-full bg-[var(--surface-muted)] px-1.5 text-[10px]">
+            {trashCount > 99 ? "99+" : trashCount}
+          </span>
+        ) : null}
+      </button>
     </section>
   );
 }

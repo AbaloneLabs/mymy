@@ -17,8 +17,8 @@ use crate::agent::tools::{
     tool_result, tool_schema, DataSensitivity, ToolCapability, ToolEffect, ToolEntry, ToolError,
     ToolHandler, ToolRegistry,
 };
-use crate::models::runtime_memory::MemorySearchQuery;
-use crate::services::runtime_memory::{self, NewMemory};
+use crate::models::runtime_memory::{MemorySearchQuery, ReviewMemoryRequest};
+use crate::services::runtime_memory::{self, MemoryCorrection, NewMemory};
 use crate::state::AppState;
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
@@ -53,18 +53,19 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "target": { "type": "string", "enum": ["memory", "user"] },
-                    "action": { "type": "string", "enum": ["add", "replace", "remove"] },
-                    "content": { "type": "string" },
-                    "old_text": { "type": "string" },
+                    "target": { "type": "string", "enum": ["memory", "user"], "description": "Curated file to update: agent memory or user profile memory." },
+                    "action": { "type": "string", "enum": ["add", "replace", "remove"], "description": "Single update operation; omit when using operations." },
+                    "content": { "type": "string", "description": "New bounded memory entry or replacement text." },
+                    "old_text": { "type": "string", "description": "Exact existing entry text required by replace or remove." },
                     "operations": {
                         "type": "array",
+                        "description": "Ordered atomic batch of curated-memory updates.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "action": { "type": "string", "enum": ["add", "replace", "remove"] },
-                                "content": { "type": "string" },
-                                "old_text": { "type": "string" }
+                                "action": { "type": "string", "enum": ["add", "replace", "remove"], "description": "Operation performed on one exact entry." },
+                                "content": { "type": "string", "description": "New entry or replacement text." },
+                                "old_text": { "type": "string", "description": "Exact existing entry required by replace or remove." }
                             },
                             "required": ["action"]
                         }
@@ -93,16 +94,17 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "memory_read".to_string(),
         schema: tool_schema(
             "memory_search",
-            "Search reviewed durable memory on demand. Results include source run and decision provenance.",
+            "Search reviewed durable facts, preferences, decisions, and conventions on demand. This does not search full chat transcripts or workspace files; use the returned provenance for an exact permitted source read when needed.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" },
+                    "query": { "type": "string", "description": "Text describing the durable fact or convention to recall." },
                     "status": {
                         "type": "string",
-                        "enum": ["active", "pending_review", "conflict", "stale"]
+                        "enum": ["active", "pending_review", "conflict", "stale"],
+                        "description": "Optional lifecycle status filter; defaults to recallable active memory."
                     },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum durable memories to return." }
                 },
                 "required": ["query"]
             }),
@@ -122,14 +124,16 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "content": { "type": "string", "maxLength": 4000 },
+                    "content": { "type": "string", "maxLength": 4000, "description": "One bounded declarative fact, preference, decision, or convention." },
                     "memoryType": {
                         "type": "string",
-                        "enum": ["preference", "convention", "decision", "fact"]
+                        "enum": ["preference", "convention", "decision", "fact"],
+                        "description": "Semantic class of the durable memory."
                     },
                     "sensitivity": {
                         "type": "string",
-                        "enum": ["normal", "private", "financial"]
+                        "enum": ["normal", "private", "financial"],
+                        "description": "Sensitivity class controlling review and disclosure."
                     }
                 },
                 "required": ["content", "memoryType", "sensitivity"]
@@ -137,7 +141,56 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         ),
         capability: ToolCapability::mutation(ToolEffect::Create, "durable_memory")
             .with_sensitivity(DataSensitivity::Private),
-        handler: Arc::new(DurableMemoryRecordTool { scope: durable }),
+        handler: Arc::new(DurableMemoryRecordTool {
+            scope: durable.clone(),
+        }),
+    });
+    registry.register(ToolEntry {
+        name: "memory_correct".to_string(),
+        toolset: "memory_write".to_string(),
+        schema: tool_schema(
+            "memory_correct",
+            "Correct one exact durable or inferred memory after resolving it with memory_search. This creates a new explicit revision and preserves the prior fact as superseded; ask the user when more than one fact could be meant.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "memoryId": { "type": "string", "description": "Exact stable memory ID returned by memory_search." },
+                    "expectedContentRevision": { "type": "integer", "minimum": 1, "description": "Content revision returned by memory_search; stale values are rejected." },
+                    "expectedLifecycleRevision": { "type": "integer", "minimum": 1, "description": "Lifecycle revision returned by memory_search; stale values are rejected." },
+                    "idempotencyKey": { "type": "string", "minLength": 16, "maxLength": 200, "description": "Fresh stable retry key for this correction; reuse it only to recover the same requested correction." },
+                    "content": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "One corrected declarative fact confirmed by the current user." }
+                },
+                "required": ["memoryId", "expectedContentRevision", "expectedLifecycleRevision", "idempotencyKey", "content"]
+            }),
+        ),
+        capability: ToolCapability::mutation(ToolEffect::Update, "durable_memory")
+            .with_resource_argument("memoryId")
+            .with_sensitivity(DataSensitivity::Private),
+        handler: Arc::new(DurableMemoryCorrectTool {
+            scope: durable.clone(),
+        }),
+    });
+    registry.register(ToolEntry {
+        name: "memory_forget".to_string(),
+        toolset: "memory_write".to_string(),
+        schema: tool_schema(
+            "memory_forget",
+            "Forget one exact memory after resolving it with memory_search. This removes derived content but does not delete the original chat or an independently retained fact; ask the user when the intended target is ambiguous.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "memoryId": { "type": "string", "description": "Exact stable memory ID returned by memory_search." },
+                    "expectedContentRevision": { "type": "integer", "minimum": 1, "description": "Content revision returned by memory_search; stale values are rejected." },
+                    "expectedLifecycleRevision": { "type": "integer", "minimum": 1, "description": "Lifecycle revision returned by memory_search; stale values are rejected." }
+                    ,"idempotencyKey": { "type": "string", "minLength": 16, "maxLength": 200, "description": "Fresh stable retry key for this forget request; reuse it only to recover the same deletion." }
+                },
+                "required": ["memoryId", "expectedContentRevision", "expectedLifecycleRevision", "idempotencyKey"]
+            }),
+        ),
+        capability: ToolCapability::mutation(ToolEffect::Delete, "durable_memory")
+            .with_resource_argument("memoryId")
+            .with_sensitivity(DataSensitivity::Private),
+        handler: Arc::new(DurableMemoryForgetTool { scope: durable }),
     });
 }
 
@@ -161,6 +214,14 @@ struct DurableMemorySearchTool {
 }
 
 struct DurableMemoryRecordTool {
+    scope: DurableMemoryScope,
+}
+
+struct DurableMemoryCorrectTool {
+    scope: DurableMemoryScope,
+}
+
+struct DurableMemoryForgetTool {
     scope: DurableMemoryScope,
 }
 
@@ -232,6 +293,10 @@ impl ToolHandler for DurableMemoryRecordTool {
             NewMemory {
                 source_run_id: Some(context.run_id),
                 source_decision_id: None,
+                source_session_id: None,
+                source_message_start: None,
+                source_message_end: None,
+                extraction_batch_id: None,
                 agent_profile: &self.scope.agent_profile,
                 project_id: self.scope.project_id,
                 memory_type: required_str(args, "memoryType")?,
@@ -239,6 +304,71 @@ impl ToolHandler for DurableMemoryRecordTool {
                 content: required_str(args, "content")?,
                 confidence: if origin == "explicit_user" { 1.0 } else { 0.7 },
                 sensitivity: required_str(args, "sensitivity")?,
+            },
+        )
+        .await
+        .map_err(|err| ToolError::Execution(err.to_string()))?;
+        Ok(tool_result(&memory))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for DurableMemoryCorrectTool {
+    async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+        Err(ToolError::Unavailable(
+            "durable memory correction requires run execution context".to_string(),
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        validate_scope(&self.scope, context)?;
+        let memory = runtime_memory::correct_memory(
+            &self.scope.state,
+            MemoryCorrection {
+                memory_id: required_uuid(args, "memoryId")?,
+                expected_content_revision: required_i64(args, "expectedContentRevision")?,
+                expected_lifecycle_revision: required_i64(args, "expectedLifecycleRevision")?,
+                agent_profile: &self.scope.agent_profile,
+                project_id: self.scope.project_id,
+                source_run_id: context.run_id,
+                idempotency_key: required_str(args, "idempotencyKey")?,
+                content: required_str(args, "content")?,
+            },
+        )
+        .await
+        .map_err(|err| ToolError::Execution(err.to_string()))?;
+        Ok(tool_result(&memory))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for DurableMemoryForgetTool {
+    async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
+        Err(ToolError::Unavailable(
+            "durable memory deletion requires run execution context".to_string(),
+        ))
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        validate_scope(&self.scope, context)?;
+        let memory = runtime_memory::forget_memory_in_scope(
+            &self.scope.state,
+            required_uuid(args, "memoryId")?,
+            &self.scope.agent_profile,
+            self.scope.project_id,
+            ReviewMemoryRequest {
+                action: "delete".to_string(),
+                expected_content_revision: required_i64(args, "expectedContentRevision")?,
+                expected_lifecycle_revision: required_i64(args, "expectedLifecycleRevision")?,
+                idempotency_key: Some(required_str(args, "idempotencyKey")?.to_string()),
             },
         )
         .await
@@ -310,4 +440,16 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::InvalidArgs(format!("missing {key}")))
+}
+
+fn required_uuid(args: &Value, key: &str) -> Result<uuid::Uuid, ToolError> {
+    uuid::Uuid::parse_str(required_str(args, key)?)
+        .map_err(|_| ToolError::InvalidArgs(format!("invalid {key}")))
+}
+
+fn required_i64(args: &Value, key: &str) -> Result<i64, ToolError> {
+    args.get(key)
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| ToolError::InvalidArgs(format!("invalid {key}")))
 }

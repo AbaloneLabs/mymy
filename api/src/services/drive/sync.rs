@@ -49,15 +49,40 @@ pub async fn enqueue_s3_sync_job(
     logical_path: &str,
     operation: &str,
 ) -> AppResult<()> {
+    let projection = crate::services::resource_identity::active_resource_sequence_for_path(
+        &state.db,
+        logical_path,
+    )
+    .await?;
+    enqueue_s3_sync_job_for_resource(
+        state,
+        logical_path,
+        operation,
+        projection.map(|value| value.0),
+        projection.map(|value| value.1),
+    )
+    .await
+}
+
+pub async fn enqueue_s3_sync_job_for_resource(
+    state: &AppState,
+    logical_path: &str,
+    operation: &str,
+    resource_id: Option<Uuid>,
+    resource_sequence: Option<i64>,
+) -> AppResult<()> {
     if state.config.drive_s3_bucket.is_none() {
         return Ok(());
     }
     let path = normalize_logical_drive_path(logical_path)?;
     sqlx::query!(
-        r#"INSERT INTO drive_sync_jobs (provider, drive_path, operation, status)
-           VALUES ('s3', $1, $2, 'pending')"#,
+        r#"INSERT INTO drive_sync_jobs
+             (provider, drive_path, operation, status, resource_id, resource_sequence)
+           VALUES ('s3', $1, $2, 'pending', $3, $4)"#,
         path,
         operation,
+        resource_id,
+        resource_sequence,
     )
     .execute(&state.db)
     .await?;

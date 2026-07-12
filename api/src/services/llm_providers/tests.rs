@@ -328,9 +328,11 @@ async fn db_pin_change_reencrypts_keys(pool: sqlx::PgPool) {
 
     let id: Uuid = created.provider.id.parse().unwrap();
 
-    reencrypt_all_keys(&state.db, &old_key, &new_key)
+    let mut transaction = state.db.begin().await.expect("begin rotation");
+    reencrypt_all_keys_for_pin_in_transaction(&mut transaction, "old-pin", "new-pin")
         .await
         .expect("reencrypt");
+    transaction.commit().await.expect("commit rotation");
 
     *state.encryption_key.write().await = Some(new_key);
 

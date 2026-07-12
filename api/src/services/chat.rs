@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::agent::context::ContextManager;
+use crate::agent::context::{
+    context_length_for_model, estimate_message_tokens, estimate_tokens, ContextManager,
+};
 use crate::agent::loop_engine::{AgentLoop, LoopConfig};
 use crate::agent::memory::MemoryStore;
 use crate::agent::prompt::{assemble_system_prompt, build_system_prompt_parts, PromptConfig};
@@ -37,7 +39,7 @@ use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
 use self::provider::{parse_runtime_provider_id, DbRotatingProvider};
 pub use self::repository::{
     create_session, delete_session, fetch_session_response, get_messages, list_sessions,
-    save_agent_messages_for_run, SessionQuery,
+    reconcile_session_deletions, save_agent_messages_for_run, SessionQuery,
 };
 use self::repository::{
     derive_title, fetch_message_rows, fetch_session, insert_user_message,
@@ -53,6 +55,8 @@ pub struct PreparedNativeTurn {
     pub user_message: ChatMessage,
     pub tool_schema_fingerprint: String,
     pub tool_count: usize,
+    pub permission_fingerprint: String,
+    pub buffered_output_required: bool,
 }
 
 pub enum PreparedExecution {
@@ -66,17 +70,67 @@ pub struct PreparedMoaTurn {
     pub config: MoaConfig,
 }
 
+/// Allocate optional prompt context only after reserving the authoritative
+/// current request, recent conversation tail, tool contracts, and output
+/// capacity. Whole blocks are selected so trust labels and Unicode text are
+/// never cut in half merely to satisfy an estimate.
+fn select_optional_context_blocks(
+    model: &str,
+    max_output_tokens: u32,
+    tool_schemas: &[crate::agent::providers::ToolSchema],
+    required_context_blocks: &[String],
+    recent_message_tokens: u32,
+    current_user_text: &str,
+    optional_blocks: Vec<(&'static str, String)>,
+) -> AppResult<(Vec<String>, bool)> {
+    let context_length = context_length_for_model(model);
+    let reserved_output = max_output_tokens.min(context_length / 2);
+    let prompt_budget = context_length
+        .saturating_mul(85)
+        .saturating_div(100)
+        .saturating_sub(reserved_output);
+    let schema_tokens = serde_json::to_string(tool_schemas)
+        .map(|value| estimate_tokens(&value))
+        .unwrap_or(prompt_budget);
+    let required_tokens = 2_048_u32
+        .saturating_add(schema_tokens)
+        .saturating_add(recent_message_tokens)
+        .saturating_add(estimate_tokens(current_user_text))
+        .saturating_add(estimate_tokens(&required_context_blocks.join("\n\n")));
+    if required_tokens >= prompt_budget {
+        return Err(AppError::PayloadTooLarge(
+            "required prompt context exceeds the model budget; reduce workspace instructions or select a larger-context model"
+                .to_string(),
+        ));
+    }
+    let mut remaining = prompt_budget - required_tokens;
+    let mut selected = Vec::new();
+    let mut dropped_recall = false;
+    for (kind, block) in optional_blocks {
+        let tokens = estimate_tokens(&block);
+        if tokens <= remaining {
+            remaining -= tokens;
+            selected.push(block);
+        } else if kind == "automatic_recall" {
+            dropped_recall = true;
+        }
+    }
+    Ok((selected, dropped_recall))
+}
+
 pub async fn prepare_native_turn_for_input(
     state: &AppState,
+    run_id: Uuid,
     id: Uuid,
     run_input_id: Uuid,
     req: SendMessageRequest,
 ) -> AppResult<PreparedNativeTurn> {
-    prepare_native_turn_internal(state, id, Some(run_input_id), req).await
+    prepare_native_turn_internal(state, Some(run_id), id, Some(run_input_id), req).await
 }
 
 async fn prepare_native_turn_internal(
     state: &AppState,
+    run_id: Option<Uuid>,
     id: Uuid,
     run_input_id: Option<Uuid>,
     req: SendMessageRequest,
@@ -130,6 +184,16 @@ async fn prepare_native_turn_internal(
         tracing::warn!(error = %err, "MCP dynamic tool registration failed");
     }
     register_agent_toolsets(&mut registry, &permission_policy);
+    registry.validate_catalog().map_err(|error| {
+        if error.tool == "<catalog>" {
+            AppError::ServiceUnavailable(
+                "The enabled tool catalog exceeds the supported provider limit. Disable optional integrations before retrying."
+                    .to_string(),
+            )
+        } else {
+            AppError::Internal(format!("built-in tool catalog invalid: {error}"))
+        }
+    })?;
     let tool_schemas_for_prompt = if use_moa {
         Vec::new()
     } else {
@@ -176,16 +240,6 @@ async fn prepare_native_turn_internal(
         ));
     }
 
-    let mut volatile_blocks = Vec::new();
-    if let Some(snapshot) = memory_snapshot {
-        if !snapshot.user.trim().is_empty() {
-            volatile_blocks.push(format!("USER.md:\n{}", snapshot.user));
-        }
-        if !snapshot.memory.trim().is_empty() {
-            volatile_blocks.push(format!("MEMORY.md:\n{}", snapshot.memory));
-        }
-    }
-
     let model = moa_runtime
         .as_ref()
         .map(|preset| preset.aggregator_provider.model.clone())
@@ -195,6 +249,72 @@ async fn prepare_native_turn_internal(
                 .map(|(_, config)| config.model.clone())
         })
         .unwrap_or_else(|| "unknown".to_string());
+    let max_output_tokens = default_runtime
+        .as_ref()
+        .map(|(_, config)| config.max_tokens)
+        .unwrap_or(16_384);
+    let rows = fetch_message_rows(state, id).await?;
+    let mut optional_blocks = Vec::new();
+    if let Some(snapshot) = memory_snapshot {
+        if !snapshot.user.trim().is_empty() {
+            optional_blocks.push(("curated_user", format!("USER.md:\n{}", snapshot.user)));
+        }
+        if !snapshot.memory.trim().is_empty() {
+            optional_blocks.push(("curated_memory", format!("MEMORY.md:\n{}", snapshot.memory)));
+        }
+    }
+    if permission_policy.can_read(crate::models::agent::AgentToolDomain::Memory) {
+        if let Some(run_id) = run_id {
+            match crate::services::runtime_memory::automatic_recall_for_run(
+                state,
+                run_id,
+                &session.profile,
+                session.project_id,
+                &text,
+            )
+            .await
+            {
+                Ok(Some(recall)) => {
+                    metrics::histogram!("mymy_memory_recall_selected_count")
+                        .record(recall.selected_count as f64);
+                    metrics::histogram!("mymy_memory_recall_estimated_tokens")
+                        .record(recall.estimated_tokens as f64);
+                    optional_blocks.push(("automatic_recall", recall.prompt_block));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%run_id, error = %error, "automatic memory recall degraded to empty context");
+                }
+            }
+        }
+    }
+    let recent_message_tokens = rows
+        .iter()
+        .rev()
+        .take(20)
+        .map(row_to_agent_message)
+        .map(|message| estimate_message_tokens(&message))
+        .sum();
+    let (volatile_blocks, dropped_recall) = select_optional_context_blocks(
+        &model,
+        max_output_tokens,
+        &tool_schemas_for_prompt,
+        &context_blocks,
+        recent_message_tokens,
+        &text,
+        optional_blocks,
+    )?;
+    if dropped_recall {
+        if let Some(run_id) = run_id {
+            crate::services::runtime_memory::mark_recall_context_dropped(
+                state,
+                run_id,
+                "global_context_budget",
+            )
+            .await?;
+        }
+    }
+    let buffered_output_required = !volatile_blocks.is_empty();
     let prompt_parts = build_system_prompt_parts(&PromptConfig {
         soul_md_path: Some(drive::agent_soul_md_path(
             &state.config.agent_data_dir,
@@ -217,7 +337,6 @@ async fn prepare_native_turn_internal(
         resolve_prompt_snapshot(state, &session, &prompt_parts, &tool_schema_fingerprint).await?;
     let system_prompt = assemble_system_prompt(&prompt_parts);
 
-    let rows = fetch_message_rows(state, id).await?;
     let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
     let agent_user_text = resolve_skill_invocation(state, &text, id).await?;
 
@@ -318,5 +437,45 @@ async fn prepare_native_turn_internal(
         user_message,
         tool_schema_fingerprint,
         tool_count,
+        permission_fingerprint: permission_policy.fingerprint(),
+        buffered_output_required,
     })
+}
+
+#[cfg(test)]
+mod context_budget_tests {
+    use super::*;
+
+    #[test]
+    fn optional_recall_is_dropped_as_a_whole_block_when_budget_is_exhausted() {
+        let (selected, dropped_recall) = select_optional_context_blocks(
+            "gpt-4o",
+            16_384,
+            &[],
+            &[],
+            0,
+            "current request",
+            vec![("automatic_recall", "기억".repeat(300_000))],
+        )
+        .unwrap();
+
+        assert!(selected.is_empty());
+        assert!(dropped_recall);
+    }
+
+    #[test]
+    fn required_current_context_is_never_silently_truncated() {
+        let error = select_optional_context_blocks(
+            "gpt-4",
+            4_096,
+            &[],
+            &[],
+            0,
+            &"required".repeat(20_000),
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AppError::PayloadTooLarge(_)));
+    }
 }

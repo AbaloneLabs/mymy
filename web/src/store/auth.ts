@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { useDecisionDrafts } from "@/store/decisionDrafts";
+import { clearDocumentEditorRecoveryDrafts } from "@/features/documentEditor/shell/documentEditorRecoveryDraft";
 
 /**
  * Auth store — session state only.
@@ -12,16 +14,25 @@ import { create } from "zustand";
  */
 
 interface AuthState {
-
   isAuthenticated: boolean;
-
-  setAuthenticated: () => void;
-
-  setAuthState: (authenticated: boolean) => void;
+  recoveryScopeId: string | null;
+  setAuthenticated: (recoveryScopeId: string) => void;
+  setAuthState: (authenticated: boolean, recoveryScopeId?: string | null) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
-  setAuthenticated: () => set({ isAuthenticated: true }),
-  setAuthState: (isAuthenticated) => set({ isAuthenticated }),
+  recoveryScopeId: null,
+  setAuthenticated: (recoveryScopeId) =>
+    set({ isAuthenticated: true, recoveryScopeId }),
+  setAuthState: (isAuthenticated, recoveryScopeId = null) => {
+    if (!isAuthenticated) {
+      useDecisionDrafts.getState().clearAll();
+      void clearDocumentEditorRecoveryDrafts().catch(() => undefined);
+    }
+    set({
+      isAuthenticated,
+      recoveryScopeId: isAuthenticated ? recoveryScopeId : null,
+    });
+  },
 }));

@@ -20,12 +20,14 @@ export interface DriveListResponse {
 }
 
 export interface DriveFileResponse {
+  resourceId?: string;
   path: string;
   name: string;
   mimeType: string;
   size: number;
   updatedAt?: string;
   fingerprint: string;
+  operationId: string;
   content: string;
   editable: boolean;
   editorKind: DocumentEditorKind;
@@ -70,10 +72,14 @@ export interface DriveTrashEntry {
   kind: DriveEntryKind;
   size: number;
   deletedAt: string;
+  operationId?: string;
+  lifecycleRevision?: string;
 }
 
 export interface DriveTrashResponse {
   entries: DriveTrashEntry[];
+  nextCursor?: string;
+  totalCount: number;
 }
 
 export interface DriveRestoreResponse {

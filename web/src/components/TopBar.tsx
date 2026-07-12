@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
 import { FolderGit2, Bot, ChevronDown, Check } from "lucide-react";
 import { useProjects } from "@/features/projects/api";
 import { useAgents } from "@/features/agents/api";
@@ -8,7 +9,8 @@ import { OmniSearch } from "@/components/OmniSearch";
 import { cn } from "@/lib/utils";
 
 /**
- * Global TopBar — shown on all pages except Home (`/`).
+ * Global TopBar — shown on every protected page so workspace search and the
+ * active project/agent scope remain discoverable from any route.
  *
  * Left side: project dropdown + agent dropdown (side by side).
  * Selecting a project/agent sets the global context ONLY — it never
@@ -22,6 +24,8 @@ export function TopBar() {
   const { t } = useTranslation();
   const { data: projectsData } = useProjects();
   const { data: agentsData } = useAgents();
+  const location = useLocation();
+  const navigate = useNavigate();
   const {
     selectedProjectId,
     setSelectedProjectId,
@@ -67,12 +71,22 @@ export function TopBar() {
 
   function handleSelectProject(id: string | null) {
     setSelectedProjectId(id);
+    updateDecisionScope("project", id);
     setProjectOpen(false);
   }
 
   function handleSelectAgent(profile: string | null) {
     setSelectedAgentProfile(profile);
+    updateDecisionScope("agent", profile);
     setAgentOpen(false);
+  }
+
+  function updateDecisionScope(name: "agent" | "project", value: string | null) {
+    if (location.pathname !== "/decisions") return;
+    const params = new URLSearchParams(location.search);
+    if (value) params.set(name, value);
+    else params.delete(name);
+    navigate({ pathname: location.pathname, search: params.toString() });
   }
 
   return (

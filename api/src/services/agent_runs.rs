@@ -85,6 +85,7 @@ pub(super) struct AgentRunRow {
     pub objective: String,
     pub prompt_version: String,
     pub authorization_context: Value,
+    pub tool_schema_fingerprint: Option<String>,
     pub lease_owner: Option<String>,
     pub lease_epoch: i64,
     pub next_event_sequence: i64,

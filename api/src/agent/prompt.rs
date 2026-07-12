@@ -14,6 +14,9 @@ use crate::services::sandbox_runner::logical_path_for_runner;
 /// Version the behavioral contract independently from provider/model names so
 /// persisted runs can explain which stable guidance shaped their execution.
 pub const PROMPT_VERSION: &str = "agent-workspace-v1";
+const MAX_IDENTITY_FILE_BYTES: u64 = 64 * 1024;
+const MAX_CONTEXT_FILE_BYTES: u64 = 128 * 1024;
+const MAX_MEMORY_FILE_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct PromptConfig {
@@ -101,7 +104,7 @@ fn load_identity(config: &PromptConfig) -> String {
     config
         .soul_md_path
         .as_ref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| read_bounded_text(path, MAX_IDENTITY_FILE_BYTES))
         .filter(|content| !content.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_AGENT_IDENTITY.to_string())
 }
@@ -141,7 +144,7 @@ fn load_context_files(config: &PromptConfig) -> String {
     let mut blocks = Vec::new();
     let explicit_agents = config.agents_md_path.as_ref();
     if let Some(path) = explicit_agents {
-        if let Ok(content) = std::fs::read_to_string(path) {
+        if let Some(content) = read_bounded_text(path, MAX_CONTEXT_FILE_BYTES) {
             if !content.trim().is_empty() {
                 blocks.push(format!(
                     "Context file: AGENTS.md\n{}",
@@ -156,7 +159,7 @@ fn load_context_files(config: &PromptConfig) -> String {
         if explicit_agents.is_some_and(|agents_path| agents_path == &path) {
             continue;
         }
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Some(content) = read_bounded_text(&path, MAX_CONTEXT_FILE_BYTES) {
             if !content.trim().is_empty() {
                 blocks.push(format!(
                     "Context file: {name}\n{}",
@@ -175,7 +178,7 @@ fn load_memory_block(config: &PromptConfig) -> String {
         ("MEMORY.md", config.memory_md_path.as_ref()),
     ] {
         if let Some(path) = path {
-            if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(content) = read_bounded_text(path, MAX_MEMORY_FILE_BYTES) {
                 if !content.trim().is_empty() {
                     blocks.push(format!(
                         "{label}:\n{}",
@@ -186,6 +189,20 @@ fn load_memory_block(config: &PromptConfig) -> String {
         }
     }
     blocks.join("\n\n")
+}
+
+fn read_bounded_text(path: &std::path::Path, maximum: u64) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > maximum {
+        tracing::warn!(
+            file_name = %path.file_name().unwrap_or_default().to_string_lossy(),
+            size = metadata.len(),
+            maximum,
+            "prompt context file was omitted because it exceeded its size boundary"
+        );
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 pub fn sanitize_prompt_block(label: &str, content: &str, scope: ThreatScope) -> String {
@@ -258,6 +275,31 @@ mod tests {
             ThreatScope::Strict,
         );
         assert!(sanitized.contains("Blocked MEMORY.md"));
+    }
+
+    #[test]
+    fn oversized_identity_file_never_enters_the_prompt() {
+        let directory =
+            std::env::temp_dir().join(format!("mymy-prompt-boundary-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let soul = directory.join("SOUL.md");
+        std::fs::write(&soul, "oversized-identity".repeat(8_000)).unwrap();
+
+        let parts = build_system_prompt_parts(&PromptConfig {
+            soul_md_path: Some(soul),
+            agents_md_path: None,
+            working_dir: directory.clone(),
+            memory_md_path: None,
+            user_md_path: None,
+            available_tool_names: Vec::new(),
+            model: "test-model".to_string(),
+            system_message: None,
+            volatile_system_message: None,
+        });
+
+        assert!(parts.stable.contains(DEFAULT_AGENT_IDENTITY));
+        assert!(!parts.stable.contains("oversized-identity"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { useTranslation } from "react-i18next";
 import {
@@ -39,10 +40,11 @@ import type {
  */
 export default function KnowledgePage() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("id"));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"read" | "edit">("read");
   const [createError, setCreateError] = useState(false);
@@ -60,6 +62,7 @@ export default function KnowledgePage() {
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [moveError, setMoveError] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const draftRevisionRef = useRef(0);
 
   // Global project filter from the TopBar dropdown. null = "All Projects".
   // Documents created under "All Projects" get no project and are hidden
@@ -91,6 +94,7 @@ export default function KnowledgePage() {
 
   /** Populate the editor draft from an article (used on create + edit start). */
   const populateDraft = useCallback((article: KnowledgeArticle) => {
+    draftRevisionRef.current += 1;
     setDraftTitle(article.title);
     setDraftContent(article.content);
     setDraftSlug(article.slug);
@@ -129,22 +133,34 @@ export default function KnowledgePage() {
   // capture the draft snapshot at fire time so that a later edit (which
   // re-enables dirty) is not lost when this save resolves.
   useEffect(() => {
-    if (mode !== "edit" || !selectedId || !dirty) return;
+    if (mode !== "edit" || !selectedId || !dirty || updateArticle.isPending) return;
     const id = setTimeout(() => {
+      const savingRevision = draftRevisionRef.current;
       setSaveStatus("saving");
       updateArticle.mutate(
         { id: selectedId, body: buildUpdateBody() },
         {
           onSuccess: () => {
-            setDirty(false);
-            setSaveStatus("saved");
+            if (draftRevisionRef.current === savingRevision) {
+              setDirty(false);
+              setSaveStatus("saved");
+            } else {
+              // The acknowledged request covered an older draft. Keeping the
+              // editor dirty causes one coalesced follow-up save after the
+              // mutation leaves its pending state.
+              setSaveStatus("idle");
+            }
           },
-          onError: () => setSaveStatus("error"),
+          onError: () => {
+            if (draftRevisionRef.current === savingRevision) {
+              setSaveStatus("error");
+            }
+          },
         },
       );
     }, 1000);
     return () => clearTimeout(id);
-  }, [dirty, selectedId, mode, buildUpdateBody]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dirty, selectedId, mode, buildUpdateBody, updateArticle.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Flush pending edits immediately (used on select-switch + Save). */
   const flushPending = useCallback(() => {
@@ -231,6 +247,7 @@ export default function KnowledgePage() {
   }
 
   function handleEditField() {
+    draftRevisionRef.current += 1;
     setDirty(true);
   }
 

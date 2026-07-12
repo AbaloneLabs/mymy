@@ -8,9 +8,14 @@ pub struct PinVerifyRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PinVerifyResponse {
     pub valid: bool,
     pub authenticated: bool,
+    /// Opaque browser-storage namespace for the authenticated server session.
+    /// This is derived from, but cannot be used in place of, the HttpOnly
+    /// session token.
+    pub recovery_scope_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,7 +35,9 @@ pub struct PinChangeResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthStatusResponse {
     pub initialized: bool,
     pub authenticated: bool,
+    pub recovery_scope_id: Option<String>,
 }

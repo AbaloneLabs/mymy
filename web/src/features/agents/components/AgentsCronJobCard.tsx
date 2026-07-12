@@ -74,7 +74,10 @@ export function CronJobCard({ job }: { job: CronJob }) {
               </a>
             )}
             {job.waitingDecisionId && (
-              <a href="?tab=decisions" className="text-[var(--status-warning)] hover:underline">
+              <a
+                href={`/decisions?decisionId=${encodeURIComponent(job.waitingDecisionId)}`}
+                className="text-[var(--status-warning)] hover:underline"
+              >
                 {t("agents.cron.waitingDecision")}
               </a>
             )}

@@ -4,69 +4,73 @@ import {
   useRef,
   useEffect,
   useMemo,
+  useCallback,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Search,
   X,
   Loader2,
 } from "lucide-react";
 import { OmniSearchDropdown } from "@/components/search/OmniSearchDropdown";
-import {
-  flattenSearchResults,
-  type FlatSearchResult,
-} from "@/components/search/omniSearchResults";
+import { workspaceSearchHitRoute } from "@/components/search/omniSearchResults";
 import { useOmniSearch } from "@/features/search/api";
 import { useProjectContext } from "@/store/projectContext";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import type { WorkspaceSearchHit } from "@/types/search";
 
 /**
  * OmniSearch — global unified search box shown in the TopBar.
  *
- * Fires a debounced (300ms) query to GET /api/search and renders grouped
- * results (notes, tasks, projects, events, messages) in a dropdown.
- * Clicking a result navigates to the entity's page. The query is scoped
- * to the currently selected project context when one is active.
+ * Fires one debounced atomic request through the shared federated adapters.
+ * Results retain typed domain/lifecycle metadata and navigate through a
+ * registered internal route. The query is scoped to the selected project plus
+ * global resources when a project context is active.
  */
 export function OmniSearch() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { selectedProjectId } = useProjectContext();
+  const queryClient = useQueryClient();
+  const {
+    selectedProjectId,
+    setSelectedProjectId,
+    setSelectedAgentProfile,
+  } = useProjectContext();
 
   const [query, setQuery] = useState("");
+  const [committedQuery, setCommittedQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const debouncedQuery = useDebouncedValue(query, 300);
+  const debouncedQuery = useDebouncedValue(committedQuery, 300);
   const trimmed = debouncedQuery.trim();
-  const { data, isFetching } = useOmniSearch(trimmed, selectedProjectId);
-
-  // Flatten results into a single navigable list for keyboard navigation.
-  const flatResults = useMemo(() => {
-    if (!data) return [];
-    return flattenSearchResults(data.results);
-  }, [data]);
-
-  const total = data?.total ?? 0;
+  const { data, isFetching } = useOmniSearch(trimmed, selectedProjectId, open);
+  const hits = useMemo(() => data?.hits ?? [], [data?.hits]);
 
   // Clamp activeIndex so it never exceeds the result set length.
-  const safeActiveIndex = flatResults.length > 0
-    ? Math.min(activeIndex, flatResults.length - 1)
+  const safeActiveIndex = hits.length > 0
+    ? Math.min(activeIndex, hits.length - 1)
     : 0;
+
+  const closeSearch = useCallback(() => {
+    setOpen(false);
+    void queryClient.cancelQueries({ queryKey: ["workspace-search"] });
+  }, [queryClient]);
 
   // Close dropdown on outside click.
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeSearch();
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [closeSearch]);
 
   // Keyboard shortcut: "/" focuses the search input.
   useEffect(() => {
@@ -85,55 +89,43 @@ export function OmniSearch() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  function navigateTo(result: FlatSearchResult) {
-    switch (result.type) {
-      case "note":
-        navigate("/notes");
-        break;
-      case "task":
-        navigate("/tasks");
-        break;
-      case "project":
-        navigate(`/projects/${result.item.id}`);
-        break;
-      case "event":
-        navigate("/calendar");
-        break;
-      case "message":
-        navigate("/chat");
-        break;
-      case "knowledge":
-        navigate("/knowledge");
-        break;
+  function navigateTo(hit: WorkspaceSearchHit) {
+    if (["notes", "tasks", "calendar", "sessions"].includes(hit.domain)) {
+      setSelectedProjectId(hit.projectId ?? null);
     }
-    setOpen(false);
+    if (hit.domain === "sessions") {
+      setSelectedAgentProfile(null);
+    }
+    navigate(workspaceSearchHitRoute(hit));
+    closeSearch();
     setQuery("");
+    setCommittedQuery("");
     inputRef.current?.blur();
   }
 
   function handleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
-    if (!open || flatResults.length === 0) {
+    if (e.nativeEvent.isComposing) return;
+    if (!open || hits.length === 0) {
       if (e.key === "ArrowDown" && trimmed) setOpen(true);
       return;
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveIndex((i) => (i + 1) % flatResults.length);
+      setActiveIndex((i) => (i + 1) % hits.length);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActiveIndex((i) => (i - 1 + flatResults.length) % flatResults.length);
+      setActiveIndex((i) => (i - 1 + hits.length) % hits.length);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const sel = flatResults[safeActiveIndex];
+      const sel = hits[safeActiveIndex];
       if (sel) navigateTo(sel);
     } else if (e.key === "Escape") {
-      setOpen(false);
+      closeSearch();
       inputRef.current?.blur();
     }
   }
 
   const showDropdown = open && trimmed.length > 0;
-  const hasResults = flatResults.length > 0;
 
   return (
     <div className="relative flex-1 max-w-md" ref={containerRef}>
@@ -148,6 +140,14 @@ export function OmniSearch() {
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
+            if (!(e.nativeEvent as InputEvent).isComposing) {
+              setCommittedQuery(e.target.value);
+            }
+            setActiveIndex(0);
+            setOpen(true);
+          }}
+          onCompositionEnd={(event) => {
+            setCommittedQuery(event.currentTarget.value);
             setActiveIndex(0);
             setOpen(true);
           }}
@@ -167,6 +167,7 @@ export function OmniSearch() {
             type="button"
             onClick={() => {
               setQuery("");
+              setCommittedQuery("");
               inputRef.current?.focus();
             }}
             className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
@@ -180,12 +181,10 @@ export function OmniSearch() {
       {showDropdown && (
         <OmniSearchDropdown
           query={trimmed}
-          results={data?.results}
-          flatResults={flatResults}
+          hits={hits}
+          partialFailures={data?.partialFailures ?? []}
           activeIndex={safeActiveIndex}
-          total={total}
           isFetching={isFetching}
-          hasResults={hasResults}
           onNavigate={navigateTo}
         />
       )}

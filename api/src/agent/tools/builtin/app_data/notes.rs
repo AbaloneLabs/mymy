@@ -18,9 +18,9 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         serde_json::json!({
             "type":"object",
             "properties":{
-                "q":{"type":"string"},
-                "scope":{"type":"string","enum":["all","general","project"]},
-                "projectId":{"type":"string"}
+                "q":{"type":"string","description":"Text to match in permitted note titles and content."},
+                "scope":{"type":"string","enum":["all","general","project"],"description":"Search all permitted notes, general notes, or one project."},
+                "projectId":{"type":"string","description":"Project UUID required when scope is project."}
             },
             "required":["q"]
         }),
@@ -32,7 +32,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "note_create",
         "notes_write",
         "Create a note.",
-        passthrough_schema(),
+        record_schema(
+            &["projectId", "title", "content", "tags", "pinned"],
+            &["title"],
+        ),
         state,
         AppAction::NoteCreate,
     );
@@ -41,7 +44,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "note_update",
         "notes_write",
         "Update a note by id.",
-        id_body_schema("Note id."),
+        id_body_schema(
+            "Note id.",
+            &["projectId", "title", "content", "tags", "pinned"],
+        ),
         state,
         AppAction::NoteUpdate,
     );

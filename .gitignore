@@ -26,3 +26,7 @@ api/target/
 # Node / bun
 web/node_modules/
 web/dist/
+# Browser-test artifacts are local/CI evidence and may contain rendered test
+# content, so they never belong in source control.
+web/playwright-report/
+web/test-results/

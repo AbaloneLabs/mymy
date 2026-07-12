@@ -40,7 +40,19 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "transaction_create",
         "finance_write",
         "Create a manual finance transaction.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "projectId",
+                "type",
+                "amount",
+                "currency",
+                "category",
+                "date",
+                "description",
+                "status",
+            ],
+            &["type", "amount"],
+        ),
         state,
         AppAction::TransactionCreate,
     );
@@ -49,7 +61,19 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "transaction_update",
         "finance_write",
         "Update a manual finance transaction by id.",
-        id_body_schema("Transaction id."),
+        id_body_schema(
+            "Transaction id.",
+            &[
+                "projectId",
+                "type",
+                "amount",
+                "currency",
+                "category",
+                "date",
+                "description",
+                "status",
+            ],
+        ),
         state,
         AppAction::TransactionUpdate,
     );

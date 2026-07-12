@@ -5,7 +5,7 @@
 #   - db   : PostgreSQL 16 + pgvector for mymy (port 33432)
 #   - web  : frontend SPA served by nginx (port 33696)
 #   - api  : Rust backend (port 33697)
-#   - sandbox-runner : isolated agent process runner (port 33698)
+#   - sandbox-runner : internal-only isolated agent process runner
 #
 # Port range: 33xxx, reserved for local mymy services.
 # ============================================================
@@ -25,7 +25,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mymy}
       POSTGRES_DB: ${POSTGRES_DB:-mymy}
     ports:
-      - "33432:5432"
+      - "127.0.0.1:33432:5432"
     volumes:
       - mymy-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -44,7 +44,7 @@ services:
     container_name: mymy-web
     restart: unless-stopped
     ports:
-      - "33696:80"
+      - "127.0.0.1:33696:80"
     depends_on:
       db:
         condition: service_healthy
@@ -66,7 +66,10 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-mymy}:${POSTGRES_PASSWORD:-mymy}@db:5432/${POSTGRES_DB:-mymy}
       PORT: "33697"
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696}
+      MYMY_BIND_HOST: "0.0.0.0"
+      MYMY_LOOPBACK_PUBLISH: "true"
+      MYMY_INITIAL_PIN: ${MYMY_INITIAL_PIN:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696,http://127.0.0.1:33696}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       MYMY_AGENT_DATA_DIR: /app/data/agent
       MYMY_DRIVE_S3_BUCKET: ${MYMY_DRIVE_S3_BUCKET:-}
@@ -79,15 +82,20 @@ services:
       MYMY_QUARANTINE_MAX_PENDING_BYTES: ${MYMY_QUARANTINE_MAX_PENDING_BYTES:-1073741824}
       MYMY_QUARANTINE_RETENTION_DAYS: ${MYMY_QUARANTINE_RETENTION_DAYS:-30}
       MYMY_SANDBOX_RUNNER_URL: http://sandbox-runner:33698
+      MYMY_SANDBOX_RUNNER_TOKEN_FILE: /run/mymy/runner-control.token
       MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
       HOME: /app/data/home
     ports:
-      - "33697:33697"
+      - "127.0.0.1:33697:33697"
+    networks:
+      - default
+      - runner-internal
     volumes:
       - mymy-api-data:/app/data
+      - mymy-runner-control:/run/mymy:ro
     depends_on:
       db:
         condition: service_healthy
@@ -115,9 +123,10 @@ services:
     environment:
       PORT: "33698"
       MYMY_SANDBOX_MODE: ${MYMY_SANDBOX_MODE:-bubblewrap}
-      MYMY_SANDBOX_UNSHARE_USER: ${MYMY_SANDBOX_UNSHARE_USER:-false}
+      MYMY_SANDBOX_UNSHARE_USER: ${MYMY_SANDBOX_UNSHARE_USER:-true}
       MYMY_RUNNER_DATA_ROOT: /app/data/agent
       MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
+      MYMY_SANDBOX_RUNNER_TOKEN_FILE: /run/mymy/runner-control.token
       MYMY_SANDBOX_UID: "1000"
       MYMY_SANDBOX_GID: "1000"
       FIRECRACKER_BIN: ${FIRECRACKER_BIN:-}
@@ -131,21 +140,27 @@ services:
       FIRECRACKER_BOOT_TIMEOUT_SECS: ${FIRECRACKER_BOOT_TIMEOUT_SECS:-30}
       RUST_LOG: ${RUST_LOG:-mymy_sandbox_runner=info,tower_http=info}
       HOME: /tmp
-    ports:
-      - "33698:33698"
     volumes:
       - mymy-api-data:/app/data
+      - mymy-runner-control:/run/mymy
       - ${FIRECRACKER_ASSETS_DIR:-./data/firecracker-assets}:/app/data/agent/firecracker-assets:ro
-    devices:
-      - /dev/kvm:/dev/kvm
-      - /dev/net/tun:/dev/net/tun
+    # Bubblewrap needs namespace and mount privileges inside Docker on the
+    # supported Linux host. The runner remains internal-only and drops commands
+    # into a separate user namespace; Firecracker-only NET_ADMIN and host
+    # devices stay in the explicit overlay.
     cap_add:
-      - NET_ADMIN
       - SYS_ADMIN
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
+    networks:
+      - runner-internal
 
 volumes:
   mymy-db-data:
   mymy-api-data:
+  mymy-runner-control:
+
+networks:
+  runner-internal:
+    internal: true

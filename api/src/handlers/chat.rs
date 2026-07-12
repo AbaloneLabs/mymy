@@ -11,6 +11,9 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::agent_run::{EnqueueChatRunRequest, EnqueueChatRunResponse};
+use crate::models::artifact::{
+    ArtifactOpenResponse, SessionArtifactsQuery, SessionArtifactsResponse,
+};
 use crate::models::chat::{
     ChatMessagesResponse, ChatSessionResponse, ChatSessionsResponse, ClarifyAnswerRequest,
     ClarifyAnswerResponse, CreateSessionRequest, DeleteResponse,
@@ -27,6 +30,11 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/api/chat/sessions/{id}", delete(delete_session))
         .route(
+            "/api/chat/sessions/{id}/artifacts",
+            get(list_session_artifacts),
+        )
+        .route("/api/artifacts/{id}/open", get(open_artifact))
+        .route(
             "/api/chat/sessions/{id}/messages",
             get(get_messages).post(send_message),
         )
@@ -34,6 +42,25 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/chat/sessions/{id}/clarify/{request_id}",
             post(resolve_clarify),
         )
+}
+
+pub async fn list_session_artifacts(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<SessionArtifactsQuery>,
+) -> AppResult<Json<SessionArtifactsResponse>> {
+    Ok(Json(
+        crate::services::artifacts::list_session_artifacts(&state, id, query).await?,
+    ))
+}
+
+pub async fn open_artifact(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<ArtifactOpenResponse>> {
+    Ok(Json(
+        crate::services::artifacts::resolve_artifact_open(&state, id).await?,
+    ))
 }
 
 pub async fn list_sessions(

@@ -13,9 +13,9 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (serverAuthenticated !== undefined) {
-      setAuthState(serverAuthenticated);
+      setAuthState(serverAuthenticated, status.data?.recoveryScopeId ?? null);
     }
-  }, [serverAuthenticated, setAuthState]);
+  }, [serverAuthenticated, setAuthState, status.data?.recoveryScopeId]);
 
   if (status.isLoading) {
     return null;

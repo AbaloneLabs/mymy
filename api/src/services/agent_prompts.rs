@@ -213,6 +213,8 @@ async fn write_prompt_file(
                 expected_fingerprint,
                 allow_overwrite: true,
                 enqueue_s3_sync: true,
+                operation_key: None,
+                artifact: None,
             },
             content.as_bytes(),
         )

@@ -134,8 +134,11 @@ impl AppAction {
             NoteUpdate => ToolCapability::mutation(ToolEffect::Update, "note"),
             NoteDelete => ToolCapability::mutation(ToolEffect::Delete, "note"),
             DriveList | DriveRead => ToolCapability::read("file").with_resource_argument("path"),
-            DriveWrite | DriveMkdir | DriveRestore => {
+            DriveWrite | DriveMkdir => {
                 ToolCapability::mutation(ToolEffect::Update, "file").with_resource_argument("path")
+            }
+            DriveRestore => {
+                ToolCapability::mutation(ToolEffect::Update, "file").with_resource_argument("id")
             }
             DriveDelete => {
                 ToolCapability::mutation(ToolEffect::Delete, "file").with_resource_argument("path")

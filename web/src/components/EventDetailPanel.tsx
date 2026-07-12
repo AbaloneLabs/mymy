@@ -23,6 +23,8 @@ interface EventDetailPanelProps {
   projects: Project[];
   /** Increments when the create-event shortcut fires (opens the form). */
   openSignal?: number;
+  /** Event selected through a typed search link. */
+  focusEventId?: string | null;
 }
 
 /**
@@ -35,6 +37,7 @@ export function EventDetailPanel({
   projectId,
   projects,
   openSignal,
+  focusEventId,
 }: EventDetailPanelProps) {
   const { t } = useTranslation();
   const [showForm, setShowForm] = useState(false);
@@ -163,7 +166,13 @@ export function EventDetailPanel({
             return (
               <div
                 key={ev.id}
-                className="group rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
+                aria-current={focusEventId === ev.id ? "true" : undefined}
+                className={cn(
+                  "group rounded-lg border bg-[var(--surface)] p-3 transition-colors hover:border-[var(--border-hover)]",
+                  focusEventId === ev.id
+                    ? "border-[var(--accent)] ring-1 ring-[var(--accent)]"
+                    : "border-[var(--border)]",
+                )}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

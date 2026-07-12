@@ -75,7 +75,7 @@ Linear에서 영감받은 다크 테마. 모든 색상은 `src/index.css`의 CSS
 
 ## 인증 (PIN)
 
-- 기본 PIN: `mymy`
+- 최초 PIN: 시작 전에 `MYMY_INITIAL_PIN`을 한 번 설정하며, 기본 PIN은 허용되지 않습니다.
 - PIN 검증은 Rust API가 처리합니다.
 - 인증 성공 시 `mymy_session` HttpOnly 쿠키가 설정됩니다.
 - `/` 라우트는 `ProtectedRoute`가 서버 세션 상태를 확인해 보호합니다.

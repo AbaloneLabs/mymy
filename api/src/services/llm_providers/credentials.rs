@@ -99,8 +99,8 @@ pub async fn create_credential(
     let encrypted = crypto::encrypt_api_key(&key, &req.api_key)?;
     sqlx::query!(
         r#"INSERT INTO agent_credentials
-           (provider_id, label, encrypted_key, key_nonce)
-           VALUES ($1, $2, $3, $4)"#,
+           (provider_id, label, encrypted_key, key_nonce, key_derivation_version)
+           VALUES ($1, $2, $3, $4, 2)"#,
         provider_id,
         label,
         encrypted.ciphertext_hex,

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::content_security::ContentOrigin;
@@ -10,6 +11,7 @@ use crate::models::drive::{
 };
 use crate::services::document_editor::editor_kind_for_path;
 use crate::services::file_observations::{fingerprint_path, FileFingerprint};
+use crate::services::resource_identity::{self, ResourceActor};
 use crate::services::workspace_content::{
     AdmissionActor, AdmissionOutcome, AdmissionRequest, StagedContent,
 };
@@ -17,7 +19,7 @@ use crate::state::AppState;
 
 use super::content::{is_editable, mime_type_for_path, read_preview_content};
 use super::paths::{logical_child_path, metadata_updated_at, resolve_drive_path, DRIVE_PREFIX};
-use super::sync::enqueue_s3_sync_job;
+use super::sync::enqueue_s3_sync_job_for_resource;
 use super::workspace::ensure_drive_root;
 
 pub async fn list(state: &AppState, logical_path: Option<&str>) -> AppResult<DriveListResponse> {
@@ -113,8 +115,15 @@ pub async fn read_file(state: &AppState, logical_path: &str) -> AppResult<DriveF
     let fingerprint = fingerprint_path(&resolved.physical_path)
         .await
         .map_err(AppError::Internal)?;
+    let resource_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM drive_resources WHERE provider = 'local_vm' AND canonical_path = $1 AND lifecycle_state = 'active'",
+    )
+    .bind(&resolved.logical_path)
+    .fetch_optional(&state.db)
+    .await?;
 
     Ok(DriveFileResponse {
+        resource_id: resource_id.map(|id| id.to_string()),
         path: resolved.logical_path,
         name: resolved
             .physical_path
@@ -148,12 +157,35 @@ pub fn blob_path(state: &AppState, logical_path: &str) -> AppResult<(PathBuf, St
 /// but they still need the same compare-and-swap boundary. The content hash is
 /// therefore checked inside the critical section immediately before the
 /// atomic replacement.
+#[cfg(test)]
 pub async fn write_file_conditionally(
     state: &AppState,
     logical_path: &str,
     content: &str,
     expected_fingerprint: Option<&str>,
 ) -> AppResult<FileFingerprint> {
+    write_file_conditionally_with_context(
+        state,
+        logical_path,
+        content,
+        expected_fingerprint,
+        AdmissionActor::user(),
+        None,
+        None,
+    )
+    .await
+    .map(|result| result.0)
+}
+
+pub async fn write_file_conditionally_with_context(
+    state: &AppState,
+    logical_path: &str,
+    content: &str,
+    expected_fingerprint: Option<&str>,
+    actor: AdmissionActor,
+    operation_key: Option<String>,
+    artifact: Option<resource_identity::ArtifactClassification>,
+) -> AppResult<(FileFingerprint, Uuid)> {
     let resolved = resolve_drive_path(&state.config.agent_data_dir, logical_path)?;
     if resolved.physical_path.exists() && expected_fingerprint.is_none() {
         return Err(AppError::Conflict(
@@ -174,16 +206,22 @@ pub async fn write_file_conditionally(
                 desired_path: resolved.logical_path,
                 file_name,
                 origin: ContentOrigin::UserEdit,
-                actor: AdmissionActor::user(),
+                actor,
                 expected_fingerprint: expected_fingerprint.map(str::to_string),
                 allow_overwrite: true,
                 enqueue_s3_sync: true,
+                operation_key,
+                artifact,
             },
             content.as_bytes(),
         )
         .await?;
     match outcome {
-        AdmissionOutcome::Committed { fingerprint, .. } => Ok(fingerprint),
+        AdmissionOutcome::Committed {
+            fingerprint,
+            operation_id,
+            ..
+        } => Ok((fingerprint, operation_id)),
         AdmissionOutcome::Quarantined { .. } => Err(AppError::content_quarantined()),
         AdmissionOutcome::Rejected => Err(AppError::content_rejected()),
     }
@@ -217,6 +255,8 @@ pub async fn upload_staged_file(
                 expected_fingerprint: None,
                 allow_overwrite: true,
                 enqueue_s3_sync: true,
+                operation_key: None,
+                artifact: None,
             },
             staged,
         )
@@ -283,6 +323,8 @@ pub async fn move_path(
     state: &AppState,
     source_path: &str,
     destination_path: &str,
+    operation_key: Option<&str>,
+    expected_lifecycle_revision: Option<&str>,
 ) -> AppResult<MoveDrivePathResponse> {
     let _namespace_guard = state.drive_namespace_lock().write().await;
     let source = resolve_drive_path(&state.config.agent_data_dir, source_path)?;
@@ -319,7 +361,92 @@ pub async fn move_path(
             "Drive destination parent must exist".to_string(),
         ));
     }
-    fs::rename(&source.physical_path, &destination.physical_path)?;
+    let metadata = fs::metadata(&source.physical_path)?;
+    let resource_id = resource_identity::ensure_existing_resource(
+        state,
+        &source.logical_path,
+        if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        },
+    )
+    .await?;
+    let operation_key = operation_key
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let actor = ResourceActor::user();
+    let prepared = resource_identity::prepare_lifecycle_operation(
+        state,
+        resource_identity::PrepareLifecycleOperation {
+            operation_key: &operation_key,
+            operation_kind: "move",
+            known_resource_id: Some(resource_id),
+            logical_path: &source.logical_path,
+            requested_reference: Some(&destination.logical_path),
+            expected_revision: expected_lifecycle_revision,
+            actor: &actor,
+            resource_kind: if metadata.is_dir() {
+                "directory"
+            } else {
+                "file"
+            },
+            trash_entry_id: None,
+        },
+    )
+    .await?;
+    if metadata.is_dir() && prepared.state == "prepared" && source.physical_path.is_dir() {
+        resource_identity::prepare_directory_move(
+            state,
+            prepared.operation_id,
+            &source.physical_path,
+            &source.logical_path,
+        )
+        .await?;
+    }
+    let resource_sequence = if prepared.state != "completed" {
+        if prepared.state == "prepared" {
+            fs::rename(&source.physical_path, &destination.physical_path)?;
+        } else if !destination.physical_path.exists() || source.physical_path.exists() {
+            return Err(AppError::Conflict(
+                "move operation filesystem state requires manual reconciliation".to_string(),
+            ));
+        }
+        resource_identity::mark_filesystem_committed(
+            state,
+            prepared.operation_id,
+            &destination.logical_path,
+            "lifecycle:filesystem_committed",
+        )
+        .await?;
+        resource_identity::project_lifecycle_commit(
+            state,
+            &prepared,
+            "moved",
+            "active",
+            Some(&destination.logical_path),
+            &actor,
+            None,
+        )
+        .await?
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT current_revision + lifecycle_revision FROM drive_resources WHERE id = $1",
+        )
+        .bind(prepared.resource_id)
+        .fetch_one(&state.db)
+        .await?
+    };
+    if metadata.is_dir() {
+        resource_identity::project_directory_descendant_paths(
+            state,
+            prepared.operation_id,
+            prepared.resource_id,
+            &source.logical_path,
+            &destination.logical_path,
+        )
+        .await?;
+    }
     if let Err(err) = crate::services::knowledge::reconcile_drive_move(
         state,
         &source.logical_path,
@@ -327,19 +454,43 @@ pub async fn move_path(
     )
     .await
     {
-        if let Err(rollback_err) = fs::rename(&destination.physical_path, &source.physical_path) {
-            return Err(AppError::Internal(format!(
-                "Drive move link reconciliation failed ({err}) and rollback failed ({rollback_err})"
-            )));
-        }
-        return Err(err);
+        tracing::error!(operation_id = %prepared.operation_id, error = %err, "Drive move committed; Wiki links require reconciliation");
     }
-    enqueue_s3_sync_job(state, &source.logical_path, "delete").await?;
-    enqueue_s3_sync_job(state, &destination.logical_path, "upload").await?;
+    if let Err(error) = enqueue_s3_sync_job_for_resource(
+        state,
+        &source.logical_path,
+        "delete",
+        Some(prepared.resource_id),
+        Some(resource_sequence),
+    )
+    .await
+    {
+        tracing::error!(operation_id = %prepared.operation_id, error = %error, "Drive move committed; delete sync enqueue failed");
+    }
+    if let Err(error) = enqueue_s3_sync_job_for_resource(
+        state,
+        &destination.logical_path,
+        "upload",
+        Some(prepared.resource_id),
+        Some(resource_sequence),
+    )
+    .await
+    {
+        tracing::error!(operation_id = %prepared.operation_id, error = %error, "Drive move committed; upload sync enqueue failed");
+    }
+    let lifecycle_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT lifecycle_revision FROM drive_resources WHERE id = $1",
+    )
+    .bind(prepared.resource_id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(MoveDrivePathResponse {
         success: true,
         source_path: source.logical_path,
         destination_path: destination.logical_path,
+        operation_id: prepared.operation_id.to_string(),
+        resource_id: prepared.resource_id.to_string(),
+        lifecycle_revision: lifecycle_revision.to_string(),
     })
 }
 

@@ -1,4 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
@@ -24,6 +27,7 @@ pub(super) struct RunnerState {
     pub(super) data_root: PathBuf,
     pub(super) log_dir: PathBuf,
     pub(super) preview_host: String,
+    pub(super) control_token: String,
     pub(super) unshare_user: bool,
     pub(super) sandbox_uid: Option<u32>,
     pub(super) sandbox_gid: Option<u32>,
@@ -52,11 +56,17 @@ impl RunnerState {
             "firecracker" => RunnerMode::Firecracker,
             _ => RunnerMode::Bubblewrap,
         };
-        let data_root = PathBuf::from(
+        let configured_data_root = PathBuf::from(
             std::env::var("MYMY_RUNNER_DATA_ROOT")
                 .unwrap_or_else(|_| "/app/data/agent".to_string()),
-        )
-        .canonicalize()?;
+        );
+        // The runner may start before the API on a brand-new named volume.
+        // Owning creation of its configured root avoids a restart-order race;
+        // canonicalization still happens before any containment comparisons or
+        // command mounts use the path.
+        std::fs::create_dir_all(&configured_data_root)?;
+        let data_root = configured_data_root.canonicalize()?;
+        let control_token = load_or_create_control_token(&data_root)?;
         let log_dir = data_root.join("runner-logs");
         std::fs::create_dir_all(&log_dir)?;
         let firecracker_work_dir = config_env::path("FIRECRACKER_WORK_DIR")
@@ -68,6 +78,7 @@ impl RunnerState {
             log_dir,
             preview_host: std::env::var("MYMY_SANDBOX_PREVIEW_HOST")
                 .unwrap_or_else(|_| "sandbox-runner".to_string()),
+            control_token,
             unshare_user: config_env::flag("MYMY_SANDBOX_UNSHARE_USER"),
             sandbox_uid: config_env::u32("MYMY_SANDBOX_UID"),
             sandbox_gid: config_env::u32("MYMY_SANDBOX_GID"),
@@ -206,16 +217,41 @@ impl RunnerState {
         &self,
         req: &PreparedRequest,
         command: &str,
+        share_network: bool,
     ) -> Result<Command, RunnerError> {
         let mut cmd = Command::new("bwrap");
-        cmd.arg("--die-with-parent")
-            .arg("--unshare-pid")
+        cmd.arg("--die-with-parent");
+        // The user namespace must be established before the other namespaces
+        // so the child owns every subsequent isolation boundary. On the
+        // supported Docker kernel a nested user namespace cannot mount procfs;
+        // expose an empty /proc instead of falling back to the outer runner's
+        // process table. Process monitoring remains owned by the runner.
+        if self.unshare_user {
+            cmd.arg("--unshare-user");
+            if let Some(uid) = self.sandbox_uid {
+                cmd.arg("--uid").arg(uid.to_string());
+            }
+            if let Some(gid) = self.sandbox_gid {
+                cmd.arg("--gid").arg(gid.to_string());
+            }
+        }
+        cmd.arg("--unshare-pid")
             .arg("--unshare-ipc")
-            .arg("--unshare-uts")
-            .arg("--share-net")
-            .arg("--proc")
-            .arg("/proc")
-            .arg("--dir")
+            .arg("--unshare-uts");
+        if share_network || !self.unshare_user {
+            // Long-lived preview processes bind a runner-local port. The
+            // purpose-bound runner control token prevents those processes from
+            // invoking the control API even though they share this namespace.
+            cmd.arg("--share-net");
+        } else {
+            cmd.arg("--unshare-net");
+        }
+        if self.unshare_user {
+            cmd.arg("--dir").arg("/proc");
+        } else {
+            cmd.arg("--proc").arg("/proc");
+        }
+        cmd.arg("--dir")
             .arg("/dev")
             .arg("--tmpfs")
             .arg("/tmp")
@@ -232,10 +268,6 @@ impl RunnerState {
                 cmd.arg("--dev-bind").arg(device).arg(device);
             }
         }
-        if self.unshare_user {
-            cmd.arg("--unshare-user");
-        }
-
         for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"] {
             if Path::new(path).exists() {
                 cmd.arg("--ro-bind").arg(path).arg(path);
@@ -249,14 +281,6 @@ impl RunnerState {
                 cmd.arg("--ro-bind");
             }
             cmd.arg(&root.host_path).arg(&root.mount_path);
-        }
-        if self.unshare_user {
-            if let Some(uid) = self.sandbox_uid {
-                cmd.arg("--uid").arg(uid.to_string());
-            }
-            if let Some(gid) = self.sandbox_gid {
-                cmd.arg("--gid").arg(gid.to_string());
-            }
         }
         cmd.arg("--setenv")
             .arg("HOME")
@@ -322,4 +346,41 @@ impl RunnerState {
             }
         }
     }
+}
+
+fn load_or_create_control_token(data_root: &Path) -> anyhow::Result<String> {
+    let path = std::env::var("MYMY_SANDBOX_RUNNER_TOKEN_FILE")
+        .map(PathBuf::from)
+        .map_err(|_| anyhow::anyhow!("MYMY_SANDBOX_RUNNER_TOKEN_FILE is required"))?;
+    if path.starts_with(data_root) {
+        anyhow::bail!("runner control token must be outside the mountable data root");
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let token = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            let mut bytes = [0_u8; 32];
+            getrandom::fill(&mut bytes)
+                .map_err(|error| anyhow::anyhow!("runner token generation failed: {error}"))?;
+            let token = hex::encode(bytes);
+            file.write_all(token.as_bytes())?;
+            file.sync_all()?;
+            token
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::read_to_string(&path)?.trim().to_string()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    if token.len() < 64 {
+        anyhow::bail!("runner control token file is empty or invalid");
+    }
+    Ok(token)
 }

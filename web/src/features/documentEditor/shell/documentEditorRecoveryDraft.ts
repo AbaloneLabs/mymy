@@ -1,14 +1,15 @@
 import type { DocumentEditorKind } from "@/types/documentEditor";
 
 const DATABASE_NAME = "mymy-document-editor";
-const DATABASE_VERSION = 2;
-const STORE_NAME = "recovery-drafts-v2";
-const LEGACY_STORE_NAME = "recovery-drafts";
-const PATH_INDEX_NAME = "path";
-const RECOVERY_SCHEMA_VERSION = 1;
+const DATABASE_VERSION = 3;
+const STORE_NAME = "recovery-drafts-v3";
+const LEGACY_STORE_NAMES = ["recovery-drafts", "recovery-drafts-v2"];
+const SCOPE_PATH_INDEX_NAME = "principal-scope-path";
+const RECOVERY_SCHEMA_VERSION = 2;
 
 export interface DocumentEditorRecoveryDraft {
   id: string;
+  principalScopeId: string;
   sessionId: string;
   schemaVersion: number;
   path: string;
@@ -39,7 +40,11 @@ export async function persistDocumentEditorRecoveryDraft(
     (store) =>
       store.put({
         ...draft,
-        id: documentEditorRecoveryDraftId(draft.path, draft.sessionId),
+        id: documentEditorRecoveryDraftId(
+          draft.principalScopeId,
+          draft.path,
+          draft.sessionId,
+        ),
         schemaVersion: RECOVERY_SCHEMA_VERSION,
         updatedAt: new Date().toISOString(),
       }),
@@ -48,45 +53,51 @@ export async function persistDocumentEditorRecoveryDraft(
 }
 
 export async function readDocumentEditorRecoveryDraft(
+  principalScopeId: string,
   path: string,
   ignoredIds: ReadonlySet<string> = new Set(),
 ) {
   const database = await openRecoveryDatabase();
   const values = await runRecoveryRequest(database, STORE_NAME, "readonly", (store) =>
-    store.index(PATH_INDEX_NAME).getAll(path),
+    store
+      .index(SCOPE_PATH_INDEX_NAME)
+      .getAll(IDBKeyRange.only([principalScopeId, path])),
   );
   const drafts = Array.isArray(values)
-    ? values.filter(isRecoveryDraft).filter((draft) => !ignoredIds.has(draft.id))
+    ? values
+        .filter(isRecoveryDraft)
+        .filter(
+          (draft) =>
+            draft.principalScopeId === principalScopeId &&
+            !ignoredIds.has(draft.id),
+        )
     : [];
-  const legacy =
-    drafts.length === 0 && database.objectStoreNames.contains(LEGACY_STORE_NAME)
-      ? await readLegacyRecoveryDraft(database, path)
-      : null;
   database.close();
-  return latestDocumentEditorRecoveryDraft(
-    [...drafts, ...(legacy ? [legacy] : [])],
-    ignoredIds,
-  );
+  return latestDocumentEditorRecoveryDraft(drafts, ignoredIds);
 }
 
 export async function deleteDocumentEditorRecoveryDraft(id: string) {
   const database = await openRecoveryDatabase();
-  if (id.startsWith("legacy:")) {
-    if (database.objectStoreNames.contains(LEGACY_STORE_NAME)) {
-      await runRecoveryRequest(database, LEGACY_STORE_NAME, "readwrite", (store) =>
-        store.delete(id.slice("legacy:".length)),
-      );
-    }
-  } else {
-    await runRecoveryRequest(database, STORE_NAME, "readwrite", (store) =>
-      store.delete(id),
-    );
-  }
+  await runRecoveryRequest(database, STORE_NAME, "readwrite", (store) =>
+    store.delete(id),
+  );
   database.close();
 }
 
-export function documentEditorRecoveryDraftId(path: string, sessionId: string) {
-  return `${path}\u0000${sessionId}`;
+export async function clearDocumentEditorRecoveryDrafts() {
+  const database = await openRecoveryDatabase();
+  await runRecoveryRequest(database, STORE_NAME, "readwrite", (store) =>
+    store.clear(),
+  );
+  database.close();
+}
+
+export function documentEditorRecoveryDraftId(
+  principalScopeId: string,
+  path: string,
+  sessionId: string,
+) {
+  return `${principalScopeId}\u0000${path}\u0000${sessionId}`;
 }
 
 export function latestDocumentEditorRecoveryDraft(
@@ -105,9 +116,18 @@ function openRecoveryDatabase() {
     const request = window.indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
+      for (const legacyStoreName of LEGACY_STORE_NAMES) {
+        if (database.objectStoreNames.contains(legacyStoreName)) {
+          database.deleteObjectStore(legacyStoreName);
+        }
+      }
       if (!database.objectStoreNames.contains(STORE_NAME)) {
         const store = database.createObjectStore(STORE_NAME, { keyPath: "id" });
-        store.createIndex(PATH_INDEX_NAME, "path", { unique: false });
+        store.createIndex(
+          SCOPE_PATH_INDEX_NAME,
+          ["principalScopeId", "path"],
+          { unique: false },
+        );
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -158,39 +178,8 @@ function isRecoveryDraft(value: unknown): value is DocumentEditorRecoveryDraft {
   return (
     candidate.schemaVersion === RECOVERY_SCHEMA_VERSION &&
     typeof candidate.id === "string" &&
+    typeof candidate.principalScopeId === "string" &&
     typeof candidate.sessionId === "string" &&
-    typeof candidate.path === "string" &&
-    typeof candidate.editorKind === "string" &&
-    typeof candidate.modelSchemaVersion === "number" &&
-    typeof candidate.baseFingerprint === "string" &&
-    typeof candidate.updatedAt === "string" &&
-    "baseModel" in candidate &&
-    "model" in candidate
-  );
-}
-
-async function readLegacyRecoveryDraft(database: IDBDatabase, path: string) {
-  const value = await runRecoveryRequest(
-    database,
-    LEGACY_STORE_NAME,
-    "readonly",
-    (store) => store.get(path),
-  );
-  if (!isLegacyRecoveryDraft(value)) return null;
-  return {
-    ...value,
-    id: `legacy:${path}`,
-    sessionId: "legacy",
-  } satisfies DocumentEditorRecoveryDraft;
-}
-
-function isLegacyRecoveryDraft(
-  value: unknown,
-): value is Omit<DocumentEditorRecoveryDraft, "id" | "sessionId"> {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<DocumentEditorRecoveryDraft>;
-  return (
-    candidate.schemaVersion === RECOVERY_SCHEMA_VERSION &&
     typeof candidate.path === "string" &&
     typeof candidate.editorKind === "string" &&
     typeof candidate.modelSchemaVersion === "number" &&

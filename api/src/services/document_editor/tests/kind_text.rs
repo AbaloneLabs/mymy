@@ -41,6 +41,7 @@ fn editor_kind_accepts_document_and_structured_text_formats() {
 fn document_editor_capabilities_and_idempotency_keys_are_explicit() {
     let capabilities = document_editor_capabilities(DocumentEditorKind::Docx);
     assert!(capabilities.contains(&"document-revision-cas-v1".to_string()));
+    assert!(capabilities.contains(&DOCUMENT_CAPABILITY_REVISION.to_string()));
     assert!(capabilities.contains(&"docx-run-model-v1".to_string()));
     assert!(validate_document_editor_capabilities(DocumentEditorKind::Docx, &capabilities).is_ok());
     assert!(validate_document_editor_capabilities(
@@ -53,6 +54,38 @@ fn document_editor_capabilities_and_idempotency_keys_are_explicit() {
 }
 
 #[test]
+fn document_capability_matrix_distinguishes_partial_and_read_only_revisions() {
+    assert_eq!(
+        document_editing_mode(
+            DocumentEditorKind::Text,
+            &json!({"content": "editable"}),
+            &[],
+        ),
+        DocumentEditingMode::Editable,
+    );
+    assert_eq!(
+        document_editing_mode(
+            DocumentEditorKind::Docx,
+            &json!({}),
+            &[DocumentCompatibilityWarning {
+                code: "preserved-part".to_string(),
+                severity: DocumentCompatibilityWarningSeverity::Warning,
+                message: "Preserved package part".to_string(),
+            }],
+        ),
+        DocumentEditingMode::PartiallyEditable,
+    );
+    assert_eq!(
+        document_editing_mode(
+            DocumentEditorKind::Text,
+            &json!({"content": "x".repeat(TEXT_EDITABLE_CHARACTER_LIMIT + 1)}),
+            &[],
+        ),
+        DocumentEditingMode::ReadOnly,
+    );
+}
+
+#[test]
 fn document_save_request_hash_binds_revision_model_and_capabilities() {
     let request = WriteDocumentEditorModelRequest {
         path: "/drive/notes.md".to_string(),
@@ -62,6 +95,7 @@ fn document_save_request_hash_binds_revision_model_and_capabilities() {
         required_capabilities: document_editor_capabilities(DocumentEditorKind::Markdown),
         idempotency_key: "save-1".to_string(),
         expected_fingerprint: "revision-1".to_string(),
+        source_session_id: None,
     };
     let baseline = document_save_request_hash(&request).unwrap();
     let changed = WriteDocumentEditorModelRequest {

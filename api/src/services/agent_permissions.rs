@@ -102,6 +102,20 @@ impl AgentPermissionPolicy {
             lines.join("\n")
         }
     }
+
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"mymy-agent-permissions-v1\0");
+        for permission in self.permissions() {
+            hasher.update(domain_slug(permission.domain).as_bytes());
+            hasher.update(b"=");
+            hasher.update(access_slug(permission.access).as_bytes());
+            hasher.update(b"\0");
+        }
+        hex::encode(hasher.finalize())
+    }
 }
 
 pub async fn load_policy(state: &AppState, profile: &str) -> AppResult<AgentPermissionPolicy> {

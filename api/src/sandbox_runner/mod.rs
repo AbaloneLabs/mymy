@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path as AxumPath, State};
+use axum::http::{Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::trace::TraceLayer;
@@ -55,8 +58,7 @@ pub async fn run() -> anyhow::Result<()> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(33698);
     let state = Arc::new(RunnerState::from_env()?);
-    let app = Router::new()
-        .route("/health", get(health))
+    let protected = Router::new()
         .route("/runtime/status", get(runtime_status))
         .route("/execute", post(execute))
         .route("/executions/{id}/cancel", post(cancel_execution))
@@ -64,6 +66,13 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/processes/{id}/stop", post(stop_process))
         .route("/processes/{id}/kill", post(kill_process))
         .route("/processes/{id}/logs", get(process_logs))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            authorize_control_request,
+        ));
+    let app = Router::new()
+        .route("/health", get(health))
+        .merge(protected)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -71,6 +80,21 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(port, "starting mymy-sandbox-runner");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn authorize_control_request(
+    State(state): State<Arc<RunnerState>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let presented = request
+        .headers()
+        .get("x-mymy-runner-token")
+        .and_then(|value| value.to_str().ok());
+    if presented != Some(state.control_token.as_str()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
 }
 
 async fn health() -> &'static str {
@@ -100,7 +124,7 @@ async fn execute(
     }
     match state.mode {
         RunnerMode::Bubblewrap => {
-            let mut command = state.build_bubblewrap_command(&prepared, &req.command)?;
+            let mut command = state.build_bubblewrap_command(&prepared, &req.command, false)?;
             command
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -262,7 +286,7 @@ async fn start_process(
             .map(Json);
     }
 
-    let mut command = state.build_bubblewrap_command(&prepared, &req.execution.command)?;
+    let mut command = state.build_bubblewrap_command(&prepared, &req.execution.command, true)?;
     command.process_group(0);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());

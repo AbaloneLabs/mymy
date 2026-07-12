@@ -30,6 +30,7 @@ impl ToolExecutionGuard for DurableToolExecutionGuard {
         tool_name: &str,
         toolset: &str,
         capability: &ToolCapability,
+        contract_fingerprint: &str,
         arguments: &Value,
     ) -> Result<(), String> {
         if context.cancellation.is_cancelled() {
@@ -94,8 +95,12 @@ impl ToolExecutionGuard for DurableToolExecutionGuard {
         let autonomous = !matches!(context.trigger, SessionTrigger::Chat)
             || !context.authorization.explicit_user_action;
         let approval_required = capability.requires_approval(autonomous);
-        let action =
-            crate::agent::tools::proposed_action_descriptor(tool_name, capability, arguments);
+        let action = crate::agent::tools::proposed_action_descriptor(
+            tool_name,
+            capability,
+            contract_fingerprint,
+            arguments,
+        );
         let action_hash = crate::agent::tools::proposed_action_hash(&action);
         let expected_version = expected_target_version(arguments);
         if capability.effect != ToolEffect::Read {

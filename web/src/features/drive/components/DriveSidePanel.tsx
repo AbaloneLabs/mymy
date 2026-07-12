@@ -3,7 +3,6 @@ import {
   ExternalLink,
   Plus,
   RefreshCw,
-  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -14,12 +13,8 @@ import {
   useDeletePreviewEndpoint,
   useDriveProviders,
   useDriveSyncJobs,
-  useDriveTrash,
-  usePurgeDriveTrash,
   usePreviewEndpoints,
-  useRestoreDriveTrash,
 } from "@/features/drive/api";
-import { formatBytes, formatDate } from "@/features/drive/utils";
 import { cn } from "@/lib/utils";
 import { StatusPill } from "./DriveStatus";
 
@@ -30,12 +25,9 @@ export function DriveSidePanel({
 }) {
   const { t } = useTranslation();
   const providers = useDriveProviders();
-  const trash = useDriveTrash();
   const syncJobs = useDriveSyncJobs();
   const previews = usePreviewEndpoints(selectedAgentProfile);
   const agents = useAgents();
-  const restoreTrash = useRestoreDriveTrash();
-  const purgeTrash = usePurgeDriveTrash();
   const createPreview = useCreatePreviewEndpoint();
   const deletePreview = useDeletePreviewEndpoint();
   const [previewAgent, setPreviewAgent] = useState(selectedAgentProfile ?? "");
@@ -92,62 +84,6 @@ export function DriveSidePanel({
               )}
             </div>
           ))}
-        </div>
-      </section>
-
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">{t("drive.trash")}</h2>
-          <button
-            type="button"
-            onClick={() => void trash.refetch()}
-            className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-            title={t("common.refresh")}
-          >
-            <RefreshCw className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
-          </button>
-        </div>
-        <div className="space-y-2">
-          {(trash.data?.entries ?? []).slice(0, 6).map((entry) => (
-            <div
-              key={entry.id}
-              className="rounded-md border border-[var(--border)] p-3"
-            >
-              <div className="flex items-start gap-2">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-[var(--text)]">
-                    {entry.originalPath}
-                  </p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    {formatBytes(entry.size)} · {formatDate(entry.deletedAt)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => restoreTrash.mutate(entry.id)}
-                  disabled={restoreTrash.isPending}
-                  className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-                  title={t("drive.restore")}
-                >
-                  <RotateCcw className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => purgeTrash.mutate(entry.id)}
-                  disabled={purgeTrash.isPending}
-                  className="h-7 w-7 rounded-md text-[var(--text-faint)] hover:bg-[var(--surface-hover)] hover:text-[var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
-                  title={t("drive.purge")}
-                >
-                  <Trash2 className="mx-auto h-3.5 w-3.5" strokeWidth={1.5} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {!trash.isLoading && (trash.data?.entries ?? []).length === 0 && (
-            <p className="rounded-md border border-dashed border-[var(--border)] px-3 py-4 text-center text-sm text-[var(--text-faint)]">
-              {t("drive.trashEmpty")}
-            </p>
-          )}
         </div>
       </section>
 

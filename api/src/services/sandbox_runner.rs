@@ -17,6 +17,7 @@ use crate::error::{AppError, AppResult};
 pub struct RunnerClient {
     base_url: String,
     http: reqwest::Client,
+    token_file: Option<PathBuf>,
 }
 
 impl RunnerClient {
@@ -24,6 +25,9 @@ impl RunnerClient {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
+            token_file: std::env::var("MYMY_SANDBOX_RUNNER_TOKEN_FILE")
+                .ok()
+                .map(PathBuf::from),
         }
     }
 
@@ -75,9 +79,11 @@ impl RunnerClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let response = self
-            .http
-            .get(format!("{}{}", self.base_url, path))
+        let mut request = self.http.get(format!("{}{}", self.base_url, path));
+        if let Some(token) = self.control_token().await? {
+            request = request.header("x-mymy-runner-token", token);
+        }
+        let response = request
             .send()
             .await
             .map_err(|err| AppError::Internal(format!("sandbox runner request failed: {err}")))?;
@@ -89,14 +95,34 @@ impl RunnerClient {
         T: for<'de> Deserialize<'de>,
         B: Serialize + ?Sized,
     {
-        let response = self
+        let mut request = self
             .http
             .post(format!("{}{}", self.base_url, path))
-            .json(body)
+            .json(body);
+        if let Some(token) = self.control_token().await? {
+            request = request.header("x-mymy-runner-token", token);
+        }
+        let response = request
             .send()
             .await
             .map_err(|err| AppError::Internal(format!("sandbox runner request failed: {err}")))?;
         parse_runner_response(response).await
+    }
+
+    async fn control_token(&self) -> AppResult<Option<String>> {
+        let Some(path) = &self.token_file else {
+            return Ok(None);
+        };
+        let token = tokio::fs::read_to_string(path).await.map_err(|err| {
+            AppError::Internal(format!("sandbox runner token unavailable: {err}"))
+        })?;
+        let token = token.trim();
+        if token.len() < 64 {
+            return Err(AppError::Internal(
+                "sandbox runner token is invalid".to_string(),
+            ));
+        }
+        Ok(Some(token.to_string()))
     }
 }
 

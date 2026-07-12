@@ -81,7 +81,7 @@ Components reference these via `var(--*)`.
 
 ## Authentication (PIN)
 
-- Default PIN: `mymy`
+- First-run PIN: set `MYMY_INITIAL_PIN` once before startup; no default PIN is accepted.
 - PIN verification is handled by the Rust API.
 - Successful unlock sets the `mymy_session` HttpOnly cookie.
 - The `/` route is guarded by `ProtectedRoute` and checks server session state.

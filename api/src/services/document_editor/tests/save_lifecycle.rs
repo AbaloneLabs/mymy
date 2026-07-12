@@ -82,6 +82,7 @@ async fn two_tabs_and_a_third_revision_keep_every_overwrite_conditional(pool: Pg
         required_capabilities: document_editor_capabilities(tab_b.editor_kind),
         idempotency_key: "tab-b-reviewed-overwrite".to_string(),
         expected_fingerprint: reviewed_a.fingerprint,
+        source_session_id: None,
     };
     let stale_review = write_model(&state, reviewed_overwrite).await;
 
@@ -235,6 +236,7 @@ fn write_request(
         required_capabilities: document_editor_capabilities(opened.editor_kind),
         idempotency_key: idempotency_key.to_string(),
         expected_fingerprint: opened.fingerprint.clone(),
+        source_session_id: None,
     }
 }
 

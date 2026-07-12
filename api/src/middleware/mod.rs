@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderName, HeaderValue, Method, Request};
+use axum::http::header::{COOKIE, ORIGIN};
+use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use tower_http::cors::CorsLayer;
@@ -74,6 +75,48 @@ pub async fn require_auth(
     }
 }
 
+/// Reject credentialed browser mutations unless their Origin matches the
+/// configured web application. Non-browser bootstrap/automation clients may
+/// omit Origin only when they also send no ambient cookie; protected requests
+/// still pass through normal authentication after this check.
+pub async fn require_same_origin(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> AppResult<Response> {
+    if !matches!(
+        *req.method(),
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    ) {
+        return Ok(next.run(req).await);
+    }
+    let origin = req
+        .headers()
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let has_cookie = req.headers().contains_key(COOKIE);
+    if origin.is_none() && !has_cookie {
+        return Ok(next.run(req).await);
+    }
+    if origin.is_some_and(|value| origin_is_allowed(value, &state.config.cors_origins)) {
+        return Ok(next.run(req).await);
+    }
+    Err(AppError::Coded {
+        code: "origin_denied",
+        status: StatusCode::FORBIDDEN,
+        message: "browser mutation origin is not allowed".to_string(),
+        retryable: false,
+    })
+}
+
+fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> bool {
+    let origin = origin.trim_end_matches('/');
+    !origin.is_empty()
+        && allowed_origins
+            .iter()
+            .any(|allowed| allowed.trim_end_matches('/') == origin)
+}
+
 fn is_public_request(method: &Method, path: &str) -> bool {
     *method == Method::OPTIONS
         || path == "/api/health"
@@ -105,5 +148,15 @@ mod tests {
         use axum::http::StatusCode;
 
         assert_eq!(StatusCode::UNAUTHORIZED, StatusCode::from_u16(401).unwrap());
+    }
+
+    #[test]
+    fn browser_origins_match_exact_configured_origins() {
+        let allowed = vec!["http://localhost:33696".to_string()];
+        assert!(origin_is_allowed("http://localhost:33696", &allowed));
+        assert!(origin_is_allowed("http://localhost:33696/", &allowed));
+        assert!(!origin_is_allowed("http://localhost:336960", &allowed));
+        assert!(!origin_is_allowed("https://localhost:33696", &allowed));
+        assert!(!origin_is_allowed("null", &allowed));
     }
 }

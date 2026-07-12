@@ -69,6 +69,7 @@ pub struct KnowledgeTreeNode {
 pub struct KnowledgeResource {
     pub id: String,
     pub knowledge_id: String,
+    pub drive_resource_id: Option<String>,
     pub resource_type: String,
     pub resource_ref: String,
     pub title: String,

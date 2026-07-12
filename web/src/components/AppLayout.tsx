@@ -21,6 +21,7 @@ import {
   Command,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldQuestion,
 } from "lucide-react";
 import LanguageSwitcher from "@/components/LanguageSwitcher";
 import { TopBar } from "@/components/TopBar";
@@ -29,6 +30,7 @@ import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
 import { useLockApp } from "@/hooks/useLockApp";
 import { cn } from "@/lib/utils";
 import logoUrl from "@/assets/logo.svg";
+import { usePendingDecisionCount } from "@/features/decisions/api";
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -44,13 +46,11 @@ export function AppLayout({ children }: AppLayoutProps) {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("mymy:main-sidebar-collapsed") === "true";
   });
+  const pendingDecisions = usePendingDecisionCount();
 
   // Register all global keyboard shortcuts (navigation sequences,
   // palette toggle, lock, context create keys).
   useGlobalShortcuts();
-
-  // TopBar is shown on all pages except Home (`/`).
-  const showTopBar = location.pathname !== "/";
 
   function toggleCollapsed() {
     setCollapsed((current) => {
@@ -65,7 +65,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-20 flex flex-col border-r border-[var(--border)] bg-[var(--bg)] transition-[width] duration-150",
+          "fixed inset-y-0 left-0 z-20 hidden flex-col border-r border-[var(--border)] bg-[var(--bg)] transition-[width] duration-150 md:flex",
           collapsed ? "w-[64px]" : "w-[220px]",
         )}
       >
@@ -134,6 +134,13 @@ export function AppLayout({ children }: AppLayoutProps) {
                 )}
                 <item.icon className="h-4 w-4 shrink-0" strokeWidth={1.5} />
                 <span className={cn(collapsed && "hidden")}>{t(item.labelKey)}</span>
+                {item.id === "decisions" && (
+                  <DecisionCountBadge
+                    count={pendingDecisions.data?.count}
+                    failed={pendingDecisions.isError}
+                    collapsed={collapsed}
+                  />
+                )}
               </button>
             );
           })}
@@ -194,14 +201,53 @@ export function AppLayout({ children }: AppLayoutProps) {
         </div>
       </aside>
 
+      <nav
+        className="fixed inset-x-0 bottom-0 z-30 grid h-14 grid-cols-5 border-t border-[var(--border)] bg-[var(--bg)] md:hidden"
+        aria-label={t("nav.mobilePrimary")}
+      >
+        {NAV_ITEMS.filter(
+          (item) =>
+            item.kind === "item" &&
+            ["home", "decisions", "chat", "agents", "journey"].includes(item.id),
+        ).map((item) => {
+          if (item.kind !== "item") return null;
+          const active = location.pathname === item.path;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-current={active ? "page" : undefined}
+              aria-label={t(item.labelKey)}
+              title={t(item.labelKey)}
+              onClick={() => navigate(item.path)}
+              className={cn(
+                "relative flex flex-col items-center justify-center gap-0.5 text-[10px]",
+                active ? "text-[var(--accent)]" : "text-[var(--text-muted)]",
+              )}
+            >
+              <item.icon className="h-4 w-4" strokeWidth={1.5} />
+              <span>{t(item.labelKey)}</span>
+              {item.id === "decisions" && (
+                <DecisionCountBadge
+                  count={pendingDecisions.data?.count}
+                  failed={pendingDecisions.isError}
+                  collapsed
+                />
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
 
       <main
         className={cn(
           "flex h-dvh min-h-0 flex-1 flex-col transition-[padding-left] duration-150",
-          collapsed ? "pl-[64px]" : "pl-[220px]",
+          "pb-14 pl-0 md:pb-0",
+          collapsed ? "md:pl-[64px]" : "md:pl-[220px]",
         )}
       >
-        {showTopBar && <TopBar />}
+        <TopBar />
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </main>
 
@@ -247,6 +293,7 @@ function SidebarButton({
 
 const NAV_ITEMS = [
   { kind: "item", id: "home", labelKey: "nav.home", icon: Home, path: "/", enabled: true },
+  { kind: "item", id: "decisions", labelKey: "nav.decisions", icon: ShieldQuestion, path: "/decisions", enabled: true },
   { kind: "item", id: "chat", labelKey: "nav.chat", icon: MessageSquare, path: "/chat", enabled: true },
   { kind: "item", id: "agents", labelKey: "nav.agents", icon: Bot, path: "/agents", enabled: true },
   { kind: "item", id: "journey", labelKey: "nav.context", icon: Share2, path: "/journey", enabled: true },
@@ -263,3 +310,35 @@ const NAV_ITEMS = [
   { kind: "item", id: "finance", labelKey: "nav.finance", icon: Wallet, path: "/finance", enabled: true },
   { kind: "item", id: "investments", labelKey: "nav.investments", icon: LineChart, path: "/investments", enabled: true },
 ] as const;
+
+function DecisionCountBadge({
+  count,
+  failed,
+  collapsed,
+}: {
+  count: number | undefined;
+  failed: boolean;
+  collapsed: boolean;
+}) {
+  const { t } = useTranslation();
+  if (!failed && (!count || count < 1)) return null;
+  const label = failed ? "!" : count! > 99 ? "99+" : String(count);
+  return (
+    <span
+      aria-label={
+        failed
+          ? t("decisions.pendingCountUnavailable")
+          : t("decisions.pendingCount", { count })
+      }
+      className={cn(
+        "ml-auto inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold",
+        failed
+          ? "bg-[var(--status-warning-bg)] text-[var(--status-warning)]"
+          : "bg-[var(--accent)] text-white",
+        collapsed && "absolute right-1 top-1 ml-0",
+      )}
+    >
+      {label}
+    </span>
+  );
+}

@@ -29,6 +29,7 @@ interface DocumentEditorPaneProps {
   onDirtyChange?: (dirty: boolean) => void;
   onOpenDocument?: (path: string) => void;
   variant?: "side" | "embedded";
+  sourceChatSessionId?: string;
 }
 
 export function DocumentEditorPane({
@@ -37,6 +38,7 @@ export function DocumentEditorPane({
   onDirtyChange,
   onOpenDocument,
   variant = "side",
+  sourceChatSessionId,
 }: DocumentEditorPaneProps) {
   const { t } = useTranslation();
   const query = useDocumentEditorModel(path);
@@ -87,6 +89,7 @@ export function DocumentEditorPane({
           onDirtyChange={onDirtyChange}
           refreshModel={async () => (await query.refetch()).data ?? null}
           onOpenDocument={onOpenDocument}
+          sourceChatSessionId={sourceChatSessionId}
         />
       )}
     </aside>
@@ -98,14 +101,21 @@ function DocumentEditorContent({
   onDirtyChange,
   refreshModel,
   onOpenDocument,
+  sourceChatSessionId,
 }: {
   data: DocumentEditorModelResponse;
   onDirtyChange?: (dirty: boolean) => void;
   refreshModel: () => Promise<DocumentEditorModelResponse | null>;
   onOpenDocument?: (path: string) => void;
+  sourceChatSessionId?: string;
 }) {
   const { t } = useTranslation();
-  const session = useDocumentEditorSession({ data, onDirtyChange, refreshModel });
+  const session = useDocumentEditorSession({
+    data,
+    onDirtyChange,
+    refreshModel,
+    sourceChatSessionId,
+  });
   const {
     rootRef,
     draft,
@@ -121,6 +131,7 @@ function DocumentEditorContent({
     lastSavedAt,
     isSaving,
     isSaveQueued,
+    lifecycleStatus,
     saveError,
     saveErrorMessage,
     saveConflict,
@@ -462,14 +473,14 @@ function DocumentEditorContent({
         kind={data.editorKind}
         model={draft}
         fingerprint={fingerprint}
-        dirty={dirty}
         operationCount={operationCount}
         selectionLabel={selectionSnapshot.label}
         isSaving={isSaving}
         isSaveQueued={isSaveQueued}
-          warningCount={compatibilityWarnings.length}
-          syncStatus={syncStatus}
-          validatedDraftSerializedSize={validatedDraftSerializedSize}
+        warningCount={compatibilityWarnings.length}
+        syncStatus={syncStatus}
+        validatedDraftSerializedSize={validatedDraftSerializedSize}
+        lifecycleStatus={lifecycleStatus}
       />
     </div>
   );

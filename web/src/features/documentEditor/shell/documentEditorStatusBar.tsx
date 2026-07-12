@@ -7,12 +7,12 @@ import {
   documentEditorKindLabel,
   documentEditorStatusItems,
 } from "./documentEditorStatusItems";
+import type { DocumentEditorLifecycleStatus } from "./documentEditorLifecycle";
 
 export function DocumentEditorStatusBar({
   kind,
   model,
   fingerprint,
-  dirty,
   operationCount,
   selectionLabel,
   isSaving,
@@ -20,11 +20,11 @@ export function DocumentEditorStatusBar({
   warningCount,
   syncStatus,
   validatedDraftSerializedSize,
+  lifecycleStatus,
 }: {
   kind: DocumentEditorKind;
   model: unknown;
   fingerprint: string;
-  dirty: boolean;
   operationCount: number;
   selectionLabel: string;
   isSaving: boolean;
@@ -32,6 +32,7 @@ export function DocumentEditorStatusBar({
   warningCount: number;
   syncStatus: DocumentEditorSyncStatus;
   validatedDraftSerializedSize: number | null;
+  lifecycleStatus: DocumentEditorLifecycleStatus;
 }) {
   const { t } = useTranslation();
   const statusItems = documentEditorStatusItems(kind, model);
@@ -40,14 +41,9 @@ export function DocumentEditorStatusBar({
       <span className="font-medium text-[var(--text)]">
         {documentEditorKindLabel(kind)}
       </span>
-      <span>
-        {isSaving
-          ? t("documentEditor.saving", { defaultValue: "Saving" })
-          : isSaveQueued
-            ? t("documentEditor.saveQueued", { defaultValue: "Save queued" })
-            : dirty
-            ? t("documentEditor.unsaved")
-            : t("documentEditor.saved", { defaultValue: "Saved" })}
+      <span role="status" aria-live="polite" aria-atomic="true">
+        {t(`documentEditor.lifecycle.${lifecycleStatus}`)}
+        {isSaveQueued && !isSaving ? ` · ${t("documentEditor.saveQueued")}` : ""}
       </span>
       <span className="font-mono text-[var(--text-faint)]">
         {t("documentEditor.revision", { defaultValue: "rev" })}{" "}

@@ -94,12 +94,17 @@ impl ToolDispatchPolicy<'_> {
         let context = self.execution_context?;
         context.decisions.as_ref()?;
         let capability = self.registry.capability(&call.name)?;
+        let contract_fingerprint = self.registry.contract_fingerprint(&call.name)?;
         if !capability.requires_approval(autonomous(Some(context))) {
             return None;
         }
         let arguments = serde_json::from_str::<Value>(&call.arguments).ok()?;
-        let proposed_action =
-            crate::agent::tools::proposed_action_descriptor(&call.name, capability, &arguments);
+        let proposed_action = crate::agent::tools::proposed_action_descriptor(
+            &call.name,
+            capability,
+            &contract_fingerprint,
+            &arguments,
+        );
         let action_hash = crate::agent::tools::proposed_action_hash(&proposed_action);
         let already_approved = context
             .authorization

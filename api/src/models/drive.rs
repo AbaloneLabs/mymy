@@ -40,6 +40,7 @@ pub struct DriveListResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveFileResponse {
+    pub resource_id: Option<String>,
     pub path: String,
     pub name: String,
     pub mime_type: String,
@@ -57,6 +58,8 @@ pub struct DriveFileResponse {
 pub struct DrivePathQuery {
     #[serde(default)]
     pub path: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub expected_lifecycle_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +70,9 @@ pub struct WriteDriveFileRequest {
     /// Required when the destination already exists. New-file creation keeps
     /// this optional so creation does not need a fabricated revision token.
     pub expected_fingerprint: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub artifact_type: Option<String>,
+    pub artifact_title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,6 +86,8 @@ pub struct CreateDriveFolderRequest {
 pub struct MoveDrivePathRequest {
     pub source_path: String,
     pub destination_path: String,
+    pub idempotency_key: Option<String>,
+    pub expected_lifecycle_revision: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,6 +96,9 @@ pub struct MoveDrivePathResponse {
     pub success: bool,
     pub source_path: String,
     pub destination_path: String,
+    pub operation_id: String,
+    pub resource_id: String,
+    pub lifecycle_revision: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +111,7 @@ pub struct DriveMutationResponse {
 pub struct WriteDriveFileResponse {
     pub success: bool,
     pub fingerprint: String,
+    pub operation_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -135,6 +147,15 @@ pub struct DriveUploadResult {
 #[serde(rename_all = "camelCase")]
 pub struct DriveTrashResponse {
     pub entries: Vec<DriveTrashEntry>,
+    pub next_cursor: Option<String>,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveTrashQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -146,6 +167,8 @@ pub struct DriveTrashEntry {
     pub kind: DriveEntryKind,
     pub size: u64,
     pub deleted_at: String,
+    pub operation_id: Option<String>,
+    pub lifecycle_revision: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

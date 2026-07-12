@@ -10,10 +10,17 @@ pub(super) fn memory_view(row: MemoryRow) -> AgentMemoryView {
         source_run_id: row.source_run_id.map(|id| id.to_string()),
         source_run_snapshot_id: row.source_run_snapshot_id,
         source_decision_id: row.source_decision_id.map(|id| id.to_string()),
+        source_session_id: row.source_session_id.map(|id| id.to_string()),
+        source_message_start: row.source_message_start.map(|id| id.to_string()),
+        source_message_end: row.source_message_end.map(|id| id.to_string()),
         agent_profile: row.agent_profile,
         project_id: row.project_id.map(|id| id.to_string()),
         memory_type: row.memory_type,
         origin: row.origin,
+        scope_kind: row.scope_kind,
+        scope_id: row.scope_id,
+        tier: row.tier,
+        evidence_role: row.evidence_role,
         content: row.content,
         confidence: row.confidence,
         status: row.status,
@@ -22,6 +29,8 @@ pub(super) fn memory_view(row: MemoryRow) -> AgentMemoryView {
         valid_until: row.valid_until.map(|value| value.to_rfc3339()),
         superseded_by: row.superseded_by.map(|id| id.to_string()),
         created_at: row.created_at.to_rfc3339(),
+        content_revision: row.content_revision,
+        lifecycle_revision: row.lifecycle_revision,
     }
 }
 

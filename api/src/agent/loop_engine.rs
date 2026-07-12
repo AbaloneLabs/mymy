@@ -29,7 +29,9 @@ use crate::agent::context::ContextManager;
 use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::types::{FinishReason, StreamDelta, Usage};
 use crate::agent::providers::{LlmProvider, Message};
-use crate::agent::tools::{tool_error, tool_result, ToolCapability, ToolRegistry};
+use crate::agent::tools::{
+    tool_error, tool_success_result, ToolCapability, ToolEffect, ToolRegistry,
+};
 
 use self::budget::{allocate_child_budget, RunBudget};
 use self::dispatch::{tool_is_allowed, ToolDispatch, ToolDispatchPolicy};
@@ -582,10 +584,10 @@ impl AgentLoop {
                             };
                             match answer {
                                 Ok(Ok(answer)) => {
-                                    tool_result(&serde_json::json!({
+                                    tool_success_result(&serde_json::json!({
                                         "success": true,
                                         "answer": answer,
-                                    }))
+                                    }), ToolEffect::Read)
                                 }
                                 Ok(Err(_)) => tool_error("clarify request closed"),
                                 Err(_) => {
@@ -617,11 +619,11 @@ impl AgentLoop {
                                 .await
                             {
                                 Ok(decision) => {
-                                    let decision_result = tool_result(&serde_json::json!({
+                                    let decision_result = tool_success_result(&serde_json::json!({
                                         "success": true,
                                         "decision_id": decision.id,
                                         "status": "pending",
-                                    }));
+                                    }), ToolEffect::Create);
                                     yield AgentEvent::ToolCallFinished {
                                         call_id: invocation_id,
                                         result: decision_result,
@@ -689,11 +691,11 @@ impl AgentLoop {
                                 Ok(decision) => {
                                     yield AgentEvent::ToolCallFinished {
                                         call_id: invocation_id,
-                                        result: tool_result(&serde_json::json!({
+                                        result: tool_success_result(&serde_json::json!({
                                             "success": true,
                                             "decision_id": decision.id,
                                             "status": "pending",
-                                        })),
+                                        }), ToolEffect::Create),
                                         error: None,
                                         duration_ms: tool_started_at.elapsed().as_millis() as u64,
                                     };
@@ -914,10 +916,13 @@ impl AgentLoop {
             total.saturating_add(result.total_tokens)
         });
         DelegateBatchResult {
-            output: tool_result(&serde_json::json!({
-            "success": all_completed,
-            "results": results,
-            })),
+            output: tool_success_result(
+                &serde_json::json!({
+                "success": all_completed,
+                "results": results,
+                }),
+                ToolEffect::Execute,
+            ),
             total_tokens,
         }
     }
@@ -1211,8 +1216,8 @@ mod tests {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
                     name: "echo".to_string(),
-                    description: None,
-                    parameters: serde_json::json!({"type":"object"}),
+                    description: Some("Echo one integer value.".to_string()),
+                    parameters: serde_json::json!({"type":"object","properties":{"value":{"type":"integer","description":"Integer value returned by the test tool."}},"required":["value"],"additionalProperties":false}),
                 },
             },
             capability: crate::agent::tools::ToolCapability::read("test"),
@@ -1263,8 +1268,8 @@ mod tests {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
                     name: "read_quarantined".to_string(),
-                    description: None,
-                    parameters: serde_json::json!({"type":"object"}),
+                    description: Some("Return a stable quarantine denial.".to_string()),
+                    parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Logical quarantined test path."}},"required":["path"],"additionalProperties":false}),
                 },
             },
             capability: crate::agent::tools::ToolCapability::read("file"),
@@ -1339,8 +1344,8 @@ mod tests {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
                     name: "read".to_string(),
-                    description: None,
-                    parameters: serde_json::json!({"type":"object"}),
+                    description: Some("Read one delayed test resource.".to_string()),
+                    parameters: serde_json::json!({"type":"object","properties":{"id":{"type":"string","description":"Test resource identifier."},"delayMs":{"type":"integer","minimum":0,"description":"Artificial delay in milliseconds."}},"required":["id","delayMs"],"additionalProperties":false}),
                 },
             },
             capability: crate::agent::tools::ToolCapability::read("test")
@@ -1414,8 +1419,8 @@ mod tests {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
                     name: "mutate".to_string(),
-                    description: None,
-                    parameters: serde_json::json!({"type":"object"}),
+                    description: Some("Mutate one test resource.".to_string()),
+                    parameters: serde_json::json!({"type":"object","properties":{"id":{"type":"string","description":"Test resource identifier."}},"required":["id"],"additionalProperties":false}),
                 },
             },
             capability: crate::agent::tools::ToolCapability::mutation(ToolEffect::Update, "test"),

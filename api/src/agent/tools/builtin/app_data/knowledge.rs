@@ -15,7 +15,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "knowledge_search",
         "knowledge_read",
         "Search knowledge articles.",
-        serde_json::json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}),
+        serde_json::json!({"type":"object","properties":{"q":{"type":"string","description":"Text to match in permitted Knowledge titles and content."}},"required":["q"]}),
         state,
         AppAction::KnowledgeSearch,
     );
@@ -41,8 +41,22 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         registry,
         "knowledge_create",
         "knowledge_write",
-        "Create a knowledge article or category.",
-        passthrough_schema(),
+        "Create a Wiki/Knowledge article or category. Use write_file instead for a Drive file or generated file artifact.",
+        record_schema(
+            &[
+                "parentId",
+                "projectId",
+                "nodeType",
+                "title",
+                "slug",
+                "content",
+                "excerpt",
+                "tags",
+                "status",
+                "sortOrder",
+            ],
+            &["title"],
+        ),
         state,
         AppAction::KnowledgeCreate,
     );
@@ -51,7 +65,20 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "knowledge_update",
         "knowledge_write",
         "Update a knowledge node by id.",
-        id_body_schema("Knowledge node id."),
+        id_body_schema(
+            "Knowledge node id.",
+            &[
+                "parentId",
+                "nodeType",
+                "title",
+                "slug",
+                "content",
+                "excerpt",
+                "tags",
+                "status",
+                "sortOrder",
+            ],
+        ),
         state,
         AppAction::KnowledgeUpdate,
     );
@@ -60,7 +87,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "knowledge_move",
         "knowledge_write",
         "Move a knowledge node by id.",
-        id_body_schema("Knowledge node id."),
+        id_body_schema(
+            "Knowledge node id.",
+            &["parentId", "projectId", "sortOrder"],
+        ),
         state,
         AppAction::KnowledgeMove,
     );
@@ -80,7 +110,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "List Drive documents attached to a knowledge node, including broken-link state.",
         serde_json::json!({
             "type":"object",
-            "properties":{"knowledgeId":{"type":"string"}},
+            "properties":{"knowledgeId":{"type":"string","description":"Knowledge node UUID."}},
             "required":["knowledgeId"]
         }),
         state,
@@ -94,10 +124,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         serde_json::json!({
             "type":"object",
             "properties":{
-                "knowledgeId":{"type":"string"},
+                "knowledgeId":{"type":"string","description":"Knowledge node UUID that will reference the Drive file."},
                 "resourceRef":{"type":"string","description":"Existing /drive/... file path."},
-                "title":{"type":"string"},
-                "sortOrder":{"type":"integer"}
+                "title":{"type":"string","description":"Optional display title for this attachment reference."},
+                "sortOrder":{"type":"integer","description":"Optional integer ordering position among node attachments."}
             },
             "required":["knowledgeId","resourceRef"]
         }),
@@ -112,8 +142,8 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         serde_json::json!({
             "type":"object",
             "properties":{
-                "knowledgeId":{"type":"string"},
-                "resourceId":{"type":"string"}
+                "knowledgeId":{"type":"string","description":"Owning Knowledge node UUID."},
+                "resourceId":{"type":"string","description":"Knowledge attachment resource UUID to detach."}
             },
             "required":["knowledgeId","resourceId"]
         }),

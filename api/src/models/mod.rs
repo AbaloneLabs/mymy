@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_run;
+pub mod artifact;
 pub mod audit;
 pub mod auth;
 pub mod calendar;

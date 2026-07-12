@@ -14,8 +14,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::drive::{
     CreateDriveFolderRequest, DriveFileResponse, DriveListResponse, DriveMutationResponse,
     DrivePathQuery, DriveProvidersResponse, DriveRestoreResponse, DriveSyncJobsResponse,
-    DriveTrashResponse, DriveUploadResponse, MoveDrivePathRequest, MoveDrivePathResponse,
-    WriteDriveFileRequest, WriteDriveFileResponse,
+    DriveTrashQuery, DriveTrashResponse, DriveUploadResponse, MoveDrivePathRequest,
+    MoveDrivePathResponse, WriteDriveFileRequest, WriteDriveFileResponse,
 };
 use crate::services::document_revisions::{record_document_revision, RevisionActor};
 use crate::services::drive as drive_service;
@@ -28,6 +28,11 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/drive/move", axum::routing::post(move_drive_path))
         .route("/api/drive/providers", get(list_drive_providers))
         .route("/api/drive/sync-jobs", get(list_drive_sync_jobs))
+        .route("/api/drive/operations/{id}", get(get_drive_operation))
+        .route(
+            "/api/drive/resources/{id}/provenance",
+            get(get_resource_provenance),
+        )
         .route("/api/drive/upload", axum::routing::post(upload_drive_file))
         .route("/api/drive/trash", get(list_drive_trash))
         .route(
@@ -71,10 +76,29 @@ pub async fn list_drive_sync_jobs(
     Ok(Json(drive_service::list_sync_jobs(&state).await?))
 }
 
+pub async fn get_drive_operation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::services::resource_identity::ResourceOperationStatus>> {
+    Ok(Json(
+        crate::services::resource_identity::operation_status(&state, id).await?,
+    ))
+}
+
+pub async fn get_resource_provenance(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<crate::models::artifact::ResourceProvenanceResponse>> {
+    Ok(Json(
+        crate::services::artifacts::list_resource_provenance(&state, id).await?,
+    ))
+}
+
 pub async fn list_drive_trash(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<DriveTrashQuery>,
 ) -> AppResult<Json<DriveTrashResponse>> {
-    Ok(Json(drive_service::list_trash(&state).await?))
+    Ok(Json(drive_service::list_trash_page(&state, query).await?))
 }
 
 pub async fn read_drive_file(
@@ -139,7 +163,6 @@ fn is_safe_inline_drive_mime(mime_type: &str) -> bool {
             | "audio/mpeg"
             | "audio/wav"
             | "audio/ogg"
-            | "application/pdf"
     )
 }
 
@@ -196,11 +219,29 @@ pub async fn write_drive_file(
 ) -> AppResult<Json<WriteDriveFileResponse>> {
     let logical_path =
         drive_service::resolve_drive_path(&state.config.agent_data_dir, &req.path)?.logical_path;
-    let fingerprint = drive_service::write_file_conditionally(
+    let artifact = match (req.artifact_type.as_deref(), req.artifact_title.as_deref()) {
+        (None, None) => None,
+        (Some(kind), Some(title)) => {
+            Some(crate::services::resource_identity::artifact_classification(
+                kind,
+                title,
+                &logical_path,
+            )?)
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "artifactType and artifactTitle must be supplied together".to_string(),
+            ));
+        }
+    };
+    let (fingerprint, operation_id) = drive_service::write_file_conditionally_with_context(
         &state,
         &req.path,
         &req.content,
         req.expected_fingerprint.as_deref(),
+        crate::services::workspace_content::AdmissionActor::user(),
+        req.idempotency_key,
+        artifact,
     )
     .await?;
     if let Err(error) = record_document_revision(
@@ -222,6 +263,7 @@ pub async fn write_drive_file(
     Ok(Json(WriteDriveFileResponse {
         success: true,
         fingerprint: fingerprint.hash,
+        operation_id: operation_id.to_string(),
     }))
 }
 
@@ -339,7 +381,13 @@ pub async fn delete_drive_path(
     Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Json<DriveMutationResponse>> {
     let path = query.path.unwrap_or_else(|| "/drive".to_string());
-    drive_service::delete_path(&state, &path).await?;
+    drive_service::delete_path(
+        &state,
+        &path,
+        query.idempotency_key.as_deref(),
+        query.expected_lifecycle_revision.as_deref(),
+    )
+    .await?;
     Ok(Json(DriveMutationResponse { success: true }))
 }
 
@@ -348,22 +396,47 @@ pub async fn move_drive_path(
     Json(request): Json<MoveDrivePathRequest>,
 ) -> AppResult<Json<MoveDrivePathResponse>> {
     Ok(Json(
-        drive_service::move_path(&state, &request.source_path, &request.destination_path).await?,
+        drive_service::move_path(
+            &state,
+            &request.source_path,
+            &request.destination_path,
+            request.idempotency_key.as_deref(),
+            request.expected_lifecycle_revision.as_deref(),
+        )
+        .await?,
     ))
 }
 
 pub async fn restore_drive_trash(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Json<DriveRestoreResponse>> {
-    Ok(Json(drive_service::restore_trash(&state, id).await?))
+    Ok(Json(
+        drive_service::restore_trash(
+            &state,
+            id,
+            query.idempotency_key.as_deref(),
+            query.expected_lifecycle_revision.as_deref(),
+        )
+        .await?,
+    ))
 }
 
 pub async fn purge_drive_trash(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DrivePathQuery>,
 ) -> AppResult<Json<DriveMutationResponse>> {
-    Ok(Json(drive_service::purge_trash(&state, id).await?))
+    Ok(Json(
+        drive_service::purge_trash(
+            &state,
+            id,
+            query.idempotency_key.as_deref(),
+            query.expected_lifecycle_revision.as_deref(),
+        )
+        .await?,
+    ))
 }
 
 #[cfg(test)]
@@ -387,6 +460,7 @@ mod upload_tests {
         assert!(!is_safe_inline_drive_mime("text/html"));
         assert!(!is_safe_inline_drive_mime("image/svg+xml"));
         assert!(!is_safe_inline_drive_mime("text/javascript"));
+        assert!(!is_safe_inline_drive_mime("application/pdf"));
         assert!(is_safe_inline_drive_mime("image/png"));
         assert_eq!(
             content_disposition("attachment", "bad\";name.svg"),

@@ -44,10 +44,10 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "code": { "type": "string" },
-                    "language": { "type": "string", "enum": ["python"], "default": "python" },
+                    "code": { "type": "string", "description": "Complete Python source code to execute in the sandbox." },
+                    "language": { "type": "string", "enum": ["python"], "default": "python", "description": "Execution language; currently only python is supported." },
                     "cwd": { "type": "string", "description": "Optional workspace-relative working directory." },
-                    "timeout": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS }
+                    "timeout": { "type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECS, "description": "Maximum execution time in seconds." }
                 },
                 "required": ["code"]
             }),

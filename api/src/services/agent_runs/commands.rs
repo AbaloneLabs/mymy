@@ -28,6 +28,7 @@ use super::{
 struct SessionIdentityRow {
     profile: String,
     project_id: Option<Uuid>,
+    deleting_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn enqueue_chat_run(
@@ -52,12 +53,17 @@ pub async fn enqueue_chat_run(
 
     let mut tx = state.db.begin().await?;
     let session = sqlx::query_as::<_, SessionIdentityRow>(
-        "SELECT profile, project_id FROM chat_sessions WHERE id = $1",
+        "SELECT profile, project_id, deleting_at FROM chat_sessions WHERE id = $1 FOR UPDATE",
     )
     .bind(session_id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("session {session_id} not found")))?;
+    if session.deleting_at.is_some() {
+        return Err(AppError::Conflict(
+            "chat session deletion is already in progress".to_string(),
+        ));
+    }
 
     let options = serde_json::json!({
         "useMoa": request.use_moa,

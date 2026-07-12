@@ -27,9 +27,11 @@ pub(super) fn validate_memory(
     }
     if !matches!(
         memory_type,
-        "preference" | "convention" | "decision" | "fact"
-    ) || !matches!(origin, "explicit_user" | "agent_proposed" | "decision")
-        || !matches!(sensitivity, "normal" | "private" | "financial")
+        "preference" | "convention" | "decision" | "fact" | "temporal"
+    ) || !matches!(
+        origin,
+        "explicit_user" | "agent_proposed" | "decision" | "conversation_inferred"
+    ) || !matches!(sensitivity, "normal" | "private" | "financial")
     {
         return Err(AppError::BadRequest(
             "invalid memory classification".to_string(),

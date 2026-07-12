@@ -118,6 +118,39 @@ fn tools_use_input_schema() {
 }
 
 #[test]
+fn provider_visible_tool_contract_preserves_canonical_constraints() {
+    let parameters = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "target": {
+                "description": "One exact target.",
+                "oneOf": [
+                    {"type": "string", "minLength": 1},
+                    {"type": "integer", "minimum": 1}
+                ]
+            }
+        },
+        "required": ["target"]
+    });
+    let tool = ToolSchema {
+        tool_type: "function".to_string(),
+        function: FunctionSchema {
+            name: "contract_probe".to_string(),
+            description: Some("Probe provider contract lowering.".to_string()),
+            parameters: parameters.clone(),
+        },
+    };
+    let body = MessagesRequest::build("claude-sonnet-4-5", 1024, "", &[], &[tool]);
+    let value = serde_json::to_value(body).unwrap();
+    assert_eq!(value["tools"][0]["input_schema"], parameters);
+    assert_eq!(
+        value["tools"][0]["description"],
+        "Probe provider contract lowering."
+    );
+}
+
+#[test]
 fn stop_reason_mapping() {
     assert_eq!(map_stop_reason("end_turn"), FinishReason::Stop);
     assert_eq!(map_stop_reason("tool_use"), FinishReason::ToolCalls);

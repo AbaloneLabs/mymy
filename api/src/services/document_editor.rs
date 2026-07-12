@@ -49,14 +49,15 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::content_security::ContentOrigin;
 use crate::models::document_editor::{
-    DocumentEditorKind, DocumentEditorModelResponse, DocumentEditorSyncStatus,
-    SaveDocumentEditorCopyRequest, ValidateDocumentEditorModelRequest,
-    ValidateDocumentEditorModelResponse, WriteDocumentEditorModelRequest,
-    DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
+    DocumentEditingMode, DocumentEditorKind, DocumentEditorLifecycleState,
+    DocumentEditorModelResponse, DocumentEditorSyncStatus, SaveDocumentEditorCopyRequest,
+    ValidateDocumentEditorModelRequest, ValidateDocumentEditorModelResponse,
+    WriteDocumentEditorModelRequest, DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
 };
 use crate::services::document_conversion::checkpoint as conversion_checkpoint;
 use crate::services::document_revisions::{
@@ -216,6 +217,9 @@ const PPTX_SLIDE_HEIGHT_EMU: f64 = 5_143_500.0;
 const PPTX_DEFAULT_TABLE_STYLE_ID: &str = "{5940675A-B579-460E-94D1-54222C63F5DA}";
 const MAX_DOCUMENT_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_DOCUMENT_MODEL_BYTES: usize = 128 * 1024 * 1024;
+const DOCUMENT_CAPABILITY_REVISION: &str = "document-capability-matrix-v1";
+const TEXT_EDITABLE_CHARACTER_LIMIT: usize = 10_000_000;
+const TEXT_EDITABLE_LINE_LIMIT: usize = 500_000;
 
 pub async fn read_model(
     state: &AppState,
@@ -276,6 +280,9 @@ async fn read_model_unlocked(
             fingerprint,
             model_schema_version: DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
             capabilities: document_editor_capabilities(kind),
+            capability_revision: DOCUMENT_CAPABILITY_REVISION.to_string(),
+            editing_mode: document_editing_mode(kind, &model, &compatibility_warnings),
+            lifecycle_state: DocumentEditorLifecycleState::Active,
             sync_status: DocumentEditorSyncStatus::LocalOnly,
             revision_provenance: None,
             compatibility_warnings,
@@ -322,6 +329,9 @@ async fn model_response_from_committed_bytes(
         fingerprint: fingerprint_value_token(&fingerprint),
         model_schema_version: DOCUMENT_EDITOR_MODEL_SCHEMA_VERSION,
         capabilities: document_editor_capabilities(kind),
+        capability_revision: DOCUMENT_CAPABILITY_REVISION.to_string(),
+        editing_mode: document_editing_mode(kind, &model, &compatibility_warnings),
+        lifecycle_state: DocumentEditorLifecycleState::Active,
         sync_status,
         revision_provenance: None,
         compatibility_warnings,
@@ -329,15 +339,30 @@ async fn model_response_from_committed_bytes(
     })
 }
 
+struct EditorCommit<'a> {
+    logical_path: &'a str,
+    physical_path: &'a Path,
+    bytes: &'a [u8],
+    expected_fingerprint: Option<&'a str>,
+    allow_overwrite: bool,
+    operation_key: &'a str,
+    source_session_id: Option<Uuid>,
+}
+
 async fn commit_editor_output(
     state: &AppState,
-    logical_path: &str,
-    physical_path: &Path,
-    bytes: &[u8],
-    expected_fingerprint: Option<&str>,
-    allow_overwrite: bool,
+    commit: EditorCommit<'_>,
 ) -> AppResult<(FileFingerprint, DocumentEditorSyncStatus)> {
-    let file_name = physical_path
+    if let Some(session_id) = commit.source_session_id {
+        crate::services::resource_identity::validate_artifact_source_session(
+            state,
+            commit.logical_path,
+            session_id,
+        )
+        .await?;
+    }
+    let file_name = commit
+        .physical_path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("document")
@@ -347,21 +372,26 @@ async fn commit_editor_output(
         .admit_bytes(
             state,
             AdmissionRequest {
-                desired_path: logical_path.to_string(),
+                desired_path: commit.logical_path.to_string(),
                 file_name,
                 origin: ContentOrigin::EditorOutput,
-                actor: AdmissionActor::user(),
-                expected_fingerprint: expected_fingerprint.map(str::to_string),
-                allow_overwrite,
+                actor: AdmissionActor::user()
+                    .with_invocation(Some(commit.operation_key))
+                    .with_source_session(commit.source_session_id),
+                expected_fingerprint: commit.expected_fingerprint.map(str::to_string),
+                allow_overwrite: commit.allow_overwrite,
                 enqueue_s3_sync: true,
+                operation_key: Some(format!("editor:{}", commit.operation_key)),
+                artifact: None,
             },
-            bytes,
+            commit.bytes,
         )
         .await?;
     match outcome {
         AdmissionOutcome::Committed {
             fingerprint,
             sync_status,
+            ..
         } => Ok((fingerprint, sync_status)),
         AdmissionOutcome::Quarantined { .. } => Err(AppError::content_quarantined()),
         AdmissionOutcome::Rejected => Err(AppError::content_rejected()),
@@ -496,6 +526,7 @@ pub async fn write_model(
             result_content_hash: result_content_hash.clone(),
             result_fingerprint: None,
             status: "pending".to_string(),
+            source_session_id: request.source_session_id,
         };
         if !insert_pending_save_receipt(state, &receipt).await? {
             let concurrent = load_save_receipt(state, &idempotency_key)
@@ -528,11 +559,15 @@ pub async fn write_model(
     .await?;
     let (committed_fingerprint, sync_status) = commit_editor_output(
         state,
-        &resolved.logical_path,
-        &resolved.physical_path,
-        &updated,
-        Some(&expected_fingerprint),
-        true,
+        EditorCommit {
+            logical_path: &resolved.logical_path,
+            physical_path: &resolved.physical_path,
+            bytes: &updated,
+            expected_fingerprint: Some(&expected_fingerprint),
+            allow_overwrite: true,
+            operation_key: &idempotency_key,
+            source_session_id: request.source_session_id,
+        },
     )
     .await?;
     let logical_path = resolved.logical_path;
@@ -695,6 +730,7 @@ pub async fn save_copy(
         result_content_hash: result_content_hash.clone(),
         result_fingerprint: None,
         status: "pending".to_string(),
+        source_session_id: request.source_session_id,
     };
     if !insert_pending_save_receipt(state, &receipt).await? {
         return Err(AppError::Conflict(
@@ -703,11 +739,15 @@ pub async fn save_copy(
     }
     let (committed_fingerprint, sync_status) = commit_editor_output(
         state,
-        &target.logical_path,
-        &target.physical_path,
-        &updated,
-        None,
-        false,
+        EditorCommit {
+            logical_path: &target.logical_path,
+            physical_path: &target.physical_path,
+            bytes: &updated,
+            expected_fingerprint: None,
+            allow_overwrite: false,
+            operation_key: &request.idempotency_key,
+            source_session_id: request.source_session_id,
+        },
     )
     .await?;
     let committed_bytes = updated;
@@ -893,6 +933,7 @@ fn document_editor_capabilities(kind: DocumentEditorKind) -> Vec<String> {
         "document-revision-snapshot-v1".to_string(),
         "atomic-file-replace-v1".to_string(),
         "normalized-model-schema-v1".to_string(),
+        DOCUMENT_CAPABILITY_REVISION.to_string(),
     ];
     capabilities.push(
         match kind {
@@ -907,6 +948,31 @@ fn document_editor_capabilities(kind: DocumentEditorKind) -> Vec<String> {
         .to_string(),
     );
     capabilities
+}
+
+fn document_editing_mode(
+    kind: DocumentEditorKind,
+    model: &Value,
+    warnings: &[crate::models::document_editor::DocumentCompatibilityWarning],
+) -> DocumentEditingMode {
+    if kind == DocumentEditorKind::Text {
+        let content = model
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if content.len() > TEXT_EDITABLE_CHARACTER_LIMIT
+            || content.lines().count() > TEXT_EDITABLE_LINE_LIMIT
+        {
+            return DocumentEditingMode::ReadOnly;
+        }
+    }
+    if warnings.is_empty() {
+        DocumentEditingMode::Editable
+    } else {
+        // The package remains round-trippable, but at least one source feature
+        // is represented only as preserved metadata or an opaque package part.
+        DocumentEditingMode::PartiallyEditable
+    }
 }
 
 fn validate_document_editor_capabilities(
@@ -951,6 +1017,14 @@ fn document_save_request_hash(request: &WriteDocumentEditorModelRequest) -> AppR
     );
     hash_framed(&mut hasher, &request.model_schema_version.to_be_bytes());
     hash_framed(&mut hasher, request.expected_fingerprint.as_bytes());
+    hash_framed(
+        &mut hasher,
+        request
+            .source_session_id
+            .map(|id| id.to_string())
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     for capability in &request.required_capabilities {
         hash_framed(&mut hasher, capability.as_bytes());
     }

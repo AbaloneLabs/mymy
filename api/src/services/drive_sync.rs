@@ -246,6 +246,8 @@ async fn download_path(
                 expected_fingerprint: None,
                 allow_overwrite: true,
                 enqueue_s3_sync: false,
+                operation_key: None,
+                artifact: None,
             },
             staged,
         )

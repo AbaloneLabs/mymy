@@ -9,10 +9,12 @@ import { api } from "@/lib/api";
 interface PinStatusResponse {
   initialized: boolean;
   authenticated: boolean;
+  recoveryScopeId: string | null;
 }
 interface PinVerifyResponse {
   valid: boolean;
   authenticated: boolean;
+  recoveryScopeId: string | null;
 }
 
 export function usePinStatus() {
@@ -31,6 +33,7 @@ export function useVerifyPin() {
       qc.setQueryData<PinStatusResponse>(["auth", "status"], (current) => ({
         initialized: current?.initialized ?? true,
         authenticated: data.authenticated,
+        recoveryScopeId: data.recoveryScopeId,
       }));
       return qc.invalidateQueries({ queryKey: ["auth"] });
     },

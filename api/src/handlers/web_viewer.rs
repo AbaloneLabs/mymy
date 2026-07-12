@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderName, HeaderValue};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
@@ -102,8 +102,22 @@ fn html_response(html: String) -> AppResult<Response> {
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            "sandbox; default-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
         ),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=()",
+        ),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
     );
     Ok(response)
 }
@@ -397,6 +411,21 @@ mod tests {
             r#"src='/api/web-viewer/assets/app.js?root=%2Fdrive%2Fagents%2Felena%2Fsite'"#
         ));
         assert!(rewritten.contains("mymy-web-viewer:navigate"));
+    }
+
+    #[test]
+    fn viewer_response_disables_active_document_capabilities() {
+        let response = html_response("<script>alert(1)</script>".to_string()).unwrap();
+        let policy = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("sandbox"));
+        assert!(policy.contains("script-src 'none'"));
+        assert!(policy.contains("connect-src 'none'"));
+        assert!(policy.contains("form-action 'none'"));
     }
 
     #[test]

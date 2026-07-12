@@ -106,6 +106,8 @@ async fn cache_media_block(
                 expected_fingerprint: None,
                 allow_overwrite: false,
                 enqueue_s3_sync: true,
+                operation_key: None,
+                artifact: None,
             },
             &bytes,
         )

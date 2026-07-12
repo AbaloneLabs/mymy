@@ -16,20 +16,21 @@ export default function PinScreen() {
   const [error, setError] = useState(false);
   const pinStatus = usePinStatus();
   const verifyPin = useVerifyPin();
+  const bootstrapLocked = pinStatus.data?.initialized === false;
 
   useEffect(() => {
-    if (pinStatus.data?.authenticated) {
-      setAuthenticated();
+    if (pinStatus.data?.authenticated && pinStatus.data.recoveryScopeId) {
+      setAuthenticated(pinStatus.data.recoveryScopeId);
       navigate("/", { replace: true });
     }
-  }, [navigate, pinStatus.data?.authenticated, setAuthenticated]);
+  }, [navigate, pinStatus.data?.authenticated, pinStatus.data?.recoveryScopeId, setAuthenticated]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await verifyPin.mutateAsync(value);
-      if (res.valid && res.authenticated) {
-        setAuthenticated();
+      if (res.valid && res.authenticated && res.recoveryScopeId) {
+        setAuthenticated(res.recoveryScopeId);
         navigate("/", { replace: true });
       } else {
         setError(true);
@@ -54,6 +55,12 @@ export default function PinScreen() {
           <p className="mt-1 text-sm text-[var(--text-muted)]">{t("pin.subtitle")}</p>
         </div>
 
+        {bootstrapLocked && (
+          <p className="mb-4 rounded-lg border border-[var(--status-warning)]/40 bg-[var(--status-warning)]/10 px-3 py-2 text-center text-xs text-[var(--text)]">
+            {t("pin.bootstrapLocked")}
+          </p>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-3">
           <input
             ref={inputRef}
@@ -62,7 +69,7 @@ export default function PinScreen() {
             autoComplete="current-password"
             value={value}
             autoFocus
-            disabled={verifyPin.isPending}
+            disabled={verifyPin.isPending || bootstrapLocked}
             onChange={(e) => {
               setValue(e.target.value);
               setError(false);
@@ -86,7 +93,7 @@ export default function PinScreen() {
 
           <button
             type="submit"
-            disabled={!value || verifyPin.isPending}
+            disabled={!value || verifyPin.isPending || bootstrapLocked}
             className={cn(
               "w-full rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors duration-150",
               "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]",

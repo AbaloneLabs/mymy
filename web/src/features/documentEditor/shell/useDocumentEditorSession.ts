@@ -27,6 +27,7 @@ import {
 } from "@/features/documentEditor/shared/api";
 import { requiredDocumentEditorCapabilities } from "@/features/documentEditor/shared/capabilities";
 import { drivePackageUrl } from "@/features/drive/api";
+import { useAuthStore } from "@/store/auth";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 import { reviewedConflictFingerprint } from "./documentEditorRevisionState";
 import {
@@ -45,20 +46,24 @@ import {
   subscribeToDocumentEditorRevisions,
   type DocumentEditorRevisionNotice,
 } from "./documentEditorRevisionChannel";
+import { documentEditorLifecycleStatus } from "./documentEditorLifecycle";
 
 export function useDocumentEditorSession({
   data,
   onDirtyChange,
   refreshModel,
+  sourceChatSessionId,
 }: {
   data: DocumentEditorModelResponse;
   onDirtyChange?: (dirty: boolean) => void;
   refreshModel?: () => Promise<DocumentEditorModelResponse | null>;
+  sourceChatSessionId?: string;
 }) {
   const writeModel = useWriteDocumentEditorModel();
   const saveCopyMutation = useSaveDocumentEditorCopy();
   const keymap = useEditorKeymap();
   const preferences = useEditorPreferences();
+  const recoveryScopeId = useAuthStore((state) => state.recoveryScopeId);
   const keymapEntries = keymap.data?.shortcuts ?? [];
   const autosaveEnabled = preferences.data?.preferences.autosaveEnabled === true;
   const autosaveDelayMs = preferences.data?.preferences.autosaveDelayMs ?? 5_000;
@@ -81,6 +86,7 @@ export function useDocumentEditorSession({
     saveConflict,
   } = sessionState;
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [isComposing, setIsComposing] = useState(false);
   const [saveCopyOpen, setSaveCopyOpen] = useState(false);
   const [saveCopyTargetPath, setSaveCopyTargetPath] = useState(() =>
     defaultDocumentCopyPath(data.path),
@@ -108,6 +114,8 @@ export function useDocumentEditorSession({
     idempotencyKey: string;
   } | null>(null);
   const dirty = draftKey !== baseKey;
+  const readOnly = data.editingMode === "read_only";
+  const lifecycleBlocked = data.lifecycleState !== "active";
   const recovery = useDocumentEditorRecovery({
     data,
     baseModel,
@@ -115,6 +123,7 @@ export function useDocumentEditorSession({
     draftKey,
     dirty,
     fingerprint,
+    principalScopeId: recoveryScopeId,
   });
   const recoveryDraft = recovery.availableDraft;
   const recoverySessionId = recovery.sessionId;
@@ -138,7 +147,7 @@ export function useDocumentEditorSession({
     saveConflict,
   });
   const autosave = useDocumentEditorAutosave({
-    enabled: autosaveEnabled,
+    enabled: autosaveEnabled && !isComposing,
     delayMs: autosaveDelayMs,
     dirty,
     draftKey,
@@ -146,6 +155,19 @@ export function useDocumentEditorSession({
     saveConflict,
     onSave: () => void save(),
   });
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const compositionStarted = () => setIsComposing(true);
+    const compositionEnded = () => setIsComposing(false);
+    root.addEventListener("compositionstart", compositionStarted);
+    root.addEventListener("compositionend", compositionEnded);
+    return () => {
+      root.removeEventListener("compositionstart", compositionStarted);
+      root.removeEventListener("compositionend", compositionEnded);
+    };
+  }, []);
+
   useEffect(() => {
     latestDraftRef.current = draft;
     latestDraftKeyRef.current = draftKey;
@@ -246,10 +268,10 @@ export function useDocumentEditorSession({
   }, []);
 
   function commitDraft(next: unknown) {
+    if (readOnly || lifecycleBlocked) return;
     const transition = editorHistory.commit(draft, draftKey, next);
     if (!transition) return;
-    writeModel.reset();
-    if (writeModel.isPending) autosave.queue();
+    prepareForLocalTransition();
     dispatchSession({
       type: "localDraft",
       model: transition.model,
@@ -258,8 +280,10 @@ export function useDocumentEditorSession({
   }
 
   function undo() {
+    if (readOnly || lifecycleBlocked) return;
     const transition = editorHistory.undo(draft);
     if (!transition) return;
+    prepareForLocalTransition();
     dispatchSession({
       type: "localDraft",
       model: transition.model,
@@ -268,8 +292,10 @@ export function useDocumentEditorSession({
   }
 
   function redo() {
+    if (readOnly || lifecycleBlocked) return;
     const transition = editorHistory.redo(draft);
     if (!transition) return;
+    prepareForLocalTransition();
     dispatchSession({
       type: "localDraft",
       model: transition.model,
@@ -277,7 +303,25 @@ export function useDocumentEditorSession({
     });
   }
 
+  function prepareForLocalTransition() {
+    // Resetting a live TanStack mutation makes the hook look idle while the
+    // HTTP request is still in flight. That used to admit a second write
+    // against the same base revision. Preserve the pending request and retain
+    // exactly one follow-up save instead; only stale terminal error state is
+    // safe to reset before a new local transition.
+    if (writeModel.isPending) {
+      autosave.queue();
+    } else {
+      writeModel.reset();
+    }
+  }
+
   async function save(options: { expectedFingerprint?: string } = {}) {
+    if (readOnly || lifecycleBlocked) return false;
+    if (isComposing) {
+      autosave.queue();
+      return false;
+    }
     if (writeModel.isPending) {
       if (dirty) autosave.queue();
       return false;
@@ -312,6 +356,7 @@ export function useDocumentEditorSession({
         requiredCapabilities: requiredDocumentEditorCapabilities(data.editorKind),
         idempotencyKey: saveIdentity.idempotencyKey,
         expectedFingerprint,
+        sourceSessionId: sourceChatSessionId,
         syncQuery: true,
       });
       const savedKey = savingDraftKey;
@@ -414,6 +459,7 @@ export function useDocumentEditorSession({
         requiredCapabilities: requiredDocumentEditorCapabilities(data.editorKind),
         idempotencyKey: identity.idempotencyKey,
         baseFingerprint: fingerprint,
+        sourceSessionId: sourceChatSessionId,
       });
       setSavedCopyPath(saved.path);
       setSaveCopyOpen(false);
@@ -559,7 +605,7 @@ export function useDocumentEditorSession({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || event.isComposing) return;
       const target = event.target;
       if (!(target instanceof Node) || !rootRef.current?.contains(target)) return;
       const command = editorCommandsForKind(data.editorKind, keymapEntries).find((item) =>
@@ -589,6 +635,17 @@ export function useDocumentEditorSession({
     lastSavedAt,
     isSaving: writeModel.isPending,
     isSaveQueued: autosave.queued,
+    lifecycleStatus: documentEditorLifecycleStatus({
+      loaded: true,
+      readOnly,
+      lifecycleBlocked,
+      conflict: saveConflict || externalRevision !== null,
+      recoveryAvailable: recoveryDraft !== null,
+      saving: writeModel.isPending,
+      reconciling: syncStatus === "pending",
+      dirty,
+    }),
+    isComposing,
     saveError: writeModel.isError && !saveConflict,
     saveErrorMessage:
       writeModel.isError && !saveConflict && writeModel.error instanceof Error

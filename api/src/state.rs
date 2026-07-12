@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use sqlx::PgPool;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use uuid::Uuid;
 
 use crate::agent::clarify::ClarifyGate;
@@ -53,6 +53,9 @@ pub struct AppState {
     pub content_safety: Arc<ContentSafetyEngine>,
     /// Sole application boundary for admitting and committing Drive bytes.
     pub workspace_content: Arc<WorkspaceContentService>,
+    /// Bounds merged search fan-out independently of the SQL pool so several
+    /// agents cannot multiply five adapters into unbounded concurrent work.
+    workspace_search_semaphore: Arc<Semaphore>,
     /// Serializes writes to the same Drive file across UI, agent, and sync
     /// entry points in this API process. The weak registry avoids retaining a
     /// mutex for every historical path while still making the fingerprint
@@ -78,6 +81,7 @@ impl AppState {
             document_conversion_pool: Arc::new(DocumentConversionPool::from_environment()),
             content_safety: Arc::new(ContentSafetyEngine::new()),
             workspace_content: Arc::new(WorkspaceContentService::new()),
+            workspace_search_semaphore: Arc::new(Semaphore::new(4)),
             drive_write_locks: Arc::new(Mutex::new(HashMap::new())),
             drive_namespace_lock: Arc::new(RwLock::new(())),
         }
@@ -101,6 +105,10 @@ impl AppState {
 
     pub(crate) fn drive_namespace_lock(&self) -> &RwLock<()> {
         &self.drive_namespace_lock
+    }
+
+    pub(crate) fn workspace_search_semaphore(&self) -> Arc<Semaphore> {
+        self.workspace_search_semaphore.clone()
     }
 
     pub async fn register_run_cancellation(

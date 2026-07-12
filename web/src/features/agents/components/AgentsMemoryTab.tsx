@@ -1,24 +1,30 @@
 import { useDeferredValue, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Archive, Check, Database, Search, Trash2 } from "lucide-react";
+import { Archive, Check, Database, Download, Search, Trash2 } from "lucide-react";
 import {
+  exportRuntimeMemories,
   useReviewRuntimeMemory,
   useMemoryEmbeddingSettings,
+  useMemoryRuntimeSettings,
   useRunSummaries,
   useRuntimeMemories,
   useUpdateMemoryEmbeddingSettings,
+  useUpdateMemoryRuntimeSettings,
 } from "@/features/agent-ops/api";
-import type { AgentMemory, MemoryEmbeddingSettings } from "@/types/agent-ops";
+import type { AgentMemory, MemoryEmbeddingSettings, MemoryRuntimeSettings } from "@/types/agent-ops";
 import { EmptyState, PanelError, PanelLoading } from "./AgentsNativeShared";
 
 export function MemoryTab({ profile }: { profile: string | null }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(false);
   const deferredQuery = useDeferredValue(query);
   const memories = useRuntimeMemories(profile, deferredQuery);
   const summaries = useRunSummaries(profile, deferredQuery);
   const review = useReviewRuntimeMemory();
   const embeddingSettings = useMemoryEmbeddingSettings(profile);
+  const runtimeSettings = useMemoryRuntimeSettings(profile);
 
   if (memories.isLoading || summaries.isLoading) return <PanelLoading />;
   if (memories.isError || summaries.isError) {
@@ -28,15 +34,56 @@ export function MemoryTab({ profile }: { profile: string | null }) {
   const memoryItems = memories.data?.memories ?? [];
   const recapItems = summaries.data?.summaries ?? [];
 
+  async function downloadExport() {
+    if (!profile || exporting) return;
+    setExporting(true);
+    setExportError(false);
+    try {
+      const exported = await exportRuntimeMemories(profile);
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `mymy-memory-${profile.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError(true);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <section className="max-w-5xl space-y-6">
       <div>
-        <h2 className="text-sm font-semibold text-[var(--text)]">
-          {t("agents.memory.title")}
-        </h2>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">
-          {t("agents.memory.description")}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-[var(--text)]">
+              {t("agents.memory.title")}
+            </h2>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              {t("agents.memory.description")}
+            </p>
+          </div>
+          {profile && (
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={() => void downloadExport()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {exporting ? t("agents.memory.exporting") : t("agents.memory.export")}
+            </button>
+          )}
+        </div>
+        {exportError && (
+          <p role="alert" className="mt-2 text-xs text-[var(--status-error)]">
+            {t("agents.memory.exportError")}
+          </p>
+        )}
         <label className="mt-3 flex max-w-md items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
           <Search className="h-3.5 w-3.5 text-[var(--text-faint)]" />
           <input
@@ -46,10 +93,14 @@ export function MemoryTab({ profile }: { profile: string | null }) {
             className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text)] outline-none"
           />
         </label>
-        {profile && embeddingSettings.data && (
+        {profile && runtimeSettings.data && (
+          <RuntimeSettings profile={profile} settings={runtimeSettings.data} />
+        )}
+        {profile && embeddingSettings.data && runtimeSettings.data && (
           <SemanticSettings
             profile={profile}
             settings={embeddingSettings.data}
+            semanticEnabled={runtimeSettings.data.semanticIndexingEnabled}
           />
         )}
       </div>
@@ -70,7 +121,15 @@ export function MemoryTab({ profile }: { profile: string | null }) {
               key={memory.id}
               memory={memory}
               busy={review.isPending}
-              onReview={(action) => review.mutate({ id: memory.id, action })}
+              onReview={(action) =>
+                review.mutate({
+                  id: memory.id,
+                  action,
+                  expectedContentRevision: memory.contentRevision,
+                  expectedLifecycleRevision: memory.lifecycleRevision,
+                  idempotencyKey: crypto.randomUUID(),
+                })
+              }
             />
           ))
         )}
@@ -118,23 +177,100 @@ export function MemoryTab({ profile }: { profile: string | null }) {
   );
 }
 
-function SemanticSettings({
+function RuntimeSettings({
   profile,
   settings,
 }: {
   profile: string;
+  settings: MemoryRuntimeSettings;
+}) {
+  const { t } = useTranslation();
+  const update = useUpdateMemoryRuntimeSettings(profile);
+  return (
+    <div className="mt-3 max-w-2xl rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
+      <label className="flex items-center gap-2 text-xs text-[var(--text)]">
+        <input
+          type="checkbox"
+          checked={settings.automaticRecallEnabled}
+          disabled={update.isPending}
+          onChange={(event) =>
+            update.mutate({
+              automaticRecallEnabled: event.target.checked,
+              inferredExtractionEnabled: settings.inferredExtractionEnabled,
+              semanticIndexingEnabled: settings.semanticIndexingEnabled,
+              expectedSettingsRevision: settings.settingsRevision,
+            })
+          }
+        />
+        {t("agents.memory.automaticRecall")}
+      </label>
+      <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+        {t("agents.memory.automaticRecallDescription")}
+      </p>
+      <label className="mt-3 flex items-center gap-2 text-xs text-[var(--text)]">
+        <input
+          type="checkbox"
+          checked={settings.inferredExtractionEnabled}
+          disabled={update.isPending}
+          onChange={(event) =>
+            update.mutate({
+              automaticRecallEnabled: settings.automaticRecallEnabled,
+              inferredExtractionEnabled: event.target.checked,
+              semanticIndexingEnabled: settings.semanticIndexingEnabled,
+              expectedSettingsRevision: settings.settingsRevision,
+            })
+          }
+        />
+        {t("agents.memory.inferredExtraction")}
+      </label>
+      <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+        {t("agents.memory.inferredExtractionDescription")}
+      </p>
+      <label className="mt-3 flex items-center gap-2 text-xs text-[var(--text)]">
+        <input
+          type="checkbox"
+          checked={settings.semanticIndexingEnabled}
+          disabled={update.isPending}
+          onChange={(event) =>
+            update.mutate({
+              automaticRecallEnabled: settings.automaticRecallEnabled,
+              inferredExtractionEnabled: settings.inferredExtractionEnabled,
+              semanticIndexingEnabled: event.target.checked,
+              expectedSettingsRevision: settings.settingsRevision,
+            })
+          }
+        />
+        {t("agents.memory.semanticIndexing")}
+      </label>
+      <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+        {t("agents.memory.semanticIndexingDescription")}
+      </p>
+      {update.isError && (
+        <p role="alert" className="mt-1 text-[11px] text-[var(--status-error)]">
+          {t("agents.memory.settingsChanged")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SemanticSettings({
+  profile,
+  settings,
+  semanticEnabled,
+}: {
+  profile: string;
   settings: MemoryEmbeddingSettings;
+  semanticEnabled: boolean;
 }) {
   const { t } = useTranslation();
   const update = useUpdateMemoryEmbeddingSettings(profile);
 
   function save(patch: Partial<{
-    enabled: boolean;
     includePrivate: boolean;
     includeFinancial: boolean;
   }>) {
     update.mutate({
-      enabled: settings.enabled,
       includePrivate: settings.includePrivate,
       includeFinancial: settings.includeFinancial,
       ...patch,
@@ -143,19 +279,10 @@ function SemanticSettings({
 
   return (
     <div className="mt-3 max-w-2xl rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
-      <label className="flex items-center gap-2 text-xs text-[var(--text)]">
-        <input
-          type="checkbox"
-          checked={settings.enabled}
-          disabled={update.isPending}
-          onChange={(event) => save({ enabled: event.target.checked })}
-        />
-        {t("agents.memory.semanticEnabled")}
-      </label>
       <p className="mt-1 text-[11px] text-[var(--text-faint)]">
         {t("agents.memory.semanticDisclosure", { provider: settings.provider })}
       </p>
-      {settings.enabled && (
+      {semanticEnabled && (
         <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-[var(--text-muted)]">
           <label className="flex items-center gap-1.5">
             <input

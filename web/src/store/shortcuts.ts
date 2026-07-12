@@ -33,6 +33,7 @@ export interface ShortcutDefinition {
 export const DEFAULT_BINDINGS: ShortcutDefinition[] = [
   // Navigation (2-key sequences)
   { actionId: "navigate.home", defaultKeys: ["g", "h"], category: "navigation" },
+  { actionId: "navigate.decisions", defaultKeys: ["g", "e"], category: "navigation" },
   { actionId: "navigate.chat", defaultKeys: ["g", "c"], category: "navigation" },
   { actionId: "navigate.agents", defaultKeys: ["g", "a"], category: "navigation" },
   { actionId: "navigate.context", defaultKeys: ["g", "x"], category: "navigation" },

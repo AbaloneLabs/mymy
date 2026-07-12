@@ -75,7 +75,7 @@ Linear にインスパイアされたダークテーマ。すべての色は `sr
 
 ## 認証（PIN）
 
-- デフォルト PIN：`mymy`
+- 初回 PIN：起動前に `MYMY_INITIAL_PIN` を一度設定します。既定の PIN は受け付けません。
 - PIN 検証は Rust API が処理します。
 - ロック解除に成功すると `mymy_session` HttpOnly cookie が設定されます。
 - `/` ルートは `ProtectedRoute` がサーバーセッション状態を確認して保護します。

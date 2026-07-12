@@ -192,6 +192,14 @@ impl AppError {
             "The file cannot be released under the current content policy.",
         )
     }
+
+    pub fn drive_hardlink_rejected() -> Self {
+        Self::coded(
+            "drive_hardlink_rejected",
+            StatusCode::LOCKED,
+            "This Drive file has multiple filesystem links and cannot be accessed or replaced safely.",
+        )
+    }
 }
 
 #[cfg(test)]

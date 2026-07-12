@@ -109,6 +109,7 @@ pub trait ToolExecutionGuard: Send + Sync {
         tool_name: &str,
         toolset: &str,
         capability: &ToolCapability,
+        contract_fingerprint: &str,
         arguments: &Value,
     ) -> Result<(), String>;
 }

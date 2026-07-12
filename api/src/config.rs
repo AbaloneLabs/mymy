@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://mymy:mymy@db:5432/mymy";
 const DEFAULT_PORT: u16 = 33697;
-const DEFAULT_CORS_ORIGIN: &str = "http://localhost:33696";
+const DEFAULT_CORS_ORIGIN: &str = "http://localhost:33696,http://127.0.0.1:33696";
 const DEFAULT_AGENT_DATA_DIR: &str = "data/agent";
 const DEFAULT_CRON_TICK_INTERVAL_SECS: u64 = 60;
 const DEFAULT_CRON_TIMEZONE: &str = "UTC";
@@ -124,6 +124,45 @@ impl Config {
             DEFAULT_QUARANTINE_RETENTION_DAYS,
         )
         .min(DEFAULT_QUARANTINE_RETENTION_DAYS)
+    }
+
+    /// The standalone API is local-only unless a deployment explicitly opts
+    /// into a wider bind and supplies the corresponding TLS/origin controls.
+    pub fn bind_host(&self) -> String {
+        env_string("MYMY_BIND_HOST", "127.0.0.1")
+    }
+
+    /// One-time owner bootstrap input. It is never persisted as plaintext and
+    /// is ignored after a non-default credential already exists.
+    pub fn initial_pin(&self) -> Option<String> {
+        env_optional("MYMY_INITIAL_PIN")
+    }
+
+    pub fn validate_network_security(&self) -> Result<(), String> {
+        let bind_host = self.bind_host();
+        let loopback = matches!(bind_host.as_str(), "127.0.0.1" | "::1" | "localhost");
+        let loopback_publish = env_parse("MYMY_LOOPBACK_PUBLISH", false);
+        if loopback || loopback_publish {
+            return Ok(());
+        }
+        if !self.auth_cookie_secure {
+            return Err(
+                "non-loopback API binding requires AUTH_COOKIE_SECURE=true or an explicitly loopback-only publisher"
+                    .to_string(),
+            );
+        }
+        if self.cors_origins.is_empty()
+            || self
+                .cors_origins
+                .iter()
+                .any(|origin| !origin.starts_with("https://"))
+        {
+            return Err(
+                "non-loopback API binding requires one or more explicit HTTPS CORS origins"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
 

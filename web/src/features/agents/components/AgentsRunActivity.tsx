@@ -1,11 +1,12 @@
-import { AlertTriangle, ChevronDown, ChevronRight, Clock3 } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { AlertTriangle, ChevronDown, ChevronRight, Clock3, FileText } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   cancelAgentRun,
   useAgentRuns,
   useRunEventLog,
+  useRunProvenance,
   type AgentRunEvent,
 } from "@/features/chat/api";
 import type { Agent } from "@/types/agents";
@@ -23,6 +24,7 @@ export function RunActivity({
   const selectedRunId = searchParams.get("runId") ?? undefined;
   const runsQuery = useAgentRuns({ agentProfile: profile, limit: 20 });
   const eventLog = useRunEventLog(selectedRunId);
+  const provenance = useRunProvenance(selectedRunId);
   const runs = runsQuery.data?.runs ?? [];
   const agentNames = new Map(agents.map((agent) => [agent.profile, agent.name]));
 
@@ -81,13 +83,13 @@ export function RunActivity({
                     {formatDate(run.completedAt ?? run.heartbeatAt ?? run.createdAt)}
                   </span>
                 </button>
-                {selected && <RunEventLog runId={run.id} query={eventLog} />}
+                {selected && <RunEventLog runId={run.id} query={eventLog} provenance={provenance} />}
               </div>
             );
           })}
           {selectedRunId && !runs.some((run) => run.id === selectedRunId) && (
             <div className="rounded-md border border-[var(--border)] bg-[var(--bg)]">
-              <RunEventLog runId={selectedRunId} query={eventLog} />
+              <RunEventLog runId={selectedRunId} query={eventLog} provenance={provenance} />
             </div>
           )}
         </div>
@@ -99,9 +101,11 @@ export function RunActivity({
 function RunEventLog({
   runId,
   query,
+  provenance,
 }: {
   runId: string;
   query: ReturnType<typeof useRunEventLog>;
+  provenance: ReturnType<typeof useRunProvenance>;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -118,6 +122,8 @@ function RunEventLog({
     return <div className="border-t border-[var(--border)] p-3 text-xs text-[var(--status-error)]">{t("agents.activity.loadError")}</div>;
   }
   const { run, events } = query.data;
+  const artifacts = provenance.data?.artifacts ?? [];
+  const effects = provenance.data?.effects ?? [];
   return (
     <div className="space-y-3 border-t border-[var(--border)] p-3">
       <div className="flex flex-wrap gap-2 text-[11px] text-[var(--text-faint)]">
@@ -140,6 +146,57 @@ function RunEventLog({
               : t("agents.activity.cancel")}
           </button>
         )}
+      </div>
+      <div>
+        <h3 className="mb-1.5 text-[11px] font-medium text-[var(--text)]">
+          {t("agents.activity.artifacts", { count: artifacts.length })}
+        </h3>
+        {provenance.isError ? (
+          <div className="text-[11px] text-[var(--status-error)]">
+            {t("agents.activity.provenanceError")}
+          </div>
+        ) : artifacts.length === 0 ? (
+          <div className="text-[11px] text-[var(--text-faint)]">
+            {t("agents.activity.noArtifacts")}
+          </div>
+        ) : (
+          <ul className="space-y-1">
+            {artifacts.map((artifact) => (
+              <li key={artifact.id} className="flex items-center gap-2 rounded bg-[var(--surface)] px-2 py-1.5 text-[11px]">
+                <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--text-faint)]" />
+                <span className="min-w-0 flex-1 truncate text-[var(--text)]">{artifact.title}</span>
+                <span className="shrink-0 text-[var(--text-faint)]">{artifact.lifecycleState}</span>
+                {artifact.currentPath && artifact.lifecycleState === "active" && (
+                  <Link
+                    to={`/drive?path=${encodeURIComponent(artifact.currentPath)}`}
+                    className="shrink-0 text-[var(--accent)] hover:underline"
+                  >
+                    {t("agents.activity.openResource")}
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <h3 className="mb-1.5 text-[11px] font-medium text-[var(--text)]">
+          {t("agents.activity.effects", { count: effects.length })}
+        </h3>
+        <ol className="max-h-48 space-y-1 overflow-y-auto">
+          {effects.map((effect) => (
+            <li key={effect.id} className="flex gap-2 text-[11px] text-[var(--text-muted)]">
+              <span className="w-16 shrink-0 font-medium text-[var(--text)]">{effect.effectKind}</span>
+              <span className="min-w-0 flex-1 truncate font-mono">
+                {effect.afterReference ?? effect.beforeReference ?? effect.currentPath ?? effect.resourceId}
+              </span>
+              <span className="shrink-0 text-[var(--text-faint)]">#{effect.resourceSequence}</span>
+            </li>
+          ))}
+          {!provenance.isLoading && effects.length === 0 && (
+            <li className="text-[11px] text-[var(--text-faint)]">{t("agents.activity.noEffects")}</li>
+          )}
+        </ol>
       </div>
       <ol className="max-h-80 space-y-1.5 overflow-y-auto">
         {events.map((event) => (

@@ -15,7 +15,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "calendar_create",
         "calendar_write",
         "Create a calendar event.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "projectId",
+                "title",
+                "description",
+                "startDate",
+                "endDate",
+                "allDay",
+            ],
+            &["title", "startDate"],
+        ),
         state,
         AppAction::CalendarCreate,
     );
@@ -24,7 +34,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "calendar_update",
         "calendar_write",
         "Update a calendar event by id.",
-        id_body_schema("Calendar event id."),
+        id_body_schema(
+            "Calendar event id.",
+            &[
+                "projectId",
+                "title",
+                "description",
+                "startDate",
+                "endDate",
+                "allDay",
+            ],
+        ),
         state,
         AppAction::CalendarUpdate,
     );

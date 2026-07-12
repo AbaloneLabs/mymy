@@ -91,6 +91,36 @@ pub fn register_all(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
     web::register(registry);
 }
 
+/// Validate the complete static catalog during API startup. Session-specific
+/// availability is still resolved per Run, but a malformed built-in must not
+/// remain latent until a user starts a conversation.
+pub fn validate_builtin_catalog(
+    state: Arc<AppState>,
+) -> Result<(), crate::agent::tools::ToolContractError> {
+    let policy = AgentPermissionPolicy::from_permissions(Vec::new());
+    let agent_data_dir = state.config.agent_data_dir.clone();
+    let config = BuiltinToolConfig::for_session(BuiltinSessionConfig {
+        working_dir: agent_data_dir.join("drive/agents/catalog-validation"),
+        allowed_roots: vec![agent_data_dir.join("drive/shared")],
+        agent_data_dir,
+        session_id: uuid::Uuid::nil(),
+        agent_profile: "catalog-validation".to_string(),
+        project_id: None,
+        sandbox_runner_url: state.config.sandbox_runner_url.clone(),
+        sandbox_preview_host: state.config.sandbox_preview_host.clone(),
+        db: state.db.clone(),
+        extension_settings_key: None,
+        app_state: state,
+        permission_policy: policy.clone(),
+    });
+    let mut registry = ToolRegistry::new();
+    register_all(&mut registry, &config);
+    register_agent_toolsets(&mut registry, &policy);
+    registry.validate_catalog()?;
+    tracing::debug!(catalog = ?registry.catalog_report(), "validated built-in tool catalog");
+    Ok(())
+}
+
 pub fn register_agent_toolsets(registry: &mut ToolRegistry, policy: &AgentPermissionPolicy) {
     registry.enable_toolset("clarify");
     registry.enable_toolset("delegation");
@@ -120,6 +150,17 @@ pub fn register_agent_toolsets(registry: &mut ToolRegistry, policy: &AgentPermis
         "investments",
     );
     enable_domain(registry, policy, AgentToolDomain::Agents, "agents");
+    if [
+        AgentToolDomain::Sessions,
+        AgentToolDomain::Tasks,
+        AgentToolDomain::Notes,
+        AgentToolDomain::Knowledge,
+    ]
+    .into_iter()
+    .any(|domain| policy.can_read(domain))
+    {
+        registry.enable_toolset("workspace_search");
+    }
 }
 
 fn enable_domain(
@@ -143,4 +184,149 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut truncated: String = value.chars().take(max_chars).collect();
     truncated.push_str("\n[truncated]");
     truncated
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use std::sync::Arc;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::services::agent_permissions::AgentPermissionPolicy;
+
+    fn registry_with_policy(policy: AgentPermissionPolicy) -> ToolRegistry {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://mymy:mymy@localhost/mymy")
+            .unwrap();
+        let agent_data_dir =
+            std::env::temp_dir().join(format!("mymy-tool-catalog-{}", uuid::Uuid::new_v4()));
+        let state = Arc::new(AppState::new(
+            db.clone(),
+            Config {
+                database_url: String::new(),
+                port: 0,
+                cors_origins: Vec::new(),
+                agent_data_dir: agent_data_dir.clone(),
+                auth_cookie_secure: false,
+                cron_tick_interval_secs: 60,
+                cron_timezone: "UTC".to_string(),
+                cron_output_keep: 10,
+                drive_s3_bucket: None,
+                drive_s3_region: None,
+                drive_s3_endpoint: None,
+                sandbox_runner_url: None,
+                sandbox_preview_host: "127.0.0.1".to_string(),
+            },
+        ));
+        let config = BuiltinToolConfig::for_session(BuiltinSessionConfig {
+            working_dir: agent_data_dir.join("drive/agents/test"),
+            allowed_roots: vec![agent_data_dir.join("drive/shared")],
+            agent_data_dir,
+            session_id: uuid::Uuid::new_v4(),
+            agent_profile: "test".to_string(),
+            project_id: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
+            db,
+            extension_settings_key: None,
+            app_state: state,
+            permission_policy: policy.clone(),
+        });
+        let mut registry = ToolRegistry::new();
+        register_all(&mut registry, &config);
+        register_agent_toolsets(&mut registry, &policy);
+        registry
+    }
+
+    fn complete_registry() -> ToolRegistry {
+        registry_with_policy(AgentPermissionPolicy::from_permissions(Vec::new()))
+    }
+
+    #[tokio::test]
+    async fn complete_builtin_catalog_has_valid_contracts() {
+        let registry = complete_registry();
+        let errors = registry
+            .contract_errors()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+        registry.validate_catalog().unwrap();
+        assert!(!registry.schemas().is_empty());
+    }
+
+    #[tokio::test]
+    async fn similar_tool_descriptions_preserve_selection_boundaries() {
+        let registry = complete_registry();
+        let descriptions = registry
+            .schemas()
+            .into_iter()
+            .map(|schema| {
+                (
+                    schema.function.name,
+                    schema.function.description.unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let contains = |tool: &str, required: &[&str]| {
+            let description = descriptions
+                .get(tool)
+                .unwrap_or_else(|| panic!("missing selection fixture tool `{tool}`"))
+                .to_ascii_lowercase();
+            for phrase in required {
+                assert!(
+                    description.contains(&phrase.to_ascii_lowercase()),
+                    "`{tool}` description must explain `{phrase}`: {description}"
+                );
+            }
+        };
+
+        contains("read_file", &["one known", "search_files"]);
+        contains(
+            "search_files",
+            &["drive", "session_search", "workspace_search"],
+        );
+        contains("session_search", &["past chat", "not drive"]);
+        contains("workspace_search", &["permitted", "targeted domain tool"]);
+        contains("memory_search", &["durable", "does not search full chat"]);
+        contains("cronjob", &["exact durable schedule", "do not use"]);
+        contains(
+            "write_file",
+            &["complete", "patch_file", "knowledge_create"],
+        );
+        contains("patch_file", &["exactly one", "fingerprint", "write_file"]);
+        contains("knowledge_create", &["wiki/knowledge", "write_file"]);
+        contains("terminal", &["foreground", "background", "process tools"]);
+    }
+
+    #[tokio::test]
+    async fn workspace_search_contract_contains_only_prompt_time_permitted_domains() {
+        use crate::models::agent::{AgentToolAccess, AgentToolPermission};
+
+        let all = complete_registry();
+        let restricted = registry_with_policy(AgentPermissionPolicy::from_permissions(vec![
+            AgentToolPermission {
+                domain: AgentToolDomain::Notes,
+                access: AgentToolAccess::Denied,
+            },
+        ]));
+        let domains = restricted
+            .schemas()
+            .into_iter()
+            .find(|schema| schema.function.name == "workspace_search")
+            .unwrap()
+            .function
+            .parameters["properties"]["domains"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(!domains.iter().any(|domain| domain == "notes"));
+        assert!(domains.iter().any(|domain| domain == "sessions"));
+        assert_ne!(
+            all.contract_fingerprint("workspace_search"),
+            restricted.contract_fingerprint("workspace_search")
+        );
+    }
 }

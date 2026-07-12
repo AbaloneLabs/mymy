@@ -75,7 +75,7 @@ bun run preview    # 预览生产构建
 
 ## 认证（PIN）
 
-- 默认 PIN：`mymy`
+- 首次 PIN：启动前设置一次 `MYMY_INITIAL_PIN`，不接受默认 PIN。
 - PIN 验证由 Rust API 处理。
 - 解锁成功后会设置 `mymy_session` HttpOnly cookie。
 - `/` 路由由 `ProtectedRoute` 保护，并检查服务端会话状态。

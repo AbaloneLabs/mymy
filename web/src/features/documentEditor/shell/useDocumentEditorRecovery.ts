@@ -10,6 +10,7 @@ import {
 } from "./documentEditorRecoveryDraft";
 
 interface RecoverySnapshot {
+  principalScopeId: string;
   sessionId: string;
   path: string;
   editorKind: DocumentEditorModelResponse["editorKind"];
@@ -35,6 +36,7 @@ export function useDocumentEditorRecovery({
   draftKey,
   dirty,
   fingerprint,
+  principalScopeId,
 }: {
   data: DocumentEditorModelResponse;
   baseModel: unknown;
@@ -42,6 +44,7 @@ export function useDocumentEditorRecovery({
   draftKey: string;
   dirty: boolean;
   fingerprint: string;
+  principalScopeId: string | null;
 }) {
   const [sessionId] = useState(() => crypto.randomUUID());
   const restoredDraftIdRef = useRef<string | null>(null);
@@ -50,7 +53,15 @@ export function useDocumentEditorRecovery({
     useState<DocumentEditorRecoveryDraft | null>(null);
   const [checkedPath, setCheckedPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const scopePathKey = principalScopeId
+    ? `${principalScopeId}\u0000${data.path}`
+    : null;
+  const scopedAvailableDraft =
+    availableDraft?.principalScopeId === principalScopeId
+      ? availableDraft
+      : null;
   const snapshotRef = useRef<RecoverySnapshot>({
+    principalScopeId: principalScopeId ?? "",
     sessionId,
     path: data.path,
     editorKind: data.editorKind,
@@ -61,13 +72,15 @@ export function useDocumentEditorRecovery({
     dirty,
   });
   const deleteCurrentSessionDraft = useCallback(() => {
+    if (!principalScopeId) return;
     void deleteDocumentEditorRecoveryDraft(
-      documentEditorRecoveryDraftId(data.path, sessionId),
+      documentEditorRecoveryDraftId(principalScopeId, data.path, sessionId),
     ).catch(() => undefined);
-  }, [data.path, sessionId]);
+  }, [data.path, principalScopeId, sessionId]);
 
   useEffect(() => {
     snapshotRef.current = {
+      principalScopeId: principalScopeId ?? "",
       sessionId,
       path: data.path,
       editorKind: data.editorKind,
@@ -86,13 +99,23 @@ export function useDocumentEditorRecovery({
     draft,
     draftKey,
     fingerprint,
+    principalScopeId,
     sessionId,
   ]);
 
   useEffect(() => {
     let active = true;
     restoredDraftIdRef.current = null;
-    void readDocumentEditorRecoveryDraft(data.path, ignoredDraftIdsRef.current)
+    if (!principalScopeId) {
+      return () => {
+        active = false;
+      };
+    }
+    void readDocumentEditorRecoveryDraft(
+      principalScopeId,
+      data.path,
+      ignoredDraftIdsRef.current,
+    )
       .then((stored) => {
         if (!active) return;
         if (
@@ -109,17 +132,17 @@ export function useDocumentEditorRecovery({
         if (active) setError(recoveryErrorMessage(caught));
       })
       .finally(() => {
-        if (active) setCheckedPath(data.path);
+        if (active) setCheckedPath(scopePathKey);
       });
     return () => {
       active = false;
     };
-  }, [data.editorKind, data.modelSchemaVersion, data.path]);
+  }, [data.editorKind, data.modelSchemaVersion, data.path, principalScopeId, scopePathKey]);
 
   useEffect(() => {
-    if (checkedPath !== data.path) return;
+    if (!principalScopeId || checkedPath !== scopePathKey) return;
     if (!dirty) {
-      if (!availableDraft) deleteCurrentSessionDraft();
+      if (!scopedAvailableDraft) deleteCurrentSessionDraft();
       return;
     }
     const timer = window.setTimeout(() => {
@@ -129,7 +152,6 @@ export function useDocumentEditorRecovery({
     }, 750);
     return () => window.clearTimeout(timer);
   }, [
-    availableDraft,
     checkedPath,
     data.path,
     deleteCurrentSessionDraft,
@@ -137,12 +159,17 @@ export function useDocumentEditorRecovery({
     draftKey,
     fingerprint,
     sessionId,
+    principalScopeId,
+    scopePathKey,
+    scopedAvailableDraft,
   ]);
 
   useEffect(() => {
     return () => {
       const snapshot = snapshotRef.current;
-      if (snapshot.dirty) void persistSnapshot(snapshot).catch(() => undefined);
+      if (snapshot.dirty && snapshot.principalScopeId) {
+        void persistSnapshot(snapshot).catch(() => undefined);
+      }
     };
   }, []);
 
@@ -151,7 +178,9 @@ export function useDocumentEditorRecovery({
   }
 
   function dismissAvailable() {
-    if (availableDraft) ignoredDraftIdsRef.current.add(availableDraft.id);
+    if (scopedAvailableDraft) {
+      ignoredDraftIdsRef.current.add(scopedAvailableDraft.id);
+    }
     setAvailableDraft(null);
   }
 
@@ -161,7 +190,10 @@ export function useDocumentEditorRecovery({
   }
 
   function deleteOwnedDrafts() {
-    const ids = new Set([documentEditorRecoveryDraftId(data.path, sessionId)]);
+    if (!principalScopeId) return;
+    const ids = new Set([
+      documentEditorRecoveryDraftId(principalScopeId, data.path, sessionId),
+    ]);
     if (restoredDraftIdRef.current) {
       ids.add(restoredDraftIdRef.current);
       restoredDraftIdRef.current = null;
@@ -187,7 +219,12 @@ export function useDocumentEditorRecovery({
     nextBaseModel: unknown;
     model: unknown;
   }) {
+    if (!principalScopeId) {
+      setError("Browser recovery is unavailable for this authenticated session");
+      return;
+    }
     void persistDocumentEditorRecoveryDraft({
+      principalScopeId,
       sessionId,
       path: data.path,
       editorKind: data.editorKind,
@@ -200,7 +237,7 @@ export function useDocumentEditorRecovery({
 
   return {
     sessionId,
-    availableDraft,
+    availableDraft: scopedAvailableDraft,
     error,
     clearAvailable,
     dismissAvailable,
@@ -214,6 +251,7 @@ export function useDocumentEditorRecovery({
 
 function persistSnapshot(snapshot: RecoverySnapshot) {
   return persistDocumentEditorRecoveryDraft({
+    principalScopeId: snapshot.principalScopeId,
     sessionId: snapshot.sessionId,
     path: snapshot.path,
     editorKind: snapshot.editorKind,

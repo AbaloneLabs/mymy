@@ -28,7 +28,9 @@ pub use credentials::{
     create_credential, delete_credential, list_credentials, list_rate_limit_status,
     mark_credential_rate_limited, update_credential,
 };
-pub use key_rotation::reencrypt_all_keys;
+pub use key_rotation::{
+    migrate_legacy_keys_for_pin_in_transaction, reencrypt_all_keys_for_pin_in_transaction,
+};
 use model_catalog::curated_models;
 use repository::{ensure_default_exists, fetch_row, require_encryption_key, row_to_provider};
 pub use runtime_config::{
@@ -66,8 +68,9 @@ pub async fn create_provider(
         r#"INSERT INTO llm_providers
              (id, label, api_format, base_url,
               encrypted_key, key_nonce,
-              model, max_tokens, is_default, enabled, preset)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, $9)"#,
+              model, max_tokens, is_default, enabled, preset,
+              key_derivation_version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, $9, 2)"#,
         id,
         req.label,
         req.api_format.as_db_str(),
@@ -123,6 +126,8 @@ pub async fn update_provider(
              base_url = COALESCE($4, base_url),
              encrypted_key = COALESCE($5, encrypted_key),
              key_nonce = COALESCE($6, key_nonce),
+             key_derivation_version = CASE WHEN $5::text IS NULL
+                                           THEN key_derivation_version ELSE 2 END,
              model = COALESCE($7, model),
              max_tokens = COALESCE($8, max_tokens),
              enabled = COALESCE($9, enabled),

@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::agent::execution::DurableDecision;
 use crate::models::decision::DecisionView;
 
+use super::validation::approval_review_projection;
 use super::DecisionRow;
 
 pub(super) fn row_to_durable(row: DecisionRow) -> DurableDecision {
@@ -38,7 +39,7 @@ pub(super) fn row_to_view(row: DecisionRow) -> DecisionView {
         suspend: row.suspend,
         status: row.status,
         answer: row.answer,
-        proposed_action: row.proposed_action,
+        proposed_action: row.proposed_action.as_ref().map(approval_review_projection),
         target_version: row.target_version,
         expires_at: row.expires_at.map(|time| time.to_rfc3339()),
         created_at: row.created_at.to_rfc3339(),

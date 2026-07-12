@@ -120,6 +120,9 @@ async fn store_pending_row(
         .map_err(|_| AppError::Internal("quarantine retention conversion failed".to_string()))?;
     let size = i64::try_from(staged.size)
         .map_err(|_| AppError::PayloadTooLarge("content size cannot be stored".to_string()))?;
+    let target_resource_id =
+        crate::services::resource_identity::active_resource_id_for_path(&state.db, desired_path)
+            .await?;
 
     let mut transaction = state.db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -142,10 +145,10 @@ async fn store_pending_row(
                desired_path, normalized_name, detected_type, origin_kind,
                actor_kind, actor_id, agent_run_id, provider_ref, sha256, size,
                storage_key, findings, policy_version, expires_at,
-               target_fingerprint
+               target_fingerprint, target_resource_id
            )
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                   now() + make_interval(days => $14), $15)
+                   now() + make_interval(days => $14), $15, $16)
            RETURNING id"#,
     )
     .bind(desired_path)
@@ -163,6 +166,7 @@ async fn store_pending_row(
     .bind(&report.policy_version)
     .bind(retention_days)
     .bind(target_fingerprint)
+    .bind(target_resource_id)
     .fetch_one(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -1231,6 +1235,8 @@ mod tests {
             expected_fingerprint: None,
             allow_overwrite: true,
             enqueue_s3_sync: false,
+            operation_key: None,
+            artifact: None,
         }
     }
 

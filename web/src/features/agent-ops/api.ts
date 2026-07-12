@@ -12,6 +12,8 @@ import type {
   QuarantinedCronJobsResponse,
   RunSummary,
   MemoryEmbeddingSettings,
+  MemoryExport,
+  MemoryRuntimeSettings,
 } from "@/types/agent-ops";
 
 const NATIVE_CRON_QUERY_KEY = ["agent-ops", "cron", "native"] as const;
@@ -35,6 +37,12 @@ export function useRuntimeMemories(profile: string | null, query: string) {
   });
 }
 
+export function exportRuntimeMemories(profile: string) {
+  return api.get<MemoryExport>(
+    `/runtime-memory/export/${encodeURIComponent(profile)}`,
+  );
+}
+
 export function useRunSummaries(profile: string | null, query: string) {
   return useQuery({
     queryKey: ["agent-ops", "run-summaries", profile, query],
@@ -55,12 +63,27 @@ export function useReviewRuntimeMemory() {
     mutationFn: ({
       id,
       action,
+      expectedContentRevision,
+      expectedLifecycleRevision,
+      idempotencyKey,
     }: {
       id: string;
       action: "approve" | "stale" | "delete";
+      expectedContentRevision: number;
+      expectedLifecycleRevision: number;
+      idempotencyKey: string;
     }) =>
-      api.post<AgentMemory>(`/runtime-memory/${id}/review`, { action }),
+      api.post<AgentMemory>(`/runtime-memory/${id}/review`, {
+        action,
+        expectedContentRevision,
+        expectedLifecycleRevision,
+        idempotencyKey,
+      }),
     onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["agent-ops", "runtime-memory"],
+      }),
+    onError: () =>
       queryClient.invalidateQueries({
         queryKey: ["agent-ops", "runtime-memory"],
       }),
@@ -82,7 +105,6 @@ export function useUpdateMemoryEmbeddingSettings(profile: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: {
-      enabled: boolean;
       includePrivate: boolean;
       includeFinancial: boolean;
     }) =>
@@ -93,6 +115,38 @@ export function useUpdateMemoryEmbeddingSettings(profile: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["agent-ops", "runtime-memory"],
+      });
+    },
+  });
+}
+
+export function useMemoryRuntimeSettings(profile: string | null) {
+  return useQuery({
+    queryKey: ["agent-ops", "runtime-memory", "runtime-settings", profile],
+    queryFn: () =>
+      api.get<MemoryRuntimeSettings>(
+        `/runtime-memory/runtime-settings/${encodeURIComponent(profile ?? "")}`,
+      ),
+    enabled: Boolean(profile),
+  });
+}
+
+export function useUpdateMemoryRuntimeSettings(profile: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      automaticRecallEnabled: boolean;
+      inferredExtractionEnabled: boolean;
+      semanticIndexingEnabled: boolean;
+      expectedSettingsRevision: number;
+    }) =>
+      api.put<MemoryRuntimeSettings>(
+        `/runtime-memory/runtime-settings/${encodeURIComponent(profile)}`,
+        body,
+      ),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["agent-ops", "runtime-memory", "runtime-settings", profile],
       });
     },
   });

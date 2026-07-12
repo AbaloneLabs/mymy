@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{truncate_chars, workspace_paths::WorkspacePathPolicy, BuiltinToolConfig};
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::security::{
     ensure_read_allowed, ensure_write_allowed, is_sensitive_path, redact_sensitive_text,
 };
@@ -27,6 +28,7 @@ use crate::services::file_observations::{
     ensure_file_not_changed_since_observed, fingerprint_path, record_file_observation,
     record_file_observation_fingerprint, FileFingerprint, FileObservationSource,
 };
+use crate::services::resource_identity::artifact_classification;
 use crate::services::workspace_content::{AdmissionActor, AdmissionOutcome, AdmissionRequest};
 use crate::state::AppState;
 
@@ -45,13 +47,13 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "drive_read".to_string(),
         schema: tool_schema(
             "read_file",
-            "Read a UTF-8 text file. Use a relative path for your private workspace, or /drive/shared/... for shared files.",
+            "Read bounded lines from one known UTF-8 file. Use search_files to discover files by literal content. Use a relative path for your private workspace, or /drive/shared/... for shared files.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Examples: report.md, notes/plan.md, /drive/shared/report.md. Do not pass drive/agents/... or host paths." },
-                    "offset": { "type": "integer", "minimum": 1 },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_READ_LINES }
+                    "offset": { "type": "integer", "minimum": 1, "description": "One-based first line to return; defaults to the beginning." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_READ_LINES, "description": "Maximum number of lines to return." }
                 },
                 "required": ["path"]
             }),
@@ -70,13 +72,13 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "drive_read".to_string(),
         schema: tool_schema(
             "search_files",
-            "Search UTF-8 files under your available workspace roots for a literal text pattern.",
+            "Search UTF-8 Drive files under available workspace roots for a literal text pattern. Use read_file after locating a file; use session_search for past conversations and workspace_search for cross-domain discovery when available.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" },
+                    "query": { "type": "string", "description": "Literal UTF-8 text to find." },
                     "path": { "type": "string", "description": "Optional relative subdirectory or /drive/... logical path." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS, "description": "Maximum number of matching lines to return." }
                 },
                 "required": ["query"]
             }),
@@ -92,13 +94,15 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "drive_write".to_string(),
         schema: tool_schema(
             "write_file",
-            "Create or overwrite a UTF-8 text file. Use relative paths for private files and /drive/shared/... for shared files.",
+            "Create or replace a complete UTF-8 Drive file. Use patch_file for one exact edit and knowledge_create for a Wiki/Knowledge article. Use relative paths for private files and /drive/shared/... for shared files.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Examples: report.md, notes/plan.md, /drive/shared/report.md. Do not pass drive/agents/... or host paths." },
-                    "content": { "type": "string" },
+                    "content": { "type": "string", "description": "Complete UTF-8 file content to write." },
                     "expectedFingerprint": { "type": "string", "description": "Fingerprint returned by read_file. Required when overwriting an existing file." }
+                    ,"artifactTitle": { "type": "string", "maxLength": 200, "description": "Optional user-facing title only when creating a durable, user-meaningful output. Omit for routine workspace files." }
+                    ,"artifactType": { "type": "string", "enum": ["document", "report", "image", "archive", "attachment", "export"], "description": "Artifact category. Required with artifactTitle and only valid for a newly created output." }
                 },
                 "required": ["path", "content"]
             }),
@@ -118,13 +122,13 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         toolset: "drive_write".to_string(),
         schema: tool_schema(
             "patch_file",
-            "Replace exactly one text occurrence in a UTF-8 text file.",
+            "Replace exactly one text occurrence in an existing UTF-8 Drive file using its fingerprint. Use write_file only when supplying the complete new content.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative private path or /drive/... logical path." },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
+                    "old_string": { "type": "string", "description": "Exact text that must occur once in the current file." },
+                    "new_string": { "type": "string", "description": "Replacement text; may be empty to delete the matched text." },
                     "expectedFingerprint": { "type": "string", "description": "Fingerprint returned by read_file." }
                 },
                 "required": ["path", "old_string", "new_string", "expectedFingerprint"]
@@ -232,12 +236,24 @@ struct WriteFileTool {
 #[async_trait]
 impl ToolHandler for WriteFileTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        self.write(args).await
+        self.write(args, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        self.write(args, Some(context)).await
     }
 }
 
 impl WriteFileTool {
-    async fn write(&self, args: &Value) -> Result<String, ToolError> {
+    async fn write(
+        &self,
+        args: &Value,
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
         let resolved = self.paths.resolve_for_write_with_logical(path)?;
@@ -255,6 +271,26 @@ impl WriteFileTool {
         .await
         .map_err(ToolError::Execution)?;
         let existed = resolved.physical.exists();
+        let artifact = match (
+            args.get("artifactType").and_then(Value::as_str),
+            args.get("artifactTitle").and_then(Value::as_str),
+        ) {
+            (None, None) => None,
+            (Some(kind), Some(title)) if !existed => Some(
+                artifact_classification(kind, title, &resolved.logical)
+                    .map_err(app_error_to_tool)?,
+            ),
+            (Some(_), Some(_)) => {
+                return Err(ToolError::InvalidArgs(
+                    "artifact metadata is only valid when creating a new output".to_string(),
+                ));
+            }
+            _ => {
+                return Err(ToolError::InvalidArgs(
+                    "artifactType and artifactTitle must be supplied together".to_string(),
+                ));
+            }
+        };
         let expected = if existed {
             Some(
                 args.get("expectedFingerprint")
@@ -295,24 +331,30 @@ impl WriteFileTool {
                         .unwrap_or("file")
                         .to_string(),
                     origin: ContentOrigin::AgentGenerated,
-                    actor: AdmissionActor::agent(self.agent_profile.as_deref(), None),
+                    actor: AdmissionActor::agent(
+                        self.agent_profile.as_deref(),
+                        context.map(|value| value.run_id),
+                    )
+                    .with_invocation(context.map(|value| value.invocation_id.as_str())),
                     expected_fingerprint: expected.map(str::to_string),
                     allow_overwrite: existed,
                     enqueue_s3_sync: true,
+                    operation_key: context.map(|value| value.invocation_id.clone()),
+                    artifact,
                 },
                 content.as_bytes(),
             )
             .await
             .map_err(app_error_to_tool)?;
-        match outcome {
-            AdmissionOutcome::Committed { .. } => {}
+        let operation_id = match outcome {
+            AdmissionOutcome::Committed { operation_id, .. } => operation_id,
             AdmissionOutcome::Quarantined { .. } => {
                 return Err(app_error_to_tool(AppError::content_quarantined()));
             }
             AdmissionOutcome::Rejected => {
                 return Err(app_error_to_tool(AppError::content_rejected()));
             }
-        }
+        };
         let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -328,6 +370,7 @@ impl WriteFileTool {
             "lines_written": content.lines().count(),
             "fingerprint": fingerprint.hash,
             "observationRecorded": observation_recorded,
+            "operationId": operation_id,
         })))
     }
 }
@@ -342,12 +385,24 @@ struct PatchFileTool {
 #[async_trait]
 impl ToolHandler for PatchFileTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        self.patch(args).await
+        self.patch(args, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolExecutionContext,
+        args: &Value,
+    ) -> Result<String, ToolError> {
+        self.patch(args, Some(context)).await
     }
 }
 
 impl PatchFileTool {
-    async fn patch(&self, args: &Value) -> Result<String, ToolError> {
+    async fn patch(
+        &self,
+        args: &Value,
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let path = required_str(args, "path")?;
         let old_string = required_str(args, "old_string")?;
         let new_string = required_str(args, "new_string")?;
@@ -401,24 +456,30 @@ impl PatchFileTool {
                         .unwrap_or("file")
                         .to_string(),
                     origin: ContentOrigin::AgentGenerated,
-                    actor: AdmissionActor::agent(self.agent_profile.as_deref(), None),
+                    actor: AdmissionActor::agent(
+                        self.agent_profile.as_deref(),
+                        context.map(|value| value.run_id),
+                    )
+                    .with_invocation(context.map(|value| value.invocation_id.as_str())),
                     expected_fingerprint: Some(expected.to_string()),
                     allow_overwrite: true,
                     enqueue_s3_sync: true,
+                    operation_key: context.map(|value| value.invocation_id.clone()),
+                    artifact: None,
                 },
                 updated.as_bytes(),
             )
             .await
             .map_err(app_error_to_tool)?;
-        match outcome {
-            AdmissionOutcome::Committed { .. } => {}
+        let operation_id = match outcome {
+            AdmissionOutcome::Committed { operation_id, .. } => operation_id,
             AdmissionOutcome::Quarantined { .. } => {
                 return Err(app_error_to_tool(AppError::content_quarantined()));
             }
             AdmissionOutcome::Rejected => {
                 return Err(app_error_to_tool(AppError::content_rejected()));
             }
-        }
+        };
         let (fingerprint, observation_recorded) = record_committed_agent_file(
             self.db.as_ref(),
             self.agent_profile.as_deref(),
@@ -433,6 +494,7 @@ impl PatchFileTool {
             "replacements": 1,
             "fingerprint": fingerprint.hash,
             "observationRecorded": observation_recorded,
+            "operationId": operation_id,
         })))
     }
 }
@@ -685,8 +747,10 @@ mod tests {
             "expectedFingerprint": fingerprint,
         });
 
-        let (write_result, patch_result) =
-            tokio::join!(writer.write(&write_args), patcher.patch(&patch_args));
+        let (write_result, patch_result) = tokio::join!(
+            writer.write(&write_args, None),
+            patcher.patch(&patch_args, None)
+        );
 
         assert_ne!(write_result.is_ok(), patch_result.is_ok());
         let committed = std::fs::read_to_string(&path).unwrap();

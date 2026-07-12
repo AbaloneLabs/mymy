@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 
 export function BoardView({
   tasks,
+  focusTaskId,
   statuses,
   onToggle,
   onDelete,
@@ -41,6 +42,7 @@ export function BoardView({
   onAddCard,
 }: {
   tasks: Task[];
+  focusTaskId?: string | null;
   statuses: TaskStatusDef[];
   onToggle: (task: Task) => void;
   onDelete: (id: string) => void;
@@ -55,6 +57,7 @@ export function BoardView({
 }) {
   const { t } = useTranslation();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const deepLinkAppliedRef = useRef(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showAddStatus, setShowAddStatus] = useState(false);
 
@@ -78,6 +81,18 @@ export function BoardView({
   const activeTask = activeId
     ? tasks.find((task) => task.id === activeId) ?? null
     : null;
+
+  useEffect(() => {
+    if (
+      !focusTaskId ||
+      deepLinkAppliedRef.current ||
+      !tasks.some((task) => task.id === focusTaskId)
+    ) {
+      return;
+    }
+    deepLinkAppliedRef.current = true;
+    setEditingId(focusTaskId);
+  }, [focusTaskId, tasks]);
 
   function handleDragStart(event: DragStartEvent) {
     setActiveId(String(event.active.id));

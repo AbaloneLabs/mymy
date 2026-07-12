@@ -11,7 +11,9 @@ mod validation;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -20,7 +22,9 @@ use crate::agent::execution::{DecisionCoordinator, DurableDecision, ToolExecutio
 use crate::agent::providers::Message;
 use crate::agent::security::redact_sensitive_text;
 use crate::error::{AppError, AppResult};
-use crate::models::decision::{DecisionView, DecisionsQuery, ResolveDecisionResponse};
+use crate::models::decision::{
+    DecisionView, DecisionsQuery, DecisionsResponse, ResolveDecisionResponse,
+};
 use crate::services::agent_runs;
 use crate::state::AppState;
 
@@ -62,7 +66,7 @@ pub fn coordinator(state: AppState) -> Arc<dyn DecisionCoordinator> {
 pub async fn list_decisions(
     state: &AppState,
     query: DecisionsQuery,
-) -> AppResult<Vec<DecisionView>> {
+) -> AppResult<DecisionsResponse> {
     if query.status.as_deref().is_some_and(|status| {
         !matches!(
             status,
@@ -73,7 +77,39 @@ pub async fn list_decisions(
             "invalid decision status filter".to_string(),
         ));
     }
-    let rows = sqlx::query_as::<_, DecisionRow>(
+    if query
+        .kind
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, "choice" | "approval" | "input"))
+    {
+        return Err(AppError::BadRequest(
+            "invalid decision kind filter".to_string(),
+        ));
+    }
+    if !(1..=100).contains(&query.limit) {
+        return Err(AppError::BadRequest(
+            "decision limit must be between 1 and 100".to_string(),
+        ));
+    }
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(decode_decision_cursor)
+        .transpose()?;
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| !cursor.matches_query(&query))
+    {
+        return Err(AppError::BadRequest(
+            "decision cursor does not match the active filters".to_string(),
+        ));
+    }
+    let cursor_pending_rank = cursor.as_ref().map(|cursor| cursor.pending_rank);
+    let cursor_blocking_rank = cursor.as_ref().map(|cursor| cursor.blocking_rank);
+    let cursor_created_at = cursor.as_ref().map(|cursor| cursor.created_at);
+    let cursor_id = cursor.as_ref().map(|cursor| cursor.id);
+    let fetch_limit = query.limit + 1;
+    let mut rows = sqlx::query_as::<_, DecisionRow>(
         r#"SELECT d.id, d.run_id, d.session_id, d.cron_job_id, d.kind,
                   d.context, d.reason, d.question, d.choices, d.suspend,
                   d.status, d.answer, d.dedupe_key, d.proposed_action,
@@ -85,17 +121,144 @@ pub async fn list_decisions(
              AND ($2::uuid IS NULL OR d.run_id = $2)
              AND ($3::uuid IS NULL OR d.session_id = $3)
              AND ($4::text IS NULL OR r.agent_profile = $4)
-           ORDER BY d.created_at DESC
-           LIMIT $5"#,
+             AND ($5::text IS NULL OR d.kind = $5)
+             AND ($6::boolean IS NULL OR d.suspend = $6)
+             AND ($7::uuid IS NULL OR r.project_id = $7)
+             AND (
+                 $8::smallint IS NULL OR
+                 (CASE WHEN d.status = 'pending' THEN 0 ELSE 1 END,
+                  CASE WHEN d.status = 'pending' AND d.suspend THEN 0 ELSE 1 END,
+                  d.created_at, d.id)
+                 > ($8::smallint, $9::smallint, $10::timestamptz, $11::uuid)
+             )
+           ORDER BY CASE WHEN d.status = 'pending' THEN 0 ELSE 1 END ASC,
+                    CASE WHEN d.status = 'pending' AND d.suspend THEN 0 ELSE 1 END ASC,
+                    d.created_at ASC, d.id ASC
+           LIMIT $12"#,
     )
-    .bind(query.status)
+    .bind(query.status.as_deref())
     .bind(query.run_id)
     .bind(query.session_id)
-    .bind(query.agent_profile)
-    .bind(query.limit.clamp(1, 200))
+    .bind(query.agent_profile.as_deref())
+    .bind(query.kind.as_deref())
+    .bind(query.blocking)
+    .bind(query.project_id)
+    .bind(cursor_pending_rank)
+    .bind(cursor_blocking_rank)
+    .bind(cursor_created_at)
+    .bind(cursor_id)
+    .bind(fetch_limit)
     .fetch_all(&state.db)
     .await?;
-    Ok(rows.into_iter().map(row_to_view).collect())
+    let has_more = rows.len() > query.limit as usize;
+    if has_more {
+        rows.pop();
+    }
+    let next_cursor = if has_more {
+        rows.last()
+            .map(|row| encode_decision_cursor(DecisionCursor::for_row(row, &query)))
+            .transpose()?
+    } else {
+        None
+    };
+    let filtered_pending_count = filtered_pending_count(state, &query).await?;
+    Ok(DecisionsResponse {
+        decisions: rows.into_iter().map(row_to_view).collect(),
+        next_cursor,
+        filtered_pending_count,
+    })
+}
+
+pub async fn pending_decision_count(state: &AppState) -> AppResult<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM decisions WHERE status = 'pending'")
+        .fetch_one(&state.db)
+        .await
+        .map_err(Into::into)
+}
+
+async fn filtered_pending_count(state: &AppState, query: &DecisionsQuery) -> AppResult<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)
+           FROM decisions d
+           INNER JOIN agent_runs r ON r.id = d.run_id
+           WHERE d.status = 'pending'
+             AND ($1::uuid IS NULL OR d.run_id = $1)
+             AND ($2::uuid IS NULL OR d.session_id = $2)
+             AND ($3::text IS NULL OR r.agent_profile = $3)
+             AND ($4::text IS NULL OR d.kind = $4)
+             AND ($5::boolean IS NULL OR d.suspend = $5)
+             AND ($6::uuid IS NULL OR r.project_id = $6)"#,
+    )
+    .bind(query.run_id)
+    .bind(query.session_id)
+    .bind(query.agent_profile.as_deref())
+    .bind(query.kind.as_deref())
+    .bind(query.blocking)
+    .bind(query.project_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(Into::into)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecisionCursor {
+    version: u8,
+    pending_rank: i16,
+    blocking_rank: i16,
+    created_at: DateTime<Utc>,
+    id: Uuid,
+    status: Option<String>,
+    kind: Option<String>,
+    blocking: Option<bool>,
+    run_id: Option<Uuid>,
+    session_id: Option<Uuid>,
+    agent_profile: Option<String>,
+    project_id: Option<Uuid>,
+}
+
+impl DecisionCursor {
+    fn for_row(row: &DecisionRow, query: &DecisionsQuery) -> Self {
+        Self {
+            version: 1,
+            pending_rank: i16::from(row.status != "pending"),
+            blocking_rank: i16::from(row.status != "pending" || !row.suspend),
+            created_at: row.created_at,
+            id: row.id,
+            status: query.status.clone(),
+            kind: query.kind.clone(),
+            blocking: query.blocking,
+            run_id: query.run_id,
+            session_id: query.session_id,
+            agent_profile: query.agent_profile.clone(),
+            project_id: query.project_id,
+        }
+    }
+
+    fn matches_query(&self, query: &DecisionsQuery) -> bool {
+        self.version == 1
+            && self.status == query.status
+            && self.kind == query.kind
+            && self.blocking == query.blocking
+            && self.run_id == query.run_id
+            && self.session_id == query.session_id
+            && self.agent_profile == query.agent_profile
+            && self.project_id == query.project_id
+    }
+}
+
+fn encode_decision_cursor(cursor: DecisionCursor) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&cursor)
+        .map_err(|error| AppError::Internal(format!("decision cursor encode failed: {error}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_decision_cursor(value: &str) -> AppResult<DecisionCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AppError::BadRequest("invalid decision cursor".to_string()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("invalid decision cursor".to_string()))
 }
 
 pub async fn get_decision(state: &AppState, id: Uuid) -> AppResult<DecisionView> {
@@ -876,6 +1039,82 @@ async fn resource_updated_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn inbox_cursor_keeps_blocking_priority_and_filter_scope(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        let mut run_ids = Vec::new();
+        for objective in ["first", "second", "third"] {
+            run_ids.push(
+                sqlx::query_scalar::<_, Uuid>(
+                    r#"INSERT INTO agent_runs
+                         (agent_profile, trigger_type, status, objective, prompt_version)
+                       VALUES ('inbox', 'wake', 'waiting_decision', $1, 'test')
+                       RETURNING id"#,
+                )
+                .bind(objective)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            );
+        }
+        for (index, (run_id, suspend)) in run_ids.iter().zip([false, true, false]).enumerate() {
+            sqlx::query(
+                r#"INSERT INTO decisions
+                     (run_id, kind, question, choices, suspend, created_at)
+                   VALUES ($1, 'input', $2, '[]'::jsonb, $3,
+                           TIMESTAMPTZ '2026-07-11 00:00:00+00' + $4 * INTERVAL '1 minute')"#,
+            )
+            .bind(run_id)
+            .bind(format!("question-{index}"))
+            .bind(suspend)
+            .bind(index as i32)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let first = list_decisions(
+            &state,
+            DecisionsQuery {
+                status: Some("pending".to_string()),
+                kind: None,
+                blocking: None,
+                run_id: None,
+                session_id: None,
+                agent_profile: Some("inbox".to_string()),
+                project_id: None,
+                cursor: None,
+                limit: 2,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.filtered_pending_count, 3);
+        assert!(first.decisions[0].suspend);
+        assert_eq!(first.decisions[1].question, "question-0");
+
+        let second = list_decisions(
+            &state,
+            DecisionsQuery {
+                status: Some("pending".to_string()),
+                kind: None,
+                blocking: None,
+                run_id: None,
+                session_id: None,
+                agent_profile: Some("inbox".to_string()),
+                project_id: None,
+                cursor: first.next_cursor,
+                limit: 2,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.decisions.len(), 1);
+        assert_eq!(second.decisions[0].question, "question-2");
+        assert!(second.next_cursor.is_none());
+        assert_eq!(pending_decision_count(&state).await.unwrap(), 3);
+    }
 
     #[sqlx::test(migrations = "./migrations")]
     async fn approval_is_superseded_when_target_changes_before_resolution(pool: sqlx::PgPool) {

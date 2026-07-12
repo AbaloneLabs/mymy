@@ -33,7 +33,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "category": { "type": "string" }
+                    "category": { "type": "string", "description": "Optional exact skill category filter." }
                 }
             }),
         ),
@@ -52,8 +52,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string" },
-                    "file_path": { "type": "string" }
+                    "name": { "type": "string", "description": "Exact registered skill name." },
+                    "file_path": { "type": "string", "description": "Optional relative support-file path linked by SKILL.md." }
                 },
                 "required": ["name"]
             }),
@@ -73,16 +73,16 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["create", "patch", "delete", "write_file", "remove_file", "pin", "unpin", "curate"] },
-                    "name": { "type": "string" },
-                    "category": { "type": "string" },
-                    "content": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
-                    "file_path": { "type": "string" },
-                    "archive": { "type": "boolean", "default": true },
-                    "stale_days": { "type": "integer", "minimum": 1, "default": 30 },
-                    "archive_days": { "type": "integer", "minimum": 1, "default": 90 }
+                    "action": { "type": "string", "enum": ["create", "patch", "delete", "write_file", "remove_file", "pin", "unpin", "curate"], "description": "Skill registry operation to perform." },
+                    "name": { "type": "string", "description": "Exact local skill name." },
+                    "category": { "type": "string", "description": "Skill category used when creating or curating." },
+                    "content": { "type": "string", "description": "Complete SKILL.md/support-file content or replacement text." },
+                    "old_string": { "type": "string", "description": "Exact current text required by patch." },
+                    "new_string": { "type": "string", "description": "Replacement text used by patch." },
+                    "file_path": { "type": "string", "description": "Relative support-file path inside the selected skill." },
+                    "archive": { "type": "boolean", "default": true, "description": "Archive deleted skill content instead of immediate removal." },
+                    "stale_days": { "type": "integer", "minimum": 1, "default": 30, "description": "Inactive-day threshold used by curate." },
+                    "archive_days": { "type": "integer", "minimum": 1, "default": 90, "description": "Inactive-day threshold used to archive stale skills." }
                 },
                 "required": ["action"]
             }),
@@ -105,13 +105,13 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "create", "invoke", "extract"] },
-                    "name": { "type": "string" },
-                    "description": { "type": "string" },
-                    "skills": { "type": "array", "items": { "type": "string" } },
-                    "instruction": { "type": "string" },
-                    "message": { "type": "string" },
-                    "inline_shell": { "type": "boolean", "default": false }
+                    "action": { "type": "string", "enum": ["list", "create", "invoke", "extract"], "description": "Skill-bundle operation to perform." },
+                    "name": { "type": "string", "description": "Exact skill-bundle name." },
+                    "description": { "type": "string", "description": "Human-readable purpose for a created bundle." },
+                    "skills": { "type": "array", "description": "Ordered skill names included in a bundle.", "items": { "type": "string", "description": "One registered skill name." } },
+                    "instruction": { "type": "string", "description": "User instruction associated with bundle creation or extraction." },
+                    "message": { "type": "string", "description": "Invocation message passed to the selected bundle." },
+                    "inline_shell": { "type": "boolean", "default": false, "description": "Whether invocation may inline an explicitly allowed shell step." }
                 },
                 "required": ["action"]
             }),

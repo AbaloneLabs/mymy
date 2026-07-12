@@ -7,6 +7,7 @@ const COMMON_DOCUMENT_EDITOR_CAPABILITIES = [
   "document-revision-snapshot-v1",
   "atomic-file-replace-v1",
   "normalized-model-schema-v1",
+  "document-capability-matrix-v1",
 ];
 
 export function requiredDocumentEditorCapabilities(kind: DocumentEditorKind) {

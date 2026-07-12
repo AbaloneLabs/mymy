@@ -12,9 +12,11 @@ mod trash;
 mod workspace;
 
 pub use content::{document_package, mime_type_for_path};
+#[cfg(test)]
+pub use operations::write_file_conditionally;
 pub use operations::{
     blob_path, create_folder, list, move_path, read_file, upload_staged_file,
-    write_file_conditionally,
+    write_file_conditionally_with_context,
 };
 pub use paths::{
     agent_agents_md_path, agent_soul_md_path, logical_agent_file_path, logical_agent_path,
@@ -25,7 +27,12 @@ pub use paths::{
 pub(crate) use sync::document_sync_status;
 pub(crate) use sync::enqueue_s3_sync_job;
 pub use sync::{list_sync_jobs, physical_path_for_sync, s3_object_key};
-pub use trash::{delete_path, list_trash, purge_trash, restore_trash};
+#[cfg(test)]
+pub use trash::list_trash;
+pub use trash::{
+    delete_path, delete_path_with_actor, list_trash_page, purge_trash, restore_trash,
+    restore_trash_with_actor,
+};
 pub use workspace::{
     archive_agent_workspace, ensure_agent_workspace, ensure_project_workspace, project_drive_slug,
     provider_status, resolve_agent_drive_workspace, AgentDriveWorkspace,

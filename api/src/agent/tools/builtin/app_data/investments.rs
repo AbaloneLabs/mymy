@@ -24,7 +24,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_account_create",
         "investments_write",
         "Create an investment account.",
-        passthrough_schema(),
+        record_schema(
+            &["projectId", "name", "institution", "currency", "notes"],
+            &["name"],
+        ),
         state,
         AppAction::InvestmentAccountCreate,
     );
@@ -33,7 +36,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_account_update",
         "investments_write",
         "Update an investment account by id.",
-        id_body_schema("Investment account id."),
+        id_body_schema(
+            "Investment account id.",
+            &["projectId", "name", "institution", "currency", "notes"],
+        ),
         state,
         AppAction::InvestmentAccountUpdate,
     );
@@ -60,7 +66,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_asset_create",
         "investments_write",
         "Create an investment asset.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "symbol",
+                "name",
+                "assetType",
+                "exchange",
+                "currency",
+                "sector",
+                "notes",
+            ],
+            &["symbol"],
+        ),
         state,
         AppAction::InvestmentAssetCreate,
     );
@@ -69,7 +86,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_asset_update",
         "investments_write",
         "Update an investment asset by id.",
-        id_body_schema("Investment asset id."),
+        id_body_schema(
+            "Investment asset id.",
+            &[
+                "symbol",
+                "name",
+                "assetType",
+                "exchange",
+                "currency",
+                "sector",
+                "notes",
+            ],
+        ),
         state,
         AppAction::InvestmentAssetUpdate,
     );
@@ -96,7 +124,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_position_create",
         "investments_write",
         "Create an investment position.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "accountId",
+                "assetId",
+                "quantityMicro",
+                "costBasisAmount",
+                "currency",
+                "openedAt",
+                "notes",
+            ],
+            &["assetId", "quantityMicro", "costBasisAmount"],
+        ),
         state,
         AppAction::InvestmentPositionCreate,
     );
@@ -105,7 +144,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_position_update",
         "investments_write",
         "Update an investment position by id.",
-        id_body_schema("Investment position id."),
+        id_body_schema(
+            "Investment position id.",
+            &[
+                "accountId",
+                "assetId",
+                "quantityMicro",
+                "costBasisAmount",
+                "currency",
+                "openedAt",
+                "notes",
+            ],
+        ),
         state,
         AppAction::InvestmentPositionUpdate,
     );
@@ -132,7 +182,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_valuation_create",
         "investments_write",
         "Create a valuation snapshot.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "positionId",
+                "unitPriceAmount",
+                "marketValueAmount",
+                "currency",
+                "recordedAt",
+                "notes",
+            ],
+            &["positionId", "marketValueAmount"],
+        ),
         state,
         AppAction::InvestmentValuationCreate,
     );
@@ -150,7 +210,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_cashflow_list",
         "investments_read",
         "List investment cashflows.",
-        serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":500},"scope":{"type":"string","enum":["all","general","project"]},"projectId":{"type":"string"}}}),
+        serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum number of cashflows to return."},"scope":{"type":"string","enum":["all","general","project"],"description":"Return all permitted, general, or project cashflows."},"projectId":{"type":"string","description":"Project UUID required when scope is project."}}}),
         state,
         AppAction::InvestmentCashflowList,
     );
@@ -159,7 +219,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_cashflow_create",
         "investments_write",
         "Create an investment cashflow.",
-        passthrough_schema(),
+        record_schema(
+            &[
+                "accountId",
+                "assetId",
+                "flowType",
+                "amount",
+                "currency",
+                "recordedAt",
+                "notes",
+            ],
+            &["flowType", "amount"],
+        ),
         state,
         AppAction::InvestmentCashflowCreate,
     );
@@ -168,7 +239,18 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_cashflow_update",
         "investments_write",
         "Update an investment cashflow by id.",
-        id_body_schema("Investment cashflow id."),
+        id_body_schema(
+            "Investment cashflow id.",
+            &[
+                "accountId",
+                "assetId",
+                "flowType",
+                "amount",
+                "currency",
+                "recordedAt",
+                "notes",
+            ],
+        ),
         state,
         AppAction::InvestmentCashflowUpdate,
     );
@@ -195,7 +277,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "investment_watchlist_create",
         "investments_write",
         "Create or update a watchlist item.",
-        passthrough_schema(),
+        record_schema(
+            &["assetId", "targetPriceAmount", "currency", "notes"],
+            &["assetId"],
+        ),
         state,
         AppAction::InvestmentWatchlistCreate,
     );

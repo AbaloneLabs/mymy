@@ -30,7 +30,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "port": { "type": "integer", "minimum": MIN_PREVIEW_PORT, "maximum": MAX_PREVIEW_PORT },
+                    "port": { "type": "integer", "minimum": MIN_PREVIEW_PORT, "maximum": MAX_PREVIEW_PORT, "description": "Sandbox server TCP port between 1024 and 65535." },
                     "label": { "type": "string", "description": "Short preview name." }
                 },
                 "required": ["port", "label"]

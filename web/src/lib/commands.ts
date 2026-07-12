@@ -17,6 +17,7 @@ import {
   Keyboard,
   Lock,
   Plus,
+  ShieldQuestion,
 } from "lucide-react";
 
 /**
@@ -76,6 +77,14 @@ export const DEFAULT_COMMANDS: CommandAction[] = [
     category: "navigation",
     keywords: ["dashboard", "main"],
     perform: (ctx) => ctx.navigate("/"),
+  },
+  {
+    id: "navigate.decisions",
+    labelKey: "commandPalette.commands.goDecisions",
+    icon: ShieldQuestion,
+    category: "navigation",
+    keywords: ["approval", "choice", "blocking"],
+    perform: (ctx) => ctx.navigate("/decisions"),
   },
   {
     id: "navigate.chat",

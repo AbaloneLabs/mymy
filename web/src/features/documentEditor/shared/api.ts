@@ -53,6 +53,7 @@ export function useWriteDocumentEditorModel() {
         requiredCapabilities: input.requiredCapabilities,
         idempotencyKey: input.idempotencyKey,
         expectedFingerprint: input.expectedFingerprint,
+        sourceSessionId: input.sourceSessionId,
       }),
     onSuccess: (data, variables) => {
       if (variables.syncQuery !== false) {

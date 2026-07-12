@@ -52,17 +52,18 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {
                     "todos": {
                         "type": "array",
+                        "description": "Complete checklist items to store; omit to read the current checklist.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "id": { "type": "string" },
-                                "content": { "type": "string" },
-                                "status": { "type": "string", "enum": VALID_STATUSES }
+                                "id": { "type": "string", "description": "Stable checklist item identifier." },
+                                "content": { "type": "string", "description": "Concrete checklist item text." },
+                                "status": { "type": "string", "enum": VALID_STATUSES, "description": "Current checklist workflow status." }
                             },
                             "required": ["id", "content", "status"]
                         }
                     },
-                    "merge": { "type": "boolean", "default": false }
+                    "merge": { "type": "boolean", "default": false, "description": "Merge supplied items by id instead of replacing the whole checklist." }
                 }
             }),
         ),
@@ -82,8 +83,8 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string" },
-                    "choices": { "type": "array", "items": { "type": "string" }, "maxItems": 4 }
+                    "question": { "type": "string", "description": "One concise question that requires user input." },
+                    "choices": { "type": "array", "description": "Optional mutually exclusive answer labels shown to the user.", "items": { "type": "string", "description": "One answer label." }, "maxItems": 4 }
                 },
                 "required": ["question"]
             }),
@@ -103,13 +104,14 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {
                     "tasks": {
                         "type": "array",
+                        "description": "Bounded independent read-only tasks for delegated execution.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "goal": { "type": "string" },
-                                "context": { "type": "string" },
-                                "tools": { "type": "array", "items": { "type": "string" } },
-                                "max_turns": { "type": "integer", "minimum": 1 }
+                                "goal": { "type": "string", "description": "Concrete outcome requested from the child task." },
+                                "context": { "type": "string", "description": "Bounded context needed to perform this task." },
+                                "tools": { "type": "array", "description": "Optional read-only tool names allowed for this task.", "items": { "type": "string", "description": "One allowed tool name." } },
+                                "max_turns": { "type": "integer", "minimum": 1, "description": "Maximum model turns allocated to this child task." }
                             },
                             "required": ["goal"]
                         }
@@ -128,14 +130,14 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             toolset: "sessions_read".to_string(),
             schema: tool_schema(
                 "session_search",
-                "Search past chat sessions. Pass query for FTS, session_id+around_message_id to scroll, or no args to browse recent sessions.",
+                "Search or browse permitted past chat sessions and exact message windows. This is conversation recall, not Drive or cross-domain workspace discovery. Pass query for FTS, session_id+around_message_id to scroll, or no args to browse recent sessions.",
                 serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string" },
-                        "session_id": { "type": "string" },
-                        "around_message_id": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                        "query": { "type": "string", "description": "Optional full-text query over permitted prior sessions and messages." },
+                        "session_id": { "type": "string", "description": "Optional session UUID to browse or scroll within." },
+                        "around_message_id": { "type": "string", "description": "Optional message UUID used as the center of a bounded session window." },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum sessions, hits, or messages to return for the selected mode." }
                     }
                 }),
             ),

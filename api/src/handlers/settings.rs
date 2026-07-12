@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use axum::http::header::COOKIE;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::Json;
 use axum::Router;
@@ -43,9 +45,28 @@ pub async fn list_quarantine(
 
 pub async fn approve_quarantine(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<ApproveQuarantineRequest>,
 ) -> AppResult<Json<QuarantineDecisionResponse>> {
+    let token = headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            crate::services::auth::extract_cookie_value(
+                value,
+                crate::services::auth::SESSION_COOKIE_NAME,
+            )
+        })
+        .ok_or_else(|| AppError::Unauthorized("authentication required".to_string()))?;
+    if !crate::services::auth::verify_recent_session_token(&state.db, token, 15).await? {
+        return Err(AppError::Coded {
+            code: "step_up_required",
+            status: StatusCode::FORBIDDEN,
+            message: "sign in again before approving suspicious content".to_string(),
+            retryable: false,
+        });
+    }
     let id = Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest("invalid content review identifier".to_string()))?;
     Ok(Json(

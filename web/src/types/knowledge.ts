@@ -40,6 +40,7 @@ export interface KnowledgeTreeNode extends KnowledgeArticle {
 export interface KnowledgeResource {
   id: string;
   knowledgeId: string;
+  driveResourceId?: string;
   resourceType: "drive_file";
   resourceRef: string;
   title: string;

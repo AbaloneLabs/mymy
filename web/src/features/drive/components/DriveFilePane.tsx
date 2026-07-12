@@ -4,6 +4,7 @@ import { drivePackageUrl } from "@/features/drive/api";
 import { formatBytes } from "@/features/drive/utils";
 import { cn } from "@/lib/utils";
 import type { DriveFileResponse } from "@/types/drive";
+import { ResourceRunLinks } from "@/features/artifacts/ResourceRunLinks";
 import { DriveFileViewer } from "./DriveFileViewer";
 import { LoadingLine } from "./DriveStatus";
 
@@ -30,9 +31,12 @@ export function DriveFilePane({
             {selectedFile?.name ?? t("drive.noSelection")}
           </p>
           {selectedFile && (
-            <p className="truncate text-xs text-[var(--text-faint)]">
-              {selectedFile.mimeType} · {formatBytes(selectedFile.size)}
-            </p>
+            <div className="space-y-0.5">
+              <p className="truncate text-xs text-[var(--text-faint)]">
+                {selectedFile.mimeType} · {formatBytes(selectedFile.size)}
+              </p>
+              <ResourceRunLinks resourceId={selectedFile.resourceId} />
+            </div>
           )}
         </div>
         {selectedFile && (

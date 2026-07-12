@@ -175,6 +175,8 @@ impl CodeRpcHandler {
                     expected_fingerprint,
                     allow_overwrite: existed,
                     enqueue_s3_sync: true,
+                    operation_key: None,
+                    artifact: None,
                 },
                 content.as_bytes(),
             )
@@ -264,6 +266,8 @@ impl CodeRpcHandler {
                     expected_fingerprint: Some(expected.to_string()),
                     allow_overwrite: true,
                     enqueue_s3_sync: true,
+                    operation_key: None,
+                    artifact: None,
                 },
                 updated.as_bytes(),
             )

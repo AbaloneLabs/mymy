@@ -10,7 +10,8 @@ use super::config::{load_servers, resolve_server, transport_name};
 use super::content::{media_dir_for_config, process_content_blocks};
 use super::naming::prefixed_tool_name;
 use crate::agent::tools::{
-    tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
+    dynamic_tool_schema, tool_result, tool_schema, ToolCapability, ToolEntry, ToolError,
+    ToolHandler, ToolRegistry,
 };
 
 pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
@@ -38,7 +39,7 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             "Call an MCP server's tools/list method.",
             serde_json::json!({
                 "type": "object",
-                "properties": { "server": { "type": "string" } },
+                "properties": { "server": { "type": "string", "description": "Configured MCP server name." } },
                 "required": ["server"]
             }),
         ),
@@ -58,9 +59,9 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "server": { "type": "string" },
-                    "tool": { "type": "string" },
-                    "arguments": { "type": "object" }
+                    "server": { "type": "string", "description": "Configured MCP server name." },
+                    "tool": { "type": "string", "description": "Exact remote tool name returned by tools/list." },
+                    "arguments": { "type": "object", "description": "Remote tool arguments matching its advertised schema.", "additionalProperties": true }
                 },
                 "required": ["server", "tool"]
             }),
@@ -117,10 +118,10 @@ pub async fn register_dynamic_tools(
                 .or_else(|| tool.get("input_schema"))
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
-            registry.register(ToolEntry {
+            let entry = ToolEntry {
                 name: tool_name.clone(),
                 toolset: "mcp".to_string(),
-                schema: tool_schema(&tool_name, &description, parameters),
+                schema: dynamic_tool_schema(&tool_name, &description, parameters),
                 capability: ToolCapability::external("mcp_tool"),
                 handler: Arc::new(McpDynamicTool {
                     path: path.clone(),
@@ -131,7 +132,15 @@ pub async fn register_dynamic_tools(
                     app_state: config.app_state.clone(),
                     agent_profile: config.agent_profile.clone(),
                 }),
-            });
+            };
+            if let Err(error) = registry.register_dynamic(entry) {
+                tracing::warn!(
+                    server = %server.name,
+                    remote_tool = %remote_name,
+                    error = %error,
+                    "MCP dynamic tool contract rejected"
+                );
+            }
         }
     }
     Ok(())

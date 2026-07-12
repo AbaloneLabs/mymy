@@ -24,7 +24,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "goal_create",
         "goals_write",
         "Create a goal.",
-        passthrough_schema(),
+        record_schema(
+            &["title", "description", "type", "period", "status"],
+            &["title"],
+        ),
         state,
         AppAction::GoalCreate,
     );
@@ -33,7 +36,10 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "goal_update",
         "goals_write",
         "Update a goal by id.",
-        id_body_schema("Goal id."),
+        id_body_schema(
+            "Goal id.",
+            &["title", "description", "type", "period", "status"],
+        ),
         state,
         AppAction::GoalUpdate,
     );
@@ -51,7 +57,17 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "key_result_create",
         "goals_write",
         "Create a key result for a goal.",
-        goal_id_body_schema(),
+        goal_id_body_schema(
+            &[
+                "title",
+                "kpiType",
+                "targetValue",
+                "currentValue",
+                "unit",
+                "financeDefinition",
+            ],
+            &["title"],
+        ),
         state,
         AppAction::KeyResultCreate,
     );
@@ -60,7 +76,14 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "key_result_update",
         "goals_write",
         "Update a key result.",
-        serde_json::json!({"type":"object","properties":{"goalId":{"type":"string"},"id":{"type":"string"},"data":{"type":"object"}},"required":["goalId","id","data"]}),
+        goal_and_id_body_schema(&[
+            "title",
+            "kpiType",
+            "targetValue",
+            "currentValue",
+            "unit",
+            "financeDefinition",
+        ]),
         state,
         AppAction::KeyResultUpdate,
     );
@@ -69,7 +92,7 @@ pub(super) fn register(registry: &mut ToolRegistry, state: &Arc<AppState>) {
         "key_result_delete",
         "goals_write",
         "Delete a key result.",
-        serde_json::json!({"type":"object","properties":{"goalId":{"type":"string"},"id":{"type":"string"}},"required":["goalId","id"]}),
+        serde_json::json!({"type":"object","properties":{"goalId":{"type":"string","description":"Owning goal UUID."},"id":{"type":"string","description":"Key Result UUID."}},"required":["goalId","id"]}),
         state,
         AppAction::KeyResultDelete,
     );

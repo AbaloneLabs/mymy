@@ -204,6 +204,7 @@ export function TextSourcePane({
           })}
         </div>
         <textarea
+          data-testid="document-editor-source"
           ref={sourceRef}
           value={sourceDisplayContent}
           onChange={(event) => onContentChange(event.target.value)}

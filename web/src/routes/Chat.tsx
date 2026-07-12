@@ -8,6 +8,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
@@ -24,10 +25,13 @@ import { useChatSessionSelection } from "@/features/chat/useChatSessionSelection
 import { useProjects } from "@/features/projects/api";
 import { useProjectContext } from "@/store/projectContext";
 import type { ChatSession } from "@/types/chat";
+import { ChatArtifactPane } from "@/features/artifacts/ChatArtifactPane";
 
 
 export default function Chat() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const requestedSessionId = searchParams.get("sessionId");
 
   // Project + agent context from TopBar dropdowns.
   const {
@@ -50,7 +54,7 @@ export default function Chat() {
     selectedProjectId ?? undefined,
     activeAgentProfile,
   );
-  const sessions: ChatSession[] = data?.sessions ?? [];
+  const sessions: ChatSession[] = useMemo(() => data?.sessions ?? [], [data?.sessions]);
 
   const agentMap = useMemo(() => {
     const m = new Map<string, { name: string; role: string }>();
@@ -81,9 +85,20 @@ export default function Chat() {
     toggleSessionsCollapsed,
   } = useChatSessionSelection(sessions);
 
+  useEffect(() => {
+    if (
+      requestedSessionId &&
+      requestedSessionId !== effectiveSessionId &&
+      sessions.some((session) => session.id === requestedSessionId)
+    ) {
+      selectSession(requestedSessionId);
+    }
+  }, [effectiveSessionId, requestedSessionId, selectSession, sessions]);
+
   // New session dialog state.
   const [showDialog, setShowDialog] = useState(false);
   const [editorPath, setEditorPath] = useState<string | null>(null);
+  const [editorSourceSessionId, setEditorSourceSessionId] = useState<string>();
   const [previewSource, setPreviewSource] =
     useState<LightweightBrowserSource | null>(null);
   const [editorDirty, setEditorDirty] = useState(false);
@@ -106,8 +121,9 @@ export default function Chat() {
   const handleDelete = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
     if (window.confirm(t("chat.deleteConfirm"))) {
-      deleteSession.mutate(sessionId);
-      markDeletedSession(sessionId);
+      deleteSession.mutate(sessionId, {
+        onSuccess: () => markDeletedSession(sessionId),
+      });
     }
   };
 
@@ -116,6 +132,7 @@ export default function Chat() {
       return;
     }
     setEditorPath(path);
+    setEditorSourceSessionId(effectiveSessionId ?? undefined);
     setPreviewSource(null);
     setEditorDirty(false);
   };
@@ -125,6 +142,7 @@ export default function Chat() {
       return;
     }
     setEditorPath(null);
+    setEditorSourceSessionId(undefined);
     setPreviewSource(source);
     setEditorDirty(false);
   };
@@ -134,6 +152,7 @@ export default function Chat() {
       return;
     }
     setEditorPath(null);
+    setEditorSourceSessionId(undefined);
     setPreviewSource(null);
     setEditorDirty(false);
   };
@@ -205,8 +224,9 @@ export default function Chat() {
             </button>
           </div>
 
+          <div className="flex min-h-0 flex-1 flex-col">
           {/* Session list */}
-          <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+          <div className="min-h-0 basis-3/5 space-y-0.5 overflow-y-auto px-2 pb-3">
             {isLoading && (
               <div className="flex items-center justify-center py-4">
                 <Loader2
@@ -299,6 +319,13 @@ export default function Chat() {
               );
             })}
           </div>
+          <ChatArtifactPane
+            sessionId={effectiveSessionId}
+            collapsed={sessionsCollapsed}
+            onOpenDocument={openDocumentEditor}
+            onOpenHtml={(path) => openPreviewPanel({ kind: "drive-html", path })}
+          />
+          </div>
         </div>
 
         {/* Chat panel with optional document editor */}
@@ -366,6 +393,7 @@ export default function Chat() {
                   path={editorPath}
                   onClose={closeSidePanel}
                   onDirtyChange={setEditorDirty}
+                  sourceChatSessionId={editorSourceSessionId}
                   onOpenDocument={openDocumentEditor}
                 />
               ) : null}

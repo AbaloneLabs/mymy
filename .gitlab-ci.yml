@@ -91,13 +91,21 @@ variables:
   - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
 
 .docker_api_after_script: &docker_api_after_script
-  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" "mymy-ci-api-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" "mymy-ci-api-${CI_JOB_ID}" "mymy-ci-runner-${CI_JOB_ID}" >/dev/null 2>&1 || true
   - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - docker run --rm -v "${CI_PROJECT_DIR}/.ci-runner-data-${CI_JOB_ID}:/data" --entrypoint chown "mymy-api-ci:${CI_JOB_ID}" -R "$(id -u):$(id -g)" /data >/dev/null 2>&1 || true
   - docker rmi "mymy-api-ci:${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - rm -rf ".ci-runner-data-${CI_JOB_ID}" ".ci-runner-control-${CI_JOB_ID}"
 
 .docker_web_after_script: &docker_web_after_script
   - docker rm -f "mymy-ci-web-${CI_JOB_ID}" >/dev/null 2>&1 || true
   - docker rmi "mymy-web-ci:${CI_JOB_ID}" >/dev/null 2>&1 || true
+
+.browser_e2e_after_script: &browser_e2e_after_script
+  - test ! -f .e2e-web.pid || kill "$(cat .e2e-web.pid)" >/dev/null 2>&1 || true
+  - test ! -f .e2e-api.pid || kill "$(cat .e2e-api.pid)" >/dev/null 2>&1 || true
+  - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" >/dev/null 2>&1 || true
+  - rm -rf .e2e-data .e2e-api.pid .e2e-web.pid
 
 # ============================================================
 # CHECK
@@ -204,7 +212,7 @@ build:docker:api:
   rules: *default_rules
   before_script: *api_db_before_script
   script:
-    - docker build --pull --network host --build-arg DATABASE_URL="$DATABASE_URL" -t "mymy-api-ci:${CI_JOB_ID}" api
+    - docker build --pull --provenance=mode=max --sbom=true --network host --build-arg DATABASE_URL="$DATABASE_URL" -t "mymy-api-ci:${CI_JOB_ID}" api
     - docker rm -f "mymy-ci-runtime-db-${CI_JOB_ID}" >/dev/null 2>&1 || true
     - docker network rm "mymy-ci-net-${CI_JOB_ID}" >/dev/null 2>&1 || true
     - docker network create "mymy-ci-net-${CI_JOB_ID}"
@@ -229,13 +237,42 @@ build:docker:api:
         sleep 1
       done
     - |
+      mkdir -p ".ci-runner-data-${CI_JOB_ID}"
+      mkdir -p ".ci-runner-control-${CI_JOB_ID}"
+      chmod 711 ".ci-runner-data-${CI_JOB_ID}"
+      chmod 700 ".ci-runner-control-${CI_JOB_ID}"
+      docker run -d \
+        --name "mymy-ci-runner-${CI_JOB_ID}" \
+        --network "mymy-ci-net-${CI_JOB_ID}" \
+        --network-alias sandbox-runner \
+        --cap-add SYS_ADMIN \
+        --security-opt seccomp=unconfined \
+        --security-opt apparmor=unconfined \
+        -e PORT=33698 \
+        -e MYMY_SANDBOX_MODE=bubblewrap \
+        -e MYMY_SANDBOX_UNSHARE_USER=true \
+        -e MYMY_RUNNER_DATA_ROOT=/app/data/agent \
+        -e MYMY_SANDBOX_UID=1000 \
+        -e MYMY_SANDBOX_GID=1000 \
+        -e MYMY_SANDBOX_RUNNER_TOKEN_FILE=/run/mymy/runner-control.token \
+        -v "${CI_PROJECT_DIR}/.ci-runner-data-${CI_JOB_ID}:/app/data" \
+        -v "${CI_PROJECT_DIR}/.ci-runner-control-${CI_JOB_ID}:/run/mymy" \
+        --entrypoint mymy-sandbox-runner \
+        "mymy-api-ci:${CI_JOB_ID}"
+    - |
       docker run -d \
         --name "mymy-ci-api-${CI_JOB_ID}" \
         --network "mymy-ci-net-${CI_JOB_ID}" \
         -e DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}" \
         -e PORT=33697 \
+        -e MYMY_BIND_HOST=0.0.0.0 \
+        -e MYMY_LOOPBACK_PUBLISH=true \
         -e CORS_ORIGIN=http://localhost:33696 \
         -e AUTH_COOKIE_SECURE=false \
+        -e MYMY_SANDBOX_RUNNER_URL=http://sandbox-runner:33698 \
+        -e MYMY_SANDBOX_RUNNER_TOKEN_FILE=/run/mymy/runner-control.token \
+        -v "${CI_PROJECT_DIR}/.ci-runner-data-${CI_JOB_ID}:/app/data" \
+        -v "${CI_PROJECT_DIR}/.ci-runner-control-${CI_JOB_ID}:/run/mymy:ro" \
         -p 127.0.0.1::33697 \
         "mymy-api-ci:${CI_JOB_ID}"
     - export API_PORT="$(docker port "mymy-ci-api-${CI_JOB_ID}" 33697/tcp | sed 's/.*://')"
@@ -250,6 +287,31 @@ build:docker:api:
         fi
         sleep 1
       done
+    - |
+      set -euo pipefail
+      for i in $(seq 1 30); do
+        if docker exec "mymy-ci-api-${CI_JOB_ID}" curl -fsS http://sandbox-runner:33698/health >/dev/null; then
+          break
+        fi
+        if [ "$i" -eq 30 ]; then
+          docker logs "mymy-ci-runner-${CI_JOB_ID}"
+          exit 1
+        fi
+        sleep 1
+      done
+      UNAUTHORIZED_STATUS="$(docker exec "mymy-ci-api-${CI_JOB_ID}" \
+        curl -sS -o /dev/null -w '%{http_code}' http://sandbox-runner:33698/runtime/status)"
+      test "${UNAUTHORIZED_STATUS}" = "401"
+      docker exec "mymy-ci-api-${CI_JOB_ID}" sh -lc '
+        token=$(cat /run/mymy/runner-control.token)
+        response=$(curl -fsS \
+          -H "X-Mymy-Runner-Token: $token" \
+          -H "Content-Type: application/json" \
+          -d '\''{"executionId":"ci-runner-smoke","command":"printf runner-ok","cwd":"/app/data/agent","roots":[{"hostPath":"/app/data/agent","mountPath":"/workspace","writable":false}],"timeoutSecs":10}'\'' \
+          http://sandbox-runner:33698/execute)
+        test "$(printf %s "$response" | jq -r .success)" = true
+        test "$(printf %s "$response" | jq -r .stdout)" = runner-ok
+      '
   after_script: *docker_api_after_script
 
 build:docker:web:
@@ -257,12 +319,15 @@ build:docker:web:
   <<: *runner_tags
   rules: *default_rules
   script:
-    - docker build --pull -t "mymy-web-ci:${CI_JOB_ID}" web
+    - docker build --pull --provenance=mode=max --sbom=true -t "mymy-web-ci:${CI_JOB_ID}" web
     - docker run -d --name "mymy-ci-web-${CI_JOB_ID}" --add-host=api:127.0.0.1 -p 127.0.0.1::80 "mymy-web-ci:${CI_JOB_ID}"
     - export WEB_PORT="$(docker port "mymy-ci-web-${CI_JOB_ID}" 80/tcp | sed 's/.*://')"
     - |
       for i in $(seq 1 30); do
-        if curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -q '<div id="root"></div>'; then
+        if curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -q '<div id="root"></div>' \
+          && curl -fsSI "http://127.0.0.1:${WEB_PORT}/" | tr -d '\r' | grep -qi "^Content-Security-Policy:.*frame-ancestors 'none'" \
+          && curl -fsSI "http://127.0.0.1:${WEB_PORT}/" | tr -d '\r' | grep -qi '^X-Frame-Options: DENY$' \
+          && curl -fsSI "http://127.0.0.1:${WEB_PORT}/" | tr -d '\r' | grep -qi '^X-Content-Type-Options: nosniff$'; then
           exit 0
         fi
         if [ "$i" -eq 30 ]; then
@@ -286,3 +351,94 @@ test:api:
     - cd api
     - cargo test --locked
   after_script: *api_db_after_script
+
+test:web:
+  stage: test
+  <<: *runner_tags
+  rules: *default_rules
+  script:
+    - cd web
+    - bun install --frozen-lockfile
+    - bun run test
+
+test:web:browser:
+  stage: test
+  <<: *runner_tags
+  rules: *default_rules
+  before_script: *api_db_before_script
+  variables:
+    MYMY_E2E_PIN: "e2e-owner-pin-2026"
+  script:
+    - |
+      set -euo pipefail
+      export API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+      export WEB_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+      export MYMY_E2E_API_URL="http://127.0.0.1:${API_PORT}/api"
+      export MYMY_E2E_BASE_URL="http://127.0.0.1:${WEB_PORT}"
+      export RUNTIME_DB_CONTAINER="mymy-ci-runtime-db-${CI_JOB_ID}"
+
+      docker rm -f "${RUNTIME_DB_CONTAINER}" >/dev/null 2>&1 || true
+      docker run -d \
+        --name "${RUNTIME_DB_CONTAINER}" \
+        -e POSTGRES_USER="${POSTGRES_USER}" \
+        -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+        -e POSTGRES_DB="${POSTGRES_DB}" \
+        -p 127.0.0.1::5432 \
+        pgvector/pgvector:pg16
+      for i in $(seq 1 60); do
+        if docker exec "${RUNTIME_DB_CONTAINER}" \
+             psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT 1" >/dev/null 2>&1; then
+          break
+        fi
+        if [ "$i" -eq 60 ]; then
+          docker logs "${RUNTIME_DB_CONTAINER}"
+          exit 1
+        fi
+        sleep 1
+      done
+      export RUNTIME_DB_PORT="$(docker port "${RUNTIME_DB_CONTAINER}" 5432/tcp | sed 's/.*://')"
+      export RUNTIME_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${RUNTIME_DB_PORT}/${POSTGRES_DB}"
+
+      cd api
+      cargo build --locked --bin mymy-api
+      mkdir -p "${CI_PROJECT_DIR}/.e2e-data/agent"
+      DATABASE_URL="${RUNTIME_DATABASE_URL}" \
+        PORT="${API_PORT}" \
+        CORS_ORIGIN="${MYMY_E2E_BASE_URL}" \
+        AUTH_COOKIE_SECURE=false \
+        MYMY_INITIAL_PIN="${MYMY_E2E_PIN}" \
+        MYMY_AGENT_DATA_DIR="${CI_PROJECT_DIR}/.e2e-data/agent" \
+        ./target/debug/mymy-api >"${CI_PROJECT_DIR}/e2e-api.log" 2>&1 &
+      echo $! >"${CI_PROJECT_DIR}/.e2e-api.pid"
+      cd "${CI_PROJECT_DIR}/web"
+      bun install --frozen-lockfile
+      VITE_API_URL="${MYMY_E2E_API_URL}" bun run build
+      bunx playwright install chromium
+      bunx vite preview --host 127.0.0.1 --port "${WEB_PORT}" >"${CI_PROJECT_DIR}/e2e-web.log" 2>&1 &
+      echo $! >"${CI_PROJECT_DIR}/.e2e-web.pid"
+
+      for i in $(seq 1 90); do
+        if curl -fsS "${MYMY_E2E_API_URL}/health" >/dev/null \
+          && curl -fsS "${MYMY_E2E_BASE_URL}/" >/dev/null; then
+          break
+        fi
+        if [ "$i" -eq 90 ]; then
+          cat "${CI_PROJECT_DIR}/e2e-api.log"
+          cat "${CI_PROJECT_DIR}/e2e-web.log"
+          exit 1
+        fi
+        sleep 1
+      done
+      MYMY_E2E_PIN="${MYMY_E2E_PIN}" \
+        MYMY_E2E_API_URL="${MYMY_E2E_API_URL}" \
+        MYMY_E2E_BASE_URL="${MYMY_E2E_BASE_URL}" \
+        bun run test:e2e
+  artifacts:
+    when: on_failure
+    expire_in: 7 days
+    paths:
+      - e2e-api.log
+      - e2e-web.log
+      - web/playwright-report/
+      - web/test-results/
+  after_script: *browser_e2e_after_script

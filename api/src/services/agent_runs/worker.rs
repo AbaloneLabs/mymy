@@ -139,12 +139,26 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
     let cancellation_run = run.clone();
     let cancellation_token = cancellation.clone();
     let cancellation_receiver = heartbeat_stop.subscribe();
+    let initial_permission_fingerprint = match crate::services::agent_permissions::load_policy(
+        state,
+        &run.agent_profile,
+    )
+    .await
+    {
+        Ok(policy) => policy.fingerprint(),
+        Err(error) => {
+            tracing::error!(run_id = %run.id, error = %error, "failed to snapshot Run permissions");
+            cancellation.cancel();
+            String::new()
+        }
+    };
     let cancellation_task = tokio::spawn(async move {
         monitor_durable_cancellation(
             cancellation_state,
             cancellation_run,
             cancellation_token,
             cancellation_receiver,
+            initial_permission_fingerprint,
         )
         .await;
     });
@@ -306,17 +320,36 @@ async fn execute_chat_run(
         .map(Uuid::parse_str)
         .transpose()
         .map_err(|err| AppError::BadRequest(format!("invalid queued MoA preset id: {err}")))?;
-    let mut turn = chat_service::prepare_native_turn_for_input(
-        state,
-        session_id,
-        input.id,
-        SendMessageRequest {
-            text: input.content.clone(),
-            use_moa,
-            moa_preset_id,
-        },
-    )
-    .await?;
+    let mut preparation_attempt = 0;
+    let mut turn = loop {
+        let prepared = chat_service::prepare_native_turn_for_input(
+            state,
+            run.id,
+            session_id,
+            input.id,
+            SendMessageRequest {
+                text: input.content.clone(),
+                use_moa,
+                moa_preset_id,
+            },
+        )
+        .await?;
+        if crate::services::runtime_memory::memory_context_is_current(state, run.id).await? {
+            break prepared;
+        }
+        preparation_attempt += 1;
+        crate::services::runtime_memory::reset_memory_context_before_dispatch(state, run.id)
+            .await?;
+        if preparation_attempt >= 3 {
+            return Err(AppError::ServiceUnavailable(
+                "memory context kept changing before provider dispatch; retry the turn".to_string(),
+            ));
+        }
+    };
+    ensure_contract_revision_compatible(
+        run.tool_schema_fingerprint.as_deref(),
+        &turn.tool_schema_fingerprint,
+    )?;
     let mut resume_blocks = Vec::new();
     if let Some(resume_input) =
         crate::services::run_progress::latest_resume_input(state, run.id).await?
@@ -400,6 +433,8 @@ async fn execute_chat_run(
     let mut terminal_error = None;
     let mut cancelled = false;
     let mut paused_decision_id = None;
+    let defer_text_delivery = turn.buffered_output_required;
+    let mut deferred_text = String::new();
     let new_messages;
 
     match &mut turn.execution {
@@ -463,9 +498,19 @@ async fn execute_chat_run(
                 }
                 match event {
                     AgentEvent::TextDelta(content) => {
-                        text_buffer.push(&content);
-                        if text_buffer.should_flush() {
-                            flush_text_buffer(state, run, &mut text_buffer).await?;
+                        if defer_text_delivery {
+                            deferred_text.push_str(&content);
+                            if deferred_text.len() > 1_000_000 {
+                                cancellation.cancel();
+                                terminal_error = Some("buffered_output_too_large".to_string());
+                                cancelled = true;
+                                break;
+                            }
+                        } else {
+                            text_buffer.push(&content);
+                            if text_buffer.should_flush() {
+                                flush_text_buffer(state, run, &mut text_buffer).await?;
+                            }
                         }
                     }
                     AgentEvent::ReasoningDelta(content) => {
@@ -681,7 +726,7 @@ async fn execute_chat_run(
                 )
                 .await?;
             }
-            if !aggregated.is_empty() {
+            if !aggregated.is_empty() && !defer_text_delivery {
                 append_chat_event(
                     state,
                     run,
@@ -692,6 +737,8 @@ async fn execute_chat_run(
                     None,
                 )
                 .await?;
+            } else if defer_text_delivery {
+                deferred_text = aggregated.clone();
             }
             turn.messages.push(Message::assistant(aggregated));
             append_chat_event(
@@ -719,6 +766,54 @@ async fn execute_chat_run(
             cancelled,
             paused_decision_id,
         });
+    }
+
+    if defer_text_delivery {
+        let current_permission_fingerprint =
+            crate::services::agent_permissions::load_policy(state, &run.agent_profile)
+                .await?
+                .fingerprint();
+        let memory_context_current =
+            crate::services::runtime_memory::memory_context_is_current(state, run.id).await?;
+        if current_permission_fingerprint != turn.permission_fingerprint || !memory_context_current
+        {
+            cancellation.cancel();
+            append_chat_event(
+                state,
+                run,
+                "error",
+                &ChatSseEvent::Error {
+                    message: "Run permissions or recalled memory changed before buffered output delivery; the response was withheld."
+                        .to_string(),
+                },
+                Some("buffered-output-context-change"),
+            )
+            .await?;
+            return Ok(RunOutcome {
+                total_api_calls,
+                total_tool_calls,
+                usage: total_usage,
+                error_code: Some(if memory_context_current {
+                    "permission_revision_changed".to_string()
+                } else {
+                    "memory_context_changed".to_string()
+                }),
+                cancelled: true,
+                paused_decision_id: None,
+            });
+        }
+        if !deferred_text.is_empty() {
+            append_chat_event(
+                state,
+                run,
+                "text_delta",
+                &ChatSseEvent::TextDelta {
+                    content: deferred_text,
+                },
+                Some("buffered-text-delivery"),
+            )
+            .await?;
+        }
     }
 
     queue_message_projection(state, run, session_id, &new_messages).await?;
@@ -781,6 +876,7 @@ async fn monitor_durable_cancellation(
     run: AgentRunRow,
     cancellation: RunCancellation,
     mut stop: watch::Receiver<bool>,
+    initial_permission_fingerprint: String,
 ) {
     loop {
         tokio::select! {
@@ -800,7 +896,44 @@ async fn monitor_durable_cancellation(
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, run_id = %run.id, "cancel polling failed"),
         }
+        match crate::services::agent_permissions::load_policy(&state, &run.agent_profile).await {
+            Ok(policy) if policy.fingerprint() != initial_permission_fingerprint => {
+                tracing::warn!(run_id = %run.id, "Run cancelled because its permission revision changed");
+                cancellation.cancel();
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(run_id = %run.id, error = %error, "Run permission revalidation failed closed");
+                cancellation.cancel();
+                break;
+            }
+        }
+        match crate::services::runtime_memory::memory_context_is_current(&state, run.id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(run_id = %run.id, "Run cancelled because recalled memory changed");
+                cancellation.cancel();
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(run_id = %run.id, error = %error, "Run memory-context revalidation failed closed");
+                cancellation.cancel();
+                break;
+            }
+        }
     }
+}
+
+fn ensure_contract_revision_compatible(pinned: Option<&str>, current: &str) -> AppResult<()> {
+    if pinned.is_some_and(|revision| revision != current) {
+        return Err(AppError::coded(
+            "contract_revision_unavailable",
+            axum::http::StatusCode::CONFLICT,
+            "This run was prepared with a different tool contract revision and cannot be resumed safely.",
+        ));
+    }
+    Ok(())
 }
 
 fn trigger_for_run(run: &AgentRunRow) -> AppResult<SessionTrigger> {
@@ -911,5 +1044,28 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::UnsupportedMedia(_) => "unsupported_media",
         AppError::ServiceUnavailable(_) => "service_unavailable",
         AppError::Coded { code, .. } => code,
+    }
+}
+
+#[cfg(test)]
+mod contract_revision_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_and_matching_runs_accept_the_current_contract() {
+        assert!(ensure_contract_revision_compatible(None, "v1").is_ok());
+        assert!(ensure_contract_revision_compatible(Some("v1"), "v1").is_ok());
+    }
+
+    #[test]
+    fn resumed_run_rejects_a_different_contract_before_execution() {
+        let error = ensure_contract_revision_compatible(Some("v1"), "v2").unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Coded {
+                code: "contract_revision_unavailable",
+                ..
+            }
+        ));
     }
 }

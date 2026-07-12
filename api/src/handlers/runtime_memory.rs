@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 use crate::models::runtime_memory::{
-    AgentMemoryView, MemoriesResponse, MemoryEmbeddingSettingsView, MemorySearchQuery,
-    RecentRecapResponse, ReviewMemoryRequest, UpdateMemoryEmbeddingSettings,
+    AgentMemoryView, MemoriesResponse, MemoryEmbeddingSettingsView, MemoryExportResponse,
+    MemoryRuntimeSettingsView, MemorySearchQuery, RecentRecapResponse, ReviewMemoryRequest,
+    UpdateMemoryEmbeddingSettings, UpdateMemoryRuntimeSettings,
 };
 use crate::models::scope::ScopeFilter;
 use crate::services::runtime_memory;
@@ -20,12 +21,45 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/runtime-memory", get(list_memories))
+        .route("/api/runtime-memory/export/{profile}", get(export_memories))
         .route("/api/runtime-memory/{id}/review", post(review_memory))
         .route("/api/run-summaries", get(list_summaries))
         .route(
             "/api/runtime-memory/settings/{profile}",
             get(get_embedding_settings).put(update_embedding_settings),
         )
+        .route(
+            "/api/runtime-memory/runtime-settings/{profile}",
+            get(get_runtime_settings).put(update_runtime_settings),
+        )
+}
+
+async fn export_memories(
+    State(state): State<Arc<AppState>>,
+    Path(profile): Path<String>,
+) -> AppResult<Json<MemoryExportResponse>> {
+    Ok(Json(
+        runtime_memory::export_memories(&state, &profile).await?,
+    ))
+}
+
+async fn get_runtime_settings(
+    State(state): State<Arc<AppState>>,
+    Path(profile): Path<String>,
+) -> AppResult<Json<MemoryRuntimeSettingsView>> {
+    Ok(Json(
+        runtime_memory::get_runtime_settings(&state, &profile).await?,
+    ))
+}
+
+async fn update_runtime_settings(
+    State(state): State<Arc<AppState>>,
+    Path(profile): Path<String>,
+    Json(request): Json<UpdateMemoryRuntimeSettings>,
+) -> AppResult<Json<MemoryRuntimeSettingsView>> {
+    Ok(Json(
+        runtime_memory::update_runtime_settings(&state, &profile, request).await?,
+    ))
 }
 
 async fn get_embedding_settings(

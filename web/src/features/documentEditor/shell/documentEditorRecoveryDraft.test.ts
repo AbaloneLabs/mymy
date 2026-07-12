@@ -8,12 +8,14 @@ import {
 function recoveryDraft(
   sessionId: string,
   updatedAt: string,
+  principalScopeId = "principal-a",
 ): DocumentEditorRecoveryDraft {
   const path = "/drive/shared/report.md";
   return {
-    id: documentEditorRecoveryDraftId(path, sessionId),
+    id: documentEditorRecoveryDraftId(principalScopeId, path, sessionId),
+    principalScopeId,
     sessionId,
-    schemaVersion: 1,
+    schemaVersion: 2,
     path,
     editorKind: "markdown",
     modelSchemaVersion: 1,
@@ -27,9 +29,33 @@ function recoveryDraft(
 describe("document editor recovery draft ownership", () => {
   test("keeps same-path tab drafts under different identities", () => {
     expect(
-      documentEditorRecoveryDraftId("/drive/shared/report.md", "tab-a"),
+      documentEditorRecoveryDraftId(
+        "principal-a",
+        "/drive/shared/report.md",
+        "tab-a",
+      ),
     ).not.toBe(
-      documentEditorRecoveryDraftId("/drive/shared/report.md", "tab-b"),
+      documentEditorRecoveryDraftId(
+        "principal-a",
+        "/drive/shared/report.md",
+        "tab-b",
+      ),
+    );
+  });
+
+  test("separates the same path and tab across authenticated principals", () => {
+    expect(
+      documentEditorRecoveryDraftId(
+        "principal-a",
+        "/drive/shared/report.md",
+        "tab-a",
+      ),
+    ).not.toBe(
+      documentEditorRecoveryDraftId(
+        "principal-b",
+        "/drive/shared/report.md",
+        "tab-a",
+      ),
     );
   });
 

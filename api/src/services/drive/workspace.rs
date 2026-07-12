@@ -182,6 +182,8 @@ async fn admit_workspace_default(
                 expected_fingerprint: None,
                 allow_overwrite: false,
                 enqueue_s3_sync: true,
+                operation_key: None,
+                artifact: None,
             },
             content.as_bytes(),
         )

@@ -262,14 +262,170 @@ pub async fn fetch_session_response(state: &AppState, id: Uuid) -> AppResult<Cha
 }
 
 pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
-    let result = sqlx::query!("DELETE FROM chat_sessions WHERE id = $1", id)
-        .execute(&state.db)
+    let mut tx = state.db.begin().await?;
+    let exists =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM chat_sessions WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if exists.is_none() {
+        let completed = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM session_deletion_operations WHERE session_id = $1 AND state = 'completed')",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
         .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("session {id} not found")));
+        tx.commit().await?;
+        if completed {
+            return Ok(true);
+        }
+        return Err(AppError::NotFound("session not found".to_string()));
     }
+    let active_run = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM agent_runs
+             WHERE session_id = $1
+               AND status IN ('queued', 'running', 'waiting_decision'))"#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active_run {
+        return Err(AppError::Conflict(
+            "cancel active session runs and wait for completion before deleting the chat"
+                .to_string(),
+        ));
+    }
+    sqlx::query(
+        "UPDATE chat_sessions SET deleting_at = COALESCE(deleting_at, now()) WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO session_deletion_operations
+              (session_id, state, fenced_at)
+           VALUES ($1, 'fenced', now())
+           ON CONFLICT (session_id) DO UPDATE SET
+             state = CASE
+               WHEN session_deletion_operations.state = 'completed' THEN 'completed'
+               ELSE 'fenced'
+             END,
+             last_error_code = NULL,
+             fenced_at = COALESCE(session_deletion_operations.fenced_at, now()),
+             updated_at = now()"#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
 
+    if !finalize_session_deletion(state, id).await? {
+        return Err(AppError::Conflict(
+            "session deletion is fenced and will finish after active work settles".to_string(),
+        ));
+    }
+    Ok(true)
+}
+
+/// Resume a fenced deletion after all admitted work becomes terminal.
+/// Locking both rows makes API retries and the worker mutually exclusive.
+async fn finalize_session_deletion(state: &AppState, id: Uuid) -> AppResult<bool> {
+    let mut tx = state.db.begin().await?;
+    // Session-before-operation is the global lock order. The API path installs
+    // the fence in that order, so the worker must not hold the operation row
+    // while waiting for a concurrent session-row lock.
+    let session_exists =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM chat_sessions WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let operation_exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM session_deletion_operations WHERE session_id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if operation_exists.is_none() {
+        return Err(AppError::Internal(
+            "session deletion operation is missing".to_string(),
+        ));
+    }
+    if session_exists.is_none() {
+        sqlx::query(
+            r#"UPDATE session_deletion_operations
+               SET state = 'completed', completed_at = COALESCE(completed_at, now()),
+                   updated_at = now(), last_error_code = NULL
+               WHERE session_id = $1"#,
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(true);
+    }
+    let active_run = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM agent_runs
+             WHERE session_id = $1
+               AND status IN ('queued', 'running', 'waiting_decision'))"#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active_run {
+        sqlx::query(
+            "UPDATE session_deletion_operations SET state = 'waiting_for_runs', updated_at = now() WHERE session_id = $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    }
+    let pending_saves = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM document_editor_save_receipts
+             WHERE source_session_id = $1 AND status = 'pending')"#,
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if pending_saves {
+        sqlx::query(
+            "UPDATE session_deletion_operations SET state = 'waiting_for_saves', updated_at = now() WHERE session_id = $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    }
+    sqlx::query(
+        r#"UPDATE agent_memories
+           SET status = 'stale', lifecycle_revision = lifecycle_revision + 1,
+               valid_until = COALESCE(valid_until, now())
+           WHERE source_session_id = $1
+             AND origin = 'conversation_inferred'
+             AND status IN ('pending_review', 'active', 'conflict')"#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM chat_sessions WHERE id = $1 AND deleting_at IS NOT NULL")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"UPDATE session_deletion_operations
+           SET state = 'completed', completed_at = now(), updated_at = now(),
+               last_error_code = NULL
+           WHERE session_id = $1"#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     log_audit_safe(
         &state.db,
         "user",
@@ -281,6 +437,26 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
     )
     .await;
     Ok(true)
+}
+
+pub async fn reconcile_session_deletions(state: &AppState, maximum: usize) -> AppResult<usize> {
+    let session_ids = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT session_id
+           FROM session_deletion_operations
+           WHERE state NOT IN ('completed', 'failed')
+           ORDER BY updated_at, session_id
+           LIMIT $1"#,
+    )
+    .bind(maximum.min(10_000) as i64)
+    .fetch_all(&state.db)
+    .await?;
+    let mut completed = 0;
+    for session_id in session_ids {
+        if finalize_session_deletion(state, session_id).await? {
+            completed += 1;
+        }
+    }
+    Ok(completed)
 }
 
 pub(super) async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatSessionRow> {
