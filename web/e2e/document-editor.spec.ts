@@ -75,8 +75,14 @@ test.describe("authenticated document editor persistence", () => {
       await page.getByRole("button", { name: "Restore draft" }).click();
       await expect(page.getByTestId("document-editor-source")).toHaveValue(recoveryEdit);
 
-      await page.request.post(apiUrl("/auth/logout"), { headers: apiHeaders(page) });
-      await page.reload();
+      const logoutCompleted = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().endsWith("/api/auth/logout"),
+      );
+      await page.getByRole("button", { name: "Lock", exact: true }).click();
+      await expect(page).toHaveURL(/\/pin(?:\?|$)/);
+      await logoutCompleted;
       await authenticate(page);
       await page.goto(`/drive?file=${encodeURIComponent(drivePath)}`);
       await expect(page.getByTestId("document-editor-source")).toHaveValue(secondEdit);
