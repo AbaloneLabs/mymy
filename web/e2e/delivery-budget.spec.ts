@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, request, test } from "@playwright/test";
 import { releaseRuntime } from "./releaseRuntime";
 
 const pin = process.env.MYMY_E2E_PIN;
@@ -26,11 +26,17 @@ test.describe("frontend delivery certification", () => {
     const budget = JSON.parse(
       readFileSync(new URL("../performance-budgets.json", import.meta.url), "utf8"),
     ) as DeliveryBudget;
-    const authenticated = await context.request.post(apiUrl("/auth/verify", apiBase), {
-      headers: { Origin: new URL(webBase).origin },
+    const authRequest = await request.newContext({
+      baseURL: normalizedApiBase(apiBase),
+      extraHTTPHeaders: { Origin: new URL(webBase).origin },
+    });
+    const authenticated = await authRequest.post("auth/verify", {
       data: { pin },
     });
     expect(authenticated.ok(), await authenticated.text()).toBe(true);
+    const storage = await authRequest.storageState();
+    await context.addCookies(storage.cookies);
+    await authRequest.dispose();
 
     await page.goto("/");
     await expect(page.getByRole("button", { name: "Home", exact: true })).toBeVisible();
@@ -88,6 +94,6 @@ test.describe("frontend delivery certification", () => {
   });
 });
 
-function apiUrl(path: string, apiBase: string) {
-  return `${apiBase.replace(/\/$/, "")}${path}`;
+function normalizedApiBase(apiBase: string) {
+  return `${apiBase.replace(/\/$/, "")}/`;
 }

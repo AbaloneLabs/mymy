@@ -68,9 +68,10 @@ test.describe.serial("stateful July 11 release journeys", () => {
     apiBase = runtime.apiBase;
     browserVersion = browser.version();
     harness = await request.newContext({
+      baseURL: normalizedApiBase(apiBase),
       extraHTTPHeaders: { Origin: new URL(runtime.webBase).origin },
     });
-    const authenticated = await harness.post(apiUrl("/auth/verify"), {
+    const authenticated = await harness.post("auth/verify", {
       data: { pin },
     });
     expect(authenticated.ok()).toBe(true);
@@ -78,7 +79,7 @@ test.describe.serial("stateful July 11 release journeys", () => {
       authenticated: true,
     });
 
-    const admitted = await harness.post(apiUrl("/release-harness/fixtures"), {
+    const admitted = await harness.post("release-harness/fixtures", {
       headers: harnessHeaders(),
       data: { seed },
     });
@@ -96,7 +97,7 @@ test.describe.serial("stateful July 11 release journeys", () => {
 
   test.afterAll(async () => {
     if (!harness || !fixture) return;
-    const cleaned = await harness.post(apiUrl("/release-harness/fixtures/cleanup"), {
+    const cleaned = await harness.post("release-harness/fixtures/cleanup", {
       headers: harnessHeaders(),
       data: { seed: fixture.seed },
     });
@@ -172,7 +173,7 @@ test.describe.serial("stateful July 11 release journeys", () => {
     ).toBeVisible();
 
     const linked = await harness.post(
-      apiUrl("/release-harness/fixtures/artifact-link"),
+      "release-harness/fixtures/artifact-link",
       {
         headers: harnessHeaders(),
         data: {
@@ -546,4 +547,8 @@ function apiHeaders(page: Page) {
 
 function apiUrl(path: string) {
   return `${apiBase.replace(/\/$/, "")}${path}`;
+}
+
+function normalizedApiBase(apiBase: string) {
+  return `${apiBase.replace(/\/$/, "")}/`;
 }
