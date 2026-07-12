@@ -1,6 +1,6 @@
 //! Auth (PIN) handlers.
 //!
-//! - GET  /api/auth/status  → check whether explicit owner bootstrap completed
+//! - GET  /api/auth/status  → check whether owner authentication is initialized
 //! - POST /api/auth/verify  → verify PIN and create a server-side session
 //! - POST /api/auth/logout  → clear the current server-side session
 //! - POST /api/auth/pin     → change PIN
@@ -55,7 +55,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 
 /// GET /api/auth/status
 ///
-/// Returns whether explicit owner bootstrap has initialized a non-default PIN.
+/// Returns whether the owner credential is initialized.
 pub async fn auth_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

@@ -25,6 +25,8 @@ pub mod notes;
 pub mod previews;
 pub mod proactive;
 pub mod projects;
+#[cfg(feature = "release-harness")]
+pub mod release_harness;
 pub mod runtime_memory;
 pub mod sandbox;
 pub mod search;
@@ -47,12 +49,15 @@ use crate::state::AppState;
 
 /// Build the complete API router.
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new()
+    let routes = Router::new()
         .merge(system_routes())
         .merge(agent_routes())
         .merge(workspace_routes())
         .merge(knowledge_routes())
-        .merge(finance_routes())
+        .merge(finance_routes());
+    #[cfg(feature = "release-harness")]
+    let routes = routes.merge(release_harness::routes());
+    routes
 }
 
 /// Prometheus output is aggregate and low-cardinality, while still remaining

@@ -21,7 +21,16 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // Playwright disables BFCache by default for test isolation. The
+        // release lane deliberately exercises real history restoration, so
+        // this one browser default must match production Chromium.
+        launchOptions: {
+          channel: "chromium",
+          ignoreDefaultArgs: ["--disable-back-forward-cache"],
+        },
+      },
     },
   ],
 });

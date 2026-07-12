@@ -20,7 +20,7 @@ export function PinChangeForm() {
     setStatus("idle");
     setMessage("");
 
-    if (next.length < 8) {
+    if (Array.from(next).length < 4) {
       setStatus("error");
       setMessage(t("pinForm.tooShort"));
       return;

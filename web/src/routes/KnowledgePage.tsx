@@ -1,4 +1,12 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import {
+  lazy,
+  Suspense,
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/AppLayout";
 import { useTranslation } from "react-i18next";
@@ -11,11 +19,7 @@ import {
   useDeleteKnowledgeArticle,
   useMoveKnowledgeArticle,
 } from "@/features/knowledge/api";
-import {
-  Editor,
-  TableOfContents,
-  Viewer,
-} from "@/features/knowledge/components/KnowledgeViews";
+import { TableOfContents } from "@/features/knowledge/components/KnowledgeTableOfContents";
 import { KnowledgeHistoryPanel } from "@/features/knowledge/components/KnowledgeHistoryPanel";
 import { KnowledgeSidebar } from "@/features/knowledge/components/KnowledgeSidebar";
 import {
@@ -28,6 +32,17 @@ import type {
   KnowledgeNodeType,
   KnowledgeStatus,
 } from "@/types/knowledge";
+
+const Viewer = lazy(() =>
+  import("@/features/knowledge/components/KnowledgeViewer").then((module) => ({
+    default: module.Viewer,
+  })),
+);
+const Editor = lazy(() =>
+  import("@/features/knowledge/components/KnowledgeEditor").then((module) => ({
+    default: module.Editor,
+  })),
+);
 
 /**
  * Knowledge Base page — a 3-panel workspace:
@@ -304,60 +319,68 @@ export default function KnowledgePage() {
 
         {/* Center: viewer / editor */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {selected ? (
-            mode === "read" ? (
-              <Viewer
-                article={selected}
-                onEdit={handleStartEdit}
-                onDelete={() => handleDelete(selected.id)}
-                deleting={deleteArticle.isPending}
-                onSelect={handleSelect}
-                onShowHistory={() => setShowHistory(true)}
-              />
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-sm text-[var(--text-dim)]" aria-busy="true">
+                …
+              </div>
+            }
+          >
+            {selected ? (
+              mode === "read" ? (
+                <Viewer
+                  article={selected}
+                  onEdit={handleStartEdit}
+                  onDelete={() => handleDelete(selected.id)}
+                  deleting={deleteArticle.isPending}
+                  onSelect={handleSelect}
+                  onShowHistory={() => setShowHistory(true)}
+                />
+              ) : (
+                <Editor
+                  draftTitle={draftTitle}
+                  draftContent={draftContent}
+                  draftSlug={draftSlug}
+                  draftExcerpt={draftExcerpt}
+                  draftTags={draftTags}
+                  draftNodeType={draftNodeType}
+                  draftParentId={draftParentId}
+                  saveStatus={saveStatus}
+                  parentOptions={allNodes}
+                  currentId={selectedId}
+                  onTitle={(v) => {
+                    setDraftTitle(v);
+                    handleEditField();
+                  }}
+                  onContent={(v) => {
+                    setDraftContent(v);
+                    handleEditField();
+                  }}
+                  onSlug={(v) => {
+                    setDraftSlug(v);
+                    handleEditField();
+                  }}
+                  onExcerpt={(v) => {
+                    setDraftExcerpt(v);
+                    handleEditField();
+                  }}
+                  onTags={(v) => {
+                    setDraftTags(v);
+                    handleEditField();
+                  }}
+                  onParentId={(v) => {
+                    setDraftParentId(v);
+                    handleEditField();
+                  }}
+                  onDone={handleDoneEdit}
+                />
+              )
             ) : (
-              <Editor
-                draftTitle={draftTitle}
-                draftContent={draftContent}
-                draftSlug={draftSlug}
-                draftExcerpt={draftExcerpt}
-                draftTags={draftTags}
-                draftNodeType={draftNodeType}
-                draftParentId={draftParentId}
-                saveStatus={saveStatus}
-                parentOptions={allNodes}
-                currentId={selectedId}
-                onTitle={(v) => {
-                  setDraftTitle(v);
-                  handleEditField();
-                }}
-                onContent={(v) => {
-                  setDraftContent(v);
-                  handleEditField();
-                }}
-                onSlug={(v) => {
-                  setDraftSlug(v);
-                  handleEditField();
-                }}
-                onExcerpt={(v) => {
-                  setDraftExcerpt(v);
-                  handleEditField();
-                }}
-                onTags={(v) => {
-                  setDraftTags(v);
-                  handleEditField();
-                }}
-                onParentId={(v) => {
-                  setDraftParentId(v);
-                  handleEditField();
-                }}
-                onDone={handleDoneEdit}
-              />
-            )
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-[var(--text-dim)]">
-              {t("knowledge.selectPrompt")}
-            </div>
-          )}
+              <div className="flex h-full items-center justify-center text-sm text-[var(--text-dim)]">
+                {t("knowledge.selectPrompt")}
+              </div>
+            )}
+          </Suspense>
         </div>
 
         {/* Right: table of contents (only in read mode with content) */}

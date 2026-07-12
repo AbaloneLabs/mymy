@@ -10,6 +10,8 @@ mod handlers;
 mod middleware;
 mod models;
 #[cfg(test)]
+mod release_certification;
+#[cfg(test)]
 mod release_scope;
 mod services;
 mod state;
@@ -117,9 +119,18 @@ async fn apply_migrations(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 fn start_background_workers(state: Arc<AppState>) -> BackgroundWorkers {
+    let agent_run_worker = if release_harness_active() {
+        // A release fixture claims real durable runs through the production
+        // lease boundary. Leaving the model worker active would race that
+        // deterministic admission and make the supposedly model-independent
+        // browser lane depend on provider configuration.
+        tokio::spawn(std::future::pending())
+    } else {
+        services::agent_runs::start_agent_run_worker(state.clone())
+    };
     (
         services::cron::start_cron_ticker(state.clone()),
-        services::agent_runs::start_agent_run_worker(state.clone()),
+        agent_run_worker,
         services::proactive::start_proactive_coordinator(state.clone()),
         services::runtime_metrics::start_runtime_metrics_collector(state.clone()),
         services::drive_sync::start_drive_sync_worker(state.clone()),
@@ -127,6 +138,16 @@ fn start_background_workers(state: Arc<AppState>) -> BackgroundWorkers {
         services::resource_identity::start_worker(state.clone()),
         services::runtime_memory::start_extraction_worker(state),
     )
+}
+
+#[cfg(feature = "release-harness")]
+fn release_harness_active() -> bool {
+    std::env::var_os("MYMY_RELEASE_HARNESS_TOKEN").is_some()
+}
+
+#[cfg(not(feature = "release-harness"))]
+fn release_harness_active() -> bool {
+    false
 }
 
 async fn serve_http(app: Router, bind_host: &str, port: u16) -> anyhow::Result<()> {

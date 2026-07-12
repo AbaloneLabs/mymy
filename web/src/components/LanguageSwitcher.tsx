@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Globe } from "lucide-react";
-import { SUPPORTED_LANGUAGES, syncHtmlLang } from "@/i18n";
+import { changeAppLanguage, SUPPORTED_LANGUAGES } from "@/i18n";
 import { useSettingsStore } from "@/store/settings";
 import { useUpdateLanguage } from "@/features/settings/api";
 import { cn } from "@/lib/utils";
@@ -17,8 +17,7 @@ export default function LanguageSwitcher({ collapsed = false }: { collapsed?: bo
 
   useEffect(() => {
     if (settings.language && settings.language !== i18n.language) {
-      void i18n.changeLanguage(settings.language);
-      syncHtmlLang(settings.language);
+      void changeAppLanguage(settings.language);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -40,8 +39,7 @@ export default function LanguageSwitcher({ collapsed = false }: { collapsed?: bo
 
   function handleSelect(code: string) {
     setLanguage(code as typeof settings.language);
-    void i18n.changeLanguage(code);
-    syncHtmlLang(code);
+    void changeAppLanguage(code);
     // Persist to backend (best-effort).
     updateLanguage.mutate(code as typeof settings.language);
     setOpen(false);

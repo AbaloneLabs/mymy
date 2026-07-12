@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { LayoutGrid, List as ListIcon, Loader2, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
@@ -9,15 +9,20 @@ import { useTasksViewStore } from "@/store/tasksView";
 import { useTasks, useCreateTask, useUpdateTask, useDeleteTask } from "@/features/tasks/api";
 import { useTaskStatuses } from "@/features/task-statuses/api";
 import {
-  BoardView,
   ListView,
   type StatusFilter,
-} from "@/features/tasks/components/TasksViews";
+} from "@/features/tasks/components/TasksListView";
 import { ViewToggleButton } from "@/features/tasks/components/ViewToggleButton";
 import { findStatusDef } from "@/features/tasks/utils";
 import type { TaskStatus } from "@/types/task-statuses";
 import type { Task } from "@/types/tasks";
 import { WorkspaceScopeToggle, type WorkspaceListScope } from "@/components/WorkspaceScopeToggle";
+
+const BoardView = lazy(() =>
+  import("@/features/tasks/components/TasksBoardView").then((module) => ({
+    default: module.BoardView,
+  })),
+);
 
 /**
  * Tasks page — full-width workspace with a view toggle between
@@ -237,18 +242,20 @@ export default function TasksPage() {
             onUpdate={(id, body) => updateTask.mutate({ id, body })}
           />
         ) : (
-          <BoardView
-            tasks={allTasks}
-            focusTaskId={requestedTaskId}
-            statuses={statuses}
-            onToggle={handleToggle}
-            onDelete={handleDelete}
-            onUpdate={(id, body) => updateTask.mutate({ id, body })}
-            onAddCard={(status) => {
-              const title = newTitle.trim();
-              if (title) handleCreate(status);
-            }}
-          />
+          <Suspense fallback={<Loader2 className="mx-auto mt-8 h-4 w-4 animate-spin" />}>
+            <BoardView
+              tasks={allTasks}
+              focusTaskId={requestedTaskId}
+              statuses={statuses}
+              onToggle={handleToggle}
+              onDelete={handleDelete}
+              onUpdate={(id, body) => updateTask.mutate({ id, body })}
+              onAddCard={(status) => {
+                const title = newTitle.trim();
+                if (title) handleCreate(status);
+              }}
+            />
+          </Suspense>
         )}
       </div>
     </AppLayout>

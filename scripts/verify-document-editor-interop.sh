@@ -15,6 +15,8 @@ if [[ -z "$libreoffice_bin" ]]; then
   exit 1
 fi
 
+libreoffice_version="$($libreoffice_bin --version | head -n 1)"
+
 run_libreoffice() {
   local profile="$1"
   shift
@@ -165,4 +167,31 @@ for prefix in "${stage_prefixes[@]}"; do
   done
 done
 
-echo "Document editor interoperability lane passed for DOCX, XLSX, and PPTX."
+rm -rf "$work_dir"
+trap - EXIT
+test ! -e "$work_dir"
+
+if [[ -n "${MYMY_RELEASE_EVIDENCE_DIR:-}" ]]; then
+  mkdir -p "$MYMY_RELEASE_EVIDENCE_DIR"
+  jq -n \
+    --arg candidateCommit "${CI_COMMIT_SHA:-working-tree}" \
+    --arg libreOfficeVersion "$libreoffice_version" \
+    '{
+      testId: "LOC-04-libreoffice-document-interop",
+      state: "passed",
+      candidateCommit: $candidateCommit,
+      producer: {
+        name: "LibreOffice",
+        version: $libreOfficeVersion
+      },
+      formats: ["docx", "xlsx", "pptx"],
+      transitions: ["noop", "a", "a-plus-b", "inverse-b", "inverse-a"],
+      structuralRoundTrip: "passed",
+      reopenAndPdfExport: "passed",
+      cleanup: {
+        temporaryDirectoryRemaining: 0
+      }
+    }' >"$MYMY_RELEASE_EVIDENCE_DIR/loc04-libreoffice-interop.json"
+fi
+
+echo "Document editor interoperability lane passed for DOCX, XLSX, and PPTX with ${libreoffice_version}."

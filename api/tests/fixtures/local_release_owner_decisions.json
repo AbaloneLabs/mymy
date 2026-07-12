@@ -1,0 +1,12 @@
+{
+  "revision": "july11-local-owner-decisions-v1",
+  "decisions": [
+    {
+      "id": "LOC-05-long-reconciliation",
+      "state": "explicitly_unclaimed",
+      "decidedAt": "2026-07-12",
+      "owner": "user",
+      "reason": "The user requested that the two-hour wall-clock measurement not be run."
+    }
+  ]
+}

@@ -35,6 +35,8 @@ const AUTOMATIC_RECALL_ITEM_LIMIT: usize = 8;
 const AUTOMATIC_RECALL_TOKEN_LIMIT: usize = 1_000;
 const MEMORY_CONTEXT_MANIFEST_VERSION: &str = "memory_context_v1";
 
+#[cfg(test)]
+pub(crate) use self::extraction::run_extraction_pass;
 pub use self::extraction::start_extraction_worker;
 
 pub struct AutomaticRecall {

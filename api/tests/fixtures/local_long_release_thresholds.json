@@ -1,0 +1,27 @@
+{
+  "fixtureRevision": "july11-long-reconciliation-v1",
+  "minimumDurationSeconds": 7200,
+  "cycleIntervalMs": 60000,
+  "minimumCycles": 120,
+  "minimumProcessRestarts": 120,
+  "driveFileSlots": 4,
+  "trashRetentionCycles": 3,
+  "tailObservationMs": 5000,
+  "maximumWorkspaceSnapshots": 1,
+  "maximumDriveSearchDocumentGrowth": 0,
+  "maximumLiveTrashEntries": 4,
+  "maximumDocumentSnapshots": 3,
+  "maximumTemporaryFiles": 0,
+  "maximumTableGrowthBytes": 134217728,
+  "maximumIndexGrowthBytes": 67108864,
+  "maximumRowGrowthPerCycle": {
+    "driveResources": 2,
+    "driveTrashEntries": 1,
+    "resourceOperations": 6,
+    "resourceRevisions": 4,
+    "resourceOutbox": 6,
+    "resourceOutboxDeliveries": 6,
+    "documentEditorSaveReceipts": 1,
+    "memoryExtractionBatches": 1
+  }
+}

@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useLockApp } from "@/hooks/useLockApp";
@@ -50,6 +57,58 @@ function RouteFallback() {
   );
 }
 
+interface RouteErrorBoundaryState {
+  error: Error | null;
+}
+
+/**
+ * Keep a failed lazy route recoverable without weakening route splitting.
+ *
+ * React caches a rejected lazy import for the lifetime of the current page,
+ * so clearing component state would immediately throw the same rejection.
+ * A user-initiated reload creates a fresh module graph and reuses the current
+ * URL, which is the only deterministic recovery after a transient chunk/CDN
+ * failure or a deployment that replaced hashed assets.
+ */
+class RouteErrorBoundary extends Component<
+  { children: ReactNode },
+  RouteErrorBoundaryState
+> {
+  state: RouteErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): RouteErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Lazy route failed to load", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main className="flex h-screen items-center justify-center bg-[var(--bg)] p-6">
+        <div
+          role="alert"
+          className="max-w-md rounded-lg border border-[var(--status-error)]/40 bg-[var(--surface)] p-5 text-[var(--text)]"
+        >
+          <h1 className="text-base font-semibold">This page could not be loaded.</h1>
+          <p className="mt-2 text-sm text-[var(--text-muted)]">
+            The route asset may have changed during deployment or failed in transit.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 rounded-md bg-[var(--accent)] px-3 py-2 text-sm text-white"
+          >
+            Retry loading page
+          </button>
+        </div>
+      </main>
+    );
+  }
+}
+
 function UnauthorizedListener() {
   const lock = useLockApp();
 
@@ -65,19 +124,21 @@ export default function App() {
   return (
     <BrowserRouter>
       <UnauthorizedListener />
-      <Suspense fallback={<RouteFallback />}>
-        <Routes>
-          <Route path="/pin" element={<PinScreen />} />
-          {protectedRoutes.map(({ path, element }) => (
-            <Route
-              key={path}
-              path={path}
-              element={<ProtectedRoute>{element}</ProtectedRoute>}
-            />
-          ))}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
+      <RouteErrorBoundary>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/pin" element={<PinScreen />} />
+            {protectedRoutes.map(({ path, element }) => (
+              <Route
+                key={path}
+                path={path}
+                element={<ProtectedRoute>{element}</ProtectedRoute>}
+              />
+            ))}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </RouteErrorBoundary>
     </BrowserRouter>
   );
 }

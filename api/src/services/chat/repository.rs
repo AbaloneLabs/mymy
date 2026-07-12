@@ -526,7 +526,7 @@ pub(super) async fn insert_user_message_for_input(
     let inserted = sqlx::query(
         r#"INSERT INTO chat_messages (id, session_id, role, content, run_input_id)
            VALUES ($1, $2, 'user', $3, $4)
-           ON CONFLICT (run_input_id) DO NOTHING"#,
+           ON CONFLICT (run_input_id) WHERE run_input_id IS NOT NULL DO NOTHING"#,
     )
     .bind(id)
     .bind(session_id)

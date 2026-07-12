@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:delivery-budget": "bun scripts/check-delivery-budget.ts",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

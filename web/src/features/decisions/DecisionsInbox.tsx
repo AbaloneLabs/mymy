@@ -268,6 +268,16 @@ function DecisionCard({
 
       {pending && (
         <div className="mt-3 flex items-center justify-between gap-3">
+          {answer && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => clearDraft(decision.id)}
+              className="text-xs text-[var(--text-faint)] hover:text-[var(--text)] disabled:opacity-50"
+            >
+              {t("decisions.discardDraft")}
+            </button>
+          )}
           {(resolve.isError || dismiss.isError || stale) && (
             <span className="text-xs text-[var(--status-error)]">{t("decisions.actionError")}</span>
           )}

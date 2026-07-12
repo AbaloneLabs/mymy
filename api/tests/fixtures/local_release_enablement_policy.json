@@ -1,0 +1,20 @@
+{
+  "policyRevision": "july11-single-host-forward-fix-v1",
+  "capabilityRevision": "july11-local-candidate-v1",
+  "deploymentTopology": "single-host-loopback-bubblewrap-v1",
+  "runtimeSwitchesSelected": false,
+  "rollbackMode": "forward_fix_only",
+  "decisionOwner": "local-release-owner",
+  "rationale": "The API, UI, durable producers, consumers, and schema ship as one single-host revision. Independent runtime disablement would permit unsupported producer/consumer splits and cannot roll back committed schema or filesystem effects.",
+  "admittedBeforeRevisionChange": "The running revision owns admitted work until its durable terminal or reconciliation state.",
+  "oldReaderBehavior": "Unsupported for rows written by a newer schema; an old binary must not be restarted against an upgraded database.",
+  "newReaderBehavior": "The new revision reads pre-upgrade rows and migrations backfill required projections before admission.",
+  "reEnableBehavior": "Deploy a forward-fixed complete server revision; no partial UI-only re-enable path exists.",
+  "components": [
+    { "id": "decisions", "independentlyDeployable": false, "gateRevision": "july11-local-candidate-v1" },
+    { "id": "artifacts", "independentlyDeployable": false, "gateRevision": "july11-local-candidate-v1" },
+    { "id": "drive_search", "independentlyDeployable": false, "gateRevision": "july11-local-candidate-v1" },
+    { "id": "memory_extraction_recall", "independentlyDeployable": false, "gateRevision": "july11-local-candidate-v1" },
+    { "id": "existing_document_editor_certification", "independentlyDeployable": false, "gateRevision": "july11-local-candidate-v1" }
+  ]
+}

@@ -132,8 +132,8 @@ impl Config {
         env_string("MYMY_BIND_HOST", "127.0.0.1")
     }
 
-    /// One-time owner bootstrap input. It is never persisted as plaintext and
-    /// is ignored after a non-default credential already exists.
+    /// Optional first-start override for the local bootstrap PIN. It is never
+    /// persisted as plaintext and is ignored after a credential exists.
     pub fn initial_pin(&self) -> Option<String> {
         env_optional("MYMY_INITIAL_PIN")
     }

@@ -59,6 +59,35 @@ pub struct PreparedNativeTurn {
     pub buffered_output_required: bool,
 }
 
+/// Materialize an admitted release-fixture input through the same idempotent
+/// repository operation used immediately before production execution. The
+/// helper is absent from production builds and lets model-independent load
+/// certification exercise message indexing and memory extraction without
+/// substituting a fake provider response.
+#[cfg(test)]
+pub async fn materialize_release_fixture_input(
+    state: &AppState,
+    session_id: Uuid,
+    input_id: Uuid,
+    text: &str,
+) -> AppResult<()> {
+    let (_, inserted) = insert_user_message_for_input(state, session_id, input_id, text).await?;
+    if inserted {
+        sqlx::query(
+            r#"UPDATE chat_sessions SET
+                 message_count = message_count + 1,
+                 title = COALESCE(NULLIF(title, ''), $2),
+                 updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(session_id)
+        .bind(derive_title(text))
+        .execute(&state.db)
+        .await?;
+    }
+    Ok(())
+}
+
 pub enum PreparedExecution {
     Agent(Box<AgentLoop>),
     Moa(PreparedMoaTurn),

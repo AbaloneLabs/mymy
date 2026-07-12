@@ -19,6 +19,11 @@ export default defineConfig({
     host: true,
     port: 33696,
   },
+  build: {
+    // The delivery gate reads Vite's authoritative module graph instead of
+    // guessing route ownership from hashed filenames.
+    manifest: true,
+  },
   test: {
     exclude: ['e2e/**', '**/node_modules/**', '**/.git/**'],
   },

@@ -64,6 +64,97 @@ pub(crate) fn run_progress_store(state: AppState) -> Arc<dyn RunProgressStore> {
     crate::services::run_progress::coordinator(state)
 }
 
+/// Claim one deterministic release-harness run through the same lease
+/// transition used by the production worker. The helper exists only in a
+/// feature-gated binary and deliberately refuses to claim a different queued
+/// run, preventing fixture setup from reordering unrelated work.
+#[cfg(feature = "release-harness")]
+pub async fn claim_release_fixture_run(
+    state: &AppState,
+    expected_run_id: Uuid,
+) -> AppResult<ToolExecutionContext> {
+    let run = claim_next_run(state, "release-harness")
+        .await?
+        .ok_or_else(|| AppError::Conflict("release fixture run was not claimable".to_string()))?;
+    if run.id != expected_run_id {
+        return Err(AppError::Conflict(
+            "release fixture would claim unrelated queued work".to_string(),
+        ));
+    }
+    Ok(ToolExecutionContext {
+        run_id: run.id,
+        session_id: run.session_id,
+        agent_profile: run.agent_profile,
+        trigger: crate::agent::execution::SessionTrigger::Chat,
+        project_id: run.project_id,
+        authorization: serde_json::from_value(run.authorization_context).map_err(|error| {
+            AppError::Internal(format!(
+                "release fixture authorization decode failed: {error}"
+            ))
+        })?,
+        invocation_id: format!("release-harness:{}:{}", run.id, run.lease_epoch),
+        lease_epoch: run.lease_epoch,
+        cancellation: crate::agent::execution::RunCancellation::new(),
+        guard: None,
+        progress: None,
+        decisions: Some(crate::services::decisions::coordinator(state.clone())),
+    })
+}
+
+#[cfg(feature = "release-harness")]
+pub async fn complete_release_fixture_run(
+    state: &AppState,
+    context: &ToolExecutionContext,
+) -> AppResult<()> {
+    let run = fetch_run_row(&state.db, context.run_id).await?;
+    finish_run(state, &run, "completed", None, serde_json::json!({})).await?;
+    Ok(())
+}
+
+#[cfg(feature = "release-harness")]
+pub async fn pause_release_fixture_run(
+    state: &AppState,
+    context: &ToolExecutionContext,
+    decision_id: Uuid,
+) -> AppResult<()> {
+    let run = fetch_run_row(&state.db, context.run_id).await?;
+    pause_run_for_decision(state, &run, &decision_id.to_string()).await
+}
+
+/// Finish every queued run owned by one release fixture after its Decisions
+/// have been closed through the production coordinator. Cleanup intentionally
+/// claims leases through the regular scheduler so it exercises the same
+/// terminal transition and refuses to consume another agent's work.
+#[cfg(any(test, feature = "release-harness"))]
+pub async fn drain_release_fixture_runs(state: &AppState, profile: &str) -> AppResult<()> {
+    loop {
+        let remaining = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM agent_runs
+               WHERE agent_profile = $1
+                 AND status IN ('queued', 'running', 'waiting_decision')"#,
+        )
+        .bind(profile)
+        .fetch_one(&state.db)
+        .await?;
+        if remaining == 0 {
+            return Ok(());
+        }
+        let run = claim_next_run(state, "release-harness-cleanup")
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "release fixture has non-terminal work that is not claimable".to_string(),
+                )
+            })?;
+        if run.agent_profile != profile {
+            return Err(AppError::Conflict(
+                "release fixture cleanup would claim unrelated queued work".to_string(),
+            ));
+        }
+        finish_run(state, &run, "completed", None, serde_json::json!({})).await?;
+    }
+}
+
 const MAX_CLIENT_REQUEST_ID_CHARS: usize = 128;
 const RUN_LEASE_SECONDS: i64 = 30;
 const INTERACTIVE_MAX_TOOL_CALLS: u32 = 500;

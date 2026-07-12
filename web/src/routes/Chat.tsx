@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -13,7 +13,6 @@ import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/AppLayout";
 import { ChatPanel } from "@/components/ChatPanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
-import { DocumentEditorPane } from "@/features/documentEditor/shell/DocumentEditorPane";
 import {
   LightweightBrowserPane,
   type LightweightBrowserSource,
@@ -27,6 +26,11 @@ import { useProjectContext } from "@/store/projectContext";
 import type { ChatSession } from "@/types/chat";
 import { ChatArtifactPane } from "@/features/artifacts/ChatArtifactPane";
 
+const DocumentEditorPane = lazy(() =>
+  import("@/features/documentEditor/shell/DocumentEditorPane").then((module) => ({
+    default: module.DocumentEditorPane,
+  })),
+);
 
 export default function Chat() {
   const { t } = useTranslation();
@@ -389,13 +393,15 @@ export default function Chat() {
                   </div>
                 </div>
               ) : editorPath ? (
-                <DocumentEditorPane
-                  path={editorPath}
-                  onClose={closeSidePanel}
-                  onDirtyChange={setEditorDirty}
-                  sourceChatSessionId={editorSourceSessionId}
-                  onOpenDocument={openDocumentEditor}
-                />
+                <Suspense fallback={<EditorPaneFallback />}>
+                  <DocumentEditorPane
+                    path={editorPath}
+                    onClose={closeSidePanel}
+                    onDirtyChange={setEditorDirty}
+                    sourceChatSessionId={editorSourceSessionId}
+                    onOpenDocument={openDocumentEditor}
+                  />
+                </Suspense>
               ) : null}
             </div>
           )}
@@ -412,6 +418,17 @@ export default function Chat() {
         />
       )}
     </AppLayout>
+  );
+}
+
+function EditorPaneFallback() {
+  return (
+    <div
+      className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]"
+      aria-busy="true"
+    >
+      …
+    </div>
   );
 }
 

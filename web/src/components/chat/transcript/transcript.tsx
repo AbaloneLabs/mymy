@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
@@ -5,8 +6,11 @@ import type { ChatMessage, ToolCall } from "@/types/chat";
 import { MessageRow } from "./messages";
 import { QueuedTurnCard } from "../queue/queuedTurns";
 import { SessionDivider } from "./sessionDivider";
-import { ToolEventRow } from "../toolResults";
 import type { QueuedChatTurn, ToolEvent } from "../shared/types";
+
+const ToolEventRow = lazy(() =>
+  import("../toolResults").then((module) => ({ default: module.ToolEventRow })),
+);
 
 interface ChatTranscriptProps {
   isLoading: boolean;
@@ -88,12 +92,16 @@ export function ChatTranscript({
       ))}
 
       {activeToolEvents.map((event) => (
-        <ToolEventRow
+        <Suspense
           key={event.id}
-          event={event}
-          onOpenDocument={onOpenDocument}
-          onOpenPreview={onOpenPreview}
-        />
+          fallback={<div className="text-xs text-[var(--text-muted)]">…</div>}
+        >
+          <ToolEventRow
+            event={event}
+            onOpenDocument={onOpenDocument}
+            onOpenPreview={onOpenPreview}
+          />
+        </Suspense>
       ))}
 
       {activeStreaming && !activeStreamAssistantText && (

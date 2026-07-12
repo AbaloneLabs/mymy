@@ -178,7 +178,7 @@ pub async fn delete_path_with_actor(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "release-harness"))]
 pub async fn list_trash(state: &AppState) -> AppResult<DriveTrashResponse> {
     list_trash_page(
         state,

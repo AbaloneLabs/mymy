@@ -58,7 +58,7 @@
     { "id": "JNY-08A", "state": "mandatory", "settledOracle": "workspace_search_keeps_project_scope_explicit_and_results_normalized", "browserOracle": "web/e2e/workspace-search.spec.ts", "cleanupOracle": "purge-e2e-search-fixture" },
     { "id": "JNY-09", "state": "mandatory", "settledOracle": "resumed_run_rejects_a_different_contract_before_execution", "browserOracle": null, "cleanupOracle": "temporary-database-removed" },
     { "id": "JNY-10", "state": "mandatory", "settledOracle": "lost_save_response_retries_without_a_second_commit", "browserOracle": "web/e2e/document-editor.spec.ts", "cleanupOracle": "purge-e2e-drive-fixture" },
-    { "id": "JNY-11", "state": "mandatory", "settledOracle": "fresh_install_stays_locked_without_explicit_owner_pin", "browserOracle": "web/e2e/document-editor.spec.ts", "cleanupOracle": "isolated-browser-database" },
+    { "id": "JNY-11", "state": "mandatory", "settledOracle": "fresh_install_seeds_default_pin_and_authenticates", "browserOracle": "web/e2e/document-editor.spec.ts", "cleanupOracle": "isolated-browser-database" },
     { "id": "JNY-12", "state": "explicitly_unclaimed", "settledOracle": "new_document_capability_is_explicitly_unclaimed", "browserOracle": null, "cleanupOracle": "no-provisional-resource-created" },
     { "id": "JNY-13", "state": "mandatory", "settledOracle": "docker-runner-control-smoke", "browserOracle": null, "cleanupOracle": "temporary-runner-containers-removed" }
   ]

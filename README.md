@@ -150,9 +150,11 @@ runner container as a privileged boundary. Host KVM/TUN devices and
 `docker-compose.firecracker.yml` overlay and requires a dedicated host security
 review; it is not enabled by the normal command.
 
-Open **http://localhost:33696** and enter the PIN you selected. Fresh installs
-without `MYMY_INITIAL_PIN` remain bootstrap-locked, and upgrades that still use
-the legacy published PIN are locked until the variable is supplied once.
+Open **http://localhost:33696** (or
+**http://&lt;server-LAN-address&gt;:33696**) and enter the initial PIN `mymy`.
+Change it immediately in Settings before exposing the web gateway to a shared network.
+`MYMY_INITIAL_PIN` may override that value on the first start; new PINs must
+contain at least four characters.
 Provider credentials are encrypted with AES-256-GCM using OS-generated nonces
 and an Argon2id PIN-derived key. A successful owner login upgrades historical
 HKDF-encrypted rows atomically before the session becomes usable.
@@ -216,6 +218,8 @@ returned by the settings API.
 - `GET /api/health` is public.
 - Protected API routes require the `mymy_session` HttpOnly cookie.
 - Repeated invalid PIN attempts are rate-limited with a short lockout.
+- Fresh installations use `mymy`; change this public bootstrap value before
+  allowing network access.
 - Set `AUTH_COOKIE_SECURE=true` only when the API is served over HTTPS.
 
 ### Drive, Sandbox, and Previews

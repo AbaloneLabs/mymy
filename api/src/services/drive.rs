@@ -27,7 +27,7 @@ pub use paths::{
 pub(crate) use sync::document_sync_status;
 pub(crate) use sync::enqueue_s3_sync_job;
 pub use sync::{list_sync_jobs, physical_path_for_sync, s3_object_key};
-#[cfg(test)]
+#[cfg(any(test, feature = "release-harness"))]
 pub use trash::list_trash;
 pub use trash::{
     delete_path, delete_path_with_actor, list_trash_page, purge_trash, restore_trash,

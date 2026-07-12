@@ -5,7 +5,8 @@ import type {
   KnowledgeNodeType,
   KnowledgeTreeNode,
 } from "@/types/knowledge";
-import { SearchResultList, TreeView } from "./KnowledgeViews";
+import { SearchResultList } from "./KnowledgeSearchResults";
+import { TreeView } from "./KnowledgeTreeView";
 
 export function KnowledgeSidebar({
   search,

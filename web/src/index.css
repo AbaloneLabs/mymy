@@ -77,6 +77,32 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* Release surfaces share one motion policy so route transitions, loading
+   indicators, and focus restoration do not reintroduce movement for users who
+   have asked the operating system to reduce it. The tiny non-zero duration
+   preserves animation completion events used by third-party components. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+/* System colors are authoritative in forced-colors mode. A visible focus ring
+   remains explicit because several compact icon controls otherwise depend on
+   color changes that high-contrast rendering intentionally replaces. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
 /* Scrollbar — subtle, Linear-like */
 ::-webkit-scrollbar {
   width: 10px;

@@ -1,9 +1,15 @@
+import { lazy, Suspense } from "react";
 import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { driveBlobUrl } from "@/features/drive/api";
-import { DocumentEditorPane } from "@/features/documentEditor/shell/DocumentEditorPane";
 import { LightweightBrowserPane } from "./LightweightBrowserPane";
 import type { DriveFileResponse } from "@/types/drive";
+
+const DocumentEditorPane = lazy(() =>
+  import("@/features/documentEditor/shell/DocumentEditorPane").then((module) => ({
+    default: module.DocumentEditorPane,
+  })),
+);
 
 export function DriveFileViewer({
   file,
@@ -57,14 +63,25 @@ export function DriveFileViewer({
   }
   if (file.editorKind !== "preview") {
     return (
-      <DocumentEditorPane
-        key={file.path}
-        path={file.path}
-        onClose={onCloseEditor ?? (() => undefined)}
-        onDirtyChange={onDirtyChange}
-        onOpenDocument={onOpenDocument}
-        variant="embedded"
-      />
+      <Suspense
+        fallback={
+          <div
+            className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]"
+            aria-busy="true"
+          >
+            …
+          </div>
+        }
+      >
+        <DocumentEditorPane
+          key={file.path}
+          path={file.path}
+          onClose={onCloseEditor ?? (() => undefined)}
+          onDirtyChange={onDirtyChange}
+          onOpenDocument={onOpenDocument}
+          variant="embedded"
+        />
+      </Suspense>
     );
   }
 

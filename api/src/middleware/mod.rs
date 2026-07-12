@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{COOKIE, ORIGIN};
+use axum::http::header::{COOKIE, HOST, ORIGIN};
 use axum::http::{HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -98,7 +98,10 @@ pub async fn require_same_origin(
     if origin.is_none() && !has_cookie {
         return Ok(next.run(req).await);
     }
-    if origin.is_some_and(|value| origin_is_allowed(value, &state.config.cors_origins)) {
+    if origin.is_some_and(|value| {
+        origin_is_allowed(value, &state.config.cors_origins)
+            || origin_matches_request_authority(value, req.headers())
+    }) {
         return Ok(next.run(req).await);
     }
     Err(AppError::Coded {
@@ -115,6 +118,30 @@ fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> bool {
         && allowed_origins
             .iter()
             .any(|allowed| allowed.trim_end_matches('/') == origin)
+}
+
+/// Accept the normal nginx same-origin path without coupling the deployment
+/// to one discovered hostname or LAN address. Browsers control `Host` and
+/// `Origin`; an unrelated site cannot make those authorities match. Explicit
+/// configured origins remain necessary for genuinely cross-origin development
+/// clients such as the isolated Playwright preview server.
+fn origin_matches_request_authority(origin: &str, headers: &axum::http::HeaderMap) -> bool {
+    let Some(host) = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| matches!(*value, "http" | "https"))
+        .unwrap_or("http");
+    origin.trim_end_matches('/') == format!("{scheme}://{host}")
 }
 
 fn is_public_request(method: &Method, path: &str) -> bool {
@@ -158,5 +185,28 @@ mod tests {
         assert!(!origin_is_allowed("http://localhost:336960", &allowed));
         assert!(!origin_is_allowed("https://localhost:33696", &allowed));
         assert!(!origin_is_allowed("null", &allowed));
+    }
+
+    #[test]
+    fn proxied_same_origin_uses_the_exact_public_authority() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("192.0.2.10:33696"));
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("http"),
+        );
+
+        assert!(origin_matches_request_authority(
+            "http://192.0.2.10:33696",
+            &headers
+        ));
+        assert!(!origin_matches_request_authority(
+            "http://192.0.2.11:33696",
+            &headers
+        ));
+        assert!(!origin_matches_request_authority(
+            "https://192.0.2.10:33696",
+            &headers
+        ));
     }
 }

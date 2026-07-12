@@ -62,7 +62,10 @@ interface PendingCountResponse {
 }
 
 function decisionsQuery(filters: DecisionFilters, cursor?: string) {
-  const query = new URLSearchParams({ limit: "50" });
+  // A bounded first page keeps the inbox responsive when autonomous agents
+  // accumulate many Decisions and makes pagination behavior part of ordinary
+  // product operation instead of a release-only fixture path.
+  const query = new URLSearchParams({ limit: "10" });
   if (filters.status) query.set("status", filters.status);
   if (filters.kind) query.set("kind", filters.kind);
   if (filters.blocking !== undefined) {

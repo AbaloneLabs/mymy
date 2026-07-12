@@ -1,22 +1,20 @@
+import { lazy, Suspense } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { AppLayout } from "@/components/AppLayout";
 import { SectionCard } from "@/components/settings/shared/SectionCard";
 import { PinChangeForm } from "@/components/settings/pin/PinChangeForm";
-import { AgentToolPermissionsSection } from "@/components/settings/agents/AgentToolPermissionsSection";
-import { GitSystemSection } from "@/components/settings/git/GitSystemSection";
-import { LlmProviderSection } from "@/components/settings/llm/LlmProviderSection";
-import { ExtensionsSection } from "@/components/settings/extensions/ExtensionsSection";
-import { EditorSettingsSection } from "@/components/settings/editor/EditorSettingsSection";
-import { SkillsSection } from "@/components/settings/skills/SkillsSection";
-import { SecuritySection } from "@/components/settings/security/SecuritySection";
-import { AuditLogSection } from "@/components/settings/audit/AuditLogSection";
-import { TaskStatusManager } from "@/components/settings/taskStatus/TaskStatusManager";
 import { useSettingsStore } from "@/store/settings";
 import { useUpdateLanguage } from "@/features/settings/api";
-import { SUPPORTED_LANGUAGES, syncHtmlLang } from "@/i18n";
+import { changeAppLanguage, SUPPORTED_LANGUAGES } from "@/i18n";
 import type { Language } from "@/types/settings";
 import { cn } from "@/lib/utils";
+
+const AdvancedSettingsSections = lazy(() =>
+  import("@/components/settings/AdvancedSettingsSections").then((module) => ({
+    default: module.AdvancedSettingsSections,
+  })),
+);
 
 /**
  * Settings page — full-width workspace with a left tab sidebar.
@@ -71,6 +69,18 @@ const VALID_TABS: SettingsTab[] = [
   "audit",
   "about",
 ];
+
+const ADVANCED_TABS = new Set<SettingsTab>([
+  "tasks",
+  "editor",
+  "agents",
+  "models",
+  "skills",
+  "extensions",
+  "git",
+  "security",
+  "audit",
+]);
 
 /** Tab groups for visual separation with dividers. */
 const TAB_GROUPS: { tabs: SettingsTab[] }[] = [
@@ -142,77 +152,10 @@ export default function Settings() {
               {activeTab === "notes" && (
                 <FeaturePlaceholder feature={t("settings.tabs.notes")} />
               )}
-              {activeTab === "tasks" && (
-                <SectionCard
-                  title={t("settings.tasks.title")}
-                  description={t("settings.tasks.description")}
-                >
-                  <TaskStatusManager />
-                </SectionCard>
-              )}
-              {activeTab === "editor" && (
-                <SectionCard
-                  title={t("settings.editor.title")}
-                  description={t("settings.editor.description")}
-                >
-                  <EditorSettingsSection />
-                </SectionCard>
-              )}
-              {activeTab === "agents" && (
-                <SectionCard
-                  title={t("settings.agentPermissions.title")}
-                  description={t("settings.agentPermissions.description")}
-                >
-                  <AgentToolPermissionsSection />
-                </SectionCard>
-              )}
-              {activeTab === "models" && (
-                <SectionCard
-                  title={t("settings.models.title")}
-                  description={t("settings.models.description")}
-                >
-                  <LlmProviderSection />
-                </SectionCard>
-              )}
-              {activeTab === "skills" && (
-                <SectionCard
-                  title={t("settings.skills.title")}
-                  description={t("settings.skills.description")}
-                >
-                  <SkillsSection />
-                </SectionCard>
-              )}
-              {activeTab === "extensions" && (
-                <SectionCard
-                  title={t("settings.extensions.title")}
-                  description={t("settings.extensions.description")}
-                >
-                  <ExtensionsSection />
-                </SectionCard>
-              )}
-              {activeTab === "git" && (
-                <SectionCard
-                  title={t("settings.git.title")}
-                  description={t("settings.git.description")}
-                >
-                  <GitSystemSection />
-                </SectionCard>
-              )}
-              {activeTab === "security" && (
-                <SectionCard
-                  title={t("settings.security.title")}
-                  description={t("settings.security.description")}
-                >
-                  <SecuritySection />
-                </SectionCard>
-              )}
-              {activeTab === "audit" && (
-                <SectionCard
-                  title={t("settings.audit.title")}
-                  description={t("settings.audit.description")}
-                >
-                  <AuditLogSection />
-                </SectionCard>
+              {ADVANCED_TABS.has(activeTab) && (
+                <Suspense fallback={<SettingsSectionFallback />}>
+                  <AdvancedSettingsSections activeTab={activeTab} />
+                </Suspense>
               )}
               {activeTab === "about" && <AboutTab />}
             </div>
@@ -220,6 +163,14 @@ export default function Settings() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+function SettingsSectionFallback() {
+  return (
+    <div className="flex min-h-48 items-center justify-center text-sm text-[var(--text-faint)]" aria-busy="true">
+      …
+    </div>
   );
 }
 
@@ -257,15 +208,14 @@ function TabButton({
 // ===========================================================================
 
 function GeneralTab() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const { settings, setLanguage, appVersion } = useSettingsStore();
   const updateLanguage = useUpdateLanguage();
 
   function handleLanguageChange(code: string) {
     const lang = code as Language;
     setLanguage(lang);
-    void i18n.changeLanguage(lang);
-    syncHtmlLang(lang);
+    void changeAppLanguage(lang);
     // Persist to backend (best-effort).
     updateLanguage.mutate(lang);
   }

@@ -44,7 +44,10 @@ services:
     container_name: mymy-web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:33696:80"
+      # The owner explicitly selected LAN access for the web gateway. API and
+      # PostgreSQL remain loopback-only host ports; browser API traffic stays
+      # same-origin through nginx instead of exposing either service directly.
+      - "0.0.0.0:33696:80"
     depends_on:
       db:
         condition: service_healthy
@@ -69,6 +72,9 @@ services:
       MYMY_BIND_HOST: "0.0.0.0"
       MYMY_LOOPBACK_PUBLISH: "true"
       MYMY_INITIAL_PIN: ${MYMY_INITIAL_PIN:-}
+      # Separate-origin development clients must be listed explicitly. The
+      # same-origin web gateway is validated against the forwarded public Host,
+      # so moving this Compose stack to another LAN address needs no code edit.
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:33696,http://127.0.0.1:33696}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       MYMY_AGENT_DATA_DIR: /app/data/agent

@@ -40,9 +40,14 @@ pub fn verify_pin(pin: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-/// Published by older releases and retained only to detect unsafe upgrades.
-const LEGACY_DEFAULT_PIN: &str = "mymy";
-const MINIMUM_PIN_CHARS: usize = 8;
+/// Owner-selected bootstrap credential for a fresh local installation.
+///
+/// This is a convenience default, not a security claim. Network-exposed
+/// installations must change it immediately. Keeping the value in one public
+/// constant makes the product contract explicit instead of hiding a second
+/// implicit seed in migration or startup code.
+pub const DEFAULT_PIN: &str = "mymy";
+const MINIMUM_PIN_CHARS: usize = 4;
 
 #[derive(Debug)]
 pub struct AuthSession {
@@ -50,10 +55,12 @@ pub struct AuthSession {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Lock a fresh installation until an explicit initial PIN is supplied, and
-/// remediate legacy installations that still use the published credential.
-/// `MYMY_INITIAL_PIN` is consumed only for this one-time transition and can be
-/// removed from the environment after startup succeeds.
+/// Initialize a fresh installation with the local bootstrap PIN.
+///
+/// `MYMY_INITIAL_PIN` remains an optional first-start override, but its absence
+/// deliberately seeds `DEFAULT_PIN` so a local owner can enter the product and
+/// rotate the credential through the authenticated UI. Existing non-default
+/// credentials are never overwritten at startup.
 pub async fn initialize_auth_state(db: &PgPool, initial_pin: Option<&str>) -> AppResult<()> {
     let initial_pin = initial_pin.map(str::trim).filter(|pin| !pin.is_empty());
     if let Some(pin) = initial_pin {
@@ -64,68 +71,32 @@ pub async fn initialize_auth_state(db: &PgPool, initial_pin: Option<&str>) -> Ap
         .await?;
     match row {
         None => {
-            if let Some(pin) = initial_pin {
-                let hash = hash_pin(pin)?;
-                sqlx::query!(
-                    r#"INSERT INTO app_meta (id, pin_hash, bootstrap_required)
-                       VALUES (true, $1, false) ON CONFLICT DO NOTHING"#,
-                    hash
-                )
-                .execute(db)
-                .await?;
-                clear_pin_failures(db).await?;
+            let pin = initial_pin.unwrap_or(DEFAULT_PIN);
+            let hash = hash_pin(pin)?;
+            sqlx::query!(
+                r#"INSERT INTO app_meta (id, pin_hash, bootstrap_required)
+                   VALUES (true, $1, false) ON CONFLICT DO NOTHING"#,
+                hash
+            )
+            .execute(db)
+            .await?;
+            clear_pin_failures(db).await?;
+            if initial_pin.is_some() {
                 tracing::info!("initialized owner credential from one-time configuration");
             } else {
                 tracing::warn!(
-                    "authentication is bootstrap-locked; set MYMY_INITIAL_PIN and restart"
+                    "initialized the public local bootstrap PIN; change it before network use"
                 );
             }
         }
-        Some(row) if verify_pin(LEGACY_DEFAULT_PIN, &row.pin_hash) => {
-            if let Some(pin) = initial_pin {
-                let hash = hash_pin(pin)?;
-                let mut transaction = db.begin().await?;
-                sqlx::query("SELECT id FROM app_meta WHERE id = true FOR UPDATE")
-                    .fetch_one(&mut *transaction)
-                    .await?;
-                crate::services::llm_providers::reencrypt_all_keys_for_pin_in_transaction(
-                    &mut transaction,
-                    LEGACY_DEFAULT_PIN,
-                    pin,
-                )
+        Some(row) if row.bootstrap_required && verify_pin(DEFAULT_PIN, &row.pin_hash) => {
+            // A release that temporarily locked the historical default retains
+            // the same hash. Re-enabling it needs no credential rewrite and
+            // therefore cannot orphan provider keys encrypted under that PIN.
+            sqlx::query("UPDATE app_meta SET bootstrap_required = false WHERE id = true")
+                .execute(db)
                 .await?;
-                sqlx::query(
-                    r#"UPDATE app_meta
-                       SET pin_hash = $1, bootstrap_required = false
-                       WHERE id = true"#,
-                )
-                .bind(hash)
-                .execute(&mut *transaction)
-                .await?;
-                sqlx::query("DELETE FROM auth_sessions")
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM auth_pin_failures")
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM auth_pin_source_failures")
-                    .execute(&mut *transaction)
-                    .await?;
-                transaction.commit().await?;
-                tracing::warn!("replaced legacy default credential and revoked all sessions");
-            } else {
-                let mut transaction = db.begin().await?;
-                sqlx::query("UPDATE app_meta SET bootstrap_required = true WHERE id = true")
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM auth_sessions")
-                    .execute(&mut *transaction)
-                    .await?;
-                transaction.commit().await?;
-                tracing::warn!(
-                    "legacy default credential detected; sessions revoked and bootstrap locked"
-                );
-            }
+            clear_pin_failures(db).await?;
         }
         Some(_) => {}
     }
@@ -264,9 +235,9 @@ pub async fn change_pin(db: &PgPool, current: &str, next: &str) -> AppResult<()>
 }
 
 fn validate_new_pin(pin: &str) -> AppResult<()> {
-    if pin.chars().count() < MINIMUM_PIN_CHARS || pin == LEGACY_DEFAULT_PIN {
+    if pin.chars().count() < MINIMUM_PIN_CHARS {
         return Err(AppError::BadRequest(format!(
-            "new PIN must contain at least {MINIMUM_PIN_CHARS} characters and cannot use the legacy default"
+            "new PIN must contain at least {MINIMUM_PIN_CHARS} characters"
         )));
     }
     Ok(())
@@ -614,20 +585,27 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn fresh_install_stays_locked_without_explicit_owner_pin(pool: sqlx::PgPool) {
+    async fn fresh_install_seeds_default_pin_and_authenticates(pool: sqlx::PgPool) {
         initialize_auth_state(&pool, None).await.unwrap();
-        assert!(!auth_initialized(&pool).await.unwrap());
-        assert!(authenticate_pin(&pool, LEGACY_DEFAULT_PIN)
+        assert!(auth_initialized(&pool).await.unwrap());
+        assert!(authenticate_pin(&pool, DEFAULT_PIN)
             .await
             .unwrap()
-            .is_none());
+            .is_some());
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM app_meta")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
-            0
+            1
         );
+    }
+
+    #[test]
+    fn four_character_pin_is_valid_for_owner_rotation() {
+        assert!(validate_new_pin("abcd").is_ok());
+        assert!(validate_new_pin(DEFAULT_PIN).is_ok());
+        assert!(validate_new_pin("abc").is_err());
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -776,36 +754,37 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn legacy_default_is_locked_and_sessions_are_revoked_until_remediated(
+    async fn previously_locked_default_is_reenabled_without_rewriting_credential(
         pool: sqlx::PgPool,
     ) {
-        let legacy_hash = hash_pin(LEGACY_DEFAULT_PIN).unwrap();
+        let default_hash = hash_pin(DEFAULT_PIN).unwrap();
         sqlx::query("INSERT INTO app_meta (id, pin_hash) VALUES (true, $1)")
-            .bind(legacy_hash)
+            .bind(&default_hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE app_meta SET bootstrap_required = true WHERE id = true")
             .execute(&pool)
             .await
             .unwrap();
         let old_session = create_session(&pool).await.unwrap();
 
         initialize_auth_state(&pool, None).await.unwrap();
-        assert!(!auth_initialized(&pool).await.unwrap());
-        assert!(!verify_session_token(&pool, &old_session.token)
+        assert!(auth_initialized(&pool).await.unwrap());
+        assert!(verify_session_token(&pool, &old_session.token)
             .await
             .unwrap());
-        assert!(authenticate_pin(&pool, LEGACY_DEFAULT_PIN)
-            .await
-            .unwrap()
-            .is_none());
-
-        let replacement = "replacement-owner-pin";
-        initialize_auth_state(&pool, Some(replacement))
-            .await
-            .unwrap();
-        assert!(auth_initialized(&pool).await.unwrap());
-        assert!(authenticate_pin(&pool, replacement)
+        assert!(authenticate_pin(&pool, DEFAULT_PIN)
             .await
             .unwrap()
             .is_some());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT pin_hash FROM app_meta WHERE id = true")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            default_hash
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

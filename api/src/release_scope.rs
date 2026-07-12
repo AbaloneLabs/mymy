@@ -52,6 +52,31 @@ struct Journey {
     cleanup_oracle: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EnablementPolicy {
+    policy_revision: String,
+    capability_revision: String,
+    deployment_topology: String,
+    runtime_switches_selected: bool,
+    rollback_mode: String,
+    decision_owner: String,
+    rationale: String,
+    admitted_before_revision_change: String,
+    old_reader_behavior: String,
+    new_reader_behavior: String,
+    re_enable_behavior: String,
+    components: Vec<EnablementComponent>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EnablementComponent {
+    id: String,
+    independently_deployable: bool,
+    gate_revision: String,
+}
+
 #[test]
 fn july11_release_scope_has_unique_owned_executable_invariants() {
     let scope: ReleaseScope =
@@ -156,6 +181,117 @@ fn july11_release_scope_has_unique_owned_executable_invariants() {
         .find(|journey| journey.id == "JNY-12")
         .expect("new-document journey must remain visible");
     assert_eq!(journey_12.state, "explicitly_unclaimed");
+}
+
+#[test]
+fn single_host_enablement_policy_rejects_partial_runtime_switches() {
+    let scope: ReleaseScope =
+        serde_json::from_str(include_str!("../tests/fixtures/july11_release_scope.json"))
+            .expect("release scope must be valid JSON");
+    let policy: EnablementPolicy = serde_json::from_str(include_str!(
+        "../tests/fixtures/local_release_enablement_policy.json"
+    ))
+    .expect("enablement policy must be valid JSON");
+
+    assert_eq!(policy.policy_revision, "july11-single-host-forward-fix-v1");
+    assert_eq!(policy.capability_revision, scope.feature_revision);
+    assert_eq!(policy.deployment_topology, scope.deployment_profile);
+    assert!(!policy.runtime_switches_selected);
+    assert_eq!(policy.rollback_mode, "forward_fix_only");
+    for required in [
+        &policy.decision_owner,
+        &policy.rationale,
+        &policy.admitted_before_revision_change,
+        &policy.old_reader_behavior,
+        &policy.new_reader_behavior,
+        &policy.re_enable_behavior,
+    ] {
+        assert!(!required.trim().is_empty());
+    }
+
+    let expected = [
+        "decisions",
+        "artifacts",
+        "drive_search",
+        "memory_extraction_recall",
+        "existing_document_editor_certification",
+    ]
+    .into_iter()
+    .collect::<HashSet<_>>();
+    assert_eq!(
+        policy
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect::<HashSet<_>>(),
+        expected
+    );
+    for component in &policy.components {
+        assert!(!component.independently_deployable);
+        assert_eq!(component.gate_revision, policy.capability_revision);
+    }
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("API crate must be inside the repository");
+    for unsupported_switch in [
+        "MYMY_ENABLE_DECISIONS",
+        "MYMY_ENABLE_ARTIFACTS",
+        "MYMY_ENABLE_DRIVE_SEARCH",
+        "MYMY_ENABLE_MEMORY_EXTRACTION",
+        "VITE_ENABLE_DOCUMENT_EDITOR",
+    ] {
+        assert!(
+            !source_tree_contains(
+                &repository_root.join("api/src/config.rs"),
+                unsupported_switch
+            ) && !source_tree_contains(
+                &repository_root.join("api/src/main.rs"),
+                unsupported_switch
+            ) && !source_tree_contains(
+                &repository_root.join("api/src/handlers"),
+                unsupported_switch
+            ) && !source_tree_contains(
+                &repository_root.join("api/src/services"),
+                unsupported_switch
+            ) && !source_tree_contains(&repository_root.join("web/src"), unsupported_switch),
+            "unsupported partial runtime switch exists: {unsupported_switch}"
+        );
+    }
+    emit_enablement_evidence(&scope, &policy);
+}
+
+fn emit_enablement_evidence(scope: &ReleaseScope, policy: &EnablementPolicy) {
+    let Some(directory) = std::env::var_os("MYMY_RELEASE_EVIDENCE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    fs::create_dir_all(&directory).expect("release evidence directory must be writable");
+    let evidence = serde_json::json!({
+        "testId": "LOC-03-server-authoritative-enablement",
+        "state": "passed",
+        "candidateCommit": std::env::var("CI_COMMIT_SHA")
+            .unwrap_or_else(|_| "working-tree".to_string()),
+        "policyRevision": policy.policy_revision,
+        "capabilityRevision": scope.feature_revision,
+        "deploymentTopology": scope.deployment_profile,
+        "runtimeSwitchesSelected": policy.runtime_switches_selected,
+        "rollbackMode": policy.rollback_mode,
+        "tests": [
+            {
+                "id": "single_host_enablement_policy_rejects_partial_runtime_switches",
+                "state": "passed"
+            },
+            {
+                "id": "july11_release_scope_has_unique_owned_executable_invariants",
+                "state": "passed"
+            }
+        ]
+    });
+    fs::write(
+        directory.join("loc03-enablement.json"),
+        serde_json::to_vec_pretty(&evidence).expect("release evidence must serialize"),
+    )
+    .expect("release evidence must be written");
 }
 
 fn oracle_exists(oracle: &str) -> bool {

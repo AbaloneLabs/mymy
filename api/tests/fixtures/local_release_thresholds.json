@@ -1,0 +1,17 @@
+{
+  "fixtureRevision": "july11-overlap-v1",
+  "iterations": 24,
+  "tailObservationMs": 2000,
+  "maximumP95Ms": {
+    "chatAdmission": 300,
+    "editorSave": 1200,
+    "artifactCommit": 800,
+    "quarantineAdmission": 800,
+    "driveIndexPass": 1000,
+    "memoryExtractionPass": 1000
+  },
+  "maximumQueueAgeMs": 5000,
+  "maximumRssGrowthBytes": 100663296,
+  "maximumFdGrowth": 12,
+  "maximumDatabaseConnections": 24
+}

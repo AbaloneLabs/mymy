@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "mymy backend API — Rust (axum)"
 
+[features]
+default = []
+# Compiles authenticated release-certification admission routes. Production
+# images never enable this feature, so the route cannot be activated by an
+# environment variable alone.
+release-harness = []
+
 [[bin]]
 name = "mymy-api"
 path = "src/main.rs"

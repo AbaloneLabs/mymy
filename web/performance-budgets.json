@@ -1,0 +1,7 @@
+{
+  "revision": "frontend-delivery-v1",
+  "maximumEntryCompressedBytes": 150000,
+  "maximumRouteCompressedBytes": 70000,
+  "maximumInitialParseExecuteMs": 1500,
+  "requiredLazyRecoveryRoute": "src/routes/DecisionsPage.tsx"
+}

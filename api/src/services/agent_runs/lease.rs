@@ -202,7 +202,7 @@ pub(super) async fn claim_next_run(
            WHERE r.status = 'queued' AND r.trigger_type IN ('chat', 'cron', 'wake')
              AND (
                (r.lease_epoch = 0 AND i.status = 'queued')
-               OR (r.lease_epoch > 0 AND i.status IN ('queued', 'applied'))
+               OR (r.lease_epoch > 0 AND i.status IN ('queued', 'claimed', 'applied'))
              )
              AND r.cancel_requested_at IS NULL
              AND NOT EXISTS (
@@ -385,6 +385,20 @@ pub(super) async fn finish_run(
     .bind(status)
     .bind(error_code)
     .bind(usage)
+    .execute(&mut *tx)
+    .await?;
+    // A suspended run keeps its input claimed while it waits for a Decision;
+    // the final lease, rather than the first lease, owns input completion.
+    // This makes resumed work claimable without presenting terminal inputs as
+    // permanently in flight.
+    sqlx::query(
+        r#"UPDATE session_run_inputs
+           SET status = CASE WHEN $2 = 'cancelled' THEN 'cancelled' ELSE 'applied' END,
+               applied_at = CASE WHEN $2 = 'cancelled' THEN applied_at ELSE COALESCE(applied_at, now()) END
+           WHERE target_run_id = $1 AND status = 'claimed'"#,
+    )
+    .bind(run.id)
+    .bind(status)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
