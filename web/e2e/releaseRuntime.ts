@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 interface ReleaseRuntime {
   apiBase: string;
@@ -15,10 +16,15 @@ export function releaseApiBase() {
 
   try {
     const runtime = JSON.parse(
-      readFileSync(new URL("../.e2e-runtime.json", import.meta.url), "utf8"),
+      readFileSync(join(process.cwd(), ".e2e-runtime.json"), "utf8"),
     ) as ReleaseRuntime;
     if (runtime.apiBase && !runtime.apiBase.startsWith("/")) return runtime.apiBase;
-  } catch {
+  } catch (error) {
+    if (process.env.CI) {
+      throw new Error("release runtime API configuration is unavailable", {
+        cause: error,
+      });
+    }
     // Ordinary local runs do not need a runtime file when their environment
     // already contains an absolute API URL.
   }
