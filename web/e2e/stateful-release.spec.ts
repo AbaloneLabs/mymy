@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 const pin = process.env.MYMY_E2E_PIN;
 const harnessToken = process.env.MYMY_RELEASE_HARNESS_TOKEN;
-const apiBase = process.env.MYMY_E2E_API_URL ?? "/api";
+const apiBase = releaseApiBase();
 const webBase = process.env.MYMY_E2E_BASE_URL ?? "http://127.0.0.1:33696";
 const seed = releaseSeed();
 
@@ -544,4 +544,15 @@ function apiHeaders(page: Page) {
 
 function apiUrl(path: string) {
   return `${apiBase.replace(/\/$/, "")}${path}`;
+}
+
+function releaseApiBase() {
+  const configured = process.env.MYMY_E2E_API_URL;
+  if (configured && !configured.startsWith("/")) return configured;
+
+  // The local release lane allocates and exports API_PORT before Playwright
+  // starts. It remains the authoritative fallback when a worker sees the
+  // browser-relative API path instead of the absolute harness URL.
+  const port = process.env.API_PORT;
+  return port ? `http://127.0.0.1:${port}/api` : (configured ?? "/api");
 }

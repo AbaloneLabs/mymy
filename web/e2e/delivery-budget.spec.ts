@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 const pin = process.env.MYMY_E2E_PIN;
-const apiBase = process.env.MYMY_E2E_API_URL ?? "/api";
+const apiBase = releaseApiBase();
 const webBase = process.env.MYMY_E2E_BASE_URL ?? "http://127.0.0.1:33696";
 
 interface DeliveryBudget {
@@ -90,4 +90,15 @@ test.describe("frontend delivery certification", () => {
 
 function apiUrl(path: string) {
   return `${apiBase.replace(/\/$/, "")}${path}`;
+}
+
+function releaseApiBase() {
+  const configured = process.env.MYMY_E2E_API_URL;
+  if (configured && !configured.startsWith("/")) return configured;
+
+  // GitLab exports the dynamically allocated port independently of the URL.
+  // Reconstructing the loopback address keeps APIRequestContext deterministic
+  // if a worker inherits the browser-facing relative API fallback.
+  const port = process.env.API_PORT;
+  return port ? `http://127.0.0.1:${port}/api` : (configured ?? "/api");
 }

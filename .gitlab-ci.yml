@@ -435,12 +435,8 @@ test:web:browser:
         fi
         sleep 1
       done
-      MYMY_E2E_PIN="${MYMY_E2E_PIN}" \
-        MYMY_E2E_API_URL="${MYMY_E2E_API_URL}" \
-        MYMY_E2E_BASE_URL="${MYMY_E2E_BASE_URL}" \
-        MYMY_RELEASE_HARNESS_TOKEN="${MYMY_RELEASE_HARNESS_TOKEN}" \
-        MYMY_RELEASE_EVIDENCE_DIR="${MYMY_RELEASE_EVIDENCE_DIR}" \
-        bun run test:e2e
+      bun -e 'const value = process.env.MYMY_E2E_API_URL; if (!value || !value.startsWith("http://127.0.0.1:")) throw new Error("absolute CI API URL is unavailable")'
+      bun run test:e2e
 
       cd "${CI_PROJECT_DIR}/api"
       MYMY_RELEASE_SEED="overlap-${CI_COMMIT_SHA:0:12}" \
