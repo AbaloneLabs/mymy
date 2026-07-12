@@ -105,7 +105,7 @@ variables:
   - test ! -f .e2e-web.pid || kill "$(cat .e2e-web.pid)" >/dev/null 2>&1 || true
   - test ! -f .e2e-api.pid || kill "$(cat .e2e-api.pid)" >/dev/null 2>&1 || true
   - docker rm -f "mymy-ci-db-${CI_JOB_ID}" "mymy-ci-runtime-db-${CI_JOB_ID}" >/dev/null 2>&1 || true
-  - rm -rf .e2e-data .e2e-api.pid .e2e-web.pid
+  - rm -rf .e2e-data .e2e-api.pid .e2e-web.pid web/.e2e-runtime.json
 
 # ============================================================
 # CHECK
@@ -423,6 +423,8 @@ test:web:browser:
       bunx vite preview --host 127.0.0.1 --port "${WEB_PORT}" >"${CI_PROJECT_DIR}/e2e-web.log" 2>&1 &
       echo $! >"${CI_PROJECT_DIR}/.e2e-web.pid"
 
+      bun -e 'const value = process.env.MYMY_E2E_API_URL; if (!value || !value.startsWith("http://127.0.0.1:")) throw new Error("absolute CI API URL is unavailable"); await Bun.write(".e2e-runtime.json", `${JSON.stringify({ apiBase: value })}\n`)'
+
       for i in $(seq 1 90); do
         if curl -fsS "${MYMY_E2E_API_URL}/health" >/dev/null \
           && curl -fsS "${MYMY_E2E_BASE_URL}/" >/dev/null; then
@@ -435,7 +437,6 @@ test:web:browser:
         fi
         sleep 1
       done
-      bun -e 'const value = process.env.MYMY_E2E_API_URL; if (!value || !value.startsWith("http://127.0.0.1:")) throw new Error("absolute CI API URL is unavailable")'
       bun run test:e2e
 
       cd "${CI_PROJECT_DIR}/api"
