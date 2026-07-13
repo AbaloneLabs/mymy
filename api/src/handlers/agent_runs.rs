@@ -35,6 +35,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/agent-runs/{id}/provenance", get(get_provenance))
         .route("/api/agent-runs/{id}/events", get(stream_events))
         .route("/api/agent-runs/{id}/cancel", post(cancel_run))
+        .route("/api/agent-runs/{id}/retry", post(retry_run))
         .route("/api/chat/sessions/{id}/runtime", get(get_session_runtime))
         .route(
             "/api/session-run-inputs/{id}",
@@ -105,6 +106,15 @@ async fn cancel_run(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<CancelAgentRunResponse>> {
     Ok(Json(agent_runs::request_cancel(&state, id, "user").await?))
+}
+
+async fn retry_run(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<AgentRunResponse>> {
+    Ok(Json(AgentRunResponse {
+        run: agent_runs::request_provider_retry_now(&state, id).await?,
+    }))
 }
 
 async fn update_run_input(

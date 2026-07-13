@@ -28,7 +28,7 @@ use crate::agent::clarify::{ClarifyGate, ClarifyRequest};
 use crate::agent::context::ContextManager;
 use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::types::{FinishReason, StreamDelta, Usage};
-use crate::agent::providers::{LlmProvider, Message};
+use crate::agent::providers::{LlmProvider, Message, ProviderError};
 use crate::agent::tools::{
     tool_error, tool_success_result, ToolCapability, ToolEffect, ToolRegistry,
 };
@@ -38,6 +38,23 @@ use self::dispatch::{tool_is_allowed, ToolDispatch, ToolDispatchPolicy};
 use self::turn_state::{TurnAccumulator, TurnEffect};
 
 const CLARIFY_TIMEOUT_SECS: u64 = 1_800;
+const PROVIDER_FAST_RETRY_DELAYS_SECS: [u64; 6] = [1, 2, 4, 8, 16, 30];
+
+fn provider_fast_retry(error: &ProviderError, retry_index: usize) -> Option<(u64, &'static str)> {
+    let default_delay = *PROVIDER_FAST_RETRY_DELAYS_SECS.get(retry_index)?;
+    match error {
+        ProviderError::RateLimited { retry_after_secs } => Some((
+            retry_after_secs.unwrap_or(default_delay).min(30),
+            "rate_limited",
+        )),
+        ProviderError::Network(_) => Some((default_delay, "network")),
+        ProviderError::HttpStatus { .. } if error.is_retryable() => {
+            Some((default_delay, "http_status"))
+        }
+        ProviderError::StreamEnded => Some((default_delay, "stream_ended")),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -70,6 +87,7 @@ pub enum AgentEvent {
     RunPaused {
         decision_id: String,
     },
+    ProviderUnavailable(String),
     Done {
         total_api_calls: u32,
         total_tool_calls: u32,
@@ -212,64 +230,110 @@ impl AgentLoop {
 
                 {
                     let request_messages = messages.clone();
-                    let model_span = tracing::info_span!(
-                        "model_turn",
-                        run_id = ?self.execution_context.as_ref().map(|context| context.run_id),
-                        iteration,
-                    );
-                    let stream_request = self
-                        .stream_with_retry(system_prompt, &request_messages, &tools)
-                        .instrument(model_span);
-                    let stream_result = if let Some(token) = &cancellation {
-                        tokio::select! {
-                            _ = token.cancelled() => {
-                                yield AgentEvent::Done { total_api_calls: iteration, total_tool_calls };
-                                return;
-                            }
-                            result = stream_request => result,
-                        }
-                    } else {
-                        stream_request.await
-                    };
-                    let mut provider_stream = match stream_result {
-                        Ok(stream) => stream,
-                        Err(err) => {
-                            yield AgentEvent::Error(format!("provider stream failed: {err}"));
-                            yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
-                            return;
-                        }
-                    };
-                    loop {
-                        let next_delta = if let Some(token) = &cancellation {
+                    let mut provider_retry_index = 0;
+                    'provider_request: loop {
+                        let model_span = tracing::info_span!(
+                            "model_turn",
+                            run_id = ?self.execution_context.as_ref().map(|context| context.run_id),
+                            iteration,
+                        );
+                        let stream_request = self
+                            .stream_with_retry(
+                                system_prompt,
+                                &request_messages,
+                                &tools,
+                                &mut provider_retry_index,
+                            )
+                            .instrument(model_span);
+                        let stream_result = if let Some(token) = &cancellation {
                             tokio::select! {
                                 _ = token.cancelled() => {
-                                    yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
+                                    yield AgentEvent::Done { total_api_calls: iteration, total_tool_calls };
                                     return;
                                 }
-                                next = provider_stream.next() => next,
+                                result = stream_request => result,
                             }
                         } else {
-                            provider_stream.next().await
+                            stream_request.await
                         };
-                        let Some(delta_result) = next_delta else {
-                            break;
-                        };
-                        let delta = match delta_result {
-                            Ok(delta) => delta,
+                        let mut provider_stream = match stream_result {
+                            Ok(stream) => stream,
                             Err(err) => {
-                                yield AgentEvent::Error(format!("provider stream error: {err}"));
+                                if err.is_retryable() {
+                                    yield AgentEvent::ProviderUnavailable(format!("provider stream failed: {err}"));
+                                } else {
+                                    yield AgentEvent::Error(format!("provider stream failed: {err}"));
+                                }
                                 yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
                                 return;
                             }
                         };
+                        let mut received_delta = false;
+                        loop {
+                            let next_delta = if let Some(token) = &cancellation {
+                                tokio::select! {
+                                    _ = token.cancelled() => {
+                                        yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
+                                        return;
+                                    }
+                                    next = provider_stream.next() => next,
+                                }
+                            } else {
+                                provider_stream.next().await
+                            };
+                            let Some(delta_result) = next_delta else {
+                                break;
+                            };
+                            let delta = match delta_result {
+                                Ok(delta) => {
+                                    received_delta = true;
+                                    delta
+                                }
+                                Err(err) => {
+                                    if !received_delta {
+                                        if let Some((delay, cause)) =
+                                            provider_fast_retry(&err, provider_retry_index)
+                                        {
+                                            provider_retry_index += 1;
+                                            metrics::counter!(
+                                                "mymy_agent_provider_retries_total",
+                                                "cause" => cause,
+                                            )
+                                            .increment(1);
+                                            let wait = tokio::time::sleep(Duration::from_secs(delay));
+                                            if let Some(token) = &cancellation {
+                                                tokio::select! {
+                                                    _ = token.cancelled() => {
+                                                        yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
+                                                        return;
+                                                    }
+                                                    _ = wait => {}
+                                                }
+                                            } else {
+                                                wait.await;
+                                            }
+                                            continue 'provider_request;
+                                        }
+                                    }
+                                    if !received_delta && err.is_retryable() {
+                                        yield AgentEvent::ProviderUnavailable(format!("provider stream error: {err}"));
+                                    } else {
+                                        yield AgentEvent::Error(format!("provider stream error: {err}"));
+                                    }
+                                    yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
+                                    return;
+                                }
+                            };
 
-                        match turn.apply(delta) {
-                            TurnEffect::Text(text) => yield AgentEvent::TextDelta(text),
-                            TurnEffect::Reasoning(text) => {
-                                yield AgentEvent::ReasoningDelta(text)
+                            match turn.apply(delta) {
+                                TurnEffect::Text(text) => yield AgentEvent::TextDelta(text),
+                                TurnEffect::Reasoning(text) => {
+                                    yield AgentEvent::ReasoningDelta(text)
+                                }
+                                TurnEffect::None => {}
                             }
-                            TurnEffect::None => {}
                         }
+                        break 'provider_request;
                     }
                 }
 
@@ -932,29 +996,23 @@ impl AgentLoop {
         system_prompt: &'a str,
         messages: &'a [Message],
         tools: &'a [crate::agent::providers::ToolSchema],
+        retry_index: &mut usize,
     ) -> Result<
         BoxStream<'a, Result<StreamDelta, crate::agent::providers::ProviderError>>,
         crate::agent::providers::ProviderError,
     > {
-        let mut attempt = 0;
         loop {
-            attempt += 1;
             match self.provider.stream(system_prompt, messages, tools).await {
                 Ok(stream) => return Ok(stream),
-                Err(crate::agent::providers::ProviderError::RateLimited { retry_after_secs })
-                    if attempt <= 3 =>
-                {
-                    let delay = retry_after_secs.unwrap_or(1_u64 << (attempt - 1)).min(8);
-                    metrics::counter!("mymy_agent_provider_retries_total", "cause" => "rate_limited")
+                Err(err) => {
+                    let Some((delay, cause)) = provider_fast_retry(&err, *retry_index) else {
+                        return Err(err);
+                    };
+                    *retry_index += 1;
+                    metrics::counter!("mymy_agent_provider_retries_total", "cause" => cause)
                         .increment(1);
                     tokio::time::sleep(Duration::from_secs(delay)).await;
                 }
-                Err(crate::agent::providers::ProviderError::Network(_)) if attempt <= 2 => {
-                    metrics::counter!("mymy_agent_provider_retries_total", "cause" => "network")
-                        .increment(1);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-                Err(err) => return Err(err),
             }
         }
     }
@@ -1021,6 +1079,11 @@ mod tests {
     use super::*;
     use crate::agent::providers::types::{FinishReason, ModelInfo};
     use crate::agent::providers::{FunctionSchema, ProviderError, ToolSchema};
+
+    #[test]
+    fn transient_provider_retries_reach_thirty_seconds_before_durable_deferral() {
+        assert_eq!(PROVIDER_FAST_RETRY_DELAYS_SECS, [1, 2, 4, 8, 16, 30]);
+    }
     use crate::agent::tools::{tool_result, ToolEffect, ToolEntry, ToolError, ToolHandler};
 
     struct MockProvider {

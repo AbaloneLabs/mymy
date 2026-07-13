@@ -28,9 +28,9 @@ use crate::state::AppState;
 
 use super::{
     append_event_for_lease, apply_message_projection, apply_one_pending_projection,
-    cancel_one_queued_run, cancel_requested, claim_next_run, finish_run, heartbeat_run,
-    load_trigger_input, mark_input_applied, pause_run_for_decision, queue_message_projection,
-    reconcile_one_stale_run, update_run_snapshot, AgentRunRow,
+    cancel_one_queued_run, cancel_requested, claim_next_run, defer_run_for_provider_retry,
+    finish_run, heartbeat_run, load_trigger_input, mark_input_applied, pause_run_for_decision,
+    queue_message_projection, reconcile_one_stale_run, update_run_snapshot, AgentRunRow,
 };
 
 const TEXT_EVENT_MAX_CHARS: usize = 2_048;
@@ -107,7 +107,7 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
         &run,
         "run_started",
         started_payload,
-        Some("run-started"),
+        Some(&format!("run-started:{}", run.lease_epoch)),
     )
     .await
     {
@@ -170,6 +170,25 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
 
     match outcome {
         Ok(outcome) => {
+            if let Some(message) = outcome.provider_retry_error.as_deref() {
+                match defer_run_for_provider_retry(state, &run, message).await {
+                    Ok(()) => {
+                        metrics::counter!(
+                            "mymy_agent_provider_durable_retries_total",
+                            "trigger" => run.trigger_type.clone(),
+                        )
+                        .increment(1);
+                        tracing::warn!("agent run parked for durable provider retry");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "failed to schedule durable provider retry");
+                    }
+                }
+                state
+                    .unregister_run_cancellation(run.id, run.lease_epoch)
+                    .await;
+                return;
+            }
             if let Some(decision_id) = outcome.paused_decision_id.as_deref() {
                 if let Err(err) = pause_run_for_decision(state, &run, decision_id).await {
                     tracing::error!(error = %err, "failed to pause run for decision");
@@ -431,6 +450,7 @@ async fn execute_chat_run(
     let mut total_tool_calls = 0;
     let mut total_usage = Usage::default();
     let mut terminal_error = None;
+    let mut provider_retry_error = None;
     let mut cancelled = false;
     let mut paused_decision_id = None;
     let defer_text_delivery = turn.buffered_output_required;
@@ -626,6 +646,10 @@ async fn execute_chat_run(
                         paused_decision_id = Some(decision_id);
                         break;
                     }
+                    AgentEvent::ProviderUnavailable(message) => {
+                        flush_text_buffer(state, run, &mut text_buffer).await?;
+                        provider_retry_error = Some(redact_sensitive_text(&message));
+                    }
                     AgentEvent::Error(message) => {
                         flush_text_buffer(state, run, &mut text_buffer).await?;
                         terminal_error = Some(
@@ -708,6 +732,7 @@ async fn execute_chat_run(
                     error_code: terminal_error,
                     cancelled,
                     paused_decision_id: None,
+                    provider_retry_error: None,
                 });
             };
             let aggregated = redact_sensitive_text(&result.aggregated);
@@ -757,6 +782,18 @@ async fn execute_chat_run(
         }
     }
 
+    if provider_retry_error.is_some() {
+        return Ok(RunOutcome {
+            total_api_calls,
+            total_tool_calls,
+            usage: total_usage,
+            error_code: None,
+            cancelled: false,
+            paused_decision_id: None,
+            provider_retry_error,
+        });
+    }
+
     if cancelled || paused_decision_id.is_some() {
         return Ok(RunOutcome {
             total_api_calls,
@@ -765,6 +802,7 @@ async fn execute_chat_run(
             error_code: None,
             cancelled,
             paused_decision_id,
+            provider_retry_error: None,
         });
     }
 
@@ -800,6 +838,7 @@ async fn execute_chat_run(
                 }),
                 cancelled: true,
                 paused_decision_id: None,
+                provider_retry_error: None,
             });
         }
         if !deferred_text.is_empty() {
@@ -840,6 +879,7 @@ async fn execute_chat_run(
         error_code: terminal_error,
         cancelled,
         paused_decision_id,
+        provider_retry_error: None,
     })
 }
 
@@ -1029,6 +1069,7 @@ struct RunOutcome {
     error_code: Option<String>,
     cancelled: bool,
     paused_decision_id: Option<String>,
+    provider_retry_error: Option<String>,
 }
 
 fn error_code(error: &AppError) -> &'static str {

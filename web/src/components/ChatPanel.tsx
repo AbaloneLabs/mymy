@@ -6,6 +6,7 @@ import {
   cancelQueuedChatInput,
   enqueueChatMessage,
   observeAgentRun,
+  retryAgentRun,
   submitChatClarifyAnswer,
   updateQueuedChatInput,
   useChatMessages,
@@ -31,7 +32,7 @@ import {
   buildToolCallById,
   chatStreamReducer,
   initialChatStreamState,
-  makeStreamingAssistantMessage,
+  type StreamItem,
 } from "@/components/chat/shared/stream";
 import { createQueuedTurnId } from "@/components/chat/queue/useQueuedChatTurns";
 import { chatQueryKeys } from "@/features/chat/queryKeys";
@@ -70,8 +71,7 @@ export function ChatPanel({
     initialChatStreamState,
   );
   const streamUserMessage = chatStream.userMessage;
-  const streamAssistantText = chatStream.assistantText;
-  const toolEvents = chatStream.toolEvents;
+  const timeline = chatStream.timeline;
   const pendingClarify = chatStream.pendingClarify;
   const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [clarifyError, setClarifyError] = useState(false);
@@ -80,6 +80,7 @@ export function ChatPanel({
   const [observedRunStatus, setObservedRunStatus] = useState<AgentRunStatus | null>(null);
   const [cancelRequested, setCancelRequested] = useState(false);
   const [outcomeUnknown, setOutcomeUnknown] = useState(false);
+  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
   const [editingQueuedTurnId, setEditingQueuedTurnId] = useState<string | null>(null);
   const [queuedEditText, setQueuedEditText] = useState("");
   const [useMoa, setUseMoa] = useState(false);
@@ -132,11 +133,24 @@ export function ChatPanel({
         slashState.command,
       )
     : null;
-  const activeStreaming = isStreaming && streamSessionId === sessionId;
-  const activeStreamAssistantText = activeStreaming ? streamAssistantText : "";
+  const observedRuntimeRun =
+    runtimeData?.activeRun?.id === observedRunId ? runtimeData.activeRun : null;
+  const providerRetryScheduled =
+    observedRuntimeRun?.errorCode === "provider_retry_scheduled" &&
+    Boolean(observedRuntimeRun.nextAttemptAt);
+  const displayedRunStatus = observedRuntimeRun?.status ?? observedRunStatus;
+  const activeStreaming =
+    isStreaming && streamSessionId === sessionId && !providerRetryScheduled;
   const activeStreamError = streamError && streamSessionId === sessionId;
   const activeStreamErrorMessage = activeStreamError ? streamErrorMessage : "";
-  const activeToolEvents = toolEvents.filter((event) => event.sessionId === sessionId);
+  // Only surface timeline items that belong to the currently visible session.
+  const activeTimeline: StreamItem[] = activeStreaming
+    ? timeline.filter(
+        (item) =>
+          item.type === "text" ||
+          (item.type === "tool" && item.event.sessionId === sessionId),
+      )
+    : [];
   const activePendingClarify =
     pendingClarify?.sessionId === sessionId ? pendingClarify : null;
 
@@ -148,14 +162,8 @@ export function ChatPanel({
       !messageIds.has(streamUserMessage.id)
         ? streamUserMessage
         : null;
-    return [
-      ...messages,
-      ...(scopedStreamUserMessage ? [scopedStreamUserMessage] : []),
-      ...(activeStreamAssistantText
-        ? [makeStreamingAssistantMessage(sessionId ?? "", activeStreamAssistantText)]
-        : []),
-    ];
-  }, [activeStreamAssistantText, messages, sessionId, streamUserMessage]);
+    return [...messages, ...(scopedStreamUserMessage ? [scopedStreamUserMessage] : [])];
+  }, [messages, sessionId, streamUserMessage]);
   const toolCallById = useMemo(
     () => buildToolCallById(visibleMessages),
     [visibleMessages],
@@ -253,6 +261,10 @@ export function ChatPanel({
           if (event.type === "outcome_unknown") {
             setOutcomeUnknown(true);
           }
+          if (event.type === "error") {
+            setStreamError(true);
+            setStreamErrorMessage(event.message);
+          }
           dispatchChatStream({ type: "event", event, sessionId: runSessionId });
         },
         controller.signal,
@@ -289,7 +301,7 @@ export function ChatPanel({
     }
   }, [
     visibleMessages.length,
-    activeStreamAssistantText,
+    activeTimeline.length,
     activeStreaming,
     activeQueuedTurns.length,
   ]);
@@ -365,6 +377,23 @@ export function ChatPanel({
     await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
   }
 
+  async function retryObservedRun() {
+    if (!observedRunId) return;
+    setRetryingRunId(observedRunId);
+    setStreamError(false);
+    setStreamErrorMessage("");
+    try {
+      const response = await retryAgentRun(observedRunId);
+      setObservedRunStatus(response.run.status);
+      await qc.invalidateQueries({ queryKey: chatQueryKeys.runtime(sessionId) });
+    } catch (error) {
+      setStreamError(true);
+      setStreamErrorMessage(error instanceof Error ? error.message : "");
+    } finally {
+      setRetryingRunId(null);
+    }
+  }
+
   const submitClarify = async (answer: string) => {
     if (!pendingClarify) return;
     const trimmed = answer.trim();
@@ -431,16 +460,6 @@ export function ChatPanel({
         onScroll={updateScrollStickiness}
         className="flex-1 space-y-4 overflow-y-auto px-6 py-4"
       >
-        {observedRunId && observedRunStatus && streamSessionId === sessionId && (
-          <RunStatusCard
-            runId={observedRunId}
-            status={observedRunStatus}
-            cancelling={cancelRequested}
-            outcomeUnknown={outcomeUnknown}
-            checklist={checklistData?.items ?? []}
-            onStop={() => void stopObservedRun()}
-          />
-        )}
         <ChatTranscript
           isLoading={isLoading}
           isError={isError}
@@ -449,10 +468,9 @@ export function ChatPanel({
           visibleMessages={visibleMessages}
           toolCallById={toolCallById}
           activeStreaming={activeStreaming}
-          activeStreamAssistantText={activeStreamAssistantText}
+          activeTimeline={activeTimeline}
           activeStreamError={activeStreamError}
           activeStreamErrorMessage={activeStreamErrorMessage}
-          activeToolEvents={activeToolEvents}
           activeQueuedTurns={activeQueuedTurns}
           editingQueuedTurnId={editingQueuedTurnId}
           queuedEditText={queuedEditText}
@@ -464,6 +482,22 @@ export function ChatPanel({
           onCancelQueuedTurnEdit={cancelQueuedTurnEdit}
           onCancelQueuedTurn={(turnId) => void cancelQueuedTurn(turnId)}
         />
+        {observedRunId && displayedRunStatus && streamSessionId === sessionId && (
+          <RunStatusCard
+            runId={observedRunId}
+            objective={observedRuntimeRun?.objective}
+            status={displayedRunStatus}
+            cancelling={cancelRequested}
+            outcomeUnknown={outcomeUnknown}
+            retryAt={observedRuntimeRun?.nextAttemptAt}
+            retryCount={observedRuntimeRun?.providerRetryCount}
+            retrying={retryingRunId === observedRunId}
+            waitingForFirstOutput={activeStreaming && activeTimeline.length === 0}
+            checklist={checklistData?.items ?? []}
+            onStop={() => void stopObservedRun()}
+            onRetry={() => void retryObservedRun()}
+          />
+        )}
       </div>
 
       <ChatComposer

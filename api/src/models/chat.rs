@@ -142,6 +142,15 @@ pub enum ChatSseEvent {
         usage: Usage,
     },
     ContextCompressing,
+    ProviderRetryScheduled {
+        run_id: String,
+        retry_at: String,
+        retry_count: i32,
+        message: String,
+    },
+    ProviderRetryRequested {
+        run_id: String,
+    },
     Done {
         assistant_message: Option<Box<ChatMessage>>,
         session: Box<ChatSession>,

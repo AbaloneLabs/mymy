@@ -141,7 +141,7 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
-    /// True if this error is retryable (rate limit or transient network).
+    /// True if replaying a request that produced no output is safe.
     ///
     /// Used by the agent loop (Phase 2) to decide whether to back off
     /// and retry the request.
@@ -149,7 +149,13 @@ impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            ProviderError::RateLimited { .. } | ProviderError::Network(_)
+            ProviderError::RateLimited { .. }
+                | ProviderError::Network(_)
+                | ProviderError::StreamEnded
+                | ProviderError::HttpStatus {
+                    status: 408 | 425 | 500 | 502 | 503 | 504,
+                    ..
+                }
         )
     }
 }
@@ -341,7 +347,11 @@ pub trait LlmProvider: Send + Sync {
 /// pick the concrete implementation.
 pub fn create_provider(config: &ProviderConfig) -> Box<dyn LlmProvider> {
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+        // A total request timeout would also cap a healthy response stream.
+        // Large local prompts can spend minutes in prefill or generation, so
+        // only connection establishment is bounded here. Run budgets and the
+        // cooperative cancellation token remain the owners of execution time.
+        .connect_timeout(Duration::from_secs(15))
         .build()
         .expect("reqwest client should build");
 

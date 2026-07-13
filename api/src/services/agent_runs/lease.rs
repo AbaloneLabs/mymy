@@ -16,6 +16,8 @@ use super::event_payload::sanitize_event_payload;
 use super::repository::{run_columns, run_select};
 use super::{append_event, insert_event_in_tx, AgentRunRow, RUN_LEASE_SECONDS};
 
+const DURABLE_PROVIDER_RETRY_MINUTES: i32 = 30;
+
 pub(super) async fn reconcile_one_stale_run(state: &AppState) -> AppResult<bool> {
     let mut tx = state.db.begin().await?;
     let stale = sqlx::query_as::<_, AgentRunRow>(&format!(
@@ -200,6 +202,7 @@ pub(super) async fn claim_next_run(
            FROM agent_runs r
            INNER JOIN session_run_inputs i ON i.target_run_id = r.id
            WHERE r.status = 'queued' AND r.trigger_type IN ('chat', 'cron', 'wake')
+             AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= now())
              AND (
                (r.lease_epoch = 0 AND i.status = 'queued')
                OR (r.lease_epoch > 0 AND i.status IN ('queued', 'claimed', 'applied'))
@@ -226,7 +229,8 @@ pub(super) async fn claim_next_run(
            SET status = 'running', lease_owner = $2,
                lease_epoch = lease_epoch + 1,
                lease_expires_at = now() + make_interval(secs => $3),
-               heartbeat_at = now(), started_at = COALESCE(started_at, now())
+               heartbeat_at = now(), started_at = COALESCE(started_at, now()),
+               next_attempt_at = NULL, error_code = NULL
            WHERE id = $1 AND status = 'queued'
            RETURNING {}"#,
         run_columns()
@@ -254,6 +258,71 @@ pub(super) async fn claim_next_run(
     }
     tx.commit().await?;
     Ok(Some(run))
+}
+
+/// Release a provider-blocked run without losing its stable request identity.
+///
+/// The worker must not occupy a lease or process slot during the 30-minute
+/// interval. Re-queuing the same run preserves event history, makes retries
+/// survive API restarts, and prevents a second user message from being created.
+pub(super) async fn defer_run_for_provider_retry(
+    state: &AppState,
+    run: &AgentRunRow,
+    message: &str,
+) -> AppResult<()> {
+    let mut tx = state.db.begin().await?;
+    let scheduled = sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, i32)>(
+        r#"UPDATE agent_runs
+           SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+               heartbeat_at = now(),
+               next_attempt_at = now() + make_interval(mins => $4),
+               provider_retry_count = provider_retry_count + 1,
+               error_code = 'provider_retry_scheduled'
+           WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3
+             AND status = 'running' AND cancel_requested_at IS NULL
+           RETURNING next_attempt_at, provider_retry_count"#,
+    )
+    .bind(run.id)
+    .bind(run.lease_owner.as_deref())
+    .bind(run.lease_epoch)
+    .bind(DURABLE_PROVIDER_RETRY_MINUTES)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        AppError::Conflict(format!(
+            "agent run {} lost its lease before provider retry scheduling",
+            run.id
+        ))
+    })?;
+    if run.trigger_type == "cron" {
+        sqlx::query(
+            "UPDATE cron_occurrences SET status = 'enqueued' WHERE run_id = $1 AND status = 'claimed'",
+        )
+        .bind(run.id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let event = ChatSseEvent::ProviderRetryScheduled {
+        run_id: run.id.to_string(),
+        retry_at: scheduled.0.to_rfc3339(),
+        retry_count: scheduled.1,
+        message: message.to_string(),
+    };
+    insert_event_in_tx(
+        &mut tx,
+        run.id,
+        "provider_retry_scheduled",
+        serde_json::to_value(event).map_err(|error| {
+            AppError::Internal(format!(
+                "provider retry event serialization failed: {error}"
+            ))
+        })?,
+        Some(&format!("provider-retry-scheduled:{}", scheduled.1)),
+    )
+    .await?;
+    tx.commit().await?;
+    state.agent_run_notify.notify_waiters();
+    Ok(())
 }
 
 pub(super) async fn update_run_snapshot(

@@ -1,4 +1,5 @@
-import { AlertTriangle, Loader2, Square } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCcw, Square } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { AgentRunStatus } from "@/features/chat/api";
 import type { RunChecklistItem } from "@/features/chat/api";
 
@@ -13,22 +14,43 @@ const STATUS_LABELS: Record<AgentRunStatus, string> = {
 
 export function RunStatusCard({
   runId,
+  objective,
   status,
   cancelling,
   outcomeUnknown = false,
+  retryAt,
+  retryCount = 0,
+  retrying = false,
+  waitingForFirstOutput = false,
   checklist,
   onStop,
+  onRetry,
 }: {
   runId: string;
+  objective?: string;
   status: AgentRunStatus;
   cancelling: boolean;
   outcomeUnknown?: boolean;
+  retryAt?: string;
+  retryCount?: number;
+  retrying?: boolean;
+  waitingForFirstOutput?: boolean;
   checklist: RunChecklistItem[];
   onStop: () => void;
+  onRetry?: () => void;
 }) {
+  const { t } = useTranslation();
   const terminal =
     status === "completed" || status === "failed" || status === "cancelled";
-  const label = cancelling && !terminal ? "취소 처리 중" : STATUS_LABELS[status];
+  const retryScheduled = !terminal && Boolean(retryAt);
+  const label = cancelling && !terminal
+    ? "취소 처리 중"
+    : retryScheduled
+      ? t("chat.providerRetryWaiting")
+      : waitingForFirstOutput
+        ? t("chat.providerWaitingForOutput")
+      : STATUS_LABELS[status];
+  const retryTime = retryAt ? new Date(retryAt).toLocaleString() : null;
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2">
@@ -44,21 +66,45 @@ export function RunStatusCard({
             <span>{label}</span>
           </div>
           <p className="mt-1 truncate text-[10px] text-[var(--text-faint)]">
-            Run {runId}
+            {objective || `Run ${runId}`}
           </p>
         </div>
         {!terminal && (
-          <button
-            type="button"
-            onClick={onStop}
-            disabled={cancelling}
-            className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-wait disabled:opacity-50"
-          >
-            <Square className="h-3 w-3" strokeWidth={1.75} />
-            중지
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {retryScheduled && onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={retrying || cancelling}
+                className="flex items-center gap-1 rounded-md bg-[var(--accent)] px-2 py-1 text-xs text-white disabled:cursor-wait disabled:opacity-50"
+              >
+                <RotateCcw
+                  className={`h-3 w-3 ${retrying ? "animate-spin" : ""}`}
+                  strokeWidth={1.75}
+                />
+                {retrying ? t("chat.retryingNow") : t("chat.retryNow")}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={cancelling}
+              className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] disabled:cursor-wait disabled:opacity-50"
+            >
+              <Square className="h-3 w-3" strokeWidth={1.75} />
+              중지
+            </button>
+          </div>
         )}
       </div>
+      {retryScheduled && retryTime && (
+        <p className="mt-2 text-xs text-[var(--text-muted)]">
+          {t("chat.providerRetryScheduled", {
+            time: retryTime,
+            count: retryCount,
+          })}
+        </p>
+      )}
       {outcomeUnknown && (
         <div className="mt-2 flex gap-2 text-xs text-[var(--status-warning)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />

@@ -40,7 +40,8 @@ use crate::models::chat::ChatSseEvent;
 use crate::state::AppState;
 
 pub use self::commands::{
-    cancel_queued_input, enqueue_chat_run, request_cancel, update_queued_input,
+    cancel_queued_input, enqueue_chat_run, request_cancel, request_provider_retry_now,
+    update_queued_input,
 };
 pub(super) use self::event::append_event;
 pub(crate) use self::event::append_event_for_context;
@@ -51,8 +52,8 @@ use self::projection::{event_to_view, input_to_view, run_to_view, truncate_chars
 use self::repository::{fetch_run_row, run_columns, run_select};
 
 use self::lease::{
-    cancel_requested, claim_next_run, finish_run, heartbeat_run, pause_run_for_decision,
-    reconcile_one_stale_run, update_run_snapshot,
+    cancel_requested, claim_next_run, defer_run_for_provider_retry, finish_run, heartbeat_run,
+    pause_run_for_decision, reconcile_one_stale_run, update_run_snapshot,
 };
 pub(crate) use self::tool_guard::tool_execution_guard;
 
@@ -184,6 +185,8 @@ pub(super) struct AgentRunRow {
     pub cancel_requested_at: Option<DateTime<Utc>>,
     pub started_at: Option<DateTime<Utc>>,
     pub heartbeat_at: Option<DateTime<Utc>>,
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub provider_retry_count: i32,
     pub completed_at: Option<DateTime<Utc>>,
     pub error_code: Option<String>,
     pub usage: Value,
@@ -324,7 +327,18 @@ pub async fn get_session_runtime(
         )));
     }
     let active_run = sqlx::query_as::<_, AgentRunRow>(&format!(
-        "{} WHERE session_id = $1 AND trigger_type = 'chat' AND status IN ('running', 'waiting_decision') ORDER BY created_at ASC LIMIT 1",
+        r#"{} WHERE session_id = $1 AND trigger_type = 'chat'
+             AND (
+               status IN ('running', 'waiting_decision')
+               OR (status = 'queued' AND next_attempt_at IS NOT NULL
+                   AND error_code = 'provider_retry_scheduled')
+             )
+           ORDER BY CASE status
+             WHEN 'running' THEN 0
+             WHEN 'waiting_decision' THEN 1
+             ELSE 2
+           END, created_at ASC
+           LIMIT 1"#,
         run_select()
     ))
     .bind(session_id)
@@ -1223,6 +1237,125 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(terminal_count, 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn provider_retry_schedule_survives_failure_and_clears_on_success(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        let session_id = seed_session(&pool).await;
+        let enqueued = enqueue_chat_run(
+            &state,
+            session_id,
+            EnqueueChatRunRequest {
+                client_request_id: "provider-retry".to_string(),
+                text: "Complete this request when the provider returns".to_string(),
+                use_moa: false,
+                moa_preset_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
+        sqlx::query("UPDATE session_run_inputs SET status = 'claimed' WHERE target_run_id = $1")
+            .bind(run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"UPDATE session_run_inputs SET status = 'applied', applied_at = now()
+               WHERE target_run_id = $1"#,
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"UPDATE agent_runs SET status = 'running', lease_owner = 'retry-worker-1',
+                   lease_epoch = 1, lease_expires_at = now() + interval '30 seconds'
+               WHERE id = $1"#,
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let first_attempt = fetch_run_row(&pool, run_id).await.unwrap();
+
+        defer_run_for_provider_retry(&state, &first_attempt, "provider unavailable")
+            .await
+            .unwrap();
+
+        let first_schedule = fetch_run_row(&pool, run_id).await.unwrap();
+        assert_eq!(first_schedule.status, "queued");
+        assert_eq!(first_schedule.provider_retry_count, 1);
+        assert_eq!(
+            first_schedule.error_code.as_deref(),
+            Some("provider_retry_scheduled")
+        );
+        let retry_at = first_schedule.next_attempt_at.unwrap();
+        let delay = retry_at.signed_duration_since(Utc::now()).num_minutes();
+        assert!((29..=30).contains(&delay));
+        assert_eq!(
+            get_session_runtime(&state, session_id)
+                .await
+                .unwrap()
+                .active_run
+                .unwrap()
+                .id,
+            run_id.to_string()
+        );
+
+        request_provider_retry_now(&state, run_id).await.unwrap();
+        sqlx::query(
+            r#"UPDATE agent_runs SET status = 'running', lease_owner = 'retry-worker-2',
+                   lease_epoch = 2, lease_expires_at = now() + interval '30 seconds'
+               WHERE id = $1 AND status = 'queued' AND next_attempt_at IS NULL"#,
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let second_attempt = fetch_run_row(&pool, run_id).await.unwrap();
+        defer_run_for_provider_retry(&state, &second_attempt, "still unavailable")
+            .await
+            .unwrap();
+        assert_eq!(
+            fetch_run_row(&pool, run_id)
+                .await
+                .unwrap()
+                .provider_retry_count,
+            2
+        );
+
+        request_provider_retry_now(&state, run_id).await.unwrap();
+        sqlx::query(
+            r#"UPDATE agent_runs SET status = 'running', lease_owner = 'retry-worker-3',
+                   lease_epoch = 3, lease_expires_at = now() + interval '30 seconds'
+               WHERE id = $1 AND status = 'queued' AND next_attempt_at IS NULL"#,
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let successful_attempt = fetch_run_row(&pool, run_id).await.unwrap();
+        finish_run(
+            &state,
+            &successful_attempt,
+            "completed",
+            None,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+        let completed = fetch_run_row(&pool, run_id).await.unwrap();
+        assert_eq!(completed.status, "completed");
+        assert!(completed.next_attempt_at.is_none());
+        assert!(completed.error_code.is_none());
+        assert!(get_session_runtime(&state, session_id)
+            .await
+            .unwrap()
+            .active_run
+            .is_none());
     }
 
     fn test_config() -> Config {

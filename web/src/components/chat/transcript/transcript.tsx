@@ -6,7 +6,8 @@ import type { ChatMessage, ToolCall } from "@/types/chat";
 import { MessageRow } from "./messages";
 import { QueuedTurnCard } from "../queue/queuedTurns";
 import { SessionDivider } from "./sessionDivider";
-import type { QueuedChatTurn, ToolEvent } from "../shared/types";
+import { makeStreamingAssistantMessage, type StreamItem } from "../shared/stream";
+import type { QueuedChatTurn } from "../shared/types";
 
 const ToolEventRow = lazy(() =>
   import("../toolResults").then((module) => ({ default: module.ToolEventRow })),
@@ -20,10 +21,9 @@ interface ChatTranscriptProps {
   visibleMessages: ChatMessage[];
   toolCallById: Map<string, ToolCall>;
   activeStreaming: boolean;
-  activeStreamAssistantText: string;
+  activeTimeline: StreamItem[];
   activeStreamError: boolean;
   activeStreamErrorMessage: string;
-  activeToolEvents: ToolEvent[];
   activeQueuedTurns: QueuedChatTurn[];
   editingQueuedTurnId: string | null;
   queuedEditText: string;
@@ -44,10 +44,9 @@ export function ChatTranscript({
   visibleMessages,
   toolCallById,
   activeStreaming,
-  activeStreamAssistantText,
+  activeTimeline,
   activeStreamError,
   activeStreamErrorMessage,
-  activeToolEvents,
   activeQueuedTurns,
   editingQueuedTurnId,
   queuedEditText,
@@ -85,26 +84,45 @@ export function ChatTranscript({
           key={msg.id}
           message={msg}
           toolCall={msg.toolCallId ? toolCallById.get(msg.toolCallId) : undefined}
-          streaming={msg.id === "streaming-assistant" && activeStreaming}
           onOpenDocument={onOpenDocument}
           onOpenPreview={onOpenPreview}
         />
       ))}
 
-      {activeToolEvents.map((event) => (
-        <Suspense
-          key={event.id}
-          fallback={<div className="text-xs text-[var(--text-muted)]">…</div>}
-        >
-          <ToolEventRow
-            event={event}
+      {/* Streaming timeline: render text and tool segments interleaved in
+          their real arrival order so the user sees text -> tool -> text ->
+          tool as it happens, instead of all text followed by all tools. */}
+      {activeTimeline.map((item, index) => {
+        if (item.type === "tool") {
+          const event = item.event;
+          return (
+            <Suspense
+              key={`tool-${event.id}-${index}`}
+              fallback={<div className="text-xs text-[var(--text-muted)]">…</div>}
+            >
+              <ToolEventRow
+                event={event}
+                onOpenDocument={onOpenDocument}
+                onOpenPreview={onOpenPreview}
+              />
+            </Suspense>
+          );
+        }
+        // Text segment: the last text segment is the one still streaming.
+        const isLastText =
+          index === activeTimeline.length - 1 || activeTimeline[index + 1].type !== "text";
+        return (
+          <MessageRow
+            key={`stream-text-${index}`}
+            message={makeStreamingAssistantMessage("", item.content, `stream-text-${index}`)}
+            streaming={isLastText && activeStreaming}
             onOpenDocument={onOpenDocument}
             onOpenPreview={onOpenPreview}
           />
-        </Suspense>
-      ))}
+        );
+      })}
 
-      {activeStreaming && !activeStreamAssistantText && (
+      {activeStreaming && activeTimeline.length === 0 && (
         <div className="flex items-center gap-2 pl-1">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--text-muted)]" strokeWidth={1.75} />
           <span className="text-xs text-[var(--text-muted)]">{t("chat.agentTyping")}</span>

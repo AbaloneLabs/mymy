@@ -1,6 +1,3 @@
-import type { ChatClarifyRequest } from "@/features/chat/api";
-import type { ChatMessage } from "@/types/chat";
-
 export interface ChatAttachment {
   name: string;
   path: string;
@@ -28,14 +25,4 @@ export interface ToolEvent {
   detail: string;
   resourceKey?: string;
   cancellation?: "cooperative" | "process_group" | "non_interruptible";
-}
-
-export interface ScopedStreamState {
-  sessionId: string | null;
-  isStreaming: boolean;
-  assistantText: string;
-  userMessage: ChatMessage | null;
-  toolEvents: ToolEvent[];
-  error: boolean;
-  pendingClarify: ChatClarifyRequest | null;
 }

@@ -1,8 +1,9 @@
 //! Public run commands and their transactional invariants.
 //!
 //! Commands validate ownership and mutable state before changing durable run
-//! or input rows. Queries and event persistence remain separate so handlers
-//! cannot accidentally combine an observation with a partially applied write.
+//! or input rows. State transitions and their audit events share a transaction
+//! when clients must never observe one without the other; handlers therefore
+//! cannot construct partially applied lifecycle changes themselves.
 
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
@@ -20,8 +21,9 @@ use crate::state::AppState;
 use super::projection::{input_to_view, is_terminal, run_to_view, truncate_chars};
 use super::repository::{fetch_run_row, run_columns, run_select};
 use super::{
-    append_event, AgentRunRow, SessionRunInputRow, INTERACTIVE_MAX_RUNTIME_SECONDS,
-    INTERACTIVE_MAX_TOOL_CALLS, INTERACTIVE_MAX_TOTAL_TOKENS, MAX_CLIENT_REQUEST_ID_CHARS,
+    append_event, insert_event_in_tx, AgentRunRow, SessionRunInputRow,
+    INTERACTIVE_MAX_RUNTIME_SECONDS, INTERACTIVE_MAX_TOOL_CALLS, INTERACTIVE_MAX_TOTAL_TOKENS,
+    MAX_CLIENT_REQUEST_ID_CHARS,
 };
 
 #[derive(Debug, FromRow)]
@@ -195,6 +197,55 @@ pub async fn request_cancel(
             .map(|(_, status)| status.clone())
             .unwrap_or(run.status),
     })
+}
+
+/// Move a durable provider retry forward without creating another chat input.
+///
+/// Only runs explicitly parked by the provider retry policy are eligible. The
+/// stable run and input identities ensure a successful manual retry clears the
+/// pending schedule by completing the original request exactly once.
+pub async fn request_provider_retry_now(
+    state: &AppState,
+    run_id: Uuid,
+) -> AppResult<crate::models::agent_run::AgentRunView> {
+    let run = fetch_run_row(&state.db, run_id).await?;
+    validate_run_origin(state, &run).await?;
+    let mut tx = state.db.begin().await?;
+    let updated = sqlx::query_as::<_, AgentRunRow>(&format!(
+        r#"UPDATE agent_runs
+           SET next_attempt_at = NULL, error_code = NULL
+           WHERE id = $1 AND status = 'queued'
+             AND next_attempt_at IS NOT NULL
+             AND error_code = 'provider_retry_scheduled'
+             AND cancel_requested_at IS NULL
+           RETURNING {}"#,
+        run_columns()
+    ))
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::Conflict("run is not waiting for a provider retry".to_string()))?;
+    insert_event_in_tx(
+        &mut tx,
+        run_id,
+        "provider_retry_requested",
+        serde_json::to_value(ChatSseEvent::ProviderRetryRequested {
+            run_id: run_id.to_string(),
+        })
+        .map_err(|error| {
+            AppError::Internal(format!(
+                "provider retry request serialization failed: {error}"
+            ))
+        })?,
+        Some(&format!(
+            "provider-retry-requested:{}",
+            updated.provider_retry_count
+        )),
+    )
+    .await?;
+    tx.commit().await?;
+    state.agent_run_notify.notify_waiters();
+    Ok(run_to_view(updated))
 }
 
 pub async fn update_queued_input(

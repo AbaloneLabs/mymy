@@ -43,6 +43,8 @@ pub struct AgentRunView {
     pub cancel_requested_at: Option<String>,
     pub started_at: Option<String>,
     pub heartbeat_at: Option<String>,
+    pub next_attempt_at: Option<String>,
+    pub provider_retry_count: i32,
     pub completed_at: Option<String>,
     pub error_code: Option<String>,
     pub usage: Value,

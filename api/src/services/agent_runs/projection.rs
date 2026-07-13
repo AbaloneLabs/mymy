@@ -28,6 +28,8 @@ pub(super) fn run_to_view(row: AgentRunRow) -> AgentRunView {
         cancel_requested_at: row.cancel_requested_at.map(|time| time.to_rfc3339()),
         started_at: row.started_at.map(|time| time.to_rfc3339()),
         heartbeat_at: row.heartbeat_at.map(|time| time.to_rfc3339()),
+        next_attempt_at: row.next_attempt_at.map(|time| time.to_rfc3339()),
+        provider_retry_count: row.provider_retry_count,
         completed_at: row.completed_at.map(|time| time.to_rfc3339()),
         error_code: row.error_code,
         usage: row.usage,

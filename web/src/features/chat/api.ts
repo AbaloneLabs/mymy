@@ -106,6 +106,14 @@ export type ChatSseEvent =
   | { type: "turn_completed"; finish_reason: string; usage: unknown }
   | { type: "context_compressing" }
   | {
+      type: "provider_retry_scheduled";
+      run_id: string;
+      retry_at: string;
+      retry_count: number;
+      message: string;
+    }
+  | { type: "provider_retry_requested"; run_id: string }
+  | {
       type: "done";
       assistant_message?: ChatMessage | null;
       session: ChatSession;
@@ -141,6 +149,8 @@ export interface AgentRun {
   cancelRequestedAt?: string;
   startedAt?: string;
   heartbeatAt?: string;
+  nextAttemptAt?: string;
+  providerRetryCount: number;
   completedAt?: string;
   errorCode?: string;
   usage: unknown;
@@ -346,6 +356,10 @@ export function cancelAgentRun(runId: string) {
   return api.post<{ accepted: boolean; terminal: boolean; status: AgentRunStatus }>(
     `/agent-runs/${runId}/cancel`,
   );
+}
+
+export function retryAgentRun(runId: string) {
+  return api.post<AgentRunResponse>(`/agent-runs/${runId}/retry`);
 }
 
 export async function streamChatMessage(

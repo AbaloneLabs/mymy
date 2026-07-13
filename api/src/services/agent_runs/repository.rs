@@ -19,7 +19,7 @@ pub(super) fn run_columns() -> &'static str {
      parent_event_id, delegate_index, project_id, status, objective, prompt_version, authorization_context, \
      tool_schema_fingerprint, \
      lease_owner, lease_epoch, next_event_sequence, lease_expires_at, cancel_requested_at, started_at, \
-     heartbeat_at, completed_at, error_code, usage, created_at"
+     heartbeat_at, next_attempt_at, provider_retry_count, completed_at, error_code, usage, created_at"
 }
 
 pub(super) async fn fetch_run_row(pool: &sqlx::PgPool, id: Uuid) -> AppResult<AgentRunRow> {
