@@ -187,7 +187,9 @@ pub async fn save_agent_messages_for_run(
                  (id, session_id, role, content, tool_calls, tool_call_id,
                   agent_run_id, run_message_index)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               ON CONFLICT (agent_run_id, run_message_index) DO NOTHING"#,
+               ON CONFLICT (agent_run_id, run_message_index)
+               WHERE agent_run_id IS NOT NULL AND run_message_index IS NOT NULL
+               DO NOTHING"#,
         )
         .bind(id)
         .bind(session_id)

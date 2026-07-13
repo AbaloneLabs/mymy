@@ -256,6 +256,8 @@ const zh = {
       noResults: "未找到模型",
       enterCredentialsFirst: "输入 API 密钥以加载模型",
       newProvider: "新提供者",
+      saveError: "无法保存提供商：{message}",
+      unknownError: "未知错误",
       untested: "未测试",
       cooldown: "冷却 {seconds} 秒",
       credentialStatus: {

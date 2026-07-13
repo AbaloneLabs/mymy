@@ -856,6 +856,52 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
+    async fn final_message_projection_matches_the_partial_unique_index(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        let session_id = seed_session(&pool).await;
+        let enqueued = enqueue_chat_run(
+            &state,
+            session_id,
+            EnqueueChatRunRequest {
+                client_request_id: "projection-index".to_string(),
+                text: "Persist the response once".to_string(),
+                use_moa: false,
+                moa_preset_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
+        let messages = vec![Message::assistant("Durable response")];
+
+        let first = crate::services::chat::save_agent_messages_for_run(
+            &state, run_id, session_id, &messages,
+        )
+        .await
+        .unwrap();
+        let duplicate = crate::services::chat::save_agent_messages_for_run(
+            &state, run_id, session_id, &messages,
+        )
+        .await
+        .unwrap();
+
+        assert!(first.is_some());
+        assert!(duplicate.is_some());
+        let persisted = sqlx::query_as::<_, (i64, i32)>(
+            r#"SELECT COUNT(m.id), s.message_count
+               FROM chat_sessions s
+               LEFT JOIN chat_messages m ON m.session_id = s.id AND m.agent_run_id = $2
+               WHERE s.id = $1 GROUP BY s.message_count"#,
+        )
+        .bind(session_id)
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(persisted, (1, 1));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
     async fn event_sequence_and_idempotency_are_durable(pool: sqlx::PgPool) {
         let state = AppState::new(pool.clone(), test_config());
         let session_id = seed_session(&pool).await;

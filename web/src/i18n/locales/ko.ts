@@ -257,6 +257,8 @@ const ko = {
       noResults: "모델을 찾을 수 없습니다",
       enterCredentialsFirst: "모델을 불러오려면 API 키를 입력하세요",
       newProvider: "새 제공자",
+      saveError: "제공자를 저장할 수 없습니다: {message}",
+      unknownError: "알 수 없는 오류",
       untested: "미테스트",
       cooldown: "쿨다운 {seconds}초",
       credentialStatus: {

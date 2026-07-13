@@ -257,6 +257,8 @@ const ja = {
       noResults: "モデルが見つかりません",
       enterCredentialsFirst: "モデルを読み込むには API キーを入力してください",
       newProvider: "新しいプロバイダー",
+      saveError: "プロバイダーを保存できませんでした: {message}",
+      unknownError: "不明なエラー",
       untested: "未テスト",
       cooldown: "クールダウン {seconds} 秒",
       credentialStatus: {

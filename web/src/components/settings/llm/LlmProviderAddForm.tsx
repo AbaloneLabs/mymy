@@ -71,21 +71,26 @@ export function LlmProviderAddForm({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const meta = PRESETS[preset];
     const trimmedLabel =
       label.trim() ||
       (meta.label !== "Custom…" ? meta.label : t("settings.models.newProvider"));
-    createMutation.mutate({
-      label: trimmedLabel,
-      api_format: apiFormat,
-      base_url: baseUrl,
-      api_key: apiKey,
-      model: model || "gpt-4o-mini",
-      max_tokens: Number(maxTokens) || 16384,
-      preset: preset === "custom" ? undefined : preset,
-    });
-    onClose();
+    try {
+      await createMutation.mutateAsync({
+        label: trimmedLabel,
+        api_format: apiFormat,
+        base_url: baseUrl,
+        api_key: apiKey,
+        model: model || "gpt-4o-mini",
+        max_tokens: Number(maxTokens) || 16384,
+        preset: preset === "custom" ? undefined : preset,
+      });
+      onClose();
+    } catch {
+      // Keep credentials and the selected model in the form so a transient
+      // backend failure can be corrected or retried without re-entering them.
+    }
   };
 
   return (
@@ -173,6 +178,17 @@ export function LlmProviderAddForm({ onClose }: { onClose: () => void }) {
         />
       </LabeledRow>
 
+      {createMutation.isError && (
+        <p role="alert" className="text-xs text-[var(--status-error)]">
+          {t("settings.models.saveError", {
+            message:
+              createMutation.error instanceof Error
+                ? createMutation.error.message
+                : t("settings.models.unknownError"),
+          })}
+        </p>
+      )}
+
       {/* Actions */}
       <div className="flex items-center justify-end gap-2 pt-1">
         <button
@@ -186,7 +202,7 @@ export function LlmProviderAddForm({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={handleSave}
-          disabled={!baseUrl || !apiKey}
+          disabled={!baseUrl || !apiKey || createMutation.isPending}
           className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition-colors duration-150 hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check className="h-3.5 w-3.5" strokeWidth={1.75} />

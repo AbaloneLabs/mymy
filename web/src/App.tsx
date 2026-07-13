@@ -9,6 +9,7 @@ import {
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useLockApp } from "@/hooks/useLockApp";
+import { reloadStaleRouteOnce } from "@/lib/deploymentVersion";
 
 const PinScreen = lazy(() => import("@/routes/PinScreen"));
 const Dashboard = lazy(() => import("@/routes/Dashboard"));
@@ -82,6 +83,7 @@ class RouteErrorBoundary extends Component<
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("Lazy route failed to load", error, info.componentStack);
+    reloadStaleRouteOnce(error);
   }
 
   render() {

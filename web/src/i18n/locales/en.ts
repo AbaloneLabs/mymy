@@ -257,6 +257,8 @@ const en = {
       noResults: "No models found",
       enterCredentialsFirst: "Enter API key to load models",
       newProvider: "New Provider",
+      saveError: "Could not save provider: {message}",
+      unknownError: "unknown error",
       untested: "Untested",
       cooldown: "cooldown {seconds}s",
       credentialStatus: {
