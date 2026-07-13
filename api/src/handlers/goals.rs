@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Json;
 use axum::Router;
 use uuid::Uuid;
@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::error::AppResult;
 use crate::models::goal::{
     CreateGoalRequest, CreateKeyResultRequest, GoalResponse, GoalsResponse, KeyResultResponse,
-    UpdateGoalRequest, UpdateKeyResultRequest,
+    LinkTaskRequest, UpdateGoalRequest, UpdateKeyResultRequest,
 };
 use crate::models::project::DeleteResponse;
 use crate::services::goals::{self as goals_service, GoalQuery};
@@ -28,6 +28,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/goals/{id}/key-results/{krId}",
             patch(update_key_result).delete(delete_key_result),
+        )
+        .route(
+            "/api/goals/{id}/key-results/{krId}/tasks",
+            post(link_task_to_kr),
+        )
+        .route(
+            "/api/goals/{id}/key-results/{krId}/tasks/{taskId}",
+            delete(unlink_task_from_kr),
         )
 }
 
@@ -94,4 +102,23 @@ pub async fn delete_key_result(
 ) -> AppResult<Json<DeleteResponse>> {
     let success = goals_service::delete_key_result(&state, id, kr_id).await?;
     Ok(Json(DeleteResponse { success }))
+}
+
+pub async fn link_task_to_kr(
+    State(state): State<Arc<AppState>>,
+    Path((id, kr_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<LinkTaskRequest>,
+) -> AppResult<Json<KeyResultResponse>> {
+    Ok(Json(
+        goals_service::link_task_to_kr(&state, id, kr_id, req).await?,
+    ))
+}
+
+pub async fn unlink_task_from_kr(
+    State(state): State<Arc<AppState>>,
+    Path((id, kr_id, task_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> AppResult<Json<KeyResultResponse>> {
+    Ok(Json(
+        goals_service::unlink_task_from_kr(&state, id, kr_id, task_id).await?,
+    ))
 }

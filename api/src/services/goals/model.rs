@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::models::goal::{FinanceKpiDefinition, Goal, KeyResult, TaskAssignmentSummary};
+use crate::models::goal::{
+    FinanceKpiDefinition, Goal, KeyResult, LinkedTask, TaskAssignmentSummary,
+};
 
 /// A goal / OKR objective row.
 #[derive(Debug, FromRow)]
@@ -39,6 +41,19 @@ pub(super) struct KeyResultRow {
     pub(super) updated_at: DateTime<Utc>,
 }
 
+/// A row from the joined goal_tasks + tasks query used to populate
+/// `KeyResult.linked_tasks`. `key_result_id` identifies which KR this
+/// task belongs to for map grouping.
+#[derive(Debug, FromRow)]
+pub(super) struct LinkedTaskRow {
+    pub(super) key_result_id: Uuid,
+    pub(super) id: Uuid,
+    pub(super) title: String,
+    pub(super) status: String,
+    pub(super) priority: String,
+    pub(super) due_date: Option<DateTime<Utc>>,
+}
+
 /// Average progress across key results (0 if empty).
 pub(super) fn average_progress(krs: &[KeyResult]) -> f64 {
     if krs.is_empty() {
@@ -72,6 +87,7 @@ pub(super) fn row_to_key_result(
     row: KeyResultRow,
     current_value: f64,
     calculation_status: &str,
+    linked_tasks: Vec<LinkedTask>,
 ) -> KeyResult {
     let progress = if row.target_value > 0.0 {
         (current_value / row.target_value * 100.0).clamp(0.0, 100.0)
@@ -90,6 +106,7 @@ pub(super) fn row_to_key_result(
         progress,
         finance_definition,
         calculation_status: calculation_status.to_string(),
+        linked_tasks,
         created_at: row.created_at.to_rfc3339(),
         updated_at: row.updated_at.to_rfc3339(),
     }

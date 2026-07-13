@@ -796,6 +796,11 @@ const ko = {
       unconfigured: "금융 KPI 정의가 없어 계산하지 않음",
       broken_scope: "연결된 프로젝트가 삭제되어 계산 중지됨",
     },
+    noLinkedTasks: "이 핵심 결과에 연결된 태스크가 없습니다.",
+    quickCreateTask: "새 태스크 제목…",
+    linkExistingTask: "기존 태스크 연결",
+    searchTasks: "태스크 검색…",
+    noTasksToLink: "연결할 수 있는 태스크가 없습니다.",
   },
   chat: {
     title: "채팅",

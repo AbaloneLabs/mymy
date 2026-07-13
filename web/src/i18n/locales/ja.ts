@@ -787,6 +787,11 @@ const ja = {
       unconfigured: "財務KPIが未設定のため計算されません",
       broken_scope: "リンク先プロジェクトが削除されたため計算を停止しました",
     },
+    noLinkedTasks: "この主要な結果にリンクされたタスクはありません。",
+    quickCreateTask: "新しいタスクのタイトル…",
+    linkExistingTask: "既存のタスクをリンク",
+    searchTasks: "タスクを検索…",
+    noTasksToLink: "リンクできるタスクはありません。",
   },
   chat: {
     title: "チャット",

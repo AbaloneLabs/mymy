@@ -29,6 +29,23 @@ pub struct FinanceKpiDefinition {
     pub category: Option<String>,
 }
 
+/// A lightweight task reference attached to a Key Result.
+///
+/// Reuses the same fields as the full `Task` model minus content/description
+/// to keep the KR payload lean. The frontend uses this to render the
+/// per-KR task list and toggle completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedTask {
+    pub id: String,
+    pub title: String,
+    /// Task status slug (e.g. "todo", "in_progress", "done").
+    pub status: String,
+    /// "low" | "medium" | "high" | "urgent"
+    pub priority: String,
+    pub due_date: Option<String>,
+}
+
 /// A key result (quantitative metric) belonging to a goal.
 ///
 /// Serialized as camelCase to match the frontend `KeyResult` interface.
@@ -48,6 +65,11 @@ pub struct KeyResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finance_definition: Option<FinanceKpiDefinition>,
     pub calculation_status: String,
+    /// Tasks linked directly to this KR. Populated on detail/list fetches
+    /// so the frontend can render the per-KR task list without a second
+    /// round-trip. Empty when no tasks are linked.
+    #[serde(default)]
+    pub linked_tasks: Vec<LinkedTask>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -150,4 +172,11 @@ pub struct UpdateKeyResultRequest {
     pub unit: Option<String>,
     #[serde(default)]
     pub finance_definition: PatchField<FinanceKpiDefinition>,
+}
+
+/// Payload for linking a task to a Key Result.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkTaskRequest {
+    pub task_id: String,
 }

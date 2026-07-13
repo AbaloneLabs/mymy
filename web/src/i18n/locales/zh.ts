@@ -786,6 +786,11 @@ const zh = {
       unconfigured: "财务 KPI 未配置，未进行计算",
       broken_scope: "关联项目已删除，计算已停止",
     },
+    noLinkedTasks: "没有与此关键结果关联的任务。",
+    quickCreateTask: "新任务标题…",
+    linkExistingTask: "关联现有任务",
+    searchTasks: "搜索任务…",
+    noTasksToLink: "没有可关联的任务。",
   },
   chat: {
     title: "聊天",

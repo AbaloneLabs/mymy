@@ -113,3 +113,35 @@ export function useDeleteKeyResult() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goals"] }),
   });
 }
+
+/**
+ * Link a task to a specific key result.
+ * The backend also upserts the goal-level link so the goal's
+ * task assignment count stays consistent.
+ */
+export function useLinkTaskToKR() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { goalId: string; krId: string; taskId: string }) =>
+      api.post<{ keyResult: KeyResult }>(
+        `/goals/${vars.goalId}/key-results/${vars.krId}/tasks`,
+        { taskId: vars.taskId },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["goals"] }),
+  });
+}
+
+/**
+ * Unlink a task from a specific key result.
+ * Only removes the KR-scoped link; the goal-level link is preserved.
+ */
+export function useUnlinkTaskFromKR() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { goalId: string; krId: string; taskId: string }) =>
+      api.delete<{ keyResult: KeyResult }>(
+        `/goals/${vars.goalId}/key-results/${vars.krId}/tasks/${vars.taskId}`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["goals"] }),
+  });
+}

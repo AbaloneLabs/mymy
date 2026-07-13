@@ -9,6 +9,18 @@ export type GoalStatus = "active" | "completed" | "archived";
 
 export type KpiType = "manual" | "task_completion" | "finance";
 
+/**
+ * A lightweight task reference attached to a Key Result.
+ * Used by the KR task linking feature to render per-KR task lists.
+ */
+export interface LinkedTask {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueDate?: string;
+}
+
 export interface FinanceKpiDefinition {
   metric: "income" | "expense" | "net";
   currency: string;
@@ -41,6 +53,9 @@ export interface KeyResult {
   financeDefinition?: FinanceKpiDefinition;
 
   calculationStatus: "ready" | "no_assignment" | "unconfigured" | "broken_scope";
+
+  /** Tasks linked directly to this KR. Populated by the backend. */
+  linkedTasks?: LinkedTask[];
 
   createdAt: string;
 

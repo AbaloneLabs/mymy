@@ -1,12 +1,17 @@
 import { useState } from "react";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { Check, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   useCreateKeyResult,
   useDeleteKeyResult,
+  useLinkTaskToKR,
+  useUnlinkTaskFromKR,
   useUpdateKeyResult,
 } from "@/features/goals/api";
 import { KPI_TYPES } from "@/features/goals/constants";
+import { useTaskStatuses } from "@/features/task-statuses/api";
+import { useCreateTask, useTasks, useUpdateTask } from "@/features/tasks/api";
+import { findStatusDef, statusBgClass } from "@/features/tasks/utils";
 import { cn } from "@/lib/utils";
 import { useProjectContext } from "@/store/projectContext";
 import type {
@@ -14,6 +19,7 @@ import type {
   Goal,
   KeyResult,
   KpiType,
+  LinkedTask,
 } from "@/types/goals";
 import { ProgressBar } from "./GoalProgressBar";
 import { capitalize, formatValue, toCamel } from "./goalViewFormat";
@@ -168,6 +174,212 @@ function KeyResultRow({ goalId, kr }: { goalId: string; kr: KeyResult }) {
           <p className={kr.calculationStatus === "ready" ? "" : "text-[var(--status-warning)]"}>
             {t(`goals.calculationStatus.${kr.calculationStatus}`)}
           </p>
+        </div>
+      )}
+
+      {/*
+        KR-scoped task list for task_completion KRs.
+        Shows linked tasks with toggle/unlink controls, a quick-create
+        input, and a search panel for linking existing tasks.
+      */}
+      {isTask && (
+        <KrTaskList
+          goalId={goalId}
+          krId={kr.id}
+          linkedTasks={kr.linkedTasks ?? []}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-KR task management panel.
+ *
+ * Renders the list of tasks linked to a specific Key Result, lets the user
+ * toggle a task's done state inline, unlink tasks, quick-create + link a
+ * new task, and search/link an existing task from the workspace.
+ *
+ * The backend recalculates the KR's currentValue from these linked tasks,
+ * so every link/unlink/toggle here indirectly updates the KR progress.
+ */
+function KrTaskList({
+  goalId,
+  krId,
+  linkedTasks,
+}: {
+  goalId: string;
+  krId: string;
+  linkedTasks: LinkedTask[];
+}) {
+  const { t } = useTranslation();
+  const linkTask = useLinkTaskToKR();
+  const unlinkTask = useUnlinkTaskFromKR();
+  const createTask = useCreateTask();
+  const updateTask = useUpdateTask();
+  const { data: tasksData } = useTasks(undefined, undefined, "all");
+  const { data: statusesData } = useTaskStatuses();
+  const statuses = statusesData?.statuses ?? [];
+
+  const [showSearch, setShowSearch] = useState(false);
+  const [query, setQuery] = useState("");
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+
+  const linkedIds = new Set(linkedTasks.map((task) => task.id));
+
+  // Unlinked tasks matching the search query, capped for dropdown readability.
+  const availableTasks = (tasksData?.tasks ?? [])
+    .filter((task) => !linkedIds.has(task.id))
+    .filter(
+      (task) =>
+        query.trim() === "" ||
+        task.title.toLowerCase().includes(query.trim().toLowerCase()),
+    )
+    .slice(0, 10);
+
+  function handleToggle(task: LinkedTask) {
+    const def = findStatusDef(statuses, task.status);
+    const isDone = def?.isDone ?? task.status === "done";
+    const next = isDone
+      ? (statuses.find((s) => !s.isDone)?.slug ?? "todo")
+      : (statuses.find((s) => s.isDone)?.slug ?? "done");
+    updateTask.mutate({ id: task.id, body: { status: next } });
+  }
+
+  function handleQuickCreate() {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    createTask.mutate(
+      { title },
+      {
+        onSuccess: (data) => {
+          linkTask.mutate({ goalId, krId, taskId: data.task.id });
+          setNewTaskTitle("");
+        },
+      },
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">
+      {linkedTasks.length === 0 ? (
+        <p className="text-xs text-[var(--text-secondary)]">
+          {t("goals.noLinkedTasks")}
+        </p>
+      ) : (
+        linkedTasks.map((task) => {
+          const def = findStatusDef(statuses, task.status);
+          const isDone = def?.isDone ?? task.status === "done";
+          return (
+            <div key={task.id} className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => handleToggle(task)}
+                className={cn(
+                  "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                  isDone
+                    ? "border-[var(--status-success)] bg-[var(--status-success)] text-white"
+                    : "border-[var(--border)] text-transparent",
+                )}
+              >
+                <Check className="h-3 w-3" />
+              </button>
+              <span
+                className={cn(
+                  "flex-1 truncate",
+                  isDone && "text-[var(--text-secondary)] line-through",
+                )}
+              >
+                {task.title}
+              </span>
+              {def && (
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] text-white",
+                    statusBgClass(def.color),
+                  )}
+                >
+                  {def.label}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  unlinkTask.mutate({ goalId, krId, taskId: task.id })
+                }
+                className="text-[var(--text-secondary)] hover:text-[var(--status-error)]"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          );
+        })
+      )}
+
+      {/* Quick create: type a title, press Enter, task is created + linked. */}
+      <div className="flex items-center gap-1 pt-1">
+        <input
+          type="text"
+          value={newTaskTitle}
+          onChange={(e) => setNewTaskTitle(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleQuickCreate();
+          }}
+          placeholder={t("goals.quickCreateTask")}
+          className="flex-1 rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
+        />
+        <button
+          type="button"
+          onClick={handleQuickCreate}
+          disabled={!newTaskTitle.trim() || createTask.isPending}
+          className="flex shrink-0 items-center rounded bg-[var(--accent)] px-2 py-1 text-xs text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+        >
+          {createTask.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Plus className="h-3 w-3" />
+          )}
+        </button>
+      </div>
+
+      {/* Toggle search panel for linking existing workspace tasks. */}
+      <button
+        type="button"
+        onClick={() => setShowSearch((v) => !v)}
+        className="flex items-center gap-1 text-xs text-[var(--accent)] hover:underline"
+      >
+        <Search className="h-3 w-3" />
+        {t("goals.linkExistingTask")}
+      </button>
+      {showSearch && (
+        <div className="space-y-1">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("goals.searchTasks")}
+            className="w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
+            autoFocus
+          />
+          {availableTasks.map((task) => (
+            <button
+              key={task.id}
+              type="button"
+              onClick={() => {
+                linkTask.mutate({ goalId, krId, taskId: task.id });
+                setQuery("");
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-[var(--surface-hover)]"
+            >
+              <Plus className="h-3 w-3 shrink-0 text-[var(--accent)]" />
+              <span className="flex-1 truncate">{task.title}</span>
+            </button>
+          ))}
+          {availableTasks.length === 0 && (
+            <p className="px-2 text-xs text-[var(--text-secondary)]">
+              {t("goals.noTasksToLink")}
+            </p>
+          )}
         </div>
       )}
     </div>

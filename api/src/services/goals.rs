@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::goal::{
     CreateGoalRequest, CreateKeyResultRequest, FinanceKpiDefinition, Goal, GoalResponse,
-    GoalsResponse, KeyResult, KeyResultResponse, TaskAssignmentSummary, UpdateGoalRequest,
-    UpdateKeyResultRequest,
+    GoalsResponse, KeyResult, KeyResultResponse, LinkTaskRequest, LinkedTask,
+    TaskAssignmentSummary, UpdateGoalRequest, UpdateKeyResultRequest,
 };
 use crate::models::scope::PatchField;
 use crate::services::audit::log_audit_safe;
@@ -24,7 +24,10 @@ use crate::state::AppState;
 mod model;
 mod validation;
 
-use model::{average_progress, finance_definition, row_to_goal, row_to_key_result, KeyResultRow};
+use model::{
+    average_progress, finance_definition, row_to_goal, row_to_key_result, KeyResultRow,
+    LinkedTaskRow,
+};
 use validation::{
     validate_current_value, validate_goal_status, validate_goal_type, validate_kpi_type,
     validate_target_value,
@@ -446,10 +449,20 @@ async fn fetch_key_results_for_goal(state: &AppState, goal_id: Uuid) -> AppResul
     .fetch_all(&state.db)
     .await?;
 
+    // Batch-load linked tasks for all KRs in this goal to avoid N+1 queries.
+    let kr_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let linked = fetch_linked_tasks_for_krs(state, &kr_ids).await?;
+
     let mut krs = Vec::with_capacity(rows.len());
     for row in rows {
         let resolved = resolve_current_value(state, &row).await?;
-        krs.push(row_to_key_result(row, resolved.value, resolved.status));
+        let tasks = linked.get(&row.id).cloned().unwrap_or_default();
+        krs.push(row_to_key_result(
+            row,
+            resolved.value,
+            resolved.status,
+            tasks,
+        ));
     }
     Ok(krs)
 }
@@ -459,7 +472,14 @@ async fn fetch_key_result(state: &AppState, id: Uuid) -> AppResult<KeyResult> {
     let row = fetch_key_result_row(state, id, None).await?;
 
     let resolved = resolve_current_value(state, &row).await?;
-    Ok(row_to_key_result(row, resolved.value, resolved.status))
+    let linked = fetch_linked_tasks_for_krs(state, &[id]).await?;
+    let tasks = linked.get(&id).cloned().unwrap_or_default();
+    Ok(row_to_key_result(
+        row,
+        resolved.value,
+        resolved.status,
+        tasks,
+    ))
 }
 
 /// Resolve the effective current_value for a KR based on its kpi_type.
@@ -470,7 +490,9 @@ async fn fetch_key_result(state: &AppState, id: Uuid) -> AppResult<KeyResult> {
 async fn resolve_current_value(state: &AppState, kr: &KeyResultRow) -> AppResult<KpiResolution> {
     match kr.kpi_type.as_str() {
         "task_completion" => {
-            // Count linked tasks and how many are done.
+            // KR-scoped: count tasks linked directly to this key result.
+            // Falls back to goal-level links (key_result_id IS NULL) only
+            // when no KR-scoped links exist, preserving legacy behavior.
             let row = sqlx::query!(
                 r#"SELECT
                      COUNT(*)::bigint AS "total!: i64",
@@ -478,17 +500,44 @@ async fn resolve_current_value(state: &AppState, kr: &KeyResultRow) -> AppResult
                    FROM goal_tasks gt
                    JOIN tasks t ON t.id = gt.task_id
                    JOIN task_statuses ts ON ts.slug = t.status
-                   WHERE gt.goal_id = $1 AND t.deleted_at IS NULL"#,
-                kr.goal_id,
+                   WHERE gt.key_result_id = $1
+                     AND t.deleted_at IS NULL"#,
+                kr.id,
             )
             .fetch_one(&state.db)
             .await;
 
             let r = row?;
-            Ok(if r.total == 0 {
+            if r.total > 0 {
+                return Ok(KpiResolution::new(
+                    r.done as f64 / r.total as f64 * 100.0,
+                    "ready",
+                ));
+            }
+
+            // Fallback: goal-level legacy links (key_result_id IS NULL).
+            let fallback = sqlx::query!(
+                r#"SELECT
+                     COUNT(*)::bigint AS "total!: i64",
+                     COUNT(*) FILTER (WHERE ts.is_done)::bigint AS "done!: i64"
+                   FROM goal_tasks gt
+                   JOIN tasks t ON t.id = gt.task_id
+                   JOIN task_statuses ts ON ts.slug = t.status
+                   WHERE gt.goal_id = $1
+                     AND gt.key_result_id IS NULL
+                     AND t.deleted_at IS NULL"#,
+                kr.goal_id,
+            )
+            .fetch_one(&state.db)
+            .await?;
+
+            Ok(if fallback.total == 0 {
                 KpiResolution::new(0.0, "no_assignment")
             } else {
-                KpiResolution::new(r.done as f64 / r.total as f64 * 100.0, "ready")
+                KpiResolution::new(
+                    fallback.done as f64 / fallback.total as f64 * 100.0,
+                    "ready",
+                )
             })
         }
         "finance" => {
@@ -704,6 +753,160 @@ async fn task_assignment_summary(
     })
 }
 
+/// Batch-load linked tasks for a set of key result IDs.
+///
+/// Returns a map from KR ID to its linked tasks. KRs with no linked tasks
+/// are absent from the map (callers default to empty). Uses a single query
+/// to avoid N+1 when loading a goal with many KRs.
+async fn fetch_linked_tasks_for_krs(
+    state: &AppState,
+    kr_ids: &[Uuid],
+) -> AppResult<std::collections::HashMap<Uuid, Vec<LinkedTask>>> {
+    if kr_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let rows = sqlx::query_as::<_, LinkedTaskRow>(
+        r#"SELECT gt.key_result_id, t.id, t.title, t.status, t.priority, t.due_date
+           FROM goal_tasks gt
+           JOIN tasks t ON t.id = gt.task_id AND t.deleted_at IS NULL
+           WHERE gt.key_result_id = ANY($1)
+           ORDER BY t.created_at ASC"#,
+    )
+    .bind(kr_ids)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut map: std::collections::HashMap<Uuid, Vec<LinkedTask>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let task = LinkedTask {
+            id: row.id.to_string(),
+            title: row.title,
+            status: row.status,
+            priority: row.priority,
+            due_date: row.due_date.map(|d| d.to_rfc3339()),
+        };
+        map.entry(row.key_result_id).or_default().push(task);
+    }
+    Ok(map)
+}
+
+// ---- KR-Task link operations ----
+
+/// POST /api/goals/{id}/key-results/{krId}/tasks
+///
+/// Links a task to a specific key result. Also upserts the goal-level row
+/// (key_result_id IS NULL) so that the goal-level task assignment count
+/// stays consistent.
+pub async fn link_task_to_kr(
+    state: &AppState,
+    goal_id: Uuid,
+    kr_id: Uuid,
+    req: LinkTaskRequest,
+) -> AppResult<KeyResultResponse> {
+    // Validate the KR exists and belongs to the goal.
+    let kr_row = fetch_key_result_row(state, kr_id, Some(goal_id)).await?;
+
+    // Validate the task exists and is not soft-deleted.
+    let task_id = Uuid::parse_str(&req.task_id)
+        .map_err(|err| AppError::BadRequest(format!("invalid taskId: {err}")))?;
+    let task_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(task_id)
+    .fetch_one(&state.db)
+    .await?;
+    if !task_exists {
+        return Err(AppError::NotFound(format!("task {task_id} not found")));
+    }
+
+    // Upsert the KR-scoped link. ON CONFLICT on the partial unique index
+    // (key_result_id, task_id) handles idempotent re-linking.
+    sqlx::query(
+        r#"INSERT INTO goal_tasks (goal_id, task_id, key_result_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (key_result_id, task_id) WHERE key_result_id IS NOT NULL DO NOTHING"#,
+    )
+    .bind(goal_id)
+    .bind(task_id)
+    .bind(kr_id)
+    .execute(&state.db)
+    .await?;
+
+    // Also ensure the goal-level link exists so the goal's
+    // task_assignment_summary counts it. ON CONFLICT on the PK
+    // (goal_id, task_id) handles idempotency.
+    sqlx::query(
+        r#"INSERT INTO goal_tasks (goal_id, task_id, key_result_id)
+           VALUES ($1, $2, NULL)
+           ON CONFLICT (goal_id, task_id) DO UPDATE SET key_result_id = CASE
+               WHEN goal_tasks.key_result_id IS NULL THEN NULL
+               ELSE goal_tasks.key_result_id
+           END"#,
+    )
+    .bind(goal_id)
+    .bind(task_id)
+    .execute(&state.db)
+    .await?;
+
+    log_audit_safe(
+        &state.db,
+        "user",
+        "user",
+        "create",
+        "goal_task",
+        Some(&task_id.to_string()),
+        Some(
+            serde_json::json!({ "goalId": goal_id.to_string(), "keyResultId": kr_id.to_string() }),
+        ),
+    )
+    .await;
+
+    let kr = fetch_key_result(state, kr_row.id).await?;
+    Ok(KeyResultResponse { key_result: kr })
+}
+
+/// DELETE /api/goals/{id}/key-results/{krId}/tasks/{taskId}
+///
+/// Unlinks a task from a specific key result. Only removes the KR-scoped
+/// row; the goal-level link (if any) is preserved.
+pub async fn unlink_task_from_kr(
+    state: &AppState,
+    goal_id: Uuid,
+    kr_id: Uuid,
+    task_id: Uuid,
+) -> AppResult<KeyResultResponse> {
+    // Validate the KR exists and belongs to the goal.
+    let kr_row = fetch_key_result_row(state, kr_id, Some(goal_id)).await?;
+
+    sqlx::query!(
+        r#"DELETE FROM goal_tasks
+           WHERE goal_id = $1 AND task_id = $2 AND key_result_id = $3"#,
+        goal_id,
+        task_id,
+        kr_id,
+    )
+    .execute(&state.db)
+    .await?;
+
+    log_audit_safe(
+        &state.db,
+        "user",
+        "user",
+        "delete",
+        "goal_task",
+        Some(&task_id.to_string()),
+        Some(
+            serde_json::json!({ "goalId": goal_id.to_string(), "keyResultId": kr_id.to_string() }),
+        ),
+    )
+    .await;
+
+    let kr = fetch_key_result(state, kr_row.id).await?;
+    Ok(KeyResultResponse { key_result: kr })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,13 +937,13 @@ mod tests {
 
     #[test]
     fn row_to_key_result_caps_progress_at_one_hundred() {
-        let kr = row_to_key_result(key_result_row(10.0, 25.0), 25.0, "ready");
+        let kr = row_to_key_result(key_result_row(10.0, 25.0), 25.0, "ready", vec![]);
         assert_eq!(kr.progress, 100.0);
     }
 
     #[test]
     fn row_to_key_result_uses_zero_progress_for_non_positive_target() {
-        let kr = row_to_key_result(key_result_row(0.0, 25.0), 25.0, "ready");
+        let kr = row_to_key_result(key_result_row(0.0, 25.0), 25.0, "ready", vec![]);
         assert_eq!(kr.progress, 0.0);
     }
 
@@ -752,8 +955,8 @@ mod tests {
     #[test]
     fn average_progress_returns_mean_value() {
         let krs = vec![
-            row_to_key_result(key_result_row(100.0, 25.0), 25.0, "ready"),
-            row_to_key_result(key_result_row(100.0, 75.0), 75.0, "ready"),
+            row_to_key_result(key_result_row(100.0, 25.0), 25.0, "ready", vec![]),
+            row_to_key_result(key_result_row(100.0, 75.0), 75.0, "ready", vec![]),
         ];
         assert_eq!(average_progress(&krs), 50.0);
     }

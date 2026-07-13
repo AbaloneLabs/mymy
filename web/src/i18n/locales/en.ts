@@ -796,6 +796,11 @@ const en = {
       unconfigured: "Not calculated because the finance KPI is not configured",
       broken_scope: "Calculation stopped because the linked project was deleted",
     },
+    noLinkedTasks: "No tasks linked to this key result.",
+    quickCreateTask: "New task title…",
+    linkExistingTask: "Link existing task",
+    searchTasks: "Search tasks…",
+    noTasksToLink: "No tasks available to link.",
   },
   chat: {
     title: "Chat",
