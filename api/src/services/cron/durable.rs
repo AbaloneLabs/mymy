@@ -50,7 +50,6 @@ pub(super) struct DbCronJobRow {
     reuse_session_id: Option<Uuid>,
     catch_up_policy: String,
     retry_policy: String,
-    action_policy: Value,
     budget: Value,
     last_run_id: Option<Uuid>,
     waiting_decision_id: Option<Uuid>,
@@ -77,14 +76,37 @@ pub(super) async fn import_file_jobs_once(state: &AppState) -> AppResult<usize> 
     let mut imported = 0_usize;
     for job in jobs {
         let id = Uuid::parse_str(&job.id).unwrap_or_else(|_| Uuid::new_v4());
+        let project_id = job
+            .project_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok());
+        let session_id = if let Some(profile) = job.agent_profile.as_deref() {
+            let session_id = Uuid::new_v4();
+            sqlx::query(
+                r#"INSERT INTO chat_sessions
+                     (id, project_id, agent_id, profile, title, status,
+                      message_count, automation_result_only)
+                   VALUES ($1, $2, $3, $4, $5, 'active', 0, false)"#,
+            )
+            .bind(session_id)
+            .bind(project_id)
+            .bind(format!("native-{profile}"))
+            .bind(profile)
+            .bind(format!("Cron: {}", truncate_chars(&job.title, 220)))
+            .execute(&mut *tx)
+            .await?;
+            Some(session_id)
+        } else {
+            None
+        };
         let inserted = sqlx::query(
             r#"INSERT INTO cron_jobs
                  (id, legacy_id, title, prompt, schedule, schedule_text, timezone,
                   enabled, next_run_at, run_count, max_runs, skills, context_from,
                   wake_agent, agent_profile, project_id, session_policy,
-                  catch_up_policy, retry_policy, budget)
+                  reuse_session_id, catch_up_policy, retry_policy, budget)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                       $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                       $12, $13, $14, $15, $16, 'reuse', $17, $18, $19, $20)
                ON CONFLICT (legacy_id) DO NOTHING"#,
         )
         .bind(id)
@@ -110,11 +132,8 @@ pub(super) async fn import_file_jobs_once(state: &AppState) -> AppResult<usize> 
         )
         .bind(job.wake_agent)
         .bind(job.agent_profile)
-        .bind(
-            job.project_id
-                .and_then(|value| Uuid::parse_str(&value).ok()),
-        )
-        .bind(job.session_policy)
+        .bind(project_id)
+        .bind(session_id)
         .bind(job.catch_up_policy)
         .bind(job.retry_policy)
         .bind(serde_json::json!({
@@ -124,6 +143,14 @@ pub(super) async fn import_file_jobs_once(state: &AppState) -> AppResult<usize> 
         }))
         .execute(&mut *tx)
         .await?;
+        if inserted.rows_affected() == 0 {
+            if let Some(session_id) = session_id {
+                sqlx::query("DELETE FROM chat_sessions WHERE id = $1")
+                    .bind(session_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
         imported += inserted.rows_affected() as usize;
     }
     sqlx::query("INSERT INTO runtime_migrations (key, details) VALUES ('cron_jobs_json_v1', $1)")
@@ -177,14 +204,29 @@ pub(super) async fn create_job(
         .or_else(|| matches!(schedule, Schedule::Once { .. }).then_some(1));
     let next_run_at = compute_next_run_in_timezone(&schedule, now, &state.config.cron_timezone);
     let id = Uuid::new_v4();
+    let session_id = Uuid::new_v4();
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        r#"INSERT INTO chat_sessions
+             (id, project_id, agent_id, profile, title, status, message_count,
+              automation_result_only)
+           VALUES ($1, $2, $3, $4, $5, 'active', 0, false)"#,
+    )
+    .bind(session_id)
+    .bind(project_id)
+    .bind(format!("native-{profile}"))
+    .bind(&profile)
+    .bind(format!("Cron: {}", truncate_chars(title, 220)))
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         r#"INSERT INTO cron_jobs
              (id, title, prompt, schedule, schedule_text, timezone, enabled,
               next_run_at, max_runs, skills, context_from, wake_agent,
-              agent_profile, project_id, session_policy, catch_up_policy,
-              retry_policy, budget)
+              agent_profile, project_id, session_policy, reuse_session_id,
+              catch_up_policy, retry_policy, budget)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                   $12, $13, $14, $15, $16, $17, $18)"#,
+                   $12, $13, $14, 'reuse', $15, $16, $17, $18)"#,
     )
     .bind(id)
     .bind(title)
@@ -206,7 +248,7 @@ pub(super) async fn create_job(
     .bind(req.wake_agent)
     .bind(Some(profile))
     .bind(project_id)
-    .bind(req.session_policy)
+    .bind(session_id)
     .bind(req.catch_up_policy)
     .bind(req.retry_policy)
     .bind(serde_json::json!({
@@ -214,8 +256,9 @@ pub(super) async fn create_job(
         "maxRuntimeSeconds": req.max_runtime_seconds,
         "maxTotalTokens": req.max_total_tokens,
     }))
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     audit_change(state, "create", id, "create", title).await;
     list_jobs(state).await
 }
@@ -268,20 +311,31 @@ pub(super) async fn update_job(
         row.wake_agent = wake_agent;
     }
     if let Some(profile) = req.agent_profile {
-        row.agent_profile = Some(
-            validate_agent_profile(state, profile.as_deref())
-                .await?
-                .ok_or_else(|| {
-                    AppError::BadRequest("agentProfile cannot be cleared".to_string())
-                })?,
-        );
+        let requested = validate_agent_profile(state, profile.as_deref())
+            .await?
+            .ok_or_else(|| AppError::BadRequest("agentProfile cannot be cleared".to_string()))?;
+        if row.agent_profile.as_deref() != Some(requested.as_str()) {
+            return Err(AppError::BadRequest(
+                "cron agentProfile cannot change after its stable session is created".to_string(),
+            ));
+        }
     }
     if let Some(project) = req.project_id {
-        row.project_id = parse_project_id(project.as_deref())?;
-        validate_project(state, row.project_id).await?;
+        let requested = parse_project_id(project.as_deref())?;
+        validate_project(state, requested).await?;
+        if row.project_id != requested {
+            return Err(AppError::BadRequest(
+                "cron projectId cannot change after its stable session is created".to_string(),
+            ));
+        }
     }
     if let Some(policy) = req.session_policy {
-        row.session_policy = policy;
+        if policy != "reuse" {
+            return Err(AppError::BadRequest(
+                "sessionPolicy must be reuse because each cron owns one stable session".to_string(),
+            ));
+        }
+        row.session_policy = "reuse".to_string();
     }
     if let Some(policy) = req.catch_up_policy {
         row.catch_up_policy = policy;
@@ -306,6 +360,7 @@ pub(super) async fn update_job(
     validate_request_policies(&row.session_policy, &row.catch_up_policy, &row.retry_policy)?;
     let (max_tool_calls, max_runtime_seconds, max_total_tokens) = budget_limits(&row.budget);
     validate_runtime_budget(max_tool_calls, max_runtime_seconds, max_total_tokens)?;
+    let mut tx = state.db.begin().await?;
     sqlx::query(
         r#"UPDATE cron_jobs SET title = $2, prompt = $3, schedule = $4,
               schedule_text = $5, enabled = $6, next_run_at = $7,
@@ -332,8 +387,19 @@ pub(super) async fn update_job(
     .bind(&row.catch_up_policy)
     .bind(&row.retry_policy)
     .bind(&row.budget)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    if let Some(session_id) = row.reuse_session_id {
+        sqlx::query(
+            r#"UPDATE chat_sessions SET title = $2, updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(session_id)
+        .bind(format!("Cron: {}", truncate_chars(&row.title, 220)))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     audit_change(state, "update", id, "update", &row.title).await;
     list_jobs(state).await
 }
@@ -378,14 +444,24 @@ pub(super) async fn trigger_job(state: &AppState, id: &str) -> AppResult<CronJob
 
 pub(super) async fn delete_job(state: &AppState, id: &str) -> AppResult<CronJobsResponse> {
     let id = parse_job_id(id)?;
-    let title = sqlx::query_scalar::<_, String>(
+    let mut tx = state.db.begin().await?;
+    let (title, session_id) = sqlx::query_as::<_, (String, Option<Uuid>)>(
         r#"UPDATE cron_jobs SET enabled = false, deleted_at = now(), updated_at = now()
-           WHERE id = $1 AND deleted_at IS NULL RETURNING title"#,
+           WHERE id = $1 AND deleted_at IS NULL RETURNING title, reuse_session_id"#,
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("cron job {id} not found")))?;
+    if let Some(session_id) = session_id {
+        sqlx::query(
+            "UPDATE chat_sessions SET status = 'archived', updated_at = now() WHERE id = $1",
+        )
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     audit_change(state, "delete", id, "delete", &title).await;
     list_jobs(state).await
 }
@@ -515,7 +591,6 @@ async fn enqueue_one_due_occurrence(state: &AppState) -> AppResult<bool> {
     let run_id = Uuid::new_v4();
     let authorization = serde_json::json!({
         "explicitUserAction": false,
-        "approvalCeiling": job.action_policy,
         "budget": job.budget,
         "retryPolicy": job.retry_policy,
     });
@@ -590,12 +665,7 @@ pub async fn finalize_occurrence(
     .fetch_one(&state.db)
     .await?;
     let output = truncate_chars(&output, 50_000);
-    let status = match run_status {
-        "completed" if output.trim() == "[SILENT]" => "silent",
-        "completed" => "success",
-        "cancelled" => "cancelled",
-        _ => "error",
-    };
+    let status = cron_result_status(run_status, &output);
     let output_path = write_output(state, &job, status, &output)?;
     insert_result(
         state,
@@ -621,6 +691,15 @@ pub async fn finalize_occurrence(
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+fn cron_result_status(run_status: &str, output: &str) -> &'static str {
+    match run_status {
+        "completed" if output.trim() == "[SILENT]" => "silent",
+        "completed" if !output.trim().is_empty() => "success",
+        "cancelled" => "cancelled",
+        _ => "error",
+    }
 }
 
 async fn fetch_job_rows(state: &AppState) -> AppResult<Vec<DbCronJobRow>> {
@@ -665,7 +744,7 @@ async fn fetch_due_job_for_update(
                INNER JOIN agent_runs active_run
                  ON active_run.id = active_occurrence.run_id
                WHERE active_occurrence.job_id = j.id
-                 AND active_run.status IN ('queued', 'running')
+                 AND active_run.status IN ('queued', 'running', 'waiting_decision')
              )
            ORDER BY j.next_run_at, j.id FOR UPDATE SKIP LOCKED LIMIT 1"#,
         job_columns("j")
@@ -684,7 +763,7 @@ fn job_columns(alias: &str) -> String {
          {alias}.wake_agent, {alias}.agent_profile, {alias}.project_id, \
          {alias}.session_policy, {alias}.reuse_session_id, \
          {alias}.catch_up_policy, {alias}.retry_policy, \
-         {alias}.action_policy, {alias}.budget"
+         {alias}.budget"
     )
 }
 
@@ -724,45 +803,44 @@ async fn resolve_session(
     job: &mut DbCronJobRow,
     profile: &str,
 ) -> AppResult<Uuid> {
-    if job.session_policy == "reuse" {
-        if let Some(session_id) = job.reuse_session_id {
-            let valid = sqlx::query_scalar::<_, bool>(
-                r#"SELECT EXISTS(SELECT 1 FROM chat_sessions
-                   WHERE id = $1 AND profile = $2
-                     AND project_id IS NOT DISTINCT FROM $3)"#,
-            )
-            .bind(session_id)
-            .bind(profile)
-            .bind(job.project_id)
-            .fetch_one(&mut **tx)
-            .await?;
-            if valid {
-                return Ok(session_id);
-            }
+    if let Some(session_id) = job.reuse_session_id {
+        let valid = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM chat_sessions
+               WHERE id = $1 AND profile = $2
+                 AND project_id IS NOT DISTINCT FROM $3)"#,
+        )
+        .bind(session_id)
+        .bind(profile)
+        .bind(job.project_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if valid {
+            return Ok(session_id);
         }
     }
     let session_id = Uuid::new_v4();
     sqlx::query(
         r#"INSERT INTO chat_sessions
-             (id, project_id, agent_id, profile, status, message_count,
+             (id, project_id, agent_id, profile, title, status, message_count,
               automation_result_only)
-           VALUES ($1, $2, $3, $4, 'active', 0, $5)"#,
+           VALUES ($1, $2, $3, $4, $5, 'active', 0, false)"#,
     )
     .bind(session_id)
     .bind(job.project_id)
     .bind(format!("native-{profile}"))
     .bind(profile)
-    .bind(job.session_policy == "result_only")
+    .bind(format!("Cron: {}", truncate_chars(&job.title, 220)))
     .execute(&mut **tx)
     .await?;
-    if job.session_policy == "reuse" {
-        sqlx::query("UPDATE cron_jobs SET reuse_session_id = $2 WHERE id = $1")
-            .bind(job.id)
-            .bind(session_id)
-            .execute(&mut **tx)
-            .await?;
-        job.reuse_session_id = Some(session_id);
-    }
+    sqlx::query(
+        "UPDATE cron_jobs SET session_policy = 'reuse', reuse_session_id = $2 WHERE id = $1",
+    )
+    .bind(job.id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    job.session_policy = "reuse".to_string();
+    job.reuse_session_id = Some(session_id);
     Ok(session_id)
 }
 
@@ -820,8 +898,10 @@ async fn advance_job(
 }
 
 fn validate_request_policies(session: &str, catch_up: &str, retry: &str) -> AppResult<()> {
-    if !matches!(session, "new" | "reuse" | "result_only") {
-        return Err(AppError::BadRequest("invalid sessionPolicy".to_string()));
+    if session != "reuse" {
+        return Err(AppError::BadRequest(
+            "sessionPolicy must be reuse because each cron owns one stable session".to_string(),
+        ));
     }
     if !matches!(catch_up, "skip" | "latest" | "all") {
         return Err(AppError::BadRequest("invalid catchUpPolicy".to_string()));
@@ -963,4 +1043,137 @@ async fn audit_change(state: &AppState, action: &str, id: Uuid, operation: &str,
         })),
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+    use crate::config::Config;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn each_cron_owns_one_visible_session_and_reuses_it_for_occurrences(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        sqlx::query(
+            r#"INSERT INTO native_agents
+                 (profile, name, drive_path, sandbox_status)
+               VALUES ('cron-session-test', 'Cron session test',
+                       '/drive/agents/cron-session-test', 'ready')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for index in 0..3 {
+            create_job(&state, request(&format!("Job {index}")))
+                .await
+                .unwrap();
+        }
+
+        let jobs = sqlx::query_as::<_, (Uuid, Uuid)>(
+            r#"SELECT id, reuse_session_id
+               FROM cron_jobs ORDER BY title"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            jobs.iter()
+                .map(|(_, session_id)| *session_id)
+                .collect::<HashSet<_>>()
+                .len(),
+            3
+        );
+        let visible_sessions = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM chat_sessions
+               WHERE profile = 'cron-session-test' AND NOT automation_result_only"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(visible_sessions, 3);
+
+        let (job_id, stable_session_id) = jobs[0];
+        trigger_job(&state, &job_id.to_string()).await.unwrap();
+        assert_eq!(tick_due_jobs(&state).await.unwrap(), 1);
+        let first_run_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM agent_runs WHERE trigger_ref = $1 ORDER BY created_at LIMIT 1",
+        )
+        .bind(job_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE agent_runs SET status = 'running' WHERE id = $1")
+            .bind(first_run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agent_runs SET status = 'completed' WHERE id = $1")
+            .bind(first_run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        trigger_job(&state, &job_id.to_string()).await.unwrap();
+        assert_eq!(tick_due_jobs(&state).await.unwrap(), 1);
+        let run_sessions = sqlx::query_scalar::<_, Uuid>(
+            "SELECT session_id FROM agent_runs WHERE trigger_ref = $1 ORDER BY created_at",
+        )
+        .bind(job_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(run_sessions, vec![stable_session_id, stable_session_id]);
+    }
+
+    #[test]
+    fn cron_result_status_never_treats_empty_completion_as_success() {
+        assert_eq!(cron_result_status("completed", ""), "error");
+        assert_eq!(cron_result_status("completed", "  \n"), "error");
+        assert_eq!(cron_result_status("completed", "[SILENT]"), "silent");
+        assert_eq!(cron_result_status("completed", "Real result"), "success");
+        assert_eq!(cron_result_status("cancelled", "partial"), "cancelled");
+        assert_eq!(cron_result_status("failed", "partial"), "error");
+    }
+
+    fn request(title: &str) -> CreateCronJobRequest {
+        CreateCronJobRequest {
+            title: title.to_string(),
+            prompt: "Perform one bounded scheduled task.".to_string(),
+            schedule: "every 1h".to_string(),
+            max_runs: None,
+            enabled: false,
+            skills: Vec::new(),
+            context_from: None,
+            wake_agent: false,
+            agent_profile: Some("cron-session-test".to_string()),
+            project_id: None,
+            session_policy: "reuse".to_string(),
+            catch_up_policy: "latest".to_string(),
+            retry_policy: "safe".to_string(),
+            max_tool_calls: default_max_tool_calls(),
+            max_runtime_seconds: default_max_runtime_seconds(),
+            max_total_tokens: default_max_total_tokens(),
+        }
+    }
+
+    fn test_config() -> Config {
+        Config {
+            database_url: String::new(),
+            port: 0,
+            cors_origins: Vec::new(),
+            agent_data_dir: std::env::temp_dir(),
+            auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 10,
+            drive_s3_bucket: None,
+            drive_s3_region: None,
+            drive_s3_endpoint: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
+        }
+    }
 }

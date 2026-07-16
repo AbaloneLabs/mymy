@@ -393,24 +393,61 @@ pub(super) async fn finish_run(
     usage: Value,
 ) -> AppResult<String> {
     let mut tx = state.db.begin().await?;
-    let cancellation_requested = sqlx::query_scalar::<_, bool>(
-        r#"SELECT cancel_requested_at IS NOT NULL
+    let (cancellation_requested, inbox_revision, delivered_revision) =
+        sqlx::query_as::<_, (bool, i64, i64)>(
+            r#"SELECT cancel_requested_at IS NOT NULL,
+                  decision_inbox_revision, decision_delivered_revision
            FROM agent_runs
            WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3
              AND status = 'running'
            FOR UPDATE"#,
-    )
-    .bind(run.id)
-    .bind(run.lease_owner.as_deref())
-    .bind(run.lease_epoch)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| {
-        AppError::Conflict(format!(
-            "agent run {} terminal transition lost its lease",
-            run.id
-        ))
-    })?;
+        )
+        .bind(run.id)
+        .bind(run.lease_owner.as_deref())
+        .bind(run.lease_epoch)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(format!(
+                "agent run {} terminal transition lost its lease",
+                run.id
+            ))
+        })?;
+    if !cancellation_requested
+        && requested_status == "completed"
+        && inbox_revision > delivered_revision
+    {
+        insert_event_in_tx(
+            &mut tx,
+            run.id,
+            "run_requeued",
+            serde_json::json!({
+                "type": "run_status",
+                "run_id": run.id,
+                "status": "queued",
+                "cancel_requested": false,
+                "reason": "decision_answer_delivery",
+                "decision_inbox_revision": inbox_revision,
+            }),
+            Some(&format!("decision-delivery-requeue:{inbox_revision}")),
+        )
+        .await?;
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET status = 'queued', heartbeat_at = now(), next_attempt_at = NULL,
+                   lease_owner = NULL, lease_expires_at = NULL, error_code = NULL
+               WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3
+                 AND status = 'running'"#,
+        )
+        .bind(run.id)
+        .bind(run.lease_owner.as_deref())
+        .bind(run.lease_epoch)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        state.agent_run_notify.notify_waiters();
+        return Ok("queued".to_string());
+    }
     let status = if cancellation_requested {
         "cancelled"
     } else {
@@ -479,8 +516,24 @@ pub(super) async fn pause_run_for_decision(
     state: &AppState,
     run: &AgentRunRow,
     decision_id: &str,
-) -> AppResult<()> {
+) -> AppResult<bool> {
+    let decision_id = Uuid::parse_str(decision_id)
+        .map_err(|err| AppError::BadRequest(format!("invalid decision id: {err}")))?;
     let mut tx = state.db.begin().await?;
+    let decision_pending = sqlx::query_scalar::<_, bool>(
+        r#"SELECT status = 'pending' AND kind IN ('choice', 'input')
+           FROM decisions WHERE id = $1 AND run_id = $2 FOR UPDATE"#,
+    )
+    .bind(decision_id)
+    .bind(run.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        AppError::Conflict(format!(
+            "decision {decision_id} does not belong to agent run {}",
+            run.id
+        ))
+    })?;
     let locked = sqlx::query_scalar::<_, Uuid>(
         r#"SELECT id FROM agent_runs
            WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3
@@ -497,6 +550,38 @@ pub(super) async fn pause_run_for_decision(
             "agent run {} lost its lease before decision pause",
             run.id
         )));
+    }
+    if !decision_pending {
+        insert_event_in_tx(
+            &mut tx,
+            run.id,
+            "run_requeued",
+            serde_json::json!({
+                "type": "run_status",
+                "run_id": run.id,
+                "status": "queued",
+                "cancel_requested": false,
+                "reason": "decision_resolved_before_pause",
+                "decision_id": decision_id,
+            }),
+            Some(&format!("decision-resolved-before-pause:{decision_id}")),
+        )
+        .await?;
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET status = 'queued', heartbeat_at = now(),
+                   lease_owner = NULL, lease_expires_at = NULL
+               WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3
+                 AND status = 'running'"#,
+        )
+        .bind(run.id)
+        .bind(run.lease_owner.as_deref())
+        .bind(run.lease_epoch)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        state.agent_run_notify.notify_waiters();
+        return Ok(false);
     }
     insert_event_in_tx(
         &mut tx,
@@ -526,5 +611,5 @@ pub(super) async fn pause_run_for_decision(
     .await?;
     tx.commit().await?;
     state.agent_run_notify.notify_waiters();
-    Ok(())
+    Ok(true)
 }

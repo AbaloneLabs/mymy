@@ -1,4 +1,4 @@
-//! Higher-level agent tools: todo, clarify, delegation metadata, session search.
+//! Higher-level agent tools: todo, Decision, delegation metadata, session search.
 //!
 //! These tools do not invent data. Todo state is persisted per chat session
 //! under the agent data directory, and session search reads only real
@@ -74,24 +74,38 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
         }),
     });
 
-    registry.register(ToolEntry {
-        name: "clarify".to_string(),
-        toolset: "clarify".to_string(),
-        schema: tool_schema(
-            "clarify",
-            "Prepare a clarifying question for the user. The UI may render the returned request.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "question": { "type": "string", "description": "One concise question that requires user input." },
-                    "choices": { "type": "array", "description": "Optional mutually exclusive answer labels shown to the user.", "items": { "type": "string", "description": "One answer label." }, "maxItems": 4 }
-                },
-                "required": ["question"]
-            }),
+    for (name, toolset, description) in [
+        (
+            "decision",
+            "decision",
+            "Explicitly ask the user for a semantic choice or non-sensitive input. Set blocking true only when no independent work can continue; set it false to continue independent work until the Run must park.",
         ),
-        capability: ToolCapability::mutation(ToolEffect::Create, "decision"),
-        handler: Arc::new(ClarifyTool),
-    });
+        (
+            "clarify",
+            "clarify",
+            "Compatibility alias for decision. The blocking dependency classification is still mandatory.",
+        ),
+    ] {
+        registry.register(ToolEntry {
+            name: name.to_string(),
+            toolset: toolset.to_string(),
+            schema: tool_schema(
+                name,
+                description,
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "question": { "type": "string", "description": "One concise question whose answer materially changes the requested outcome." },
+                        "choices": { "type": "array", "description": "Optional mutually exclusive answer labels shown to the user.", "items": { "type": "string", "description": "One answer label." }, "maxItems": 4 },
+                        "blocking": { "type": "boolean", "description": "True pauses the whole Run; false blocks only dependent work while independent work continues." }
+                    },
+                    "required": ["question", "blocking"]
+                }),
+            ),
+            capability: ToolCapability::mutation(ToolEffect::Create, "decision"),
+            handler: Arc::new(ClarifyTool),
+        });
+    }
 
     registry.register(ToolEntry {
         name: "delegate_task".to_string(),
@@ -104,13 +118,13 @@ pub fn register(registry: &mut ToolRegistry, config: &BuiltinToolConfig) {
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "Bounded independent read-only tasks for delegated execution.",
+                        "description": "Bounded independent tasks for delegated execution. Each child inherits this agent's current access policy and write-safety checks.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "goal": { "type": "string", "description": "Concrete outcome requested from the child task." },
                                 "context": { "type": "string", "description": "Bounded context needed to perform this task." },
-                                "tools": { "type": "array", "description": "Optional read-only tool names allowed for this task.", "items": { "type": "string", "description": "One allowed tool name." } },
+                                "tools": { "type": "array", "description": "Optional tool names allowed for this task. Omit to inherit every available non-delegation tool permitted for the owning agent.", "items": { "type": "string", "description": "One allowed tool name." } },
                                 "max_turns": { "type": "integer", "minimum": 1, "description": "Maximum model turns allocated to this child task." }
                             },
                             "required": ["goal"]

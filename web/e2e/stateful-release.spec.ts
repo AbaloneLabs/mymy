@@ -32,7 +32,6 @@ interface ReleaseFixture {
   decisions: {
     choiceId: string;
     inputId: string;
-    approvalId: string;
     paginationIds: string[];
     totalPending: number;
   };
@@ -88,7 +87,7 @@ test.describe.serial("stateful July 11 release journeys", () => {
     expect(fixture).toMatchObject({
       fixtureRevision: "july11-stateful-browser-v1",
       seed,
-      decisions: { totalPending: 26 },
+      decisions: { totalPending: 25 },
       quarantine: { toolErrorCode: "content_quarantined" },
     });
     activePath = fixture.artifact.path;
@@ -409,14 +408,6 @@ test.describe.serial("stateful July 11 release journeys", () => {
     await expect(inputCard.getByRole("status")).toHaveText(
       "The Decision was updated from the server-confirmed result.",
     );
-
-    await page.goto(`/decisions?scope=all&decisionId=${fixture.decisions.approvalId}`);
-    const approvalCard = decisionCard(page, fixture.decisions.approvalId);
-    await approvalCard.getByRole("button", { name: "Approve", exact: true }).click();
-    await expect(approvalCard.getByRole("status")).toHaveText(
-      "The Decision changed. Its current server state was refreshed.",
-    );
-    await expect(approvalCard).toContainText("Superseded");
 
     await page.goto("/decisions?scope=all&status=pending");
     const pendingCards = page.locator('article[id^="decision-"]');

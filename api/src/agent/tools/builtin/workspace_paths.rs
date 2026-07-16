@@ -203,13 +203,14 @@ impl WorkspacePathPolicy {
             .map_err(|err| ToolError::InvalidArgs(format!("invalid logical Drive path: {err}")))
     }
 
-    fn ensure_inside(&self, path: &Path, raw: &str) -> Result<(), ToolError> {
+    fn ensure_inside(&self, path: &Path, _raw: &str) -> Result<(), ToolError> {
         if self.is_inside(path) {
             return Ok(());
         }
-        Err(ToolError::InvalidArgs(format!(
-            "path escapes workspace: {raw}"
-        )))
+        Err(ToolError::Coded {
+            code: "path_scope_violation",
+            message: "path escapes the configured workspace".to_string(),
+        })
     }
 
     pub(super) fn logical_path_for(&self, path: &Path) -> String {

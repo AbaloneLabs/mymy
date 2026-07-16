@@ -195,11 +195,8 @@ fn default_permissions() -> HashMap<AgentToolDomain, AgentToolAccess> {
         .collect()
 }
 
-fn default_access(domain: AgentToolDomain) -> AgentToolAccess {
-    match domain {
-        AgentToolDomain::Agents | AgentToolDomain::Sessions => AgentToolAccess::ReadOnly,
-        _ => AgentToolAccess::Access,
-    }
+fn default_access(_domain: AgentToolDomain) -> AgentToolAccess {
+    AgentToolAccess::Access
 }
 
 pub fn domain_slug(domain: AgentToolDomain) -> &'static str {

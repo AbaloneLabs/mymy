@@ -410,47 +410,6 @@ pub async fn create_memory(state: &AppState, memory: NewMemory<'_>) -> AppResult
     Ok(memory_view(row))
 }
 
-pub async fn create_decision_memory(state: &AppState, decision_id: Uuid) -> AppResult<()> {
-    let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, String, Value)>(
-        r#"SELECT d.run_id, r.agent_profile, r.project_id, d.question, d.answer
-           FROM decisions d INNER JOIN agent_runs r ON r.id = d.run_id
-           WHERE d.id = $1 AND d.status = 'resolved' AND d.answer IS NOT NULL"#,
-    )
-    .bind(decision_id)
-    .fetch_optional(&state.db)
-    .await?;
-    let Some((run_id, profile, project_id, question, answer)) = row else {
-        return Ok(());
-    };
-    let content = format!(
-        "Decision: {} => {}",
-        redact_sensitive_text(&question),
-        redact_sensitive_text(&answer.to_string())
-    );
-    if scan_for_threats(&content, ThreatScope::Strict).is_empty() {
-        create_memory(
-            state,
-            NewMemory {
-                source_run_id: Some(run_id),
-                source_decision_id: Some(decision_id),
-                source_session_id: None,
-                source_message_start: None,
-                source_message_end: None,
-                extraction_batch_id: None,
-                agent_profile: &profile,
-                project_id,
-                memory_type: "decision",
-                origin: "decision",
-                content: &content,
-                confidence: 0.9,
-                sensitivity: "private",
-            },
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 fn validate_memory_idempotency_key(value: &str) -> AppResult<()> {
     if !(16..=200).contains(&value.len()) || value.chars().any(char::is_whitespace) {
         return Err(AppError::BadRequest(

@@ -287,6 +287,20 @@ export default function Chat() {
                     <div className="truncate text-xs">
                       {session.title || t("chat.newSession")}
                     </div>
+                    {session.latestRunStatus && (
+                      <div
+                        className={cn(
+                          "mt-0.5 truncate text-[10px]",
+                          session.latestRunStatus === "waiting_decision" ||
+                            session.latestRunStatus === "failed"
+                            ? "text-[var(--status-warning)]"
+                            : "text-[var(--text-faint)]",
+                        )}
+                        title={session.blockerSummary}
+                      >
+                        {session.latestRunStatus}
+                      </div>
+                    )}
                     <div className="mt-0.5 flex items-center gap-1">
                       {projectName ? (
                         <>

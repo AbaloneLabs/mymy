@@ -447,7 +447,6 @@ async fn insert_chat_run(
     .bind(PROMPT_VERSION)
     .bind(serde_json::json!({
         "explicitUserAction": true,
-        "approvalCeiling": {},
         "budget": {
             "maxToolCalls": INTERACTIVE_MAX_TOOL_CALLS,
             "maxRuntimeSeconds": INTERACTIVE_MAX_RUNTIME_SECONDS,

@@ -43,6 +43,10 @@ pub struct ChatSession {
     pub title: Option<String>,
     pub status: SessionStatus,
     pub message_count: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_run_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker_summary: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

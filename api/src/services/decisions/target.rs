@@ -1,8 +1,8 @@
-//! Canonical identity and version comparison for durable approvals.
+//! Canonical hashing and version comparison for semantic Decisions and writes.
 //!
-//! Proposed actions are hashed from their complete JSON value, while resource
-//! versions accept exact opaque fingerprints and normalized RFC3339 instants.
-//! Keeping both rules pure makes stale-approval behavior deterministic.
+//! Semantic Decision dedupe keys are hashed from their complete JSON value,
+//! while resource versions accept exact opaque fingerprints and normalized
+//! RFC3339 instants.
 
 use chrono::DateTime;
 use serde_json::Value;
@@ -38,7 +38,7 @@ mod tests {
     }
 
     #[test]
-    fn action_hash_changes_with_target_version() {
+    fn value_hash_changes_with_target_version() {
         let first = hash_value(&serde_json::json!({ "id": "a", "version": 1 })).unwrap();
         let second = hash_value(&serde_json::json!({ "id": "a", "version": 2 })).unwrap();
         assert_ne!(first, second);

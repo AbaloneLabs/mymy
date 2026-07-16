@@ -295,7 +295,7 @@ impl WorkspaceContentService {
         }
     }
 
-    /// Commit bytes already re-inspected by the quarantine approval flow.
+    /// Commit bytes already re-inspected by the quarantine review flow.
     pub(crate) async fn release_reviewed(
         &self,
         state: &AppState,

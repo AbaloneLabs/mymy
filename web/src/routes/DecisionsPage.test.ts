@@ -6,12 +6,12 @@ import {
 
 describe("Decision URL project scope", () => {
   it("binds an explicit project without dropping unrelated filters", () => {
-    const params = new URLSearchParams("status=pending&kind=approval&scope=all");
+    const params = new URLSearchParams("status=pending&kind=choice&scope=all");
 
     setDecisionProjectScope(params, "project-1");
 
     expect(params.toString()).toBe(
-      "status=pending&kind=approval&scope=project&project=project-1",
+      "status=pending&kind=choice&scope=project&project=project-1",
     );
   });
 

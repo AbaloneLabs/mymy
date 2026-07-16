@@ -46,8 +46,6 @@ pub struct AuthorizationContext {
     #[serde(default)]
     pub explicit_user_action: bool,
     #[serde(default)]
-    pub approval_ceiling: Value,
-    #[serde(default)]
     pub budget: Value,
 }
 
@@ -101,6 +99,32 @@ pub struct ToolExecutionContext {
     pub decisions: Option<Arc<dyn DecisionCoordinator>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolGuardError {
+    pub code: &'static str,
+    pub message: String,
+    pub protected_invariant: &'static str,
+    pub permitted_next_action: &'static str,
+    pub operation_state: &'static str,
+}
+
+impl ToolGuardError {
+    pub fn denied(
+        code: &'static str,
+        message: impl Into<String>,
+        protected_invariant: &'static str,
+        permitted_next_action: &'static str,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            protected_invariant,
+            permitted_next_action,
+            operation_state: "not_started",
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait ToolExecutionGuard: Send + Sync {
     async fn validate(
@@ -111,7 +135,7 @@ pub trait ToolExecutionGuard: Send + Sync {
         capability: &ToolCapability,
         contract_fingerprint: &str,
         arguments: &Value,
-    ) -> Result<(), String>;
+    ) -> Result<(), ToolGuardError>;
 }
 
 #[async_trait::async_trait]
@@ -134,6 +158,7 @@ pub struct DurableDecision {
     pub session_id: Option<Uuid>,
     pub question: String,
     pub choices: Vec<String>,
+    pub suspend: bool,
     pub created_at: String,
 }
 
@@ -144,15 +169,7 @@ pub trait DecisionCoordinator: Send + Sync {
         context: &ToolExecutionContext,
         question: &str,
         choices: &[String],
-        messages: &[Message],
-    ) -> Result<DurableDecision, String>;
-
-    async fn create_approval(
-        &self,
-        context: &ToolExecutionContext,
-        question: &str,
-        proposed_action: Value,
-        target_version: Option<String>,
+        blocking: bool,
         messages: &[Message],
     ) -> Result<DurableDecision, String>;
 }

@@ -2,7 +2,7 @@
 //!
 //! Provider-side schema checks are advisory: models and transports can still
 //! produce malformed arguments. The registry therefore validates the catalog
-//! before exposure and validates every invocation again before approval or
+//! before exposure and validates every invocation again before safety checks or
 //! handler execution. This module intentionally supports the JSON Schema
 //! vocabulary used by mymy tools instead of silently pretending to implement
 //! an unrestricted draft.

@@ -215,7 +215,7 @@ export interface SaveCronJobRequest {
   wakeAgent?: boolean;
   agentProfile?: string | null;
   projectId?: string | null;
-  sessionPolicy?: "new" | "reuse" | "result_only";
+  sessionPolicy?: "reuse";
   catchUpPolicy?: "skip" | "latest" | "all";
   retryPolicy?: "none" | "safe";
   maxToolCalls?: number;
@@ -380,7 +380,7 @@ interface NativeCronJob {
   skills?: string[];
   agent_profile?: string;
   project_id?: string;
-  session_policy?: "new" | "reuse" | "result_only";
+  session_policy?: "reuse";
   catch_up_policy?: "skip" | "latest" | "all";
   retry_policy?: "none" | "safe";
   max_tool_calls?: number;
@@ -417,7 +417,7 @@ function toCronJob(job: NativeCronJob): CronJob {
     paused: !job.enabled,
     agentProfile: job.agent_profile,
     projectId: job.project_id,
-    sessionPolicy: job.session_policy ?? "new",
+    sessionPolicy: job.session_policy ?? "reuse",
     catchUpPolicy: job.catch_up_policy ?? "latest",
     retryPolicy: job.retry_policy ?? "safe",
     maxToolCalls: job.max_tool_calls ?? 100,

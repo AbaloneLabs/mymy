@@ -1,9 +1,9 @@
 //! Tool dispatch policy independent from turn streaming.
 //!
 //! The provider loop decides when to dispatch, while this module decides
-//! whether a call is executable, needs user interaction, or can join a safe
-//! parallel batch. Keeping that policy in one place prevents sequential and
-//! parallel execution from applying different approval or delegation rules.
+//! whether a call is executable, needs explicit user judgment, or can join a
+//! safe parallel batch. Keeping that policy in one place prevents sequential
+//! and parallel execution from applying different Decision or delegation rules.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,9 +13,9 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::agent::clarify::{normalize_choices, ClarifyGate, ClarifyRequest};
-use crate::agent::execution::{SessionTrigger, ToolExecutionContext};
+use crate::agent::execution::ToolExecutionContext;
 use crate::agent::providers::types::ToolCall;
-use crate::agent::tools::{tool_error, ToolRegistry};
+use crate::agent::tools::{decision_argument_error, tool_error, ToolRegistry};
 
 use super::delegate;
 
@@ -29,11 +29,7 @@ pub(super) enum ToolDispatch {
     DurableClarify {
         question: String,
         choices: Vec<String>,
-    },
-    Approval {
-        question: String,
-        proposed_action: Value,
-        target_version: Option<String>,
+        blocking: bool,
     },
     Delegate {
         tasks: Vec<delegate::DelegateTaskSpec>,
@@ -57,11 +53,9 @@ impl ToolDispatchPolicy<'_> {
             )));
         }
         match call.name.as_str() {
-            "clarify" => self.evaluate_clarify(call).await,
+            "decision" | "clarify" => self.evaluate_clarify(call).await,
             "delegate_task" => self.evaluate_delegate(call),
-            _ => self
-                .evaluate_approval(call)
-                .unwrap_or(ToolDispatch::Execute),
+            _ => ToolDispatch::Execute,
         }
     }
 
@@ -69,64 +63,26 @@ impl ToolDispatchPolicy<'_> {
         if calls.len() < 2 {
             return false;
         }
-        let autonomous = autonomous(self.execution_context);
         let mut resources = HashSet::new();
         calls.iter().all(|call| {
             if !tool_is_allowed(self.allowed_tool_names, &call.name)
-                || matches!(call.name.as_str(), "clarify" | "delegate_task")
+                || matches!(call.name.as_str(), "decision" | "clarify" | "delegate_task")
             {
-                return false;
-            }
-            let Some(capability) = self.registry.capability(&call.name) else {
-                return false;
-            };
-            if !capability.parallel_safe() || capability.requires_approval(autonomous) {
                 return false;
             }
             let Ok(arguments) = serde_json::from_str::<Value>(&call.arguments) else {
                 return false;
             };
+            let Some(capability) = self
+                .registry
+                .capability_for_arguments(&call.name, &arguments)
+            else {
+                return false;
+            };
+            if !capability.parallel_safe() {
+                return false;
+            }
             resources.insert(capability.resource_key(&arguments))
-        })
-    }
-
-    fn evaluate_approval(&self, call: &ToolCall) -> Option<ToolDispatch> {
-        let context = self.execution_context?;
-        context.decisions.as_ref()?;
-        let capability = self.registry.capability(&call.name)?;
-        let contract_fingerprint = self.registry.contract_fingerprint(&call.name)?;
-        if !capability.requires_approval(autonomous(Some(context))) {
-            return None;
-        }
-        let arguments = serde_json::from_str::<Value>(&call.arguments).ok()?;
-        let proposed_action = crate::agent::tools::proposed_action_descriptor(
-            &call.name,
-            capability,
-            &contract_fingerprint,
-            &arguments,
-        );
-        let action_hash = crate::agent::tools::proposed_action_hash(&proposed_action);
-        let already_approved = context
-            .authorization
-            .approval_ceiling
-            .get("approvedActionHashes")
-            .and_then(Value::as_array)
-            .is_some_and(|hashes| {
-                hashes
-                    .iter()
-                    .any(|hash| hash.as_str() == Some(&action_hash))
-            });
-        if already_approved {
-            return None;
-        }
-        let resource_key = capability.resource_key(&arguments);
-        Some(ToolDispatch::Approval {
-            question: format!(
-                "Approve the {:?} action `{}` on `{}`?",
-                capability.effect, call.name, resource_key
-            ),
-            proposed_action,
-            target_version: extract_target_version(&arguments),
         })
     }
 
@@ -142,6 +98,9 @@ impl ToolDispatchPolicy<'_> {
         else {
             return ToolDispatch::Execute;
         };
+        let Some(blocking) = args.get("blocking").and_then(Value::as_bool) else {
+            return ToolDispatch::Blocked(decision_argument_error());
+        };
         let choices = normalize_choices(args.get("choices"));
         if self
             .execution_context
@@ -151,6 +110,7 @@ impl ToolDispatchPolicy<'_> {
             return ToolDispatch::DurableClarify {
                 question: question.to_string(),
                 choices,
+                blocking,
             };
         }
         let (Some(gate), Some(session_id)) = (self.clarify_gate, self.session_id) else {
@@ -178,34 +138,4 @@ pub(super) fn tool_is_allowed(allowed: Option<&HashSet<String>>, tool_name: &str
         }
         None => true,
     }
-}
-
-fn autonomous(context: Option<&ToolExecutionContext>) -> bool {
-    context.is_some_and(|context| {
-        !matches!(context.trigger, SessionTrigger::Chat)
-            || !context.authorization.explicit_user_action
-    })
-}
-
-fn extract_target_version(arguments: &Value) -> Option<String> {
-    let keys = [
-        "expectedVersion",
-        "expectedFingerprint",
-        "targetVersion",
-        "version",
-        "updatedAt",
-    ];
-    let direct = keys
-        .into_iter()
-        .find_map(|key| arguments.get(key))
-        .or_else(|| {
-            arguments
-                .get("data")
-                .and_then(|data| keys.into_iter().find_map(|key| data.get(key)))
-        });
-    direct.and_then(|value| match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        _ => None,
-    })
 }

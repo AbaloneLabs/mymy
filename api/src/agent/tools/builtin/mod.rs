@@ -122,6 +122,7 @@ pub fn validate_builtin_catalog(
 }
 
 pub fn register_agent_toolsets(registry: &mut ToolRegistry, policy: &AgentPermissionPolicy) {
+    registry.enable_toolset("decision");
     registry.enable_toolset("clarify");
     registry.enable_toolset("delegation");
     registry.enable_toolset("runtime");
@@ -255,6 +256,29 @@ mod contract_tests {
         assert!(errors.is_empty(), "{}", errors.join("\n"));
         registry.validate_catalog().unwrap();
         assert!(!registry.schemas().is_empty());
+        let report = registry.catalog_report();
+        assert_eq!(report.len(), registry.schemas().len());
+        assert!(report.iter().all(|entry| {
+            !entry.interaction_boundary.is_empty()
+                && !entry.decision_behavior.is_empty()
+                && !entry.operation_modes.is_empty()
+                && !entry.safety_enforcement.is_empty()
+        }));
+        assert!(report.iter().all(|entry| {
+            if matches!(entry.name.as_str(), "decision" | "clarify") {
+                entry.decision_behavior == "explicit_semantic_request"
+            } else {
+                entry.decision_behavior == "never_automatic"
+            }
+        }));
+        let todo = report.iter().find(|entry| entry.name == "todo").unwrap();
+        assert_eq!(todo.operation_modes, vec!["read", "replace", "merge"]);
+        assert!(report.iter().all(|entry| {
+            entry.capability.effect == crate::agent::tools::ToolEffect::Read
+                || entry
+                    .safety_enforcement
+                    .contains(&"argument_bound_write_inspection")
+        }));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 //! replay latency, while heartbeat and lease epochs prevent a stale worker
 //! from claiming completion after ownership has moved elsewhere.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -190,16 +190,52 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
                 return;
             }
             if let Some(decision_id) = outcome.paused_decision_id.as_deref() {
-                if let Err(err) = pause_run_for_decision(state, &run, decision_id).await {
-                    tracing::error!(error = %err, "failed to pause run for decision");
-                } else {
-                    tracing::info!(decision_id, "agent run paused for decision");
-                    if run.trigger_type == "cron" {
-                        if let Err(err) =
-                            crate::services::cron::mark_occurrence_waiting(state, run.id).await
-                        {
-                            tracing::error!(error = %err, "failed to mark cron occurrence waiting");
+                match pause_run_for_decision(state, &run, decision_id).await {
+                    Ok(true) => {
+                        tracing::info!(decision_id, "agent run paused for decision");
+                        if run.trigger_type == "cron" {
+                            if let Err(err) =
+                                crate::services::cron::mark_occurrence_waiting(state, run.id).await
+                            {
+                                tracing::error!(error = %err, "failed to mark cron occurrence waiting");
+                            }
                         }
+                    }
+                    Ok(false) => {
+                        tracing::info!(decision_id, "Decision resolved before pause; Run requeued");
+                        state
+                            .unregister_run_cancellation(run.id, run.lease_epoch)
+                            .await;
+                        record_run_finished(&run, "queued", run_started.elapsed());
+                        return;
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to pause run for decision");
+                        let _ = persist_terminal_status_notice(
+                            state,
+                            &run,
+                            "failed",
+                            Some("decision_pause_failed"),
+                        )
+                        .await;
+                        let _ = finish_run(
+                            state,
+                            &run,
+                            "failed",
+                            Some("decision_pause_failed"),
+                            serde_json::json!({}),
+                        )
+                        .await;
+                        if run.trigger_type == "cron" {
+                            let _ =
+                                crate::services::cron::finalize_occurrence(state, run.id, "failed")
+                                    .await;
+                        }
+                        state
+                            .unregister_run_cancellation(run.id, run.lease_epoch)
+                            .await;
+                        record_run_finished(&run, "failed", run_started.elapsed());
+                        return;
                     }
                 }
                 state
@@ -208,13 +244,19 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
                 record_run_finished(&run, "waiting_decision", run_started.elapsed());
                 return;
             }
-            let status = if outcome.cancelled {
-                "cancelled"
-            } else if outcome.error_code.is_some() {
-                "failed"
-            } else {
-                "completed"
-            };
+            let status = terminal_status(&outcome);
+            if status != "completed" {
+                if let Err(error) = persist_terminal_status_notice(
+                    state,
+                    &run,
+                    status,
+                    outcome.error_code.as_deref(),
+                )
+                .await
+                {
+                    tracing::error!(error = %error, "failed to persist terminal Run status message");
+                }
+            }
             match finish_run(
                 state,
                 &run,
@@ -231,6 +273,16 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
             .await
             {
                 Ok(actual_status) => {
+                    if actual_status == "queued" {
+                        tracing::info!(
+                            "agent run requeued to deliver a newly resolved Decision answer"
+                        );
+                        record_run_finished(&run, "queued", run_started.elapsed());
+                        state
+                            .unregister_run_cancellation(run.id, run.lease_epoch)
+                            .await;
+                        return;
+                    }
                     crate::services::runtime_memory::spawn_run_summary(state.clone(), run.id);
                     if actual_status == "completed" && outcome.total_tool_calls > 0 {
                         if let Err(err) = crate::services::proactive::record_activity(
@@ -274,6 +326,11 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
                 Some("run-error"),
             )
             .await;
+            if let Err(status_error) =
+                persist_terminal_status_notice(state, &run, "failed", Some(error_code(&err))).await
+            {
+                tracing::error!(error = %status_error, "failed to persist Run failure message");
+            }
             if let Err(finish_err) = finish_run(
                 state,
                 &run,
@@ -375,27 +432,16 @@ async fn execute_chat_run(
     {
         resume_blocks.push(resume_input);
     }
-    resume_blocks
-        .extend(crate::services::decisions::resolved_answers_for_run(state, run.id).await?);
+    let decision_inbox = crate::services::decisions::resolved_answer_inbox(state, run.id).await?;
+    resume_blocks.extend(decision_inbox.messages);
     if !resume_blocks.is_empty() {
         turn.messages
             .push(Message::user(resume_blocks.join("\n\n")));
     }
-    let approved_action_hashes =
-        crate::services::decisions::approved_action_hashes(state, run.id).await?;
     let mut authorization =
         serde_json::from_value::<AuthorizationContext>(run.authorization_context.clone())
             .unwrap_or_default();
     authorization.explicit_user_action = run.trigger_type == "chat";
-    if !authorization.approval_ceiling.is_object() {
-        authorization.approval_ceiling = serde_json::json!({});
-    }
-    if let Some(ceiling) = authorization.approval_ceiling.as_object_mut() {
-        ceiling.insert(
-            "approvedActionHashes".to_string(),
-            serde_json::to_value(approved_action_hashes).unwrap_or_default(),
-        );
-    }
     let max_runtime = authorization
         .budget
         .get("maxRuntimeSeconds")
@@ -431,6 +477,14 @@ async fn execute_chat_run(
         turn.tool_count,
     )
     .await?;
+    crate::services::decisions::mark_inbox_delivered(
+        state,
+        run.id,
+        run.lease_epoch,
+        &run.agent_profile,
+        decision_inbox.revision,
+    )
+    .await?;
     mark_input_applied(state, input.id).await?;
 
     let mut user_message = turn.user_message.clone();
@@ -461,7 +515,7 @@ async fn execute_chat_run(
         PreparedExecution::Agent(agent_loop) => {
             let mut text_buffer = TextEventBuffer::new();
             let execution_started = Instant::now();
-            let mut active_tool_calls = HashSet::new();
+            let mut active_tool_calls = HashMap::new();
             let mut events = agent_loop.run(&turn.system_prompt, &mut turn.messages);
             loop {
                 let mut budget_expired = false;
@@ -492,7 +546,7 @@ async fn execute_chat_run(
                         Some("runtime-budget-exceeded"),
                     )
                     .await?;
-                    for call_id in &active_tool_calls {
+                    for call_id in active_tool_calls.keys() {
                         append_chat_event(
                             state,
                             run,
@@ -555,7 +609,13 @@ async fn execute_chat_run(
                         resource_key,
                         capability,
                     } => {
-                        active_tool_calls.insert(call_id.clone());
+                        active_tool_calls.insert(
+                            call_id.clone(),
+                            ToolNoticeContext {
+                                tool_name: tool_name.clone(),
+                                resource_key: resource_key.clone(),
+                            },
+                        );
                         flush_text_buffer(state, run, &mut text_buffer).await?;
                         append_chat_event(
                             state,
@@ -578,7 +638,7 @@ async fn execute_chat_run(
                         error,
                         duration_ms,
                     } => {
-                        active_tool_calls.remove(&call_id);
+                        let tool_context = active_tool_calls.remove(&call_id);
                         flush_text_buffer(state, run, &mut text_buffer).await?;
                         append_chat_event(
                             state,
@@ -593,6 +653,17 @@ async fn execute_chat_run(
                             Some(&format!("tool-finish:{call_id}")),
                         )
                         .await?;
+                        if let Some(tool_context) = tool_context.as_ref() {
+                            persist_tool_status_notice(
+                                state,
+                                run,
+                                session_id,
+                                &call_id,
+                                tool_context,
+                                &result,
+                            )
+                            .await?;
+                        }
                     }
                     AgentEvent::ClarifyRequired { request } => {
                         flush_text_buffer(state, run, &mut text_buffer).await?;
@@ -782,6 +853,29 @@ async fn execute_chat_run(
         }
     }
 
+    if cancellation.is_cancelled() && paused_decision_id.is_none() {
+        if cancel_requested(state, run.id).await? {
+            cancelled = true;
+        } else {
+            let current_permission_fingerprint =
+                crate::services::agent_permissions::load_policy(state, &run.agent_profile)
+                    .await?
+                    .fingerprint();
+            terminal_error = Some(
+                if current_permission_fingerprint != turn.permission_fingerprint {
+                    "permission_revision_changed"
+                } else if !crate::services::runtime_memory::memory_context_is_current(state, run.id)
+                    .await?
+                {
+                    "memory_context_changed"
+                } else {
+                    "run_execution_cancelled"
+                }
+                .to_string(),
+            );
+        }
+    }
+
     if provider_retry_error.is_some() {
         return Ok(RunOutcome {
             total_api_calls,
@@ -794,7 +888,7 @@ async fn execute_chat_run(
         });
     }
 
-    if cancelled || paused_decision_id.is_some() {
+    if cancelled {
         return Ok(RunOutcome {
             total_api_calls,
             total_tool_calls,
@@ -847,7 +941,7 @@ async fn execute_chat_run(
                 run,
                 "text_delta",
                 &ChatSseEvent::TextDelta {
-                    content: deferred_text,
+                    content: deferred_text.clone(),
                 },
                 Some("buffered-text-delivery"),
             )
@@ -857,6 +951,38 @@ async fn execute_chat_run(
 
     queue_message_projection(state, run, session_id, &new_messages).await?;
     let assistant_message = apply_message_projection(state, run.id).await?;
+    if let Some(pending) =
+        crate::services::decisions::pending_decision_for_run(state, run.id).await?
+    {
+        persist_waiting_decision_notice(state, run, session_id, &pending).await?;
+        return Ok(RunOutcome {
+            total_api_calls,
+            total_tool_calls,
+            usage: total_usage,
+            error_code: terminal_error,
+            cancelled: false,
+            paused_decision_id: Some(pending.id.to_string()),
+            provider_retry_error: None,
+        });
+    }
+    paused_decision_id = None;
+    if run.trigger_type == "cron" && terminal_error.is_none() && deferred_text.trim().is_empty() {
+        terminal_error = Some("empty_agent_outcome".to_string());
+        chat_service::save_run_status_message(
+            state,
+            run.id,
+            session_id,
+            "empty-agent-outcome",
+            "작업이 실패했습니다.\n사유: empty_agent_outcome — cron 실행이 실제 응답이나 [SILENT] 결과 없이 종료되었습니다.\n실행 상태: 성공으로 기록되지 않았습니다.\n다음 단계: 이 세션에서 실행 기록을 확인한 뒤 작업을 다시 요청하세요.",
+            serde_json::json!({
+                "type": "run_status",
+                "status": "failed",
+                "reasonCode": "empty_agent_outcome",
+                "agentRunId": run.id,
+            }),
+        )
+        .await?;
+    }
     let session = chat_service::fetch_session_response(state, session_id).await?;
     append_chat_event(
         state,
@@ -1072,6 +1198,192 @@ struct RunOutcome {
     provider_retry_error: Option<String>,
 }
 
+fn terminal_status(outcome: &RunOutcome) -> &'static str {
+    if outcome.error_code.is_some() {
+        "failed"
+    } else if outcome.cancelled {
+        "cancelled"
+    } else {
+        "completed"
+    }
+}
+
+struct ToolNoticeContext {
+    tool_name: String,
+    resource_key: Option<String>,
+}
+
+async fn persist_waiting_decision_notice(
+    state: &AppState,
+    run: &AgentRunRow,
+    session_id: Uuid,
+    decision: &crate::services::decisions::PendingDecision,
+) -> AppResult<()> {
+    let scheduling = if decision.blocking {
+        "독립 작업도 함께 일시 중지되었습니다."
+    } else {
+        "독립 작업을 마쳤으며, 답변이 필요한 작업만 보류되었습니다."
+    };
+    let content = format!(
+        "사용자 판단을 기다리고 있습니다.\n질문: {}\n실행 상태: waiting_decision — {}\n다음 단계: Decision에 답하면 이 세션에서 작업이 자동으로 재개됩니다.",
+        redact_sensitive_text(&decision.question),
+        scheduling,
+    );
+    chat_service::save_run_status_message(
+        state,
+        run.id,
+        session_id,
+        &format!("waiting-decision:{}", decision.id),
+        &content,
+        serde_json::json!({
+            "type": "run_status",
+            "status": "waiting_decision",
+            "decisionId": decision.id,
+            "blocking": decision.blocking,
+            "agentRunId": run.id,
+        }),
+    )
+    .await
+}
+
+async fn persist_tool_status_notice(
+    state: &AppState,
+    run: &AgentRunRow,
+    session_id: Uuid,
+    call_id: &str,
+    context: &ToolNoticeContext,
+    result: &str,
+) -> AppResult<()> {
+    let Ok(result) = serde_json::from_str::<serde_json::Value>(result) else {
+        return Ok(());
+    };
+    if result.get("ok").and_then(serde_json::Value::as_bool) != Some(false) {
+        return Ok(());
+    }
+    let code = result
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tool_error");
+    let recovery_kind = result
+        .get("recovery")
+        .and_then(|recovery| recovery.get("kind"))
+        .and_then(serde_json::Value::as_str);
+    let visible_kind = match (code, recovery_kind) {
+        (_, Some("safety_denied")) => "blocked",
+        ("content_quarantined", _) | ("quarantine_capacity_exceeded", _) => "quarantined",
+        ("content_rejected", _) => "blocked",
+        ("execution_outcome_unknown", _) => "reconciliation_required",
+        _ => return Ok(()),
+    };
+    let error = result
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| "정책 검사에서 작업을 허용하지 않았습니다.".to_string());
+    let operation_state = result
+        .get("operationState")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let next_action = result
+        .get("recovery")
+        .and_then(|recovery| recovery.get("permittedNextAction"))
+        .and_then(serde_json::Value::as_str)
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| match visible_kind {
+            "quarantined" => {
+                "격리 검토 화면에서 상태를 확인하세요. 대상은 변경되지 않았습니다.".to_string()
+            }
+            "reconciliation_required" => {
+                "같은 쓰기를 다시 실행하지 말고 대상 상태를 먼저 읽어 확인하세요.".to_string()
+            }
+            _ => "안전한 범위로 작업을 좁히거나 이 분기를 중지하세요.".to_string(),
+        });
+    let target = context
+        .resource_key
+        .as_deref()
+        .map(visible_resource_label)
+        .unwrap_or_else(|| "설정된 대상".to_string());
+    let content = format!(
+        "작업이 차단되었습니다.\n요청: {} ({})\n사유: {} — {}\n실행 상태: {}\n다음 단계: {}",
+        context.tool_name, target, code, error, operation_state, next_action,
+    );
+    chat_service::save_run_status_message(
+        state,
+        run.id,
+        session_id,
+        &format!("tool-status:{call_id}"),
+        &content,
+        serde_json::json!({
+            "type": "run_status",
+            "status": visible_kind,
+            "reasonCode": code,
+            "operationState": operation_state,
+            "tool": context.tool_name,
+            "agentRunId": run.id,
+        }),
+    )
+    .await
+}
+
+fn visible_resource_label(resource_key: &str) -> String {
+    let redacted = redact_sensitive_text(resource_key);
+    let unsafe_path = redacted.contains("..")
+        || redacted
+            .split_once(':')
+            .is_some_and(|(_, target)| target.starts_with('/') && !target.starts_with("/drive/"));
+    if unsafe_path {
+        let kind = redacted
+            .split_once(':')
+            .map_or("resource", |(kind, _)| kind);
+        format!("{kind}:protected-target")
+    } else {
+        redacted
+    }
+}
+
+async fn persist_terminal_status_notice(
+    state: &AppState,
+    run: &AgentRunRow,
+    status: &str,
+    reason_code: Option<&str>,
+) -> AppResult<()> {
+    let Some(session_id) = run.session_id else {
+        return Ok(());
+    };
+    let reason_code = reason_code.unwrap_or(if status == "cancelled" {
+        "cancelled_by_user"
+    } else {
+        "run_failed"
+    });
+    let (title, next_action) = if status == "cancelled" {
+        (
+            "작업이 취소되었습니다.",
+            "필요하면 이 세션에서 범위를 조정해 새 요청을 보내세요.",
+        )
+    } else {
+        (
+            "작업이 실패했습니다.",
+            "이 세션의 실행 기록과 차단 사유를 확인한 뒤 안전한 후속 요청을 보내세요.",
+        )
+    };
+    let content =
+        format!("{title}\n사유: {reason_code}\n실행 상태: {status}\n다음 단계: {next_action}");
+    chat_service::save_run_status_message(
+        state,
+        run.id,
+        session_id,
+        &format!("terminal:{status}:{reason_code}"),
+        &content,
+        serde_json::json!({
+            "type": "run_status",
+            "status": status,
+            "reasonCode": reason_code,
+            "agentRunId": run.id,
+        }),
+    )
+    .await
+}
+
 fn error_code(error: &AppError) -> &'static str {
     match error {
         AppError::BadRequest(_) => "bad_request",
@@ -1108,5 +1420,25 @@ mod contract_revision_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cancellation_and_internal_abort_never_become_false_success() {
+        let cancelled = RunOutcome {
+            total_api_calls: 0,
+            total_tool_calls: 0,
+            usage: Usage::default(),
+            error_code: None,
+            cancelled: true,
+            paused_decision_id: None,
+            provider_retry_error: None,
+        };
+        assert_eq!(terminal_status(&cancelled), "cancelled");
+
+        let internal_abort = RunOutcome {
+            error_code: Some("permission_revision_changed".to_string()),
+            ..cancelled
+        };
+        assert_eq!(terminal_status(&internal_abort), "failed");
     }
 }

@@ -480,12 +480,11 @@ impl AgentLoop {
                             .as_ref()
                             .map(|context| context.invocation_id.clone())
                             .unwrap_or_else(|| call.id.clone());
+                        let args = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
                         let capability = self
                             .tool_registry
-                            .capability(&call.name)
-                            .cloned()
+                            .capability_for_arguments(&call.name, &args)
                             .expect("parallel eligibility requires capability metadata");
-                        let args = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
                         let resource_key = capability.resource_key(&args);
                         yield AgentEvent::ToolCallStarted {
                             call_id: invocation_id.clone(),
@@ -590,9 +589,11 @@ impl AgentLoop {
                         .as_ref()
                         .map(|context| context.invocation_id.clone())
                         .unwrap_or_else(|| call.id.clone());
-                    let tool_capability = self.tool_registry.capability(&call.name).cloned();
+                    let args = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+                    let tool_capability = self
+                        .tool_registry
+                        .capability_for_arguments(&call.name, &args);
                     let resource_key = tool_capability.as_ref().map(|capability| {
-                        let args = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
                         tracing::debug!(
                             tool = %call.name,
                             invocation_id = %invocation_id,
@@ -662,7 +663,11 @@ impl AgentLoop {
                                 }
                             }
                         }
-                        ToolDispatch::DurableClarify { question, choices } => {
+                        ToolDispatch::DurableClarify {
+                            question,
+                            choices,
+                            blocking,
+                        } => {
                             let (Some(context), Some(coordinator)) = (
                                 self.execution_context.as_ref(),
                                 self.execution_context
@@ -679,7 +684,7 @@ impl AgentLoop {
                                 return;
                             };
                             match coordinator
-                                .create_choice(context, &question, &choices, messages)
+                                .create_choice(context, &question, &choices, blocking, messages)
                                 .await
                             {
                                 Ok(decision) => {
@@ -687,13 +692,10 @@ impl AgentLoop {
                                         "success": true,
                                         "decision_id": decision.id,
                                         "status": "pending",
+                                        "blocking": decision.suspend,
+                                        "run_status": if decision.suspend { "waiting_decision" } else { "running" },
+                                        "independent_work": if decision.suspend { "paused" } else { "continues" },
                                     }), ToolEffect::Create);
-                                    yield AgentEvent::ToolCallFinished {
-                                        call_id: invocation_id,
-                                        result: decision_result,
-                                        error: None,
-                                        duration_ms: tool_started_at.elapsed().as_millis() as u64,
-                                    };
                                     if let Some(session_id) = decision.session_id {
                                         yield AgentEvent::ClarifyRequired {
                                             request: ClarifyRequest {
@@ -705,90 +707,21 @@ impl AgentLoop {
                                             },
                                         };
                                     }
-                                    yield AgentEvent::RunPaused {
-                                        decision_id: decision.id.to_string(),
-                                    };
-                                    return;
-                                }
-                                Err(err) => {
-                                    yield AgentEvent::ToolCallFinished {
-                                        call_id: invocation_id,
-                                        result: tool_error(&format!("decision creation failed: {err}")),
-                                        error: Some(format!("decision creation failed: {err}")),
-                                        duration_ms: tool_started_at.elapsed().as_millis() as u64,
-                                    };
-                                    yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
-                                    return;
-                                }
-                            }
-                        }
-                        ToolDispatch::Approval {
-                            question,
-                            proposed_action,
-                            target_version,
-                        } => {
-                            let (Some(context), Some(coordinator)) = (
-                                self.execution_context.as_ref(),
-                                self.execution_context
-                                    .as_ref()
-                                    .and_then(|context| context.decisions.as_ref()),
-                            ) else {
-                                yield AgentEvent::ToolCallFinished {
-                                    call_id: invocation_id,
-                                    result: tool_error("durable approval runtime is unavailable"),
-                                    error: Some("durable approval runtime is unavailable".to_string()),
-                                    duration_ms: tool_started_at.elapsed().as_millis() as u64,
-                                };
-                                yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
-                                return;
-                            };
-                            match coordinator
-                                .create_approval(
-                                    context,
-                                    &question,
-                                    proposed_action,
-                                    target_version,
-                                    messages,
-                                )
-                                .await
-                            {
-                                Ok(decision) => {
-                                    yield AgentEvent::ToolCallFinished {
-                                        call_id: invocation_id,
-                                        result: tool_success_result(&serde_json::json!({
-                                            "success": true,
-                                            "decision_id": decision.id,
-                                            "status": "pending",
-                                        }), ToolEffect::Create),
-                                        error: None,
-                                        duration_ms: tool_started_at.elapsed().as_millis() as u64,
-                                    };
-                                    if let Some(session_id) = decision.session_id {
-                                        yield AgentEvent::ClarifyRequired {
-                                            request: ClarifyRequest {
-                                                request_id: decision.id.to_string(),
-                                                session_id,
-                                                question: decision.question,
-                                                choices: decision.choices,
-                                                created_at: decision.created_at,
-                                            },
+                                    if decision.suspend {
+                                        yield AgentEvent::ToolCallFinished {
+                                            call_id: invocation_id,
+                                            result: decision_result,
+                                            error: None,
+                                            duration_ms: tool_started_at.elapsed().as_millis() as u64,
                                         };
+                                        yield AgentEvent::RunPaused {
+                                            decision_id: decision.id.to_string(),
+                                        };
+                                        return;
                                     }
-                                    yield AgentEvent::RunPaused {
-                                        decision_id: decision.id.to_string(),
-                                    };
-                                    return;
+                                    decision_result
                                 }
-                                Err(err) => {
-                                    yield AgentEvent::ToolCallFinished {
-                                        call_id: invocation_id,
-                                        result: tool_error(&format!("approval creation failed: {err}")),
-                                        error: Some(format!("approval creation failed: {err}")),
-                                        duration_ms: tool_started_at.elapsed().as_millis() as u64,
-                                    };
-                                    yield AgentEvent::Done { total_api_calls: api_calls, total_tool_calls };
-                                    return;
-                                }
+                                Err(err) => tool_error(&format!("decision creation failed: {err}")),
                             }
                         }
                         ToolDispatch::Delegate { tasks } => {
@@ -1177,7 +1110,7 @@ mod tests {
         async fn execute(&self, _args: &Value) -> Result<String, ToolError> {
             Err(ToolError::Coded {
                 code: "content_quarantined",
-                message: "This file is considered suspicious and cannot be accessed until the user approves it. If you need the file, ask the user for approval.".to_string(),
+                message: "This file is suspicious and remains outside visible storage until the separate quarantine review lifecycle completes.".to_string(),
             })
         }
     }
@@ -1318,7 +1251,7 @@ mod tests {
                     },
                 ],
                 vec![
-                    StreamDelta::Text("I need user approval.".to_string()),
+                    StreamDelta::Text("The item remains quarantined.".to_string()),
                     text_finish(),
                 ],
             ])),
@@ -1352,13 +1285,16 @@ mod tests {
         assert_eq!(finished.len(), 1, "the failed call must not be retried");
         let result: Value = serde_json::from_str(finished[0]).unwrap();
         assert_eq!(result["code"], "content_quarantined");
-        assert!(result["error"].as_str().unwrap().contains("ask the user"));
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside visible storage"));
         let serialized = result.to_string();
         assert!(!serialized.contains("Settings"));
         assert!(!serialized.contains("quarantine_call"));
         assert!(!serialized.contains("untrusted-name"));
         assert!(events.iter().any(
-            |event| matches!(event, AgentEvent::TextDelta(text) if text.contains("approval"))
+            |event| matches!(event, AgentEvent::TextDelta(text) if text.contains("quarantined"))
         ));
         assert!(events
             .iter()

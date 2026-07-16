@@ -49,20 +49,20 @@ const SENSITIVE_DIRS: &[&str] = &[
 
 pub fn ensure_read_allowed(path: &Path) -> Result<(), ToolError> {
     if is_sensitive_path(path) {
-        return Err(ToolError::Unavailable(format!(
-            "reading sensitive path is blocked: {}",
-            path.display()
-        )));
+        return Err(ToolError::Coded {
+            code: "protected_path_denied",
+            message: "reading a protected credential path is blocked".to_string(),
+        });
     }
     Ok(())
 }
 
 pub fn ensure_write_allowed(path: &Path) -> Result<(), ToolError> {
     if is_sensitive_path(path) {
-        return Err(ToolError::Unavailable(format!(
-            "writing sensitive path is blocked: {}",
-            path.display()
-        )));
+        return Err(ToolError::Coded {
+            code: "protected_path_denied",
+            message: "writing a protected credential path is blocked".to_string(),
+        });
     }
     Ok(())
 }

@@ -30,9 +30,7 @@ use crate::state::AppState;
 
 use self::projection::{row_to_durable, row_to_view, truncate};
 use self::target::{hash_value, versions_equal};
-use self::validation::{
-    validate_answer_not_secret, validate_choice, validate_proposed_action_hash,
-};
+use self::validation::{validate_answer_not_secret, validate_choice, validate_prompt_not_secret};
 
 const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_CONTEXT_CHARS: usize = 8_000;
@@ -51,9 +49,6 @@ pub(super) struct DecisionRow {
     suspend: bool,
     status: String,
     answer: Option<Value>,
-    proposed_action: Option<Value>,
-    proposed_action_hash: Option<String>,
-    target_version: Option<String>,
     expires_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     resolved_at: Option<DateTime<Utc>>,
@@ -80,7 +75,7 @@ pub async fn list_decisions(
     if query
         .kind
         .as_deref()
-        .is_some_and(|kind| !matches!(kind, "choice" | "approval" | "input"))
+        .is_some_and(|kind| !matches!(kind, "choice" | "input"))
     {
         return Err(AppError::BadRequest(
             "invalid decision kind filter".to_string(),
@@ -112,12 +107,12 @@ pub async fn list_decisions(
     let mut rows = sqlx::query_as::<_, DecisionRow>(
         r#"SELECT d.id, d.run_id, d.session_id, d.cron_job_id, d.kind,
                   d.context, d.reason, d.question, d.choices, d.suspend,
-                  d.status, d.answer, d.dedupe_key, d.proposed_action,
-                  d.proposed_action_hash, d.target_version, d.expires_at,
+                  d.status, d.answer, d.expires_at,
                   d.created_at, d.resolved_at
            FROM decisions d
            INNER JOIN agent_runs r ON r.id = d.run_id
-           WHERE ($1::text IS NULL OR d.status = $1)
+           WHERE d.kind IN ('choice', 'input')
+             AND ($1::text IS NULL OR d.status = $1)
              AND ($2::uuid IS NULL OR d.run_id = $2)
              AND ($3::uuid IS NULL OR d.session_id = $3)
              AND ($4::text IS NULL OR r.agent_profile = $4)
@@ -170,10 +165,12 @@ pub async fn list_decisions(
 }
 
 pub async fn pending_decision_count(state: &AppState) -> AppResult<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM decisions WHERE status = 'pending'")
-        .fetch_one(&state.db)
-        .await
-        .map_err(Into::into)
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM decisions WHERE status = 'pending' AND kind IN ('choice', 'input')",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(Into::into)
 }
 
 async fn filtered_pending_count(state: &AppState, query: &DecisionsQuery) -> AppResult<i64> {
@@ -181,7 +178,7 @@ async fn filtered_pending_count(state: &AppState, query: &DecisionsQuery) -> App
         r#"SELECT COUNT(*)
            FROM decisions d
            INNER JOIN agent_runs r ON r.id = d.run_id
-           WHERE d.status = 'pending'
+           WHERE d.status = 'pending' AND d.kind IN ('choice', 'input')
              AND ($1::uuid IS NULL OR d.run_id = $1)
              AND ($2::uuid IS NULL OR d.session_id = $2)
              AND ($3::text IS NULL OR r.agent_profile = $3)
@@ -262,7 +259,11 @@ fn decode_decision_cursor(value: &str) -> AppResult<DecisionCursor> {
 }
 
 pub async fn get_decision(state: &AppState, id: Uuid) -> AppResult<DecisionView> {
-    fetch_decision(&state.db, id).await.map(row_to_view)
+    let decision = fetch_decision(&state.db, id).await?;
+    if decision.kind == "approval" {
+        return Err(AppError::NotFound(format!("decision {id} not found")));
+    }
+    Ok(row_to_view(decision))
 }
 
 pub async fn resolve_decision(
@@ -274,6 +275,11 @@ pub async fn resolve_decision(
     validate_answer_not_secret(&answer)?;
     let mut tx = state.db.begin().await?;
     let decision = fetch_decision_for_update(&mut tx, id).await?;
+    if decision.kind == "approval" {
+        return Err(AppError::Conflict(
+            "legacy approval records are audit-only and cannot authorize execution".to_string(),
+        ));
+    }
     if decision.status != "pending" {
         tx.commit().await?;
         return Ok(ResolveDecisionResponse {
@@ -299,7 +305,6 @@ pub async fn resolve_decision(
         });
     }
     validate_choice(&decision, &answer)?;
-    validate_proposed_action_hash(&decision)?;
     let run_status = sqlx::query_as::<_, (String, bool)>(
         r#"SELECT status, cancel_requested_at IS NOT NULL
            FROM agent_runs WHERE id = $1 FOR UPDATE"#,
@@ -321,44 +326,6 @@ pub async fn resolve_decision(
             applied: false,
         });
     }
-    if decision.kind == "approval" && !live_target_matches(state, &decision).await? {
-        sqlx::query(
-            "UPDATE decisions SET status = 'superseded', resolved_at = now(), resolved_by = $2 WHERE id = $1",
-        )
-        .bind(id)
-        .bind(actor)
-        .execute(&mut *tx)
-        .await?;
-        release_checklist_blocker(&mut tx, id).await?;
-        if decision.suspend {
-            sqlx::query(
-                r#"UPDATE agent_runs SET status = 'queued'
-                   WHERE id = $1 AND status = 'waiting_decision'
-                     AND cancel_requested_at IS NULL"#,
-            )
-            .bind(decision.run_id)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        agent_runs::append_event(
-            state,
-            decision.run_id,
-            "decision_superseded",
-            serde_json::json!({
-                "type": "decision_superseded",
-                "decision_id": id,
-                "reason": "target_version_changed",
-            }),
-            Some(&format!("decision-superseded:{id}")),
-        )
-        .await?;
-        state.agent_run_notify.notify_waiters();
-        return Ok(ResolveDecisionResponse {
-            decision: get_decision(state, id).await?,
-            applied: false,
-        });
-    }
     sqlx::query(
         r#"UPDATE decisions
            SET status = 'resolved', answer = $2, resolved_at = now(), resolved_by = $3
@@ -370,21 +337,14 @@ pub async fn resolve_decision(
     .execute(&mut *tx)
     .await?;
     release_checklist_blocker(&mut tx, id).await?;
-    if decision.suspend {
-        let updated = sqlx::query(
-            r#"UPDATE agent_runs SET status = 'queued'
-               WHERE id = $1 AND status = 'waiting_decision'
-                 AND cancel_requested_at IS NULL"#,
-        )
-        .bind(decision.run_id)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() != 1 {
-            return Err(AppError::Conflict(
-                "waiting run changed before decision resolution".to_string(),
-            ));
-        }
-    }
+    sqlx::query(
+        r#"UPDATE agent_runs
+           SET decision_inbox_revision = decision_inbox_revision + 1
+           WHERE id = $1"#,
+    )
+    .bind(decision.run_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     agent_runs::append_event(
         state,
@@ -412,9 +372,7 @@ pub async fn resolve_decision(
         &id.to_string(),
     )
     .await?;
-    if let Err(err) = crate::services::runtime_memory::create_decision_memory(state, id).await {
-        tracing::warn!(error = %err, decision_id = %id, "failed to create decision memory candidate");
-    }
+    requeue_waiting_run_after_decision(state, decision.run_id).await?;
     state.agent_run_notify.notify_waiters();
     Ok(ResolveDecisionResponse {
         decision: get_decision(state, id).await?,
@@ -429,6 +387,11 @@ pub async fn dismiss_decision(
 ) -> AppResult<ResolveDecisionResponse> {
     let mut tx = state.db.begin().await?;
     let decision = fetch_decision_for_update(&mut tx, id).await?;
+    if decision.kind == "approval" {
+        return Err(AppError::Conflict(
+            "legacy approval records are audit-only and cannot resume execution".to_string(),
+        ));
+    }
     if decision.status != "pending" {
         tx.commit().await?;
         return Ok(ResolveDecisionResponse {
@@ -443,6 +406,20 @@ pub async fn dismiss_decision(
     .bind(decision.run_id)
     .fetch_one(&mut *tx)
     .await?;
+    if matches!(run_status.0.as_str(), "completed" | "failed" | "cancelled") {
+        sqlx::query(
+            "UPDATE decisions SET status = 'cancelled', resolved_at = now(), resolved_by = $2 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(actor)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(ResolveDecisionResponse {
+            decision: get_decision(state, id).await?,
+            applied: false,
+        });
+    }
     let status = if run_status.1 {
         "cancelled"
     } else {
@@ -459,13 +436,18 @@ pub async fn dismiss_decision(
     .execute(&mut *tx)
     .await?;
     release_checklist_blocker(&mut tx, id).await?;
-    if decision.suspend && run_status.0 == "waiting_decision" && !run_status.1 {
-        sqlx::query("UPDATE agent_runs SET status = 'queued' WHERE id = $1")
-            .bind(decision.run_id)
-            .execute(&mut *tx)
-            .await?;
+    if !run_status.1 {
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET decision_inbox_revision = decision_inbox_revision + 1
+               WHERE id = $1"#,
+        )
+        .bind(decision.run_id)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
+    requeue_waiting_run_after_decision(state, decision.run_id).await?;
     state.agent_run_notify.notify_waiters();
     Ok(ResolveDecisionResponse {
         decision: get_decision(state, id).await?,
@@ -473,18 +455,35 @@ pub async fn dismiss_decision(
     })
 }
 
-pub async fn resolved_answers_for_run(state: &AppState, run_id: Uuid) -> AppResult<Vec<String>> {
+#[derive(Debug)]
+pub struct ResolvedDecisionInbox {
+    pub revision: i64,
+    pub messages: Vec<String>,
+}
+
+pub async fn resolved_answer_inbox(
+    state: &AppState,
+    run_id: Uuid,
+) -> AppResult<ResolvedDecisionInbox> {
+    let revision = sqlx::query_scalar::<_, i64>(
+        "SELECT decision_inbox_revision FROM agent_runs WHERE id = $1",
+    )
+    .bind(run_id)
+    .fetch_one(&state.db)
+    .await?;
     let rows = sqlx::query_as::<_, (String, String, Option<Value>)>(
         r#"SELECT question, status, answer
            FROM decisions
            WHERE run_id = $1
-             AND (status = 'dismissed' OR (status = 'resolved' AND answer IS NOT NULL))
+             AND kind IN ('choice', 'input')
+             AND (status IN ('dismissed', 'expired', 'superseded')
+                  OR (status = 'resolved' AND answer IS NOT NULL))
            ORDER BY resolved_at, created_at"#,
     )
     .bind(run_id)
     .fetch_all(&state.db)
     .await?;
-    Ok(rows
+    let messages = rows
         .into_iter()
         .map(|(question, status, answer)| {
             let outcome = answer
@@ -495,59 +494,89 @@ pub async fn resolved_answers_for_run(state: &AppState, run_id: Uuid) -> AppResu
                 redact_sensitive_text(&question),
             )
         })
-        .collect())
+        .collect();
+    Ok(ResolvedDecisionInbox { revision, messages })
 }
 
-pub async fn approved_action_hashes(state: &AppState, run_id: Uuid) -> AppResult<Vec<String>> {
-    sqlx::query_scalar::<_, String>(
-        r#"SELECT proposed_action_hash
-           FROM decisions
-           WHERE run_id = $1 AND kind = 'approval' AND status = 'resolved'
-             AND answer = '"approve"'::jsonb
-             AND proposed_action_hash IS NOT NULL
-           ORDER BY resolved_at, created_at"#,
+#[cfg(test)]
+pub async fn resolved_answers_for_run(state: &AppState, run_id: Uuid) -> AppResult<Vec<String>> {
+    Ok(resolved_answer_inbox(state, run_id).await?.messages)
+}
+
+pub async fn mark_inbox_delivered(
+    state: &AppState,
+    run_id: Uuid,
+    lease_epoch: i64,
+    agent_profile: &str,
+    revision: i64,
+) -> AppResult<()> {
+    let updated = sqlx::query(
+        r#"UPDATE agent_runs
+           SET decision_delivered_revision = GREATEST(decision_delivered_revision, $4)
+           WHERE id = $1 AND lease_epoch = $2 AND lease_owner IS NOT NULL
+             AND status = 'running' AND agent_profile = $3
+             AND decision_inbox_revision >= $4"#,
     )
     .bind(run_id)
-    .fetch_all(&state.db)
+    .bind(lease_epoch)
+    .bind(agent_profile)
+    .bind(revision)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "decision inbox delivery lost its active Run lease".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingDecision {
+    pub id: Uuid,
+    pub question: String,
+    pub blocking: bool,
+}
+
+pub async fn pending_decision_for_run(
+    state: &AppState,
+    run_id: Uuid,
+) -> AppResult<Option<PendingDecision>> {
+    sqlx::query_as::<_, (Uuid, String, bool)>(
+        r#"SELECT id, question, suspend
+           FROM decisions
+           WHERE run_id = $1 AND status = 'pending' AND kind IN ('choice', 'input')
+           ORDER BY suspend DESC, created_at ASC
+           LIMIT 1"#,
+    )
+    .bind(run_id)
+    .fetch_optional(&state.db)
     .await
+    .map(|row| {
+        row.map(|(id, question, blocking)| PendingDecision {
+            id,
+            question,
+            blocking,
+        })
+    })
     .map_err(Into::into)
 }
 
-pub async fn validate_approved_action_target(
-    state: &AppState,
-    run_id: Uuid,
-    action_hash: &str,
-) -> AppResult<()> {
-    let row = sqlx::query_as::<_, (Option<String>, Value, String)>(
-        r#"SELECT d.target_version, d.proposed_action, r.agent_profile
-           FROM decisions d
-           INNER JOIN agent_runs r ON r.id = d.run_id
-           WHERE d.run_id = $1 AND d.kind = 'approval'
-             AND d.status = 'resolved' AND d.answer = '"approve"'::jsonb
-             AND d.proposed_action_hash = $2
-           ORDER BY d.resolved_at DESC LIMIT 1"#,
+async fn requeue_waiting_run_after_decision(state: &AppState, run_id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE agent_runs r
+           SET status = 'queued', next_attempt_at = NULL
+           WHERE r.id = $1 AND r.status = 'waiting_decision'
+             AND r.cancel_requested_at IS NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM decisions d
+                 WHERE d.run_id = r.id AND d.status = 'pending'
+                   AND d.kind IN ('choice', 'input') AND d.suspend
+             )"#,
     )
     .bind(run_id)
-    .bind(action_hash)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::Conflict("approved action record is no longer valid".to_string()))?;
-    if let Some(expected) = row.0 {
-        let resource_key = row
-            .1
-            .get("resourceKey")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AppError::Conflict("approved action is missing its resource key".to_string())
-            })?;
-        let current = current_resource_version(state, &row.2, resource_key).await?;
-        if !current.is_some_and(|current| versions_equal(&expected, &current)) {
-            return Err(AppError::Conflict(
-                "approved target changed after the Decision was resolved; request a new approval"
-                    .to_string(),
-            ));
-        }
-    }
+    .execute(&state.db)
+    .await?;
     Ok(())
 }
 
@@ -567,25 +596,63 @@ pub async fn validate_resource_target_version(
 }
 
 pub async fn expire_pending_decisions(state: &AppState) -> AppResult<usize> {
-    let expired = sqlx::query_scalar::<_, Uuid>(
+    let expired = sqlx::query_as::<_, (Uuid, Uuid)>(
         r#"UPDATE decisions
            SET status = 'expired', resolved_at = now(), resolved_by = 'system'
            WHERE status = 'pending' AND expires_at <= now()
-           RETURNING run_id"#,
+           RETURNING id, run_id"#,
     )
     .fetch_all(&state.db)
     .await?;
-    for run_id in &expired {
-        let trigger = sqlx::query_scalar::<_, String>(
+    for (decision_id, run_id) in &expired {
+        let mut tx = state.db.begin().await?;
+        release_checklist_blocker(&mut tx, *decision_id).await?;
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET decision_inbox_revision = decision_inbox_revision + 1
+               WHERE id = $1"#,
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
+        let terminal = sqlx::query_as::<_, (String, Option<Uuid>)>(
             r#"UPDATE agent_runs
                SET status = 'failed', error_code = 'decision_expired', completed_at = now()
                WHERE id = $1 AND status = 'waiting_decision'
-               RETURNING trigger_type"#,
+               RETURNING trigger_type, session_id"#,
         )
         .bind(run_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await?;
-        if let Some(trigger) = trigger {
+        if terminal.is_some() {
+            sqlx::query(
+                r#"UPDATE session_run_inputs
+                   SET status = 'applied', applied_at = COALESCE(applied_at, now())
+                   WHERE target_run_id = $1 AND status = 'claimed'"#,
+            )
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        if let Some((trigger, session_id)) = terminal {
+            if let Some(session_id) = session_id {
+                crate::services::chat::save_run_status_message(
+                    state,
+                    *run_id,
+                    session_id,
+                    &format!("decision-expired:{decision_id}"),
+                    "작업이 실패했습니다.\n사유: decision_expired — 필요한 사용자 판단이 만료되었습니다.\n실행 상태: failed\n다음 단계: 이 세션에서 현재 조건에 맞는 새 요청을 보내세요.",
+                    serde_json::json!({
+                        "type": "run_status",
+                        "status": "failed",
+                        "reasonCode": "decision_expired",
+                        "decisionId": decision_id,
+                        "agentRunId": run_id,
+                    }),
+                )
+                .await?;
+            }
             agent_runs::append_event(
                 state,
                 *run_id,
@@ -655,6 +722,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
         context: &ToolExecutionContext,
         question: &str,
         choices: &[String],
+        blocking: bool,
         messages: &[Message],
     ) -> Result<DurableDecision, String> {
         let question = question.trim();
@@ -671,6 +739,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
             .take(8)
             .map(str::to_string)
             .collect::<Vec<_>>();
+        validate_prompt_not_secret(question, &choices).map_err(|error| error.to_string())?;
         let kind = if choices.is_empty() {
             "input"
         } else {
@@ -681,6 +750,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
             "kind": kind,
             "question": question.to_lowercase(),
             "choices": choices,
+            "blocking": blocking,
         }))?;
         let mut tx = self.state.db.begin().await.map_err(|err| err.to_string())?;
         let run_valid = sqlx::query_scalar::<_, bool>(
@@ -705,24 +775,31 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
             tx.commit().await.map_err(|err| err.to_string())?;
             return Ok(row_to_durable(existing));
         }
-        sqlx::query(
-            r#"UPDATE decisions
-               SET status = 'superseded', resolved_at = now(), resolved_by = 'agent'
-               WHERE run_id = $1 AND status = 'pending' AND suspend"#,
-        )
-        .bind(context.run_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| err.to_string())?;
+        if blocking {
+            let superseded = sqlx::query_scalar::<_, Uuid>(
+                r#"UPDATE decisions
+                   SET status = 'superseded', resolved_at = now(), resolved_by = 'agent'
+                   WHERE run_id = $1 AND status = 'pending' AND suspend
+                   RETURNING id"#,
+            )
+            .bind(context.run_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| err.to_string())?;
+            for decision_id in superseded {
+                release_checklist_blocker(&mut tx, decision_id)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            }
+        }
         let row = sqlx::query_as::<_, DecisionRow>(
             r#"INSERT INTO decisions
                  (run_id, session_id, kind, context, reason, question,
                   choices, suspend, dedupe_key)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                RETURNING id, run_id, session_id, cron_job_id, kind, context,
                          reason, question, choices, suspend, status, answer,
-                         dedupe_key, proposed_action, proposed_action_hash,
-                         target_version, expires_at, created_at, resolved_at"#,
+                         expires_at, created_at, resolved_at"#,
         )
         .bind(context.run_id)
         .bind(context.session_id)
@@ -734,6 +811,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
         .bind("The missing choice materially changes the run outcome.")
         .bind(question)
         .bind(serde_json::to_value(&choices).map_err(|err| err.to_string())?)
+        .bind(blocking)
         .bind(&dedupe_key)
         .fetch_one(&mut *tx)
         .await
@@ -752,107 +830,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
                 "kind": row.kind,
                 "question": redact_sensitive_text(&row.question),
                 "choices": row.choices,
-            }),
-            Some(&format!("decision-created:{}", row.id)),
-        )
-        .await
-        .map_err(|err| err.to_string())?;
-        Ok(row_to_durable(row))
-    }
-
-    async fn create_approval(
-        &self,
-        context: &ToolExecutionContext,
-        question: &str,
-        proposed_action: Value,
-        target_version: Option<String>,
-        messages: &[Message],
-    ) -> Result<DurableDecision, String> {
-        if let Some(progress) = &context.progress {
-            progress.create_checkpoint(context, messages).await?;
-        }
-        let action_hash = hash_value(&proposed_action)?;
-        let dedupe_key = hash_value(&serde_json::json!({
-            "runId": context.run_id,
-            "kind": "approval",
-            "actionHash": action_hash,
-            "targetVersion": target_version,
-        }))?;
-        let mut tx = self.state.db.begin().await.map_err(|err| err.to_string())?;
-        let run_valid = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM agent_runs
-                 WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
-                   AND cancel_requested_at IS NULL
-               )"#,
-        )
-        .bind(context.run_id)
-        .bind(context.lease_epoch)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| err.to_string())?;
-        if !run_valid {
-            return Err("run changed before approval creation".to_string());
-        }
-        if let Some(existing) = fetch_pending_by_dedupe(&mut tx, &dedupe_key)
-            .await
-            .map_err(|err| err.to_string())?
-        {
-            tx.commit().await.map_err(|err| err.to_string())?;
-            return Ok(row_to_durable(existing));
-        }
-        sqlx::query(
-            r#"UPDATE decisions
-               SET status = 'superseded', resolved_at = now(), resolved_by = 'agent'
-               WHERE run_id = $1 AND status = 'pending' AND suspend"#,
-        )
-        .bind(context.run_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| err.to_string())?;
-        let row = sqlx::query_as::<_, DecisionRow>(
-            r#"INSERT INTO decisions
-                 (run_id, session_id, kind, context, reason, question,
-                  choices, suspend, dedupe_key, proposed_action,
-                  proposed_action_hash, target_version)
-               VALUES ($1, $2, 'approval', $3, $4, $5,
-                       '["approve","reject"]'::jsonb, true, $6, $7, $8, $9)
-               RETURNING id, run_id, session_id, cron_job_id, kind, context,
-                         reason, question, choices, suspend, status, answer,
-                         dedupe_key, proposed_action, proposed_action_hash,
-                         target_version, expires_at, created_at, resolved_at"#,
-        )
-        .bind(context.run_id)
-        .bind(context.session_id)
-        .bind(truncate(
-            &format!(
-                "Autonomous {} action requires approval",
-                context.trigger.name()
-            ),
-            MAX_CONTEXT_CHARS,
-        ))
-        .bind("Runtime capability policy requires explicit approval for this effect.")
-        .bind(question)
-        .bind(&dedupe_key)
-        .bind(&proposed_action)
-        .bind(&action_hash)
-        .bind(target_version)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| err.to_string())?;
-        link_current_checklist_blocker(&mut tx, context.run_id, row.id)
-            .await
-            .map_err(|err| err.to_string())?;
-        tx.commit().await.map_err(|err| err.to_string())?;
-        agent_runs::append_event_for_context(
-            &self.state,
-            context,
-            "decision_created",
-            serde_json::json!({
-                "type": "decision_created",
-                "decision_id": row.id,
-                "kind": "approval",
-                "question": redact_sensitive_text(&row.question),
+                "blocking": row.suspend,
             }),
             Some(&format!("decision-created:{}", row.id)),
         )
@@ -865,8 +843,7 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
 async fn fetch_decision(pool: &sqlx::PgPool, id: Uuid) -> AppResult<DecisionRow> {
     sqlx::query_as::<_, DecisionRow>(
         r#"SELECT id, run_id, session_id, cron_job_id, kind, context, reason,
-                  question, choices, suspend, status, answer, dedupe_key,
-                  proposed_action, proposed_action_hash, target_version,
+                  question, choices, suspend, status, answer,
                   expires_at, created_at, resolved_at
            FROM decisions WHERE id = $1"#,
     )
@@ -882,8 +859,7 @@ async fn fetch_decision_for_update(
 ) -> AppResult<DecisionRow> {
     sqlx::query_as::<_, DecisionRow>(
         r#"SELECT id, run_id, session_id, cron_job_id, kind, context, reason,
-                  question, choices, suspend, status, answer, dedupe_key,
-                  proposed_action, proposed_action_hash, target_version,
+                  question, choices, suspend, status, answer,
                   expires_at, created_at, resolved_at
            FROM decisions WHERE id = $1 FOR UPDATE"#,
     )
@@ -899,8 +875,7 @@ async fn fetch_pending_by_dedupe(
 ) -> AppResult<Option<DecisionRow>> {
     sqlx::query_as::<_, DecisionRow>(
         r#"SELECT id, run_id, session_id, cron_job_id, kind, context, reason,
-                  question, choices, suspend, status, answer, dedupe_key,
-                  proposed_action, proposed_action_hash, target_version,
+                  question, choices, suspend, status, answer,
                   expires_at, created_at, resolved_at
            FROM decisions WHERE dedupe_key = $1 AND status = 'pending'"#,
     )
@@ -910,38 +885,17 @@ async fn fetch_pending_by_dedupe(
     .map_err(Into::into)
 }
 
-async fn live_target_matches(state: &AppState, decision: &DecisionRow) -> AppResult<bool> {
-    let Some(expected) = decision.target_version.as_deref() else {
-        return Ok(true);
-    };
-    let resource_key = decision
-        .proposed_action
-        .as_ref()
-        .and_then(|action| action.get("resourceKey"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::Conflict("versioned approval is missing its resource key".to_string())
-        })?;
-    let profile =
-        sqlx::query_scalar::<_, String>("SELECT agent_profile FROM agent_runs WHERE id = $1")
-            .bind(decision.run_id)
-            .fetch_one(&state.db)
-            .await?;
-    let current = current_resource_version(state, &profile, resource_key).await?;
-    Ok(current.is_some_and(|current| versions_equal(expected, &current)))
-}
-
 async fn current_resource_version(
     state: &AppState,
     agent_profile: &str,
     resource_key: &str,
 ) -> AppResult<Option<String>> {
     let (kind, identifier) = resource_key.split_once(':').ok_or_else(|| {
-        AppError::Conflict("versioned approval has an invalid resource key".to_string())
+        AppError::Conflict("versioned write target has an invalid resource key".to_string())
     })?;
     if identifier == "*" || identifier.trim().is_empty() {
         return Err(AppError::Conflict(
-            "versioned approval target cannot be identified".to_string(),
+            "versioned write target cannot be identified".to_string(),
         ));
     }
     if kind == "file" {
@@ -977,7 +931,7 @@ async fn current_resource_version(
         .map(|value| value.to_rfc3339()));
     }
     let id = Uuid::parse_str(identifier).map_err(|err| {
-        AppError::Conflict(format!("versioned approval target id is invalid: {err}"))
+        AppError::Conflict(format!("versioned write target id is invalid: {err}"))
     })?;
     let version = match kind {
         "task" => resource_updated_at(state, "tasks", id).await?,
@@ -1003,7 +957,7 @@ async fn current_resource_version(
         }
         _ => {
             return Err(AppError::Conflict(format!(
-                "versioned approval does not support resource type {kind}"
+                "versioned write does not support resource type {kind}"
             )))
         }
     };
@@ -1117,7 +1071,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn approval_is_superseded_when_target_changes_before_resolution(pool: sqlx::PgPool) {
+    async fn legacy_approval_cannot_authorize_execution(pool: sqlx::PgPool) {
         let state = AppState::new(pool.clone(), test_config());
         sqlx::query(
             r#"INSERT INTO native_agents
@@ -1192,26 +1146,15 @@ mod tests {
             Value::String("approve".to_string()),
             "user",
         )
-        .await
-        .unwrap();
-        assert!(!resolution.applied);
-        assert_eq!(resolution.decision.status, "superseded");
+        .await;
+        assert!(matches!(resolution, Err(AppError::Conflict(_))));
         let run_status =
             sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id = $1")
                 .bind(run_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(run_status, "queued");
-        let event_exists = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(SELECT 1 FROM agent_run_events
-               WHERE run_id = $1 AND event_type = 'decision_superseded')"#,
-        )
-        .bind(run_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert!(event_exists);
+        assert_eq!(run_status, "waiting_decision");
     }
 
     #[sqlx::test(migrations = "./migrations")]

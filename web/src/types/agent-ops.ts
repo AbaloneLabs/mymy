@@ -14,7 +14,7 @@ export interface CronJob {
   paused: boolean;
   agentProfile?: string;
   projectId?: string;
-  sessionPolicy: "new" | "reuse" | "result_only";
+  sessionPolicy: "reuse";
   catchUpPolicy: "skip" | "latest" | "all";
   retryPolicy: "none" | "safe";
   maxToolCalls: number;

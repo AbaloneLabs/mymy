@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Check, HelpCircle, X } from "lucide-react";
+import { Check, HelpCircle, X } from "lucide-react";
 import {
   type Decision,
   type DecisionFilters,
@@ -110,7 +110,7 @@ function DecisionCard({
   const { t } = useTranslation();
   const resolve = useResolveDecision();
   const dismiss = useDismissDecision();
-  const targetVersion = decision.targetVersion ?? "unversioned";
+  const targetVersion = decision.createdAt;
   const draft = useDecisionDrafts((state) => state.drafts[decision.id]);
   const answer = draft?.targetVersion === targetVersion ? draft.value : "";
   const setDraft = useDecisionDrafts((state) => state.setDraft);
@@ -210,18 +210,6 @@ function DecisionCard({
         </div>
       </div>
 
-      {decision.targetVersion && (
-        <div className="mt-3 flex items-center gap-1.5 text-[11px] text-[var(--status-warning)]">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          {t("decisions.targetVersion", { version: decision.targetVersion })}
-        </div>
-      )}
-      {decision.proposedAction !== undefined && decision.proposedAction !== null && (
-        <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-[var(--surface-hover)] p-2 text-[11px] text-[var(--text-muted)]">
-          {JSON.stringify(decision.proposedAction, null, 2)}
-        </pre>
-      )}
-
       {pending && choices.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-2">
           {choices.map((choice) => (
@@ -232,11 +220,7 @@ function DecisionCard({
               onClick={() => void submit(choice)}
               className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
             >
-              {choice === "approve"
-                ? t("decisions.approve")
-                : choice === "reject"
-                  ? t("decisions.reject")
-                  : choice}
+              {choice}
             </button>
           ))}
         </div>

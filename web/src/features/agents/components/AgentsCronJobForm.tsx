@@ -26,7 +26,6 @@ export function CronJobForm({
   const [prompt, setPrompt] = useState(job?.prompt ?? "");
   const [schedule, setSchedule] = useState(job?.schedule ?? "");
   const [skills, setSkills] = useState(job?.skill ?? "");
-  const [sessionPolicy, setSessionPolicy] = useState(job?.sessionPolicy ?? "new");
   const [catchUpPolicy, setCatchUpPolicy] = useState(job?.catchUpPolicy ?? "latest");
   const [retryPolicy, setRetryPolicy] = useState(job?.retryPolicy ?? "safe");
   const [agentProfile, setAgentProfile] = useState(
@@ -51,7 +50,6 @@ export function CronJobForm({
       skills: splitNames(skills),
       agentProfile,
       projectId: job ? (job.projectId ?? null) : selectedProjectId,
-      sessionPolicy,
       catchUpPolicy,
       retryPolicy,
       maxToolCalls,
@@ -120,14 +118,6 @@ export function CronJobForm({
             placeholder="skill-one, skill-two"
             className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]"
           />
-        </label>
-        <label className="space-y-1 text-xs text-[var(--text-muted)]">
-          {t("agents.cron.sessionPolicy")}
-          <select value={sessionPolicy} onChange={(event) => setSessionPolicy(event.target.value as typeof sessionPolicy)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-sm text-[var(--text)]">
-            <option value="new">{t("agents.cron.sessionNew")}</option>
-            <option value="reuse">{t("agents.cron.sessionReuse")}</option>
-            <option value="result_only">{t("agents.cron.sessionResultOnly")}</option>
-          </select>
         </label>
         <label className="space-y-1 text-xs text-[var(--text-muted)]">
           {t("agents.cron.catchUpPolicy")}

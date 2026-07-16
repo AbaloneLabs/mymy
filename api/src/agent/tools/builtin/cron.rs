@@ -50,7 +50,7 @@ fn cron_tool_schema() -> crate::agent::providers::ToolSchema {
                 "skills": { "type": "array", "description": "Skill names made available to the scheduled run.", "items": { "type": "string", "description": "One registered skill name." } },
                 "context_from": { "type": "array", "description": "Approved context source identifiers for the scheduled run.", "items": { "type": "string", "description": "One context source identifier." } },
                 "wake_agent": { "type": "boolean", "default": true, "description": "Whether an occurrence creates an agent execution rather than result-only state." },
-                "session_policy": { "type": "string", "enum": ["new", "reuse", "result_only"], "description": "Conversation-session policy for each occurrence." },
+                "session_policy": { "type": "string", "enum": ["reuse"], "description": "Stable per-job conversation policy. Every occurrence reuses this cron job's own visible session." },
                 "catch_up_policy": { "type": "string", "enum": ["skip", "latest", "all"], "description": "How missed occurrences are handled after downtime." },
                 "retry_policy": { "type": "string", "enum": ["none", "safe"], "description": "Whether safely retryable failed occurrences may run again." },
                 "max_tool_calls": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum tool calls allowed per occurrence." },
@@ -154,7 +154,7 @@ impl CronTool {
                     agent_profile,
                     project_id: project_id.map(|id| id.to_string()),
                     session_policy: string(args, "session_policy")
-                        .unwrap_or_else(|| "new".to_string()),
+                        .unwrap_or_else(|| "reuse".to_string()),
                     catch_up_policy: string(args, "catch_up_policy")
                         .unwrap_or_else(|| "latest".to_string()),
                     retry_policy: string(args, "retry_policy")

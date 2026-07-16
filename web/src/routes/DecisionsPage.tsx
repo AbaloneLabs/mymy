@@ -25,7 +25,7 @@ const STATUSES = [
   "cancelled",
   "superseded",
 ] as const;
-const KINDS = ["choice", "approval", "input"] as const;
+const KINDS = ["choice", "input"] as const;
 
 export default function DecisionsPage() {
   const { t } = useTranslation();

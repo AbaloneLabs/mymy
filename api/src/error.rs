@@ -149,7 +149,7 @@ impl AppError {
         Self::coded(
             "content_quarantined",
             StatusCode::LOCKED,
-            "This file is considered suspicious and cannot be accessed until the user approves it. If you need the file, ask the user for approval.",
+            "This file is suspicious and remains outside visible storage until the separate quarantine review lifecycle completes.",
         )
     }
 

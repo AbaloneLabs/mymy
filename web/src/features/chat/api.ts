@@ -90,7 +90,6 @@ export type ChatSseEvent =
         idempotency: string;
         parallelPolicy: string;
         resourceKind: string;
-        approvalPolicy: string;
         dataSensitivity: string;
         cancellation: "cooperative" | "process_group" | "non_interruptible";
       } | null;

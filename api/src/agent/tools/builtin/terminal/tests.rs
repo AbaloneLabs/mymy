@@ -68,7 +68,7 @@ async fn terminal_blocks_sensitive_output_redirection() {
         .execute(&serde_json::json!({"command":"printf secret > .env"}))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("sensitive path"));
+    assert!(err.to_string().contains("protected credential path"));
 }
 
 #[test]

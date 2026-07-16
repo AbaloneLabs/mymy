@@ -27,6 +27,8 @@ pub(super) struct ChatSessionRow {
     pub(super) system_prompt_context: Option<String>,
     pub(super) system_prompt_fingerprint: Option<String>,
     pub(super) tool_schema_fingerprint: Option<String>,
+    pub(super) latest_run_status: Option<String>,
+    pub(super) blocker_summary: Option<String>,
     pub(super) created_at: DateTime<Utc>,
     pub(super) updated_at: DateTime<Utc>,
 }
@@ -59,9 +61,26 @@ pub async fn list_sessions(state: &AppState, q: SessionQuery) -> AppResult<ChatS
         r#"SELECT s.id, s.project_id, s.agent_id, s.profile, s.title,
                   s.status, s.message_count, s.system_prompt_stable,
                   s.system_prompt_context, s.system_prompt_fingerprint,
-                  s.tool_schema_fingerprint, s.created_at, s.updated_at
+                  s.tool_schema_fingerprint,
+                  latest_run.status AS "latest_run_status?",
+                  latest_blocker.content AS "blocker_summary?",
+                  s.created_at, s.updated_at
            FROM chat_sessions s
            INNER JOIN native_agents a ON a.profile = s.profile
+           LEFT JOIN LATERAL (
+               SELECT r.status FROM agent_runs r
+               WHERE r.session_id = s.id AND r.trigger_type IN ('chat', 'cron')
+               ORDER BY r.created_at DESC LIMIT 1
+           ) latest_run ON true
+           LEFT JOIN LATERAL (
+               SELECT m.content FROM chat_messages m
+               WHERE m.session_id = s.id AND m.metadata->>'type' = 'run_status'
+                 AND m.metadata->>'status' IN (
+                     'waiting_decision', 'blocked', 'quarantined', 'failed',
+                     'cancelled', 'reconciliation_required'
+                 )
+               ORDER BY m.created_at DESC LIMIT 1
+           ) latest_blocker ON true
            WHERE ($1::text = 'all'
                OR ($1 = 'general' AND s.project_id IS NULL)
                OR ($1 = 'project' AND s.project_id = $2))
@@ -257,6 +276,53 @@ pub async fn save_agent_messages_for_run(
     }
 
     Ok(last_assistant)
+}
+
+/// Persist a bounded Run-state notice in the ordinary session timeline.
+///
+/// Runtime events are useful for live replay, but they are not a substitute
+/// for a message the user can find after reconnecting. The caller supplies a
+/// stable key so retries and crash recovery cannot duplicate the same notice.
+pub async fn save_run_status_message(
+    state: &AppState,
+    run_id: Uuid,
+    session_id: Uuid,
+    status_key: &str,
+    content: &str,
+    metadata: serde_json::Value,
+) -> AppResult<()> {
+    let content = redact_sensitive_text(content);
+    let mut tx = state.db.begin().await?;
+    let inserted = sqlx::query(
+        r#"INSERT INTO chat_messages
+             (id, session_id, role, content, metadata, agent_run_id, run_status_key)
+           VALUES ($1, $2, 'system', $3, $4, $5, $6)
+           ON CONFLICT (agent_run_id, run_status_key)
+           WHERE agent_run_id IS NOT NULL AND run_status_key IS NOT NULL
+           DO NOTHING"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(session_id)
+    .bind(content)
+    .bind(metadata)
+    .bind(run_id)
+    .bind(status_key)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    if inserted {
+        sqlx::query(
+            r#"UPDATE chat_sessions
+               SET message_count = message_count + 1, updated_at = now()
+               WHERE id = $1"#,
+        )
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 pub async fn fetch_session_response(state: &AppState, id: Uuid) -> AppResult<ChatSession> {
@@ -466,7 +532,9 @@ pub(super) async fn fetch_session(state: &AppState, id: Uuid) -> AppResult<ChatS
         ChatSessionRow,
         r#"SELECT id, project_id, agent_id, profile, title,
                   status, message_count, system_prompt_stable, system_prompt_context,
-                  system_prompt_fingerprint, tool_schema_fingerprint, created_at, updated_at
+                  system_prompt_fingerprint, tool_schema_fingerprint,
+                  NULL::text AS "latest_run_status?",
+                  NULL::text AS "blocker_summary?", created_at, updated_at
            FROM chat_sessions WHERE id = $1"#,
         id
     )
@@ -582,6 +650,8 @@ fn row_to_session(row: ChatSessionRow) -> ChatSession {
         title: row.title,
         status,
         message_count: row.message_count,
+        latest_run_status: row.latest_run_status,
+        blocker_summary: row.blocker_summary,
         created_at: row.created_at.to_rfc3339(),
         updated_at: row.updated_at.to_rfc3339(),
     }

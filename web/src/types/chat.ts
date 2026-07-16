@@ -19,6 +19,8 @@ export interface ChatSession {
   title?: string;
   status: SessionStatus;
   messageCount: number;
+  latestRunStatus?: string;
+  blockerSummary?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -146,10 +146,10 @@ function normalizePermissions(
     domain,
     access:
       permissions.find((permission) => permission.domain === domain)?.access ??
-      defaultAccess(domain),
+      defaultAccess(),
   }));
 }
 
-function defaultAccess(domain: AgentToolDomain): AgentToolAccess {
-  return domain === "agents" || domain === "sessions" ? "read_only" : "access";
+function defaultAccess(): AgentToolAccess {
+  return "access";
 }

@@ -39,7 +39,8 @@ use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
 use self::provider::{parse_runtime_provider_id, DbRotatingProvider};
 pub use self::repository::{
     create_session, delete_session, fetch_session_response, get_messages, list_sessions,
-    reconcile_session_deletions, save_agent_messages_for_run, SessionQuery,
+    reconcile_session_deletions, save_agent_messages_for_run, save_run_status_message,
+    SessionQuery,
 };
 use self::repository::{
     derive_title, fetch_message_rows, fetch_session, insert_user_message,

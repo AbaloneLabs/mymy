@@ -119,7 +119,13 @@ pub async fn pause_release_fixture_run(
     decision_id: Uuid,
 ) -> AppResult<()> {
     let run = fetch_run_row(&state.db, context.run_id).await?;
-    pause_run_for_decision(state, &run, &decision_id.to_string()).await
+    if pause_run_for_decision(state, &run, &decision_id.to_string()).await? {
+        Ok(())
+    } else {
+        Err(AppError::Conflict(
+            "release fixture Decision resolved before its pause transition".to_string(),
+        ))
+    }
 }
 
 /// Finish every queued run owned by one release fixture after its Decisions
@@ -1114,7 +1120,6 @@ mod tests {
             project_id: parent_row.project_id,
             authorization: crate::agent::execution::AuthorizationContext {
                 explicit_user_action: true,
-                approval_ceiling: serde_json::json!({}),
                 budget: serde_json::json!({}),
             },
             invocation_id: invocation_id.clone(),
@@ -1356,6 +1361,136 @@ mod tests {
             .unwrap()
             .active_run
             .is_none());
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolved_deferred_decision_is_delivered_before_terminal_completion(
+        pool: sqlx::PgPool,
+    ) {
+        let state = AppState::new(pool.clone(), test_config());
+        let session_id = seed_session(&pool).await;
+        let run = enqueue_running_run(&state, &pool, session_id, "deferred-delivery").await;
+        let decision_id = insert_choice_decision(&pool, run.id, session_id, false).await;
+
+        crate::services::decisions::resolve_decision(
+            &state,
+            decision_id,
+            Value::String("yes".to_string()),
+            "user",
+        )
+        .await
+        .unwrap();
+        let revision = sqlx::query_as::<_, (String, i64, i64)>(
+            r#"SELECT status, decision_inbox_revision, decision_delivered_revision
+               FROM agent_runs WHERE id = $1"#,
+        )
+        .bind(run.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(revision, ("running".to_string(), 1, 0));
+
+        let actual_status = finish_run(&state, &run, "completed", None, serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(actual_status, "queued");
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id = $1")
+                .bind(run.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "queued"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn decision_resolved_before_pause_requeues_instead_of_stranding_the_run(
+        pool: sqlx::PgPool,
+    ) {
+        let state = AppState::new(pool.clone(), test_config());
+        let session_id = seed_session(&pool).await;
+        let run = enqueue_running_run(&state, &pool, session_id, "pause-race").await;
+        let decision_id = insert_choice_decision(&pool, run.id, session_id, true).await;
+
+        crate::services::decisions::resolve_decision(
+            &state,
+            decision_id,
+            Value::String("yes".to_string()),
+            "user",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !pause_run_for_decision(&state, &run, &decision_id.to_string())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM agent_runs WHERE id = $1")
+                .bind(run.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "queued"
+        );
+    }
+
+    async fn enqueue_running_run(
+        state: &AppState,
+        pool: &sqlx::PgPool,
+        session_id: Uuid,
+        request_id: &str,
+    ) -> AgentRunRow {
+        let enqueued = enqueue_chat_run(
+            state,
+            session_id,
+            EnqueueChatRunRequest {
+                client_request_id: request_id.to_string(),
+                text: "Continue after a semantic Decision".to_string(),
+                use_moa: false,
+                moa_preset_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET status = 'running', lease_owner = 'decision-test-worker',
+                   lease_epoch = 1, lease_expires_at = now() + interval '30 seconds'
+               WHERE id = $1"#,
+        )
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE session_run_inputs SET status = 'claimed' WHERE target_run_id = $1")
+            .bind(run_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        fetch_run_row(pool, run_id).await.unwrap()
+    }
+
+    async fn insert_choice_decision(
+        pool: &sqlx::PgPool,
+        run_id: Uuid,
+        session_id: Uuid,
+        blocking: bool,
+    ) -> Uuid {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO decisions
+                 (run_id, session_id, kind, question, choices, suspend)
+               VALUES ($1, $2, 'choice', 'Continue?', '["yes", "no"]'::jsonb, $3)
+               RETURNING id"#,
+        )
+        .bind(run_id)
+        .bind(session_id)
+        .bind(blocking)
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 
     fn test_config() -> Config {

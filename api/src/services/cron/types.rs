@@ -178,7 +178,7 @@ fn default_wake_agent() -> bool {
 }
 
 fn default_session_policy() -> String {
-    "new".to_string()
+    "reuse".to_string()
 }
 
 fn default_catch_up_policy() -> String {

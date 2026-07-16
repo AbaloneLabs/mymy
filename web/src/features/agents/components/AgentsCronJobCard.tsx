@@ -62,7 +62,6 @@ export function CronJobCard({ job }: { job: CronJob }) {
             </p>
           )}
           <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[var(--text-faint)]">
-            <span>{job.sessionPolicy}</span>
             <span>catch-up: {job.catchUpPolicy}</span>
             <span>retry: {job.retryPolicy}</span>
             <span>{job.maxToolCalls} tools</span>

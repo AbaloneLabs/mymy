@@ -83,7 +83,7 @@ export const DEFAULT_COMMANDS: CommandAction[] = [
     labelKey: "commandPalette.commands.goDecisions",
     icon: ShieldQuestion,
     category: "navigation",
-    keywords: ["approval", "choice", "blocking"],
+    keywords: ["choice", "input", "blocking"],
     perform: (ctx) => ctx.navigate("/decisions"),
   },
   {

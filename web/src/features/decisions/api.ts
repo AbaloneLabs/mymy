@@ -15,7 +15,7 @@ export type DecisionStatus =
   | "cancelled"
   | "superseded";
 
-export type DecisionKind = "choice" | "approval" | "input";
+export type DecisionKind = "choice" | "input";
 
 export interface Decision {
   id: string;
@@ -30,8 +30,6 @@ export interface Decision {
   suspend: boolean;
   status: DecisionStatus;
   answer?: unknown;
-  proposedAction?: unknown;
-  targetVersion?: string;
   expiresAt?: string;
   createdAt: string;
   resolvedAt?: string;

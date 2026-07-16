@@ -355,7 +355,7 @@ fn default_wake_agent() -> bool {
 }
 
 fn default_session_policy() -> String {
-    "new".to_string()
+    "reuse".to_string()
 }
 
 fn default_catch_up_policy() -> String {
@@ -443,7 +443,7 @@ mod tests {
             wake_agent: true,
             agent_profile: None,
             project_id: None,
-            session_policy: "new".to_string(),
+            session_policy: "reuse".to_string(),
             catch_up_policy: "latest".to_string(),
             retry_policy: "safe".to_string(),
             max_tool_calls: default_max_tool_calls(),

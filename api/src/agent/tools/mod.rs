@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::execution::ToolExecutionContext;
+use crate::agent::execution::{ToolExecutionContext, ToolGuardError};
 use crate::agent::providers::{FunctionSchema, ToolSchema};
 use crate::agent::security::{scan_for_threats, ThreatScope};
 use crate::error::AppError;
@@ -121,14 +121,6 @@ pub enum ParallelPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ApprovalPolicy {
-    Never,
-    AutonomousOnly,
-    Always,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum DataSensitivity {
     Normal,
     Financial,
@@ -153,7 +145,6 @@ pub struct ToolCapability {
     pub parallel_policy: ParallelPolicy,
     pub resource_kind: String,
     pub resource_argument: Option<String>,
-    pub approval_policy: ApprovalPolicy,
     pub data_sensitivity: DataSensitivity,
     pub cancellation: ToolCancellationPolicy,
 }
@@ -167,7 +158,6 @@ impl ToolCapability {
             parallel_policy: ParallelPolicy::Safe,
             resource_kind: resource_kind.into(),
             resource_argument: None,
-            approval_policy: ApprovalPolicy::Never,
             data_sensitivity: DataSensitivity::Normal,
             cancellation: ToolCancellationPolicy::Cooperative,
         }
@@ -187,7 +177,6 @@ impl ToolCapability {
             // The conservative wildcard keeps unrelated mutations serialized
             // until the catalog audit assigns a truthful identifier.
             resource_argument: None,
-            approval_policy: ApprovalPolicy::AutonomousOnly,
             data_sensitivity: DataSensitivity::Normal,
             cancellation: ToolCancellationPolicy::NonInterruptible,
         }
@@ -201,7 +190,6 @@ impl ToolCapability {
             parallel_policy: ParallelPolicy::AlwaysSerial,
             resource_kind: "process".to_string(),
             resource_argument: None,
-            approval_policy: ApprovalPolicy::AutonomousOnly,
             data_sensitivity: DataSensitivity::Private,
             cancellation: ToolCancellationPolicy::ProcessGroup,
         }
@@ -215,7 +203,6 @@ impl ToolCapability {
             parallel_policy: ParallelPolicy::AlwaysSerial,
             resource_kind: resource_kind.into(),
             resource_argument: None,
-            approval_policy: ApprovalPolicy::AutonomousOnly,
             data_sensitivity: DataSensitivity::Private,
             cancellation: ToolCancellationPolicy::Cooperative,
         }
@@ -223,6 +210,11 @@ impl ToolCapability {
 
     pub fn with_resource_argument(mut self, argument: &str) -> Self {
         self.resource_argument = Some(argument.to_string());
+        self
+    }
+
+    fn with_resource_argument_opt(mut self, argument: Option<&str>) -> Self {
+        self.resource_argument = argument.map(str::to_string);
         self
     }
 
@@ -250,13 +242,6 @@ impl ToolCapability {
         self.effect == ToolEffect::Read
             && self.parallel_policy == ParallelPolicy::Safe
             && self.cancellation != ToolCancellationPolicy::NonInterruptible
-    }
-
-    pub fn requires_approval(&self, autonomous: bool) -> bool {
-        self.approval_policy == ApprovalPolicy::Always
-            || (autonomous
-                && self.effect != ToolEffect::Read
-                && self.approval_policy == ApprovalPolicy::AutonomousOnly)
     }
 }
 
@@ -291,6 +276,10 @@ pub struct ToolCatalogReportEntry {
     pub result_contract_revision: &'static str,
     pub provider_protocols: Vec<&'static str>,
     pub validation_exemptions: Vec<&'static str>,
+    pub interaction_boundary: &'static str,
+    pub decision_behavior: &'static str,
+    pub operation_modes: Vec<&'static str>,
+    pub safety_enforcement: Vec<&'static str>,
 }
 
 impl ToolRegistry {
@@ -444,6 +433,14 @@ impl ToolRegistry {
                     result_contract_revision: TOOL_RESULT_CONTRACT_REVISION,
                     provider_protocols: vec!["openai", "anthropic"],
                     validation_exemptions: Vec::new(),
+                    interaction_boundary: interaction_boundary(&entry.name),
+                    decision_behavior: if matches!(entry.name.as_str(), "decision" | "clarify") {
+                        "explicit_semantic_request"
+                    } else {
+                        "never_automatic"
+                    },
+                    operation_modes: operation_modes(&entry.name, entry.capability.effect),
+                    safety_enforcement: safety_enforcement(&entry.toolset, entry.capability.effect),
                 }
             })
             .collect::<Vec<_>>();
@@ -456,11 +453,8 @@ impl ToolRegistry {
             .into_iter()
             .map(|(name, capability)| {
                 format!(
-                    "- {name}: effect={:?}, risk={:?}, approval={:?}, cancellation={:?}",
-                    capability.effect,
-                    capability.risk,
-                    capability.approval_policy,
-                    capability.cancellation
+                    "- {name}: effect={:?}, risk={:?}, cancellation={:?}",
+                    capability.effect, capability.risk, capability.cancellation
                 )
                 .to_ascii_lowercase()
             })
@@ -485,10 +479,43 @@ impl ToolRegistry {
         self.tools.get(name).map(|entry| &entry.capability)
     }
 
-    /// Return the exact contract revision used for invocation and approval.
+    /// Resolve mixed-operation tools from their validated arguments.
+    ///
+    /// A provider-facing tool may expose several modes for ergonomic reasons,
+    /// but scheduling and safety must use the concrete operation instead of a
+    /// coarse capability assigned to the shared name.
+    pub fn capability_for_arguments(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Option<ToolCapability> {
+        let entry = self.tools.get(name)?;
+        let read_mode = match name {
+            "todo" => arguments.get("todos").is_none(),
+            "cronjob" => matches!(
+                arguments.get("action").and_then(Value::as_str),
+                Some("list" | "blueprints")
+            ),
+            "skill_bundle" => matches!(
+                arguments.get("action").and_then(Value::as_str),
+                Some("list" | "invoke" | "extract")
+            ),
+            _ => false,
+        };
+        if read_mode {
+            Some(
+                ToolCapability::read(entry.capability.resource_kind.clone())
+                    .with_resource_argument_opt(entry.capability.resource_argument.as_deref()),
+            )
+        } else {
+            Some(entry.capability.clone())
+        }
+    }
+
+    /// Return the exact contract revision used for invocation and inspection.
     ///
     /// This fingerprint intentionally includes the canonical schema, execution
-    /// capability, and toolset boundary. A durable approval is therefore
+    /// capability, and toolset boundary. A safety inspection is therefore
     /// invalidated if a deployment changes arguments, side-effect semantics,
     /// or the permission domain even when the public tool name stays stable.
     pub fn contract_fingerprint(&self, name: &str) -> Option<String> {
@@ -528,15 +555,25 @@ impl ToolRegistry {
         let args: Value = match serde_json::from_str(arguments) {
             Ok(value) => value,
             Err(_) => {
-                return tool_coded_error("invalid_json", "Tool arguments are not valid JSON.")
+                return tool_error_with_recovery(
+                    "invalid_json",
+                    "Tool arguments are not valid JSON.",
+                    false,
+                    "not_started",
+                    serde_json::json!({
+                        "kind": "correct_arguments",
+                        "canRetryAfterCorrection": true,
+                        "nextAction": "Send one valid JSON object that matches the tool schema."
+                    }),
+                )
             }
         };
         if let Err(error) = contract::validate_arguments(entry, &args) {
-            return tool_coded_error(
-                "invalid_arguments",
-                &format!("{}: {}", error.path, error.reason),
-            );
+            return invalid_arguments_error(entry, &error.path, &error.reason);
         }
+        let capability = self
+            .capability_for_arguments(name, &args)
+            .unwrap_or_else(|| entry.capability.clone());
 
         let result = match context {
             Some(context) => {
@@ -557,13 +594,13 @@ impl ToolRegistry {
                             context,
                             name,
                             &entry.toolset,
-                            &entry.capability,
+                            &capability,
                             &contract_fingerprint,
                             &args,
                         )
                         .await
                     {
-                        return tool_error(&err);
+                        return tool_guard_error(&err);
                     }
                 }
                 let span = tracing::info_span!(
@@ -573,16 +610,16 @@ impl ToolRegistry {
                     trigger = context.trigger.name(),
                     invocation_id = %context.invocation_id,
                     tool = %name,
-                    effect = ?entry.capability.effect,
-                    risk = ?entry.capability.risk,
-                    cancellation = ?entry.capability.cancellation,
+                    effect = ?capability.effect,
+                    risk = ?capability.risk,
+                    cancellation = ?capability.cancellation,
                 );
                 let _guard = span.enter();
                 let started = std::time::Instant::now();
                 let result = entry.handler.execute_with_context(context, &args).await;
                 metrics::histogram!(
                     "mymy_agent_tool_duration_seconds",
-                    "effect" => tool_effect_label(entry.capability.effect),
+                    "effect" => tool_effect_label(capability.effect),
                     "outcome" => if result.is_ok() { "success" } else { "error" },
                 )
                 .record(started.elapsed().as_secs_f64());
@@ -592,28 +629,140 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(result) => sanitize_tool_output(name, entry.capability.effect, &result),
+            Ok(result) => sanitize_tool_output(name, capability.effect, &result),
+            Err(ToolError::Coded {
+                code: "content_quarantined",
+                message,
+            }) => tool_error_with_recovery(
+                "content_quarantined",
+                &message,
+                false,
+                "not_committed",
+                serde_json::json!({
+                    "kind": "quarantine_review",
+                    "canRetryAfterCorrection": false,
+                    "targetChanged": false,
+                    "nextAction": "Keep the target unchanged and use the separate quarantine review lifecycle.",
+                    "resubmitStagedContent": false
+                }),
+            ),
+            Err(ToolError::Coded {
+                code: "content_rejected",
+                message,
+            }) => tool_error_with_recovery(
+                "content_rejected",
+                &message,
+                false,
+                "not_committed",
+                serde_json::json!({
+                    "kind": "safety_denied",
+                    "canRetryAfterCorrection": false,
+                    "protectedInvariant": "rejected content cannot enter visible storage",
+                    "permittedNextAction": "Stop this branch or create genuinely different admissible content without reusing the rejected bytes.",
+                    "overrideAvailable": false
+                }),
+            ),
+            Err(ToolError::Coded { code, message })
+                if code.ends_with("_denied") || code == "path_scope_violation" =>
+            {
+                tool_error_with_recovery(
+                    code,
+                    &message,
+                    false,
+                    "not_started",
+                    serde_json::json!({
+                        "kind": "safety_denied",
+                        "canRetryAfterCorrection": false,
+                        "protectedInvariant": "the operation must remain inside the owning agent's protected scope",
+                        "permittedNextAction": "Use one bounded target already inside the configured workspace, or stop this branch.",
+                        "overrideAvailable": false
+                    }),
+                )
+            }
             Err(ToolError::Coded { code, message }) => {
                 tool_coded_error_with_state(code, &message, false, "not_committed")
             }
-            Err(ToolError::InvalidArgs(message)) => {
-                tool_coded_error_with_state("invalid_arguments", &message, false, "not_started")
-            }
+            Err(ToolError::InvalidArgs(message)) => invalid_arguments_error(entry, "$", &message),
             Err(ToolError::Unavailable(message)) => {
                 tool_coded_error_with_state("unavailable", &message, true, "not_started")
             }
-            Err(ToolError::Execution(message)) if entry.capability.effect == ToolEffect::Read => {
+            Err(ToolError::Execution(message)) if capability.effect == ToolEffect::Read => {
                 tool_coded_error_with_state("execution_failed", &message, true, "not_committed")
             }
-            Err(ToolError::Execution(message)) => {
-                tool_coded_error_with_state("execution_outcome_unknown", &message, false, "unknown")
-            }
+            Err(ToolError::Execution(message)) => tool_error_with_recovery(
+                "execution_outcome_unknown",
+                &message,
+                false,
+                "unknown",
+                serde_json::json!({
+                    "kind": "reconcile_state",
+                    "canRetryAfterCorrection": false,
+                    "exactRetryProhibited": true,
+                    "resourceKind": capability.resource_kind.clone(),
+                    "resourceKey": capability.resource_key(&args),
+                    "nextAction": "Read and reconcile the live resource state. Retry a write only after proving the prior operation did not commit."
+                }),
+            ),
         }
     }
 
     fn is_enabled(&self, entry: &ToolEntry) -> bool {
         self.enabled_toolsets.is_empty() || self.enabled_toolsets.contains(&entry.toolset)
     }
+}
+
+fn interaction_boundary(name: &str) -> &'static str {
+    match name {
+        "decision" | "clarify" => "semantic_decision",
+        "todo" | "runtime_status" => "internal_run_control",
+        _ => "safety_enforced_tool",
+    }
+}
+
+fn operation_modes(name: &str, effect: ToolEffect) -> Vec<&'static str> {
+    match name {
+        "todo" => vec!["read", "replace", "merge"],
+        "cronjob" => vec![
+            "list",
+            "create",
+            "update",
+            "pause",
+            "resume",
+            "remove",
+            "trigger",
+            "blueprints",
+            "instantiate_blueprint",
+        ],
+        "skill_bundle" => vec!["list", "invoke", "extract", "create"],
+        _ => vec![match effect {
+            ToolEffect::Read => "read",
+            ToolEffect::Create => "create",
+            ToolEffect::Update => "update",
+            ToolEffect::Delete => "delete",
+            ToolEffect::Execute => "execute",
+            ToolEffect::External => "external",
+        }],
+    }
+}
+
+fn safety_enforcement(toolset: &str, effect: ToolEffect) -> Vec<&'static str> {
+    let mut checks = vec!["active_lease", "origin_scope"];
+    if toolset.ends_with("_read") || toolset.ends_with("_write") {
+        checks.push("agent_access_revalidation");
+    } else {
+        checks.push("tool_exposure_policy");
+    }
+    if effect != ToolEffect::Read {
+        checks.extend([
+            "argument_bound_write_inspection",
+            "resource_scope",
+            "protected_target",
+            "credential_disclosure",
+            "target_version",
+            "content_admission",
+        ]);
+    }
+    checks
 }
 
 fn tool_effect_label(effect: ToolEffect) -> &'static str {
@@ -720,10 +869,6 @@ pub fn tool_error(message: &str) -> String {
     tool_coded_error_with_state("tool_error", message, false, "not_committed")
 }
 
-pub fn tool_coded_error(code: &str, message: &str) -> String {
-    tool_coded_error_with_state(code, message, false, "not_committed")
-}
-
 fn tool_coded_error_with_state(
     code: &str,
     message: &str,
@@ -741,30 +886,157 @@ fn tool_coded_error_with_state(
     .to_string()
 }
 
-pub fn proposed_action_descriptor(
-    tool_name: &str,
-    capability: &ToolCapability,
-    contract_fingerprint: &str,
-    arguments: &Value,
-) -> Value {
-    let argument_bytes = serde_json::to_vec(arguments).unwrap_or_default();
-    let mut argument_hasher = sha2::Sha256::new();
-    use sha2::Digest as _;
-    argument_hasher.update(argument_bytes);
+fn tool_error_with_recovery(
+    code: &str,
+    message: &str,
+    retryable: bool,
+    operation_state: &str,
+    recovery: Value,
+) -> String {
     serde_json::json!({
-        "tool": tool_name,
-        "contractFingerprint": contract_fingerprint,
-        "effect": capability.effect,
-        "resourceKey": capability.resource_key(arguments),
-        "argumentsHash": hex::encode(argument_hasher.finalize()),
+        "contractVersion": TOOL_RESULT_CONTRACT_REVISION,
+        "ok": false,
+        "error": message,
+        "code": code,
+        "retryable": retryable,
+        "operationState": operation_state,
+        "recovery": recovery,
     })
+    .to_string()
 }
 
-pub fn proposed_action_hash(action: &Value) -> String {
-    let mut hasher = sha2::Sha256::new();
-    use sha2::Digest as _;
-    hasher.update(serde_json::to_vec(action).unwrap_or_default());
-    hex::encode(hasher.finalize())
+fn invalid_arguments_error(entry: &ToolEntry, path: &str, issue: &str) -> String {
+    let parameters = &entry.schema.function.parameters;
+    let allowed_arguments = parameters
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let example = minimal_argument_example(parameters);
+    tool_error_with_recovery(
+        "invalid_arguments",
+        &format!("{path}: {issue}"),
+        false,
+        "not_started",
+        serde_json::json!({
+            "kind": "correct_arguments",
+            "canRetryAfterCorrection": true,
+            "invalid": [{ "path": path, "issue": issue }],
+            "allowedArguments": allowed_arguments,
+            "examples": [{
+                "title": "Argument template; replace placeholders with live values",
+                "arguments": example,
+                "outcome": {
+                    "executableAsShown": false,
+                    "operationState": "depends_on_live_execution"
+                }
+            }]
+        }),
+    )
+}
+
+fn minimal_argument_example(schema: &Value) -> Value {
+    let schema_type = schema
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("object");
+    match schema_type {
+        "object" => {
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let properties = schema.get("properties").and_then(Value::as_object);
+            let mut object = serde_json::Map::new();
+            for key in required {
+                if let Some(property) = properties.and_then(|properties| properties.get(key)) {
+                    object.insert(key.to_string(), minimal_argument_example(property));
+                }
+            }
+            Value::Object(object)
+        }
+        "array" => Value::Array(Vec::new()),
+        "boolean" => Value::Bool(false),
+        "integer" | "number" => schema
+            .get("minimum")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(0)),
+        "string" => schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .cloned()
+            .unwrap_or_else(|| Value::String("<required>".to_string())),
+        _ => Value::Null,
+    }
+}
+
+/// Explain both scheduling choices when the model omits the mandatory
+/// dependency classification. No state is changed before this result is built.
+pub fn decision_argument_error() -> String {
+    tool_error_with_recovery(
+        "invalid_arguments",
+        "$.blocking is required and must be a boolean",
+        false,
+        "not_started",
+        serde_json::json!({
+            "kind": "correct_arguments",
+            "canRetryAfterCorrection": true,
+            "invalid": [{
+                "path": "$.blocking",
+                "issue": "required",
+                "expected": "boolean"
+            }],
+            "examples": [
+                {
+                    "title": "Block because the answer is on the critical path",
+                    "arguments": {
+                        "question": "Which report format should I produce?",
+                        "choices": ["document", "spreadsheet"],
+                        "blocking": true
+                    },
+                    "outcome": {
+                        "decisionStatus": "pending",
+                        "runStatus": "waiting_decision",
+                        "dependentWork": "blocked",
+                        "independentWork": "paused"
+                    }
+                },
+                {
+                    "title": "Defer while independent work remains",
+                    "arguments": {
+                        "question": "Which report format should I produce?",
+                        "choices": ["document", "spreadsheet"],
+                        "blocking": false
+                    },
+                    "outcome": {
+                        "decisionStatus": "pending",
+                        "runStatus": "running",
+                        "dependentWork": "blocked",
+                        "independentWork": "continues"
+                    }
+                }
+            ]
+        }),
+    )
+}
+
+pub fn tool_guard_error(error: &ToolGuardError) -> String {
+    tool_error_with_recovery(
+        error.code,
+        &error.message,
+        false,
+        error.operation_state,
+        serde_json::json!({
+            "kind": "safety_denied",
+            "canRetryAfterCorrection": false,
+            "protectedInvariant": error.protected_invariant,
+            "permittedNextAction": error.permitted_next_action,
+            "overrideAvailable": false
+        }),
+    )
 }
 
 fn sanitize_tool_output(tool_name: &str, effect: ToolEffect, output: &str) -> String {
@@ -864,7 +1136,7 @@ fn sanitize_tool_output(tool_name: &str, effect: ToolEffect, output: &str) -> St
 }
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 1_000_000;
-const TOOL_RESULT_CONTRACT_REVISION: &str = "mymy.tool-result.v1";
+const TOOL_RESULT_CONTRACT_REVISION: &str = "mymy.tool-result.v2";
 
 fn validate_tool_result_envelope(output: &str) -> Result<(), &'static str> {
     let value: Value = serde_json::from_str(output).map_err(|_| "result is not JSON")?;
@@ -1182,6 +1454,11 @@ mod tests {
         });
         let missing = serde_json::from_str::<Value>(&registry.execute("echo", "{}").await).unwrap();
         assert_eq!(missing["code"], "invalid_arguments");
+        assert_eq!(missing["contractVersion"], TOOL_RESULT_CONTRACT_REVISION);
+        assert_eq!(missing["operationState"], "not_started");
+        assert_eq!(missing["recovery"]["kind"], "correct_arguments");
+        assert_eq!(missing["recovery"]["canRetryAfterCorrection"], true);
+        assert_eq!(missing["recovery"]["examples"][0]["arguments"]["value"], 1);
         let unknown = serde_json::from_str::<Value>(
             &registry
                 .execute("echo", r#"{"value":1,"extra":true}"#)
@@ -1189,6 +1466,94 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown["code"], "invalid_arguments");
+    }
+
+    #[test]
+    fn mixed_operation_tools_use_the_concrete_argument_effect() {
+        let mut registry = ToolRegistry::new();
+        for name in ["todo", "cronjob", "skill_bundle"] {
+            registry.register(ToolEntry {
+                name: name.to_string(),
+                toolset: "test".to_string(),
+                schema: tool_schema(
+                    name,
+                    "Exercise one mixed-operation contract.",
+                    serde_json::json!({"type":"object","properties":{}}),
+                ),
+                capability: ToolCapability::mutation(ToolEffect::Update, name),
+                handler: Arc::new(EchoTool),
+            });
+        }
+
+        assert_eq!(
+            registry
+                .capability_for_arguments("todo", &serde_json::json!({}))
+                .unwrap()
+                .effect,
+            ToolEffect::Read
+        );
+        assert_eq!(
+            registry
+                .capability_for_arguments("todo", &serde_json::json!({"todos": []}))
+                .unwrap()
+                .effect,
+            ToolEffect::Update
+        );
+        for action in ["list", "blueprints"] {
+            assert_eq!(
+                registry
+                    .capability_for_arguments("cronjob", &serde_json::json!({"action": action}),)
+                    .unwrap()
+                    .effect,
+                ToolEffect::Read
+            );
+        }
+        assert_eq!(
+            registry
+                .capability_for_arguments("cronjob", &serde_json::json!({"action": "create"}),)
+                .unwrap()
+                .effect,
+            ToolEffect::Update
+        );
+        for action in ["list", "invoke", "extract"] {
+            assert_eq!(
+                registry
+                    .capability_for_arguments(
+                        "skill_bundle",
+                        &serde_json::json!({"action": action}),
+                    )
+                    .unwrap()
+                    .effect,
+                ToolEffect::Read
+            );
+        }
+    }
+
+    #[test]
+    fn missing_decision_blocking_returns_both_scheduling_examples() {
+        let result = serde_json::from_str::<Value>(&decision_argument_error()).unwrap();
+        assert_eq!(result["contractVersion"], TOOL_RESULT_CONTRACT_REVISION);
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["code"], "invalid_arguments");
+        assert_eq!(result["operationState"], "not_started");
+        assert_eq!(result["recovery"]["invalid"][0]["path"], "$.blocking");
+        assert_eq!(result["recovery"]["examples"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            result["recovery"]["examples"][0]["arguments"]["blocking"],
+            true
+        );
+        assert_eq!(
+            result["recovery"]["examples"][0]["outcome"]["runStatus"],
+            "waiting_decision"
+        );
+        assert_eq!(
+            result["recovery"]["examples"][1]["arguments"]["blocking"],
+            false
+        );
+        assert_eq!(
+            result["recovery"]["examples"][1]["outcome"]["independentWork"],
+            "continues"
+        );
     }
 
     #[tokio::test]
@@ -1287,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_fingerprint_binds_schema_capability_and_approval() {
+    fn contract_fingerprint_binds_schema_and_capability() {
         fn registry_with(minimum: i64, effect: ToolEffect) -> ToolRegistry {
             let mut registry = ToolRegistry::new();
             registry.register(ToolEntry {
@@ -1330,23 +1695,6 @@ mod tests {
             changed_capability
                 .contract_fingerprint("bounded_mutation")
                 .unwrap()
-        );
-
-        let arguments = serde_json::json!({"value": 3});
-        let capability = v1.capability("bounded_mutation").unwrap();
-        let v1_action =
-            proposed_action_descriptor("bounded_mutation", capability, &v1_fingerprint, &arguments);
-        let v2_action = proposed_action_descriptor(
-            "bounded_mutation",
-            capability,
-            &changed_schema
-                .contract_fingerprint("bounded_mutation")
-                .unwrap(),
-            &arguments,
-        );
-        assert_ne!(
-            proposed_action_hash(&v1_action),
-            proposed_action_hash(&v2_action)
         );
         assert_eq!(
             v1.catalog_report()[0].result_contract_revision,

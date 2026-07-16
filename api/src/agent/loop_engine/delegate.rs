@@ -16,7 +16,7 @@ use super::{AgentEvent, AgentLoop, LoopConfig};
 const MAX_DELEGATE_TASKS: usize = 10;
 pub(super) const MAX_DELEGATE_CONCURRENCY: usize = 5;
 const MAX_DELEGATE_TURNS: u32 = 10;
-const DELEGATE_BLOCKED_TOOLS: &[&str] = &["delegate_task", "clarify"];
+const DELEGATE_BLOCKED_TOOLS: &[&str] = &["delegate_task", "decision", "clarify"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct DelegateTaskSpec {
@@ -267,11 +267,7 @@ fn resolve_delegate_tools(
         .into_iter()
         .filter(|tool| available_tools.contains(tool))
         .filter(|tool| !is_delegate_tool_blocked(tool.as_str()))
-        .filter(|tool| {
-            registry.capability(tool).is_some_and(|capability| {
-                capability.effect == crate::agent::tools::ToolEffect::Read
-            })
-        })
+        .filter(|tool| registry.capability(tool).is_some())
         .collect::<Vec<_>>();
     tools.sort();
     tools.dedup();
@@ -280,7 +276,7 @@ fn resolve_delegate_tools(
 
 fn build_delegate_system_prompt(parent_system_prompt: &str) -> String {
     format!(
-        "{parent_system_prompt}\n\n[Delegated child runtime]\nYou are a non-interactive child agent. Complete only the delegated goal, return concise findings, do not ask the user for clarification, and do not call delegation or clarification tools."
+        "{parent_system_prompt}\n\n[Delegated child runtime]\nYou are a non-interactive child agent. Complete only the delegated goal, return concise findings, do not ask the user for a Decision, and do not call delegation or Decision tools."
     )
 }
 
@@ -291,5 +287,71 @@ fn build_delegate_user_prompt(task: &DelegateTaskSpec) -> String {
             task.goal, context
         ),
         None => format!("Delegated goal:\n{}", task.goal),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::agent::tools::{
+        tool_result, tool_schema, ToolCapability, ToolEffect, ToolEntry, ToolError, ToolHandler,
+    };
+
+    struct TestTool;
+
+    #[async_trait]
+    impl ToolHandler for TestTool {
+        async fn execute(&self, arguments: &Value) -> Result<String, ToolError> {
+            Ok(tool_result(arguments))
+        }
+    }
+
+    #[test]
+    fn delegated_children_inherit_agent_authorized_writes() {
+        let mut registry = ToolRegistry::new();
+        for (name, capability) in [
+            ("read_task", ToolCapability::read("task")),
+            (
+                "update_task",
+                ToolCapability::mutation(ToolEffect::Update, "task"),
+            ),
+            (
+                "decision",
+                ToolCapability::mutation(ToolEffect::Create, "decision"),
+            ),
+        ] {
+            registry.register(ToolEntry {
+                name: name.to_string(),
+                toolset: "test".to_string(),
+                schema: tool_schema(
+                    name,
+                    "Exercise delegated access inheritance.",
+                    serde_json::json!({"type":"object","properties":{}}),
+                ),
+                capability,
+                handler: Arc::new(TestTool),
+            });
+        }
+        let available = ["read_task", "update_task", "decision"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let task = DelegateTaskSpec {
+            index: 0,
+            goal: "Update one task".to_string(),
+            context: None,
+            tools: Vec::new(),
+            max_turns: 1,
+            max_tool_calls: None,
+            max_total_tokens: None,
+        };
+
+        assert_eq!(
+            resolve_delegate_tools(&task, &available, &registry),
+            vec!["read_task".to_string(), "update_task".to_string()]
+        );
     }
 }

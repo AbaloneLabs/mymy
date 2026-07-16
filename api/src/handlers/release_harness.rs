@@ -112,7 +112,6 @@ struct CleanupResponse {
 struct DecisionFixture {
     choice_id: String,
     input_id: String,
-    approval_id: String,
     pagination_ids: Vec<String>,
     total_pending: usize,
 }
@@ -149,7 +148,7 @@ async fn create_fixtures(
     let profile = created.agent.profile;
 
     let artifact = create_artifact_fixture(&state, &profile, &seed).await?;
-    let decisions = create_decision_fixture(&state, &profile, &seed, &artifact).await?;
+    let decisions = create_decision_fixture(&state, &profile, &seed).await?;
     let quarantine = create_quarantine_fixture(&state, &profile, &seed).await?;
 
     Ok(Json(FixtureResponse {
@@ -530,7 +529,6 @@ async fn create_decision_fixture(
     state: &Arc<AppState>,
     profile: &str,
     seed: &str,
-    artifact: &ArtifactFixture,
 ) -> AppResult<DecisionFixture> {
     let choice = create_choice_decision(
         state,
@@ -551,28 +549,6 @@ async fn create_decision_fixture(
     )
     .await?;
 
-    let approval_session = create_session(state, profile).await?;
-    let approval_run = create_claimed_run(state, approval_session, seed, "approval").await?;
-    let coordinator = approval_run
-        .decisions
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("release Decision coordinator is missing".to_string()))?;
-    let approval = coordinator
-        .create_approval(
-            &approval_run,
-            &format!("Approve artifact publication {seed}"),
-            serde_json::json!({
-                "tool": "write_file",
-                "resourceKey": format!("file:{}", artifact.path),
-                "effect": "update"
-            }),
-            Some(artifact.fingerprint.clone()),
-            &[],
-        )
-        .await
-        .map_err(AppError::Conflict)?;
-    agent_runs::pause_release_fixture_run(state, &approval_run, approval.id).await?;
-
     let mut pagination_ids = Vec::with_capacity(PAGINATION_DECISION_COUNT);
     for index in 0..PAGINATION_DECISION_COUNT {
         let decision = create_choice_decision(
@@ -590,8 +566,7 @@ async fn create_decision_fixture(
     Ok(DecisionFixture {
         choice_id: choice.id.to_string(),
         input_id: input.id.to_string(),
-        approval_id: approval.id.to_string(),
-        total_pending: PAGINATION_DECISION_COUNT + 3,
+        total_pending: PAGINATION_DECISION_COUNT + 2,
         pagination_ids,
     })
 }
@@ -611,7 +586,7 @@ async fn create_choice_decision(
         .as_ref()
         .ok_or_else(|| AppError::Internal("release Decision coordinator is missing".to_string()))?;
     let decision = coordinator
-        .create_choice(&run, &question, &choices, &[])
+        .create_choice(&run, &question, &choices, true, &[])
         .await
         .map_err(AppError::Conflict)?;
     agent_runs::pause_release_fixture_run(state, &run, decision.id).await?;

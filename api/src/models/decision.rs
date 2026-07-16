@@ -18,8 +18,6 @@ pub struct DecisionView {
     pub suspend: bool,
     pub status: String,
     pub answer: Option<Value>,
-    pub proposed_action: Option<Value>,
-    pub target_version: Option<String>,
     pub expires_at: Option<String>,
     pub created_at: String,
     pub resolved_at: Option<String>,

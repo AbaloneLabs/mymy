@@ -92,7 +92,7 @@ pub async fn instantiate_blueprint(
             wake_agent: true,
             agent_profile: req.agent_profile,
             project_id: req.project_id,
-            session_policy: "new".to_string(),
+            session_policy: "reuse".to_string(),
             catch_up_policy: "latest".to_string(),
             retry_policy: "safe".to_string(),
             max_tool_calls: crate::agent::scheduler::default_max_tool_calls(),
