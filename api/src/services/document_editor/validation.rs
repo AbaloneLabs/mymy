@@ -109,12 +109,13 @@ pub(super) fn validate_ooxml_package(kind: DocumentEditorKind, bytes: &[u8]) -> 
         .map(|entry| entry.name.as_str())
         .collect::<Vec<_>>();
     let required = match kind {
-        DocumentEditorKind::Docx => &[
-            "[Content_Types].xml",
-            "_rels/.rels",
-            "word/document.xml",
-            "word/_rels/document.xml.rels",
-        ][..],
+        // A Word document only needs a document-level relationship part when
+        // its main part actually relates to images, styles, hyperlinks, or
+        // another package part. Minimal text-only DOCX producers may omit it,
+        // and the decoder already treats that absence as an empty relation set.
+        DocumentEditorKind::Docx => {
+            &["[Content_Types].xml", "_rels/.rels", "word/document.xml"][..]
+        }
         DocumentEditorKind::Xlsx => &[
             "[Content_Types].xml",
             "_rels/.rels",

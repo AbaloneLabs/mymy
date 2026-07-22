@@ -179,11 +179,30 @@ fn ooxml_validation_accepts_required_parts_and_relationship_targets() {
 }
 
 #[test]
+fn ooxml_validation_accepts_docx_without_optional_document_relationships() {
+    let bytes = test_ooxml_package(&[
+        ("[Content_Types].xml", "<Types/>"),
+        (
+            "_rels/.rels",
+            r#"<Relationships><Relationship Id="rId1" Target="word/document.xml"/></Relationships>"#,
+        ),
+        (
+            "word/document.xml",
+            r#"<w:document><w:body><w:p><w:r><w:t>Text only</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+    ]);
+
+    validate_ooxml_package(DocumentEditorKind::Docx, &bytes)
+        .expect("text-only DOCX should not require a document relationship part");
+    let model = docx_model(&bytes).expect("text-only DOCX should decode");
+    assert_eq!(model["blocks"][0]["text"], "Text only");
+}
+
+#[test]
 fn ooxml_validation_rejects_missing_required_part() {
     let bytes = test_ooxml_package(&[
         ("[Content_Types].xml", "<Types/>"),
         ("_rels/.rels", "<Relationships/>"),
-        ("word/document.xml", "<w:document/>"),
     ]);
 
     assert!(validate_ooxml_package(DocumentEditorKind::Docx, &bytes).is_err());
