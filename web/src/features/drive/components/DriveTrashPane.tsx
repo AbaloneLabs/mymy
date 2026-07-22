@@ -7,6 +7,7 @@ import {
   useRestoreDriveTrash,
 } from "@/features/drive/api";
 import { formatBytes, formatDate } from "@/features/drive/utils";
+import { createUuid } from "@/lib/uuid";
 import type { DriveTrashEntry } from "@/types/drive";
 
 export function DriveTrashPane({ onOpenPath }: { onOpenPath: (path: string, kind: DriveTrashEntry["kind"]) => void }) {
@@ -53,8 +54,8 @@ function TrashRow({
   const { t } = useTranslation();
   const restore = useRestoreDriveTrash();
   const purge = usePurgeDriveTrash();
-  const [restoreKey] = useState(() => crypto.randomUUID());
-  const [purgeKey] = useState(() => crypto.randomUUID());
+  const [restoreKey] = useState(createUuid);
+  const [purgeKey] = useState(createUuid);
 
   return (
     <article className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">

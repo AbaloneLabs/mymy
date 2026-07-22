@@ -19,7 +19,12 @@ import {
 } from "@/features/drive/components/LightweightBrowserPane";
 import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
-import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
+import {
+  getChatSessionDeletionImpact,
+  useChatSessions,
+  useCreateChatSession,
+  useDeleteChatSession,
+} from "@/features/chat/api";
 import { useChatSessionSelection } from "@/features/chat/useChatSessionSelection";
 import { withChatSessionId } from "@/features/chat/chatSessionUrl";
 import { useProjects } from "@/features/projects/api";
@@ -124,23 +129,38 @@ export default function Chat() {
     });
   };
 
-  const handleDelete = (e: React.MouseEvent, sessionId: string) => {
+  const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    if (window.confirm(t("chat.deleteConfirm"))) {
-      deleteSession.mutate(sessionId, {
-        onSuccess: () => {
-          markDeletedSession(sessionId);
-          if (sessionId === effectiveSessionId) {
-            const nextSessionId =
-              sessions.find((session) => session.id !== sessionId)?.id ?? null;
-            setSearchParams(
-              (current) => withChatSessionId(current, nextSessionId),
-              { replace: true },
-            );
-          }
-        },
-      });
+    let impact;
+    try {
+      impact = await getChatSessionDeletionImpact(sessionId);
+    } catch {
+      window.alert(t("chat.deleteImpactError"));
+      return;
     }
+    const confirmed = window.confirm(
+      impact.hasFutureCronRuns
+        ? t("chat.deleteCronConfirm", { title: impact.cronJobTitle ?? "" })
+        : t("chat.deleteConfirm"),
+    );
+    if (!confirmed) return;
+
+    deleteSession.mutate({
+      sessionId,
+      confirmFutureCronDeletion: impact.hasFutureCronRuns,
+    }, {
+      onSuccess: () => {
+        markDeletedSession(sessionId);
+        if (sessionId === effectiveSessionId) {
+          const nextSessionId =
+            sessions.find((session) => session.id !== sessionId)?.id ?? null;
+          setSearchParams(
+            (current) => withChatSessionId(current, nextSessionId),
+            { replace: true },
+          );
+        }
+      },
+    });
   };
 
   const openDocumentEditor = (path: string) => {
@@ -333,7 +353,7 @@ export default function Chat() {
                   </div>
                   <button
                     type="button"
-                    onClick={(e) => handleDelete(e, session.id)}
+                    onClick={(e) => void handleDelete(e, session.id)}
                     disabled={deleteSession.isPending}
                     className={cn(
                       "shrink-0 opacity-0 transition-opacity duration-150",

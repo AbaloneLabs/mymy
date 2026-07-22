@@ -239,6 +239,20 @@ pub struct DeleteResponse {
     pub success: bool,
 }
 
+/// Describes whether deleting a visible conversation also abandons scheduled
+/// work. The UI reads this immediately before confirmation so a user never
+/// mistakes deletion of a cron-owned session for deletion of transcript data
+/// alone.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeletionImpactResponse {
+    pub has_future_cron_runs: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cron_job_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ChatSseEvent, RunChecklistEventItem};

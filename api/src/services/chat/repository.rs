@@ -8,7 +8,7 @@ use crate::agent::security::redact_sensitive_text;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{
     ChatMessage, ChatMessagesResponse, ChatSession, ChatSessionResponse, ChatSessionsResponse,
-    CreateSessionRequest, MessageRole, SessionStatus, ToolCallDto,
+    CreateSessionRequest, MessageRole, SessionDeletionImpactResponse, SessionStatus, ToolCallDto,
 };
 use crate::services::agents;
 use crate::services::audit::log_audit_safe;
@@ -329,8 +329,68 @@ pub async fn fetch_session_response(state: &AppState, id: Uuid) -> AppResult<Cha
     fetch_session(state, id).await.map(row_to_session)
 }
 
+pub async fn session_deletion_impact(
+    state: &AppState,
+    id: Uuid,
+) -> AppResult<SessionDeletionImpactResponse> {
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+    if !exists {
+        return Err(AppError::NotFound("session not found".to_string()));
+    }
+    let future_cron = sqlx::query_as::<_, (String, DateTime<Utc>)>(
+        r#"SELECT title, next_run_at
+           FROM cron_jobs
+           WHERE reuse_session_id = $1
+             AND enabled
+             AND deleted_at IS NULL
+             AND (max_runs IS NULL OR run_count < max_runs)
+           ORDER BY next_run_at, id
+           LIMIT 1"#,
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(SessionDeletionImpactResponse {
+        has_future_cron_runs: future_cron.is_some(),
+        cron_job_title: future_cron.as_ref().map(|(title, _)| title.clone()),
+        next_run_at: future_cron.map(|(_, next_run_at)| next_run_at.to_rfc3339()),
+    })
+}
+
+#[cfg(any(test, feature = "release-harness"))]
 pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
+    delete_session_with_options(state, id, false).await
+}
+
+/// Deletes a conversation and retires the cron definition that owns it.
+///
+/// Cron rows are locked before the session because the scheduler already uses
+/// that order while admitting occurrences. This prevents a due occurrence
+/// from being enqueued between user confirmation and the deletion fence. A
+/// future cron requires an explicit confirmation bit, while an exhausted or
+/// disabled cron is retired without an extra warning because no work is being
+/// abandoned.
+pub async fn delete_session_with_options(
+    state: &AppState,
+    id: Uuid,
+    confirm_future_cron_deletion: bool,
+) -> AppResult<bool> {
     let mut tx = state.db.begin().await?;
+    let linked_cron_jobs = sqlx::query_as::<_, (Uuid, String, bool)>(
+        r#"SELECT id, title,
+                  (enabled AND (max_runs IS NULL OR run_count < max_runs)) AS has_future_runs
+           FROM cron_jobs
+           WHERE reuse_session_id = $1 AND deleted_at IS NULL
+           ORDER BY id
+           FOR UPDATE"#,
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
     let exists =
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM chat_sessions WHERE id = $1 FOR UPDATE")
             .bind(id)
@@ -349,6 +409,16 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
         }
         return Err(AppError::NotFound("session not found".to_string()));
     }
+    if linked_cron_jobs.iter().any(|(_, _, future)| *future) && !confirm_future_cron_deletion {
+        return Err(AppError::Coded {
+            code: "session_has_future_cron_runs",
+            status: axum::http::StatusCode::CONFLICT,
+            message:
+                "session has future cron runs; confirm cron deletion before deleting the session"
+                    .to_string(),
+            retryable: false,
+        });
+    }
     let active_run = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS(
              SELECT 1 FROM agent_runs
@@ -364,6 +434,14 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
                 .to_string(),
         ));
     }
+    sqlx::query(
+        r#"UPDATE cron_jobs
+           SET enabled = false, deleted_at = COALESCE(deleted_at, now()), updated_at = now()
+           WHERE reuse_session_id = $1 AND deleted_at IS NULL"#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         "UPDATE chat_sessions SET deleting_at = COALESCE(deleting_at, now()) WHERE id = $1",
     )
@@ -387,6 +465,22 @@ pub async fn delete_session(state: &AppState, id: Uuid) -> AppResult<bool> {
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+
+    for (job_id, title, _) in &linked_cron_jobs {
+        log_audit_safe(
+            &state.db,
+            "user",
+            "user",
+            "delete",
+            "cron_job",
+            Some(&job_id.to_string()),
+            Some(serde_json::json!({
+                "operation": "session_delete",
+                "title": redact_sensitive_text(title),
+            })),
+        )
+        .await;
+    }
 
     if !finalize_session_deletion(state, id).await? {
         return Err(AppError::Conflict(
@@ -744,7 +838,11 @@ pub(super) fn derive_title(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::metadata_is_agent_context;
+    use super::{delete_session_with_options, metadata_is_agent_context, session_deletion_impact};
+    use crate::config::Config;
+    use crate::error::AppError;
+    use crate::state::AppState;
+    use uuid::Uuid;
 
     #[test]
     fn run_status_metadata_is_excluded_from_agent_context() {
@@ -762,5 +860,102 @@ mod tests {
 
         assert!(metadata_is_agent_context(None));
         assert!(metadata_is_agent_context(Some(&metadata)));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn deleting_a_cron_session_requires_confirmation_and_retires_the_job(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        sqlx::query(
+            r#"INSERT INTO native_agents
+                 (profile, name, drive_path, sandbox_status)
+               VALUES ('session-delete-cron', 'Session delete cron',
+                       '/drive/agents/session-delete-cron', 'ready')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let session_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO chat_sessions
+                 (id, agent_id, profile, title, status)
+               VALUES ($1, 'native-session-delete-cron', 'session-delete-cron',
+                       'Cron: future work', 'active')"#,
+        )
+        .bind(session_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let job_id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO cron_jobs
+                 (title, prompt, schedule, schedule_text, enabled, next_run_at,
+                  agent_profile, reuse_session_id, session_policy)
+               VALUES ('Future work', 'Do the scheduled work.', '{}'::jsonb,
+                       'every 1h', true, now() + interval '1 hour',
+                       'session-delete-cron', $1, 'reuse')
+               RETURNING id"#,
+        )
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let impact = session_deletion_impact(&state, session_id).await.unwrap();
+        assert!(impact.has_future_cron_runs);
+        assert_eq!(impact.cron_job_title.as_deref(), Some("Future work"));
+
+        let error = delete_session_with_options(&state, session_id, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::Coded {
+                code: "session_has_future_cron_runs",
+                ..
+            }
+        ));
+        assert!(
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM cron_jobs WHERE id = $1",)
+                .bind(job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        );
+
+        assert!(delete_session_with_options(&state, session_id, true)
+            .await
+            .unwrap());
+        let retired = sqlx::query_as::<_, (bool, bool, Option<Uuid>)>(
+            "SELECT enabled, deleted_at IS NOT NULL, reuse_session_id FROM cron_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retired, (false, true, None));
+        assert!(!sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id = $1)",
+        )
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap());
+    }
+
+    fn test_config() -> Config {
+        Config {
+            database_url: String::new(),
+            port: 0,
+            cors_origins: Vec::new(),
+            agent_data_dir: std::env::temp_dir(),
+            auth_cookie_secure: false,
+            cron_tick_interval_secs: 60,
+            cron_timezone: "UTC".to_string(),
+            cron_output_keep: 10,
+            drive_s3_bucket: None,
+            drive_s3_region: None,
+            drive_s3_endpoint: None,
+            sandbox_runner_url: None,
+            sandbox_preview_host: "127.0.0.1".to_string(),
+        }
     }
 }

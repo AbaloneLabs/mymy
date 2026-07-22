@@ -1,17 +1,9 @@
 import { useRef, useState } from "react";
+import { createUuid } from "@/lib/uuid";
 import type { QueuedChatTurn } from "../shared/types";
 
 export function createQueuedTurnId() {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi?.randomUUID === "function") {
-    return cryptoApi.randomUUID();
-  }
-  if (typeof cryptoApi?.getRandomValues === "function") {
-    const bytes = new Uint32Array(2);
-    cryptoApi.getRandomValues(bytes);
-    return `queued-${Date.now().toString(36)}-${bytes[0].toString(36)}${bytes[1].toString(36)}`;
-  }
-  return `queued-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return createUuid();
 }
 
 export function useQueuedChatTurns() {

@@ -816,6 +816,8 @@ const ja = {
     retryingNow: "再試行中...",
     deleteSession: "セッション削除",
     deleteConfirm: "このセッションとすべてのメッセージを削除しますか？",
+    deleteCronConfirm: "このセッションには cron ジョブ「{title}」の今後の実行が残っています。セッションを削除すると、その cron ジョブも削除されます。続行しますか？",
+    deleteImpactError: "このセッションに予定された作業があるか確認できませんでした。",
     error: "応答を取得できませんでした。LLM プロバイダーとエージェント設定を確認してください。",
     noSessions: "まだセッションはありません",
     noConversation: "選択された会話はありません",

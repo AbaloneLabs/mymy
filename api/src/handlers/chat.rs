@@ -16,7 +16,7 @@ use crate::models::artifact::{
 };
 use crate::models::chat::{
     ChatMessagesResponse, ChatSessionResponse, ChatSessionsResponse, ClarifyAnswerRequest,
-    ClarifyAnswerResponse, CreateSessionRequest, DeleteResponse,
+    ClarifyAnswerResponse, CreateSessionRequest, DeleteResponse, SessionDeletionImpactResponse,
 };
 use crate::services::agent_runs;
 use crate::services::chat::{self as chat_service, SessionQuery};
@@ -29,6 +29,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             get(list_sessions).post(create_session),
         )
         .route("/api/chat/sessions/{id}", delete(delete_session))
+        .route(
+            "/api/chat/sessions/{id}/deletion-impact",
+            get(session_deletion_impact),
+        )
         .route(
             "/api/chat/sessions/{id}/artifacts",
             get(list_session_artifacts),
@@ -98,9 +102,28 @@ pub async fn send_message(
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DeleteSessionQuery>,
 ) -> AppResult<Json<DeleteResponse>> {
-    let success = chat_service::delete_session(&state, id).await?;
+    let success =
+        chat_service::delete_session_with_options(&state, id, query.confirm_future_cron_deletion)
+            .await?;
     Ok(Json(DeleteResponse { success }))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSessionQuery {
+    #[serde(default)]
+    confirm_future_cron_deletion: bool,
+}
+
+pub async fn session_deletion_impact(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<SessionDeletionImpactResponse>> {
+    Ok(Json(
+        chat_service::session_deletion_impact(&state, id).await?,
+    ))
 }
 
 pub async fn resolve_clarify(

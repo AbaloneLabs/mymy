@@ -815,6 +815,8 @@ const zh = {
     retryingNow: "正在重试...",
     deleteSession: "删除会话",
     deleteConfirm: "确定删除此会话及所有消息？",
+    deleteCronConfirm: "此会话仍有 cron 作业“{title}”的后续运行。删除会话也会删除该 cron 作业。是否继续？",
+    deleteImpactError: "无法检查此会话是否有计划任务。",
     error: "未能获取回复。请检查 LLM 提供者和智能体设置。",
     noSessions: "还没有会话",
     noConversation: "没有选中的对话",

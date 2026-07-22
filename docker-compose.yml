@@ -133,6 +133,10 @@ services:
       MYMY_RUNNER_DATA_ROOT: /app/data/agent
       MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
       MYMY_SANDBOX_RUNNER_TOKEN_FILE: /run/mymy/runner-control.token
+      # The runner creates the bearer token as root, but only the API's runtime
+      # group receives read access through a 0640 file. This also repairs older
+      # named volumes whose token was left root:root 0600.
+      MYMY_SANDBOX_RUNNER_TOKEN_GID: ${HOST_GID:-1000}
       MYMY_SANDBOX_UID: "1000"
       MYMY_SANDBOX_GID: "1000"
       FIRECRACKER_BIN: ${FIRECRACKER_BIN:-}

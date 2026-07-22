@@ -825,6 +825,8 @@ const en = {
     retryingNow: "Retrying...",
     deleteSession: "Delete session",
     deleteConfirm: "Delete this session and all its messages?",
+    deleteCronConfirm: "This session has future runs for the cron job \"{title}\". Deleting the session will also delete that cron job. Continue?",
+    deleteImpactError: "Could not check whether this session has scheduled work.",
     error: "Failed to get a response. Check the LLM provider and agent settings.",
     noSessions: "No sessions yet",
     noConversation: "No conversation selected",

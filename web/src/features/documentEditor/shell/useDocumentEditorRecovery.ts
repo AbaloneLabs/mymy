@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { stableJson } from "@/features/documentEditor/shared/models";
+import { createUuid } from "@/lib/uuid";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 import {
   deleteDocumentEditorRecoveryDraft,
@@ -46,7 +47,7 @@ export function useDocumentEditorRecovery({
   fingerprint: string;
   principalScopeId: string | null;
 }) {
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const [sessionId] = useState(createUuid);
   const restoredDraftIdRef = useRef<string | null>(null);
   const ignoredDraftIdsRef = useRef(new Set<string>());
   const [availableDraft, setAvailableDraft] =

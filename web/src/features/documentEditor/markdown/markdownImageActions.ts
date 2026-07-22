@@ -5,6 +5,7 @@ import {
   uploadDriveFiles,
 } from "@/features/drive/api";
 import { parentPath } from "@/features/drive/utils";
+import { createUuid } from "@/lib/uuid";
 import { markdownRelativeFileReference } from "./markdownPreview";
 import {
   rebaseMarkdownSourceAnchor,
@@ -111,7 +112,7 @@ export function useMarkdownImageActions({
       end: selection?.selectionEnd ?? contentRef.current.length,
       affinity: "right" as const,
     };
-    const id = `md-${crypto.randomUUID()}`;
+    const id = `md-${createUuid()}`;
     const operation: InternalMarkdownImageOperation = {
       id,
       label: `Upload ${file.name}`,

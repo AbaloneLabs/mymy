@@ -11,6 +11,7 @@ import {
   useUpdateMemoryEmbeddingSettings,
   useUpdateMemoryRuntimeSettings,
 } from "@/features/agent-ops/api";
+import { createUuid } from "@/lib/uuid";
 import type { AgentMemory, MemoryEmbeddingSettings, MemoryRuntimeSettings } from "@/types/agent-ops";
 import { EmptyState, PanelError, PanelLoading } from "./AgentsNativeShared";
 
@@ -127,7 +128,7 @@ export function MemoryTab({ profile }: { profile: string | null }) {
                   action,
                   expectedContentRevision: memory.contentRevision,
                   expectedLifecycleRevision: memory.lifecycleRevision,
-                  idempotencyKey: crypto.randomUUID(),
+                  idempotencyKey: createUuid(),
                 })
               }
             />

@@ -1,7 +1,11 @@
 import { Plus, MessageSquare, Trash2, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { useChatSessions, useDeleteChatSession } from "@/features/chat/api";
+import {
+  getChatSessionDeletionImpact,
+  useChatSessions,
+  useDeleteChatSession,
+} from "@/features/chat/api";
 import type { ChatSession } from "@/types/chat";
 
 interface SessionSidebarProps {
@@ -25,11 +29,25 @@ export function SessionSidebar({
 
   const sessions: ChatSession[] = data?.sessions ?? [];
 
-  const handleDelete = (e: React.MouseEvent, sessionId: string) => {
+  const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    if (window.confirm(t("chat.deleteConfirm"))) {
-      deleteSession.mutate(sessionId);
+    let impact;
+    try {
+      impact = await getChatSessionDeletionImpact(sessionId);
+    } catch {
+      window.alert(t("chat.deleteImpactError"));
+      return;
     }
+    const confirmed = window.confirm(
+      impact.hasFutureCronRuns
+        ? t("chat.deleteCronConfirm", { title: impact.cronJobTitle ?? "" })
+        : t("chat.deleteConfirm"),
+    );
+    if (!confirmed) return;
+    deleteSession.mutate({
+      sessionId,
+      confirmFutureCronDeletion: impact.hasFutureCronRuns,
+    });
   };
 
   return (
@@ -97,7 +115,7 @@ export function SessionSidebar({
               </span>
               <button
                 type="button"
-                onClick={(e) => handleDelete(e, session.id)}
+                onClick={(e) => void handleDelete(e, session.id)}
                 disabled={deleteSession.isPending}
                 className={cn(
                   "shrink-0 opacity-0 transition-opacity duration-150",

@@ -20,6 +20,23 @@ interface ChatMessagesResponse {
   messages: ChatMessage[];
 }
 
+export interface SessionDeletionImpact {
+  hasFutureCronRuns: boolean;
+  cronJobTitle?: string;
+  nextRunAt?: string;
+}
+
+export interface DeleteChatSessionInput {
+  sessionId: string;
+  confirmFutureCronDeletion: boolean;
+}
+
+export function getChatSessionDeletionImpact(sessionId: string) {
+  return api.get<SessionDeletionImpact>(
+    `/chat/sessions/${sessionId}/deletion-impact`,
+  );
+}
+
 export function useChatSessions(projectId?: string, profile?: string) {
   return useQuery({
     queryKey: chatQueryKeys.sessions(projectId, profile),
@@ -464,8 +481,17 @@ async function enqueueChatRun(
 export function useDeleteChatSession(projectId?: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) =>
-      api.delete<{ success: boolean }>(`/chat/sessions/${sessionId}`),
+    mutationFn: ({
+      sessionId,
+      confirmFutureCronDeletion,
+    }: DeleteChatSessionInput) => {
+      const query = confirmFutureCronDeletion
+        ? "?confirmFutureCronDeletion=true"
+        : "";
+      return api.delete<{ success: boolean }>(
+        `/chat/sessions/${sessionId}${query}`,
+      );
+    },
     onSuccess: () => {
       // Invalidate project-scoped (if known) and global session lists.
       if (projectId) {

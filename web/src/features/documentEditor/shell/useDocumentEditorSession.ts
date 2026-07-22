@@ -27,6 +27,7 @@ import {
 } from "@/features/documentEditor/shared/api";
 import { requiredDocumentEditorCapabilities } from "@/features/documentEditor/shared/capabilities";
 import { drivePackageUrl } from "@/features/drive/api";
+import { createUuid } from "@/lib/uuid";
 import { useAuthStore } from "@/store/auth";
 import type { DocumentEditorModelResponse } from "@/types/documentEditor";
 import { reviewedConflictFingerprint } from "./documentEditorRevisionState";
@@ -338,7 +339,7 @@ export function useDocumentEditorSession({
         : {
             draftKey: savingDraftKey,
             expectedFingerprint,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: createUuid(),
           };
     pendingSaveIdentityRef.current = saveIdentity;
     dispatchSession({
@@ -445,7 +446,7 @@ export function useDocumentEditorSession({
             draftKey: savingDraftKey,
             targetPath,
             baseFingerprint: fingerprint,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: createUuid(),
           };
     pendingCopyIdentityRef.current = identity;
     saveCopyMutation.reset();
@@ -487,7 +488,7 @@ export function useDocumentEditorSession({
     ) {
       return false;
     }
-    const mergedKey = `rebase:${crypto.randomUUID()}`;
+    const mergedKey = `rebase:${createUuid()}`;
     dispatchSession({
       type: "rebase",
       response: externalRevision,

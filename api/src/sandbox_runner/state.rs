@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{chown, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
@@ -66,7 +66,10 @@ impl RunnerState {
         // command mounts use the path.
         std::fs::create_dir_all(&configured_data_root)?;
         let data_root = configured_data_root.canonicalize()?;
-        let control_token = load_or_create_control_token(&data_root)?;
+        let control_token = load_or_create_control_token(
+            &data_root,
+            config_env::u32("MYMY_SANDBOX_RUNNER_TOKEN_GID"),
+        )?;
         let log_dir = data_root.join("runner-logs");
         std::fs::create_dir_all(&log_dir)?;
         let firecracker_work_dir = config_env::path("FIRECRACKER_WORK_DIR")
@@ -348,7 +351,10 @@ impl RunnerState {
     }
 }
 
-fn load_or_create_control_token(data_root: &Path) -> anyhow::Result<String> {
+fn load_or_create_control_token(
+    data_root: &Path,
+    token_reader_gid: Option<u32>,
+) -> anyhow::Result<String> {
     let path = std::env::var("MYMY_SANDBOX_RUNNER_TOKEN_FILE")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("MYMY_SANDBOX_RUNNER_TOKEN_FILE is required"))?;
@@ -378,7 +384,19 @@ fn load_or_create_control_token(data_root: &Path) -> anyhow::Result<String> {
         }
         Err(error) => return Err(error.into()),
     };
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    // The runner stays privileged for its isolation backends, while the API
+    // deliberately drops to the host UID/GID. Giving only that configured
+    // group read access preserves the bearer token boundary without making a
+    // root-created named-volume file unreadable to the API sidecar.
+    if let Some(gid) = token_reader_gid {
+        chown(&path, None, Some(gid))?;
+    }
+    let mode = if token_reader_gid.is_some() {
+        0o640
+    } else {
+        0o600
+    };
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
     if token.len() < 64 {
         anyhow::bail!("runner control token file is empty or invalid");
     }

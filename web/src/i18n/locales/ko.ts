@@ -825,6 +825,8 @@ const ko = {
     retryingNow: "재시도 중...",
     deleteSession: "세션 삭제",
     deleteConfirm: "이 세션과 모든 메시지를 삭제하시겠습니까?",
+    deleteCronConfirm: "이 세션에는 cron 작업 \"{title}\"의 향후 실행이 남아 있습니다. 세션을 삭제하면 해당 cron 작업도 함께 삭제됩니다. 계속하시겠습니까?",
+    deleteImpactError: "이 세션에 예정된 작업이 있는지 확인하지 못했습니다.",
     error: "응답을 받지 못했습니다. LLM 제공자와 에이전트 설정을 확인하세요.",
     noSessions: "아직 세션이 없습니다",
     noConversation: "선택된 대화가 없습니다",

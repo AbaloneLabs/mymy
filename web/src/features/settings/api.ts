@@ -3,6 +3,7 @@
  */
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
+import { createUuid } from "@/lib/uuid";
 import type {
   AppSettings,
   Language,
@@ -76,7 +77,7 @@ export function useApproveQuarantine() {
         `/settings/security/quarantine/${id}/approve`,
         {
           expectedVersion,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: createUuid(),
           destinationPath,
         },
       ),

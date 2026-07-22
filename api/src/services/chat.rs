@@ -37,10 +37,12 @@ use crate::state::AppState;
 
 use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
 use self::provider::{parse_runtime_provider_id, DbRotatingProvider};
+#[cfg(any(test, feature = "release-harness"))]
+pub use self::repository::delete_session;
 pub use self::repository::{
-    create_session, delete_session, fetch_session_response, get_messages, list_sessions,
-    reconcile_session_deletions, save_agent_messages_for_run, save_run_status_message,
-    SessionQuery,
+    create_session, delete_session_with_options, fetch_session_response, get_messages,
+    list_sessions, reconcile_session_deletions, save_agent_messages_for_run,
+    save_run_status_message, session_deletion_impact, SessionQuery,
 };
 use self::repository::{
     derive_title, fetch_message_rows, fetch_session, insert_user_message,
