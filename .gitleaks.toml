@@ -20,4 +20,5 @@ regexes = [
     '''sk-secret-123456789''',
     '''sk-test-[a-z0-9]+''',
     '''sk-ant-test[a-z0-9-]*''',
+    '''sk-(assigned|replacement)-123456789''',
 ]
