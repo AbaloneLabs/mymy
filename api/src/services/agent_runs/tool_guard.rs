@@ -148,7 +148,7 @@ impl ToolExecutionGuard for DurableToolExecutionGuard {
             }
             if let Err(error) = inspect_write(context, tool_name, capability, arguments) {
                 let resource_key = capability.resource_key(arguments);
-                crate::services::agent_runs::append_event_for_context(
+                crate::services::agent_runs::append_audit_event_for_context(
                     &self.state,
                     context,
                     "write_safety_inspected",
@@ -182,7 +182,7 @@ impl ToolExecutionGuard for DurableToolExecutionGuard {
                 return Err(error);
             }
             let argument_hash = hash_arguments(arguments);
-            crate::services::agent_runs::append_event_for_context(
+            crate::services::agent_runs::append_audit_event_for_context(
                 &self.state,
                 context,
                 "write_safety_inspected",

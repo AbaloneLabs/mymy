@@ -75,6 +75,19 @@ pub struct ToolCallDto {
     pub arguments: String,
 }
 
+/// A redacted checklist projection carried by the user-visible run stream.
+///
+/// This intentionally differs from the REST checklist model: durable database
+/// identifiers and verification links are unnecessary for an invalidation
+/// event and would expose more run internals than the chat timeline needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunChecklistEventItem {
+    pub id: String,
+    pub content: String,
+    pub status: String,
+    pub position: i32,
+}
+
 impl From<&ToolCall> for ToolCallDto {
     fn from(call: &ToolCall) -> Self {
         Self {
@@ -124,6 +137,24 @@ pub enum ChatSseEvent {
     },
     ModelTurnStarted {
         iteration: u32,
+    },
+    ChecklistChanged {
+        items: Vec<RunChecklistEventItem>,
+    },
+    CheckpointCreated {
+        checkpoint_id: Uuid,
+        sequence: i32,
+    },
+    DecisionCreated {
+        decision_id: Uuid,
+        kind: String,
+        question: String,
+        choices: serde_json::Value,
+        blocking: bool,
+    },
+    DecisionResolved {
+        decision_id: Uuid,
+        kind: String,
     },
     ToolCallStart {
         call_id: String,
@@ -206,4 +237,37 @@ pub struct ClarifyAnswerResponse {
 #[derive(Debug, Serialize)]
 pub struct DeleteResponse {
     pub success: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatSseEvent, RunChecklistEventItem};
+
+    #[test]
+    fn serializes_durable_extension_events_with_the_stream_discriminator() {
+        let decision_id = uuid::Uuid::nil();
+        let decision = serde_json::to_value(ChatSseEvent::DecisionCreated {
+            decision_id,
+            kind: "choice".to_string(),
+            question: "Continue?".to_string(),
+            choices: serde_json::json!(["yes", "no"]),
+            blocking: false,
+        })
+        .unwrap();
+        assert_eq!(decision["type"], "decision_created");
+        assert_eq!(decision["decision_id"], decision_id.to_string());
+        assert_eq!(decision["blocking"], false);
+
+        let checklist = serde_json::to_value(ChatSseEvent::ChecklistChanged {
+            items: vec![RunChecklistEventItem {
+                id: "item-1".to_string(),
+                content: "Verify result".to_string(),
+                status: "pending".to_string(),
+                position: 0,
+            }],
+        })
+        .unwrap();
+        assert_eq!(checklist["type"], "checklist_changed");
+        assert_eq!(checklist["items"][0]["id"], "item-1");
+    }
 }

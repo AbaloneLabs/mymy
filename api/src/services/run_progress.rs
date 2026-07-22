@@ -18,6 +18,7 @@ use crate::agent::execution::{RunProgressStore, ToolExecutionContext};
 use crate::agent::providers::{Message, MessageRole};
 use crate::agent::security::redact_sensitive_text;
 use crate::error::{AppError, AppResult};
+use crate::models::chat::{ChatSseEvent, RunChecklistEventItem};
 use crate::services::agent_runs;
 use crate::state::AppState;
 
@@ -77,19 +78,24 @@ pub async fn update_checklist(
     replace_checklist_tx(&mut tx, context.run_id, &next).await?;
     tx.commit().await?;
     let items = fetch_checklist(&state.db, context.run_id).await?;
-    agent_runs::append_event_for_context(
+    agent_runs::append_user_event_for_context(
         state,
         context,
         "checklist_changed",
-        serde_json::json!({
-            "type": "checklist_changed",
-            "items": items.iter().map(|item| serde_json::json!({
-                "id": item.item_key,
-                "content": redact_sensitive_text(&item.content),
-                "status": item.status,
-                "position": item.position,
-            })).collect::<Vec<_>>(),
-        }),
+        serde_json::to_value(ChatSseEvent::ChecklistChanged {
+            items: items
+                .iter()
+                .map(|item| RunChecklistEventItem {
+                    id: item.item_key.clone(),
+                    content: redact_sensitive_text(&item.content),
+                    status: item.status.clone(),
+                    position: item.position,
+                })
+                .collect(),
+        })
+        .map_err(|err| {
+            AppError::Internal(format!("checklist event serialization failed: {err}"))
+        })?,
         None,
     )
     .await?;
@@ -235,15 +241,15 @@ impl RunProgressStore for DurableRunProgressStore {
         .await
         .map_err(|err| err.to_string())?;
         tx.commit().await.map_err(|err| err.to_string())?;
-        agent_runs::append_event_for_context(
+        agent_runs::append_user_event_for_context(
             &self.state,
             context,
             "checkpoint_created",
-            serde_json::json!({
-                "type": "checkpoint_created",
-                "checkpoint_id": checkpoint_id,
-                "sequence": sequence,
-            }),
+            serde_json::to_value(ChatSseEvent::CheckpointCreated {
+                checkpoint_id,
+                sequence,
+            })
+            .map_err(|err| format!("checkpoint event serialization failed: {err}"))?,
             Some(&format!("checkpoint:{sequence}")),
         )
         .await

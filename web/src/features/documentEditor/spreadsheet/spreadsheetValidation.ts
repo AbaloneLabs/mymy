@@ -141,6 +141,7 @@ function compareValidationValue(
     case "lessThanOrEqual":
       return value <= first;
   }
+  return false;
 }
 
 function validationTypeMessage(type: XlsxDataValidation["type"]) {

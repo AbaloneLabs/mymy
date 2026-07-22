@@ -14,7 +14,7 @@ use crate::state::AppState;
 
 use super::event_payload::sanitize_event_payload;
 use super::repository::{run_columns, run_select};
-use super::{append_event, insert_event_in_tx, AgentRunRow, RUN_LEASE_SECONDS};
+use super::{append_user_event, insert_user_event_in_tx, AgentRunRow, RUN_LEASE_SECONDS};
 
 const DURABLE_PROVIDER_RETRY_MINUTES: i32 = 30;
 
@@ -56,7 +56,7 @@ pub(super) async fn reconcile_one_stale_run(state: &AppState) -> AppResult<bool>
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        append_event(
+        append_user_event(
             state,
             run.id,
             "run_paused",
@@ -151,7 +151,7 @@ pub(super) async fn reconcile_one_stale_run(state: &AppState) -> AppResult<bool>
             run_id: run.id.to_string(),
             message: "A tool effect may have completed before the worker lease was lost. Review the resulting state before retrying.".to_string(),
         };
-        append_event(
+        append_user_event(
             state,
             run.id,
             "tool_outcome_unknown",
@@ -163,7 +163,7 @@ pub(super) async fn reconcile_one_stale_run(state: &AppState) -> AppResult<bool>
         .await?;
     }
     if reconciliation_failure {
-        append_event(
+        append_user_event(
             state,
             run.id,
             "run_finished",
@@ -308,7 +308,7 @@ pub(super) async fn defer_run_for_provider_retry(
         retry_count: scheduled.1,
         message: message.to_string(),
     };
-    insert_event_in_tx(
+    insert_user_event_in_tx(
         &mut tx,
         run.id,
         "provider_retry_scheduled",
@@ -417,7 +417,7 @@ pub(super) async fn finish_run(
         && requested_status == "completed"
         && inbox_revision > delivered_revision
     {
-        insert_event_in_tx(
+        insert_user_event_in_tx(
             &mut tx,
             run.id,
             "run_requeued",
@@ -468,8 +468,8 @@ pub(super) async fn finish_run(
     .await?;
     sqlx::query(
         r#"INSERT INTO agent_run_events
-             (run_id, sequence, event_type, idempotency_key, payload)
-           VALUES ($1, $2, 'run_finished', 'run-finished', $3)"#,
+             (run_id, sequence, event_type, idempotency_key, visibility, payload)
+           VALUES ($1, $2, 'run_finished', 'run-finished', 'user', $3)"#,
     )
     .bind(run.id)
     .bind(sequence)
@@ -552,7 +552,7 @@ pub(super) async fn pause_run_for_decision(
         )));
     }
     if !decision_pending {
-        insert_event_in_tx(
+        insert_user_event_in_tx(
             &mut tx,
             run.id,
             "run_requeued",
@@ -583,7 +583,7 @@ pub(super) async fn pause_run_for_decision(
         state.agent_run_notify.notify_waiters();
         return Ok(false);
     }
-    insert_event_in_tx(
+    insert_user_event_in_tx(
         &mut tx,
         run.id,
         "run_paused",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ChatSseEvent } from "@/features/chat/api";
 import { chatStreamReducer, initialChatStreamState } from "./stream";
 
 describe("chat stream reducer", () => {
@@ -117,5 +118,14 @@ describe("chat stream reducer", () => {
         event: { type: "error", message: "provider unavailable" },
       }),
     ).not.toThrow();
+  });
+
+  it("preserves state if a future runtime event bypasses the decoder", () => {
+    const state = chatStreamReducer(initialChatStreamState, {
+      type: "event",
+      sessionId: "session-1",
+      event: { type: "future_event" } as unknown as ChatSseEvent,
+    });
+    expect(state).toBe(initialChatStreamState);
   });
 });

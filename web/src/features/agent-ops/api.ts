@@ -437,6 +437,7 @@ function scheduleLabel(schedule: NativeSchedule): string {
     case "cron":
       return schedule.expression;
   }
+  return "";
 }
 
 export interface PromptFile {

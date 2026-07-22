@@ -21,7 +21,7 @@ use crate::state::AppState;
 use super::projection::{input_to_view, is_terminal, run_to_view, truncate_chars};
 use super::repository::{fetch_run_row, run_columns, run_select};
 use super::{
-    append_event, insert_event_in_tx, AgentRunRow, SessionRunInputRow,
+    append_user_event, insert_user_event_in_tx, AgentRunRow, SessionRunInputRow,
     INTERACTIVE_MAX_RUNTIME_SECONDS, INTERACTIVE_MAX_TOOL_CALLS, INTERACTIVE_MAX_TOTAL_TOKENS,
     MAX_CLIENT_REQUEST_ID_CHARS,
 };
@@ -225,7 +225,7 @@ pub async fn request_provider_retry_now(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::Conflict("run is not waiting for a provider retry".to_string()))?;
-    insert_event_in_tx(
+    insert_user_event_in_tx(
         &mut tx,
         run_id,
         "provider_retry_requested",
@@ -353,7 +353,7 @@ pub async fn cancel_queued_input(
             status: "cancelled".to_string(),
             cancel_requested: true,
         };
-        append_event(
+        append_user_event(
             state,
             run_id,
             "run_finished",

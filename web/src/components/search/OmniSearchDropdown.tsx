@@ -173,6 +173,7 @@ function domainIcon(domain: WorkspaceSearchDomain) {
     case "drive":
       return <FileText {...props} />;
   }
+  return <FileText {...props} />;
 }
 
 function domainLabel(
@@ -195,4 +196,5 @@ function domainLabel(
     case "drive":
       return t("search.groupDrive");
   }
+  return domain;
 }

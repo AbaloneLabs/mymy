@@ -43,11 +43,11 @@ pub use self::commands::{
     cancel_queued_input, enqueue_chat_run, request_cancel, request_provider_retry_now,
     update_queued_input,
 };
-pub(super) use self::event::append_event;
-pub(crate) use self::event::append_event_for_context;
+pub(super) use self::event::append_user_event;
+pub(crate) use self::event::{append_audit_event_for_context, append_user_event_for_context};
 pub use worker::start_agent_run_worker;
 
-use self::event::{append_event_for_lease, insert_event_in_tx};
+use self::event::{append_user_event_for_lease, insert_user_event_in_tx};
 use self::projection::{event_to_view, input_to_view, run_to_view, truncate_chars};
 use self::repository::{fetch_run_row, run_columns, run_select};
 
@@ -572,7 +572,7 @@ pub(super) async fn cancel_one_queued_run(state: &AppState) -> AppResult<bool> {
         status: "cancelled".to_string(),
         cancel_requested: true,
     };
-    append_event(
+    append_user_event(
         state,
         run.id,
         "run_finished",
@@ -698,7 +698,7 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
                 cancel_requested: cancellation.is_cancelled(),
             })
             .map_err(|err| err.to_string())?;
-            append_event_for_lease(
+            append_user_event_for_lease(
                 &self.state,
                 &child,
                 "run_started",
@@ -763,7 +763,7 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
         .ok_or_else(|| "delegate child terminal transition lost its lease".to_string())?;
 
         for event in &result.visible_events {
-            insert_event_in_tx(
+            insert_user_event_in_tx(
                 &mut tx,
                 handle.run_id,
                 &event.event_type,
@@ -774,7 +774,7 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
             .map_err(|err| err.to_string())?;
         }
         if !result.result.trim().is_empty() {
-            insert_event_in_tx(
+            insert_user_event_in_tx(
                 &mut tx,
                 handle.run_id,
                 "text_delta",
@@ -794,7 +794,7 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
         } else {
             "failed"
         };
-        insert_event_in_tx(
+        insert_user_event_in_tx(
             &mut tx,
             handle.run_id,
             "run_finished",
@@ -939,7 +939,7 @@ mod tests {
         .unwrap();
         let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
 
-        let first = append_event(
+        let first = append_user_event(
             &state,
             run_id,
             "run_started",
@@ -948,7 +948,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let duplicate = append_event(
+        let duplicate = append_user_event(
             &state,
             run_id,
             "run_started",
@@ -957,7 +957,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let second = append_event(
+        let second = append_user_event(
             &state,
             run_id,
             "model_turn_started",
@@ -970,6 +970,77 @@ mod tests {
         assert_eq!(first.id, duplicate.id);
         assert_eq!(first.sequence, 1);
         assert_eq!(second.sequence, 2);
+        assert_eq!(
+            sqlx::query_scalar::<_, Vec<String>>(
+                "SELECT array_agg(visibility ORDER BY sequence) FROM agent_run_events WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            vec!["user".to_string(), "user".to_string()]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn audit_events_are_not_projected_to_user_event_queries(pool: sqlx::PgPool) {
+        let state = AppState::new(pool.clone(), test_config());
+        let session_id = seed_session(&pool).await;
+        let enqueued = enqueue_chat_run(
+            &state,
+            session_id,
+            EnqueueChatRunRequest {
+                client_request_id: "request-audit-event".to_string(),
+                text: "Inspect a write".to_string(),
+                use_moa: false,
+                moa_preset_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
+        sqlx::query(
+            r#"UPDATE agent_runs
+               SET status = 'running', lease_owner = 'audit-test-worker', lease_epoch = 1,
+                   lease_expires_at = now() + interval '30 seconds'
+               WHERE id = $1"#,
+        )
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let context = ToolExecutionContext {
+            run_id,
+            session_id: Some(session_id),
+            agent_profile: "run-test".to_string(),
+            trigger: SessionTrigger::Chat,
+            project_id: None,
+            authorization: crate::agent::execution::AuthorizationContext {
+                explicit_user_action: true,
+                budget: serde_json::json!({}),
+            },
+            invocation_id: "audit-event-test".to_string(),
+            lease_epoch: 1,
+            cancellation: crate::agent::execution::RunCancellation::new(),
+            guard: None,
+            progress: None,
+            decisions: None,
+        };
+
+        let event = append_audit_event_for_context(
+            &state,
+            &context,
+            "write_safety_inspected",
+            serde_json::json!({"type": "write_safety_inspected", "verdict": "allow"}),
+            Some("write-safety:audit-event-test"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(event.visibility, "audit");
+        let projection = list_run_events(&state, run_id, 0).await.unwrap();
+        assert!(projection.events.is_empty());
+        assert_eq!(projection.latest_sequence, 0);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1056,7 +1127,7 @@ mod tests {
             .await
             .unwrap();
 
-        let error = append_event_for_lease(
+        let error = append_user_event_for_lease(
             &state,
             &stale,
             "model_turn_started",
@@ -1103,7 +1174,7 @@ mod tests {
         .unwrap();
         let parent_row = fetch_run_row(&pool, run_id).await.unwrap();
         let invocation_id = format!("{run_id}:1:delegate-call");
-        append_event_for_lease(
+        append_user_event_for_lease(
             &state,
             &parent_row,
             "tool_call_start",

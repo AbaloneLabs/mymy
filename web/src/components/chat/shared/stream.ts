@@ -77,6 +77,8 @@ export function chatStreamReducer(
     case "model_turn_started":
     case "checklist_changed":
     case "checkpoint_created":
+    case "decision_created":
+    case "decision_resolved":
     case "turn_completed":
     case "context_compressing":
     case "provider_retry_scheduled":
@@ -148,4 +150,5 @@ export function chatStreamReducer(
       // failed model request never trips the route-level asset boundary.
       return state;
   }
+  return state;
 }

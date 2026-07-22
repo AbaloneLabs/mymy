@@ -50,4 +50,5 @@ function fallbackRoute(domain: WorkspaceSearchHit["domain"]) {
     case "drive":
       return "/drive";
   }
+  return "/";
 }

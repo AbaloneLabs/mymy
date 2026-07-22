@@ -216,18 +216,20 @@ function RunEventLog({
 
 function eventSummary(event: AgentRunEvent) {
   const payload = event.payload;
-  if (event.eventType === "tool_call_start") {
+  const payloadType = text(payload.type);
+  const eventType = payloadType ?? event.eventType;
+  if (eventType === "tool_call_start") {
     return text(payload.tool_name) ?? text(payload.resource_key) ?? "";
   }
-  if (event.eventType === "tool_call_finish") {
+  if (eventType === "tool_call_finish") {
     const duration = number(payload.duration_ms);
     return duration === undefined ? "" : `${duration}ms`;
   }
-  if (event.eventType === "run_status") return text(payload.status) ?? "";
-  if (event.eventType === "outcome_unknown" || event.eventType === "error") {
+  if (eventType === "run_status") return text(payload.status) ?? "";
+  if (eventType === "outcome_unknown" || eventType === "error") {
     return text(payload.message) ?? "";
   }
-  if (event.eventType === "checklist_changed") {
+  if (eventType === "checklist_changed") {
     return Array.isArray(payload.items) ? `${payload.items.length} items` : "";
   }
   return "";

@@ -76,8 +76,17 @@ export type ChatSseEvent =
   | { type: "user_message"; message: ChatMessage }
   | { type: "text_delta"; content: string }
   | { type: "model_turn_started"; iteration: number }
-  | { type: "checklist_changed"; items: RunChecklistItem[] }
+  | { type: "checklist_changed"; items: RunChecklistEventItem[] }
   | { type: "checkpoint_created"; checkpoint_id: string; sequence: number }
+  | {
+      type: "decision_created";
+      decision_id: string;
+      kind: string;
+      question: string;
+      choices: unknown[];
+      blocking: boolean;
+    }
+  | { type: "decision_resolved"; decision_id: string; kind: string }
   | {
       type: "tool_call_start";
       call_id: string;
@@ -215,6 +224,13 @@ export interface RunChecklistItem {
   position: number;
   blockedDecisionId?: string;
   verificationEventId?: string;
+}
+
+export interface RunChecklistEventItem {
+  id: string;
+  content: string;
+  status: RunChecklistItem["status"];
+  position: number;
 }
 
 export interface EnqueueChatRunResponse {

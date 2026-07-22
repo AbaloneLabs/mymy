@@ -315,10 +315,14 @@ export function ChatPanel({
   }, [sessionId]);
 
   useEffect(() => {
-    runObserverRef.current?.abort();
-    runObserverRef.current = null;
-    observedRunIdRef.current = null;
-    isStreamingRef.current = false;
+    const stopObserver = () => {
+      runObserverRef.current?.abort();
+      runObserverRef.current = null;
+      observedRunIdRef.current = null;
+      isStreamingRef.current = false;
+    };
+    stopObserver();
+    return stopObserver;
   }, [sessionId]);
 
   useEffect(() => {

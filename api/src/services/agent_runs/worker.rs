@@ -27,7 +27,7 @@ use crate::services::chat::{self as chat_service, PreparedExecution};
 use crate::state::AppState;
 
 use super::{
-    append_event_for_lease, apply_message_projection, apply_one_pending_projection,
+    append_user_event_for_lease, apply_message_projection, apply_one_pending_projection,
     cancel_one_queued_run, cancel_requested, claim_next_run, defer_run_for_provider_retry,
     finish_run, heartbeat_run, load_trigger_input, mark_input_applied, pause_run_for_decision,
     queue_message_projection, reconcile_one_stale_run, update_run_snapshot, AgentRunRow,
@@ -102,7 +102,7 @@ async fn execute_claimed_run(state: &AppState, run: AgentRunRow) {
         cancel_requested: run.cancel_requested_at.is_some(),
     })
     .unwrap_or_else(|_| serde_json::json!({"type": "error"}));
-    if let Err(err) = append_event_for_lease(
+    if let Err(err) = append_user_event_for_lease(
         state,
         &run,
         "run_started",
@@ -1141,7 +1141,7 @@ async fn append_chat_event(
 ) -> AppResult<()> {
     let payload = serde_json::to_value(event)
         .map_err(|err| AppError::Internal(format!("run event serialization failed: {err}")))?;
-    append_event_for_lease(state, run, event_type, payload, idempotency_key).await?;
+    append_user_event_for_lease(state, run, event_type, payload, idempotency_key).await?;
     Ok(())
 }
 

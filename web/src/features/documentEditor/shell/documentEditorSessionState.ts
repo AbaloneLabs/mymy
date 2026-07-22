@@ -178,6 +178,7 @@ export function documentEditorSessionReducer(
     case "clearConflict":
       return { ...state, saveConflict: false };
   }
+  return state;
 }
 
 function adoptRevision(

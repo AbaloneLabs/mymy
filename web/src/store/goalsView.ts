@@ -64,4 +64,5 @@ export function buildPeriodLabel(
     case "monthly":
       return `${year}-${String(month).padStart(2, "0")}`;
   }
+  return "";
 }

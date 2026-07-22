@@ -9,7 +9,11 @@ import {
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useLockApp } from "@/hooks/useLockApp";
-import { reloadStaleRouteOnce } from "@/lib/deploymentVersion";
+import {
+  isDynamicImportFailure,
+  reloadStaleRouteOnce,
+  routeErrorPresentation,
+} from "@/lib/deploymentVersion";
 
 const PinScreen = lazy(() => import("@/routes/PinScreen"));
 const Dashboard = lazy(() => import("@/routes/Dashboard"));
@@ -82,21 +86,28 @@ class RouteErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Lazy route failed to load", error, info.componentStack);
-    reloadStaleRouteOnce(error);
+    if (isDynamicImportFailure(error)) {
+      console.error("Lazy route failed to load", error, info.componentStack);
+      reloadStaleRouteOnce(error);
+      return;
+    }
+    console.error("Route rendering failed", error, info.componentStack);
   }
 
   render() {
     if (!this.state.error) return this.props.children;
+    const presentation = routeErrorPresentation(this.state.error);
     return (
       <main className="flex h-screen items-center justify-center bg-[var(--bg)] p-6">
         <div
           role="alert"
           className="max-w-md rounded-lg border border-[var(--status-error)]/40 bg-[var(--surface)] p-5 text-[var(--text)]"
         >
-          <h1 className="text-base font-semibold">This page could not be loaded.</h1>
+          <h1 className="text-base font-semibold">
+            {presentation.title}
+          </h1>
           <p className="mt-2 text-sm text-[var(--text-muted)]">
-            The route asset may have changed during deployment or failed in transit.
+            {presentation.description}
           </p>
           <button
             type="button"

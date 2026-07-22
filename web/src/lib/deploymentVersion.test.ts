@@ -3,6 +3,7 @@ import {
   deploymentEntryChanged,
   entryModuleSource,
   isDynamicImportFailure,
+  routeErrorPresentation,
   routeRecoveryAllowed,
 } from "./deploymentVersion";
 
@@ -28,6 +29,14 @@ describe("deployment version detection", () => {
       ),
     ).toBe(true);
     expect(isDynamicImportFailure(new Error("render failed"))).toBe(false);
+    expect(routeErrorPresentation(new Error("render failed"))).toMatchObject({
+      title: "This page encountered an unexpected error.",
+    });
+    expect(
+      routeErrorPresentation(
+        new Error("Failed to fetch dynamically imported module: /assets/Chat-old.js"),
+      ),
+    ).toMatchObject({ title: "This page could not be loaded." });
   });
 
   it("allows only one automatic recovery per route window", () => {

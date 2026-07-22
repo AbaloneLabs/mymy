@@ -88,6 +88,21 @@ export function isDynamicImportFailure(error: Error): boolean {
   ].some((fragment) => message.includes(fragment));
 }
 
+export function routeErrorPresentation(error: Error) {
+  if (isDynamicImportFailure(error)) {
+    return {
+      title: "This page could not be loaded.",
+      description:
+        "The route asset may have changed during deployment or failed in transit.",
+    };
+  }
+  return {
+    title: "This page encountered an unexpected error.",
+    description:
+      "Retry the page. If the problem continues, check the browser console for the recorded error.",
+  };
+}
+
 interface RouteRecoveryRecord {
   href: string;
   attemptedAt: number;

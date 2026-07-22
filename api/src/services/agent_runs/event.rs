@@ -18,17 +18,29 @@ use super::projection::event_to_view;
 use super::repository::fetch_run_row;
 use super::{AgentRunEventRow, AgentRunRow};
 
-pub(crate) async fn append_event(
+const USER_VISIBILITY: &str = "user";
+const AUDIT_VISIBILITY: &str = "audit";
+
+pub(crate) async fn append_user_event(
     state: &AppState,
     run_id: Uuid,
     event_type: &str,
     payload: Value,
     idempotency_key: Option<&str>,
 ) -> AppResult<AgentRunEventView> {
-    append_event_with_lease(state, run_id, None, event_type, payload, idempotency_key).await
+    append_event_with_lease(
+        state,
+        run_id,
+        None,
+        USER_VISIBILITY,
+        event_type,
+        payload,
+        idempotency_key,
+    )
+    .await
 }
 
-pub(crate) async fn append_event_for_lease(
+pub(crate) async fn append_user_event_for_lease(
     state: &AppState,
     run: &AgentRunRow,
     event_type: &str,
@@ -39,6 +51,7 @@ pub(crate) async fn append_event_for_lease(
         state,
         run.id,
         Some(run),
+        USER_VISIBILITY,
         event_type,
         payload,
         idempotency_key,
@@ -46,7 +59,7 @@ pub(crate) async fn append_event_for_lease(
     .await
 }
 
-pub(crate) async fn append_event_for_context(
+pub(crate) async fn append_user_event_for_context(
     state: &AppState,
     context: &ToolExecutionContext,
     event_type: &str,
@@ -60,21 +73,55 @@ pub(crate) async fn append_event_for_context(
             context.run_id
         )));
     }
-    append_event_for_lease(state, &run, event_type, payload, idempotency_key).await
+    append_user_event_for_lease(state, &run, event_type, payload, idempotency_key).await
+}
+
+pub(crate) async fn append_audit_event_for_context(
+    state: &AppState,
+    context: &ToolExecutionContext,
+    event_type: &str,
+    payload: Value,
+    idempotency_key: Option<&str>,
+) -> AppResult<AgentRunEventView> {
+    let run = fetch_run_row(&state.db, context.run_id).await?;
+    if run.lease_epoch != context.lease_epoch || run.status != "running" {
+        return Err(AppError::Conflict(format!(
+            "agent run {} lease ownership changed",
+            context.run_id
+        )));
+    }
+    append_event_with_lease(
+        state,
+        run.id,
+        Some(&run),
+        AUDIT_VISIBILITY,
+        event_type,
+        payload,
+        idempotency_key,
+    )
+    .await
 }
 
 async fn append_event_with_lease(
     state: &AppState,
     run_id: Uuid,
     lease: Option<&AgentRunRow>,
+    visibility: &'static str,
     event_type: &str,
     payload: Value,
     idempotency_key: Option<&str>,
 ) -> AppResult<AgentRunEventView> {
     let append_started = std::time::Instant::now();
-    let result =
-        append_event_with_lease_inner(state, run_id, lease, event_type, payload, idempotency_key)
-            .await;
+    let result = append_event_with_lease_inner(
+        state,
+        run_id,
+        lease,
+        visibility,
+        event_type,
+        payload,
+        idempotency_key,
+    )
+    .await;
     metrics::histogram!("mymy_agent_event_append_duration_seconds")
         .record(append_started.elapsed().as_secs_f64());
     if result.is_err() {
@@ -87,6 +134,7 @@ async fn append_event_with_lease_inner(
     state: &AppState,
     run_id: Uuid,
     lease: Option<&AgentRunRow>,
+    visibility: &'static str,
     event_type: &str,
     payload: Value,
     idempotency_key: Option<&str>,
@@ -142,8 +190,8 @@ async fn append_event_with_lease_inner(
     .ok_or_else(|| AppError::NotFound(format!("agent run {run_id} not found")))?;
     let row = sqlx::query_as::<_, AgentRunEventRow>(
         r#"INSERT INTO agent_run_events
-             (run_id, sequence, event_type, idempotency_key, payload)
-           VALUES ($1, $2, $3, $4, $5)
+             (run_id, sequence, event_type, idempotency_key, visibility, payload)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id, run_id, sequence, event_type, payload_version,
                      visibility, payload, created_at"#,
     )
@@ -151,6 +199,7 @@ async fn append_event_with_lease_inner(
     .bind(sequence)
     .bind(event_type)
     .bind(idempotency_key)
+    .bind(visibility)
     .bind(payload)
     .fetch_one(&mut *tx)
     .await?;
@@ -177,7 +226,7 @@ async fn fetch_event_by_idempotency_in_tx(
     .map_err(Into::into)
 }
 
-pub(crate) async fn insert_event_in_tx(
+pub(crate) async fn insert_user_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     run_id: Uuid,
     event_type: &str,
@@ -192,8 +241,8 @@ pub(crate) async fn insert_event_in_tx(
     .await?;
     sqlx::query(
         r#"INSERT INTO agent_run_events
-             (run_id, sequence, event_type, idempotency_key, payload)
-           VALUES ($1, $2, $3, $4, $5)"#,
+             (run_id, sequence, event_type, idempotency_key, visibility, payload)
+           VALUES ($1, $2, $3, $4, 'user', $5)"#,
     )
     .bind(run_id)
     .bind(sequence)

@@ -22,6 +22,7 @@ use crate::agent::execution::{DecisionCoordinator, DurableDecision, ToolExecutio
 use crate::agent::providers::Message;
 use crate::agent::security::redact_sensitive_text;
 use crate::error::{AppError, AppResult};
+use crate::models::chat::ChatSseEvent;
 use crate::models::decision::{
     DecisionView, DecisionsQuery, DecisionsResponse, ResolveDecisionResponse,
 };
@@ -346,15 +347,15 @@ pub async fn resolve_decision(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    agent_runs::append_event(
+    agent_runs::append_user_event(
         state,
         decision.run_id,
         "decision_resolved",
-        serde_json::json!({
-            "type": "decision_resolved",
-            "decision_id": id,
-            "kind": decision.kind,
-        }),
+        serde_json::to_value(ChatSseEvent::DecisionResolved {
+            decision_id: id,
+            kind: decision.kind,
+        })
+        .map_err(|err| AppError::Internal(format!("decision event serialization failed: {err}")))?,
         Some(&format!("decision-resolved:{id}")),
     )
     .await?;
@@ -653,7 +654,7 @@ pub async fn expire_pending_decisions(state: &AppState) -> AppResult<usize> {
                 )
                 .await?;
             }
-            agent_runs::append_event(
+            agent_runs::append_user_event(
                 state,
                 *run_id,
                 "run_finished",
@@ -820,18 +821,18 @@ impl DecisionCoordinator for DurableDecisionCoordinator {
             .await
             .map_err(|err| err.to_string())?;
         tx.commit().await.map_err(|err| err.to_string())?;
-        agent_runs::append_event_for_context(
+        agent_runs::append_user_event_for_context(
             &self.state,
             context,
             "decision_created",
-            serde_json::json!({
-                "type": "decision_created",
-                "decision_id": row.id,
-                "kind": row.kind,
-                "question": redact_sensitive_text(&row.question),
-                "choices": row.choices,
-                "blocking": row.suspend,
-            }),
+            serde_json::to_value(ChatSseEvent::DecisionCreated {
+                decision_id: row.id,
+                kind: row.kind.clone(),
+                question: redact_sensitive_text(&row.question),
+                choices: row.choices.clone(),
+                blocking: row.suspend,
+            })
+            .map_err(|err| format!("decision event serialization failed: {err}"))?,
             Some(&format!("decision-created:{}", row.id)),
         )
         .await
