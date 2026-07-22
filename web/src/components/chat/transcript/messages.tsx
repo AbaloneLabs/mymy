@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import type { ChatMessage, ToolCall } from "@/types/chat";
 import { MediaTagList } from "../attachments/media";
 import type { LightweightBrowserSource } from "@/features/drive/components/LightweightBrowserPane";
+import { TranscriptItemBoundary } from "../shared/TranscriptItemBoundary";
 
 const AssistantMarkdown = lazy(() =>
   import("./richMessages").then((module) => ({
@@ -43,15 +44,20 @@ export function MessageRow({
 
   if (isTool) {
     return (
-      <Suspense fallback={<RichMessageFallback content={message.content} />}>
-        <ToolMessageRow
-          message={message}
-          toolName={toolCall?.name ?? "tool"}
-          toolArguments={toolCall?.arguments ?? "{}"}
-          onOpenDocument={onOpenDocument}
-          onOpenPreview={onOpenPreview}
-        />
-      </Suspense>
+      <TranscriptItemBoundary
+        itemId={message.id}
+        fallback={<RichMessageFallback content={message.content} />}
+      >
+        <Suspense fallback={<RichMessageFallback content={message.content} />}>
+          <ToolMessageRow
+            message={message}
+            toolName={toolCall?.name ?? "tool"}
+            toolArguments={toolCall?.arguments ?? "{}"}
+            onOpenDocument={onOpenDocument}
+            onOpenPreview={onOpenPreview}
+          />
+        </Suspense>
+      </TranscriptItemBoundary>
     );
   }
 
@@ -60,9 +66,14 @@ export function MessageRow({
       <div className={cn("w-1 shrink-0 rounded-full", barClass)} />
       <div className="min-w-0 flex-1 py-0.5 text-sm leading-relaxed text-[var(--text)]">
         {isAssistant ? (
-          <Suspense fallback={<RichMessageFallback content={message.content} />}>
-            <AssistantMarkdown content={message.content} streaming={streaming} />
-          </Suspense>
+          <TranscriptItemBoundary
+            itemId={message.id}
+            fallback={<RichMessageFallback content={message.content} />}
+          >
+            <Suspense fallback={<RichMessageFallback content={message.content} />}>
+              <AssistantMarkdown content={message.content} streaming={streaming} />
+            </Suspense>
+          </TranscriptItemBoundary>
         ) : (
           <div className="whitespace-pre-wrap break-words text-[var(--text)]">
             {message.content}
@@ -86,7 +97,7 @@ export function MessageRow({
 
 function RichMessageFallback({ content }: { content: string }) {
   return (
-    <div className="whitespace-pre-wrap break-words text-[var(--text)]" aria-busy="true">
+    <div className="whitespace-pre-wrap break-words text-[var(--text)]">
       {content}
     </div>
   );

@@ -21,6 +21,7 @@ import { useCreateAction } from "@/hooks/useGlobalShortcuts";
 import { useAgents } from "@/features/agents/api";
 import { useChatSessions, useCreateChatSession, useDeleteChatSession } from "@/features/chat/api";
 import { useChatSessionSelection } from "@/features/chat/useChatSessionSelection";
+import { withChatSessionId } from "@/features/chat/chatSessionUrl";
 import { useProjects } from "@/features/projects/api";
 import { useProjectContext } from "@/store/projectContext";
 import type { ChatSession } from "@/types/chat";
@@ -34,7 +35,7 @@ const DocumentEditorPane = lazy(() =>
 
 export default function Chat() {
   const { t } = useTranslation();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedSessionId = searchParams.get("sessionId");
 
   // Project + agent context from TopBar dropdowns.
@@ -58,6 +59,7 @@ export default function Chat() {
     selectedProjectId ?? undefined,
     activeAgentProfile,
   );
+  const sessionsLoaded = data !== undefined;
   const sessions: ChatSession[] = useMemo(() => data?.sessions ?? [], [data?.sessions]);
 
   const agentMap = useMemo(() => {
@@ -87,17 +89,15 @@ export default function Chat() {
     markCreatedSession,
     markDeletedSession,
     toggleSessionsCollapsed,
-  } = useChatSessionSelection(sessions);
+  } = useChatSessionSelection(sessions, requestedSessionId);
 
   useEffect(() => {
-    if (
-      requestedSessionId &&
-      requestedSessionId !== effectiveSessionId &&
-      sessions.some((session) => session.id === requestedSessionId)
-    ) {
-      selectSession(requestedSessionId);
-    }
-  }, [effectiveSessionId, requestedSessionId, selectSession, sessions]);
+    if (!sessionsLoaded || isLoading || requestedSessionId === effectiveSessionId) return;
+    setSearchParams(
+      (current) => withChatSessionId(current, effectiveSessionId),
+      { replace: true },
+    );
+  }, [effectiveSessionId, isLoading, requestedSessionId, sessionsLoaded, setSearchParams]);
 
   // New session dialog state.
   const [showDialog, setShowDialog] = useState(false);
@@ -111,12 +111,14 @@ export default function Chat() {
 
   const handleSelectSession = (sid: string) => {
     selectSession(sid);
+    setSearchParams((current) => withChatSessionId(current, sid));
   };
 
   const handleCreate = (vars: { profile: string; projectId?: string }) => {
     createSession.mutate(vars, {
       onSuccess: (res) => {
         markCreatedSession(res.session.id);
+        setSearchParams((current) => withChatSessionId(current, res.session.id));
         setShowDialog(false);
       },
     });
@@ -126,7 +128,17 @@ export default function Chat() {
     e.stopPropagation();
     if (window.confirm(t("chat.deleteConfirm"))) {
       deleteSession.mutate(sessionId, {
-        onSuccess: () => markDeletedSession(sessionId),
+        onSuccess: () => {
+          markDeletedSession(sessionId);
+          if (sessionId === effectiveSessionId) {
+            const nextSessionId =
+              sessions.find((session) => session.id !== sessionId)?.id ?? null;
+            setSearchParams(
+              (current) => withChatSessionId(current, nextSessionId),
+              { replace: true },
+            );
+          }
+        },
       });
     }
   };

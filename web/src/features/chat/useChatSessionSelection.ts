@@ -3,7 +3,25 @@ import type { ChatSession } from "@/types/chat";
 
 const CHAT_SESSIONS_COLLAPSED_KEY = "mymy:chat-sessions-collapsed";
 
-export function useChatSessionSelection(sessions: ChatSession[]) {
+export function resolveEffectiveChatSessionId(
+  sessions: ReadonlyArray<Pick<ChatSession, "id">>,
+  requestedSessionId: string | null,
+  activeSessionId: string | null,
+): string | null {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  if (requestedSessionId && sessionIds.has(requestedSessionId)) {
+    return requestedSessionId;
+  }
+  if (activeSessionId && sessionIds.has(activeSessionId)) {
+    return activeSessionId;
+  }
+  return sessions[0]?.id ?? null;
+}
+
+export function useChatSessionSelection(
+  sessions: ChatSession[],
+  requestedSessionId: string | null,
+) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isNewSession, setIsNewSession] = useState(false);
   const [sessionsCollapsed, setSessionsCollapsed] = useState(() => {
@@ -11,15 +29,11 @@ export function useChatSessionSelection(sessions: ChatSession[]) {
     return window.localStorage.getItem(CHAT_SESSIONS_COLLAPSED_KEY) === "true";
   });
 
-  const sessionIds = useMemo(
-    () => new Set(sessions.map((session) => session.id)),
-    [sessions],
+  const effectiveSessionId = resolveEffectiveChatSessionId(
+    sessions,
+    requestedSessionId,
+    activeSessionId,
   );
-  const activeSessionIsVisible =
-    activeSessionId !== null && sessionIds.has(activeSessionId);
-  const effectiveSessionId = activeSessionIsVisible
-    ? activeSessionId
-    : sessions[0]?.id ?? null;
   const effectiveSession = useMemo(
     () => sessions.find((session) => session.id === effectiveSessionId),
     [effectiveSessionId, sessions],

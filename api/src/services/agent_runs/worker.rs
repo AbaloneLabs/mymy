@@ -509,6 +509,10 @@ async fn execute_chat_run(
     let mut paused_decision_id = None;
     let defer_text_delivery = turn.buffered_output_required;
     let mut deferred_text = String::new();
+    // Cron success follows the semantic output stream, not the delivery path.
+    // Safety buffering may delay presentation but must never turn a completed
+    // response into an empty outcome simply because it used a different sink.
+    let mut agent_output = AgentOutputObservation::default();
     let new_messages;
 
     match &mut turn.execution {
@@ -572,6 +576,7 @@ async fn execute_chat_run(
                 }
                 match event {
                     AgentEvent::TextDelta(content) => {
+                        agent_output.observe(&content);
                         if defer_text_delivery {
                             deferred_text.push_str(&content);
                             if deferred_text.len() > 1_000_000 {
@@ -807,6 +812,7 @@ async fn execute_chat_run(
                 });
             };
             let aggregated = redact_sensitive_text(&result.aggregated);
+            agent_output.observe(&aggregated);
             total_usage = result.usage.clone();
             if max_total_tokens.is_some_and(|limit| total_usage.total_tokens > limit) {
                 terminal_error = Some("runtime_budget_exceeded".to_string());
@@ -966,7 +972,7 @@ async fn execute_chat_run(
         });
     }
     paused_decision_id = None;
-    if run.trigger_type == "cron" && terminal_error.is_none() && deferred_text.trim().is_empty() {
+    if run.trigger_type == "cron" && terminal_error.is_none() && !agent_output.has_output() {
         terminal_error = Some("empty_agent_outcome".to_string());
         chat_service::save_run_status_message(
             state,
@@ -1160,6 +1166,21 @@ async fn flush_text_buffer(
 struct TextEventBuffer {
     content: String,
     last_flush: Instant,
+}
+
+#[derive(Default)]
+struct AgentOutputObservation {
+    has_non_whitespace_text: bool,
+}
+
+impl AgentOutputObservation {
+    fn observe(&mut self, value: &str) {
+        self.has_non_whitespace_text |= value.chars().any(|character| !character.is_whitespace());
+    }
+
+    fn has_output(&self) -> bool {
+        self.has_non_whitespace_text
+    }
 }
 
 impl TextEventBuffer {
@@ -1440,5 +1461,19 @@ mod contract_revision_tests {
             ..cancelled
         };
         assert_eq!(terminal_status(&internal_abort), "failed");
+    }
+
+    #[test]
+    fn cron_output_observation_is_independent_from_delivery_buffering() {
+        let mut observation = AgentOutputObservation::default();
+        observation.observe(" \n\t");
+        assert!(!observation.has_output());
+
+        observation.observe("실제 cron 결과");
+        assert!(observation.has_output());
+
+        let mut silent = AgentOutputObservation::default();
+        silent.observe("[SILENT]");
+        assert!(silent.has_output());
     }
 }

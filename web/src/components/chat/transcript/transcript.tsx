@@ -8,6 +8,7 @@ import { QueuedTurnCard } from "../queue/queuedTurns";
 import { SessionDivider } from "./sessionDivider";
 import { makeStreamingAssistantMessage, type StreamItem } from "../shared/stream";
 import type { QueuedChatTurn } from "../shared/types";
+import { TranscriptItemBoundary } from "../shared/TranscriptItemBoundary";
 
 const ToolEventRow = lazy(() =>
   import("../toolResults").then((module) => ({ default: module.ToolEventRow })),
@@ -96,16 +97,23 @@ export function ChatTranscript({
         if (item.type === "tool") {
           const event = item.event;
           return (
-            <Suspense
+            <TranscriptItemBoundary
               key={`tool-${event.id}-${index}`}
-              fallback={<div className="text-xs text-[var(--text-muted)]">…</div>}
+              itemId={`${event.id}:${event.status}`}
+              fallback={
+                <div className="whitespace-pre-wrap break-words text-xs text-[var(--text-muted)]">
+                  {event.detail}
+                </div>
+              }
             >
-              <ToolEventRow
-                event={event}
-                onOpenDocument={onOpenDocument}
-                onOpenPreview={onOpenPreview}
-              />
-            </Suspense>
+              <Suspense fallback={<div className="text-xs text-[var(--text-muted)]">…</div>}>
+                <ToolEventRow
+                  event={event}
+                  onOpenDocument={onOpenDocument}
+                  onOpenPreview={onOpenPreview}
+                />
+              </Suspense>
+            </TranscriptItemBoundary>
           );
         }
         // Text segment: the last text segment is the one still streaming.
