@@ -697,6 +697,23 @@ pub(super) fn row_to_agent_message(row: &ChatMessageRow) -> Message {
     }
 }
 
+/// Keep presentation-only lifecycle notices in the durable chat transcript
+/// without turning them into instructions for later model turns. Run-status
+/// messages use the system role so the UI can render them distinctly, but
+/// their metadata identifies them as an operational projection rather than
+/// conversational context. Genuine system messages remain eligible and are
+/// normalized by each provider at its wire-format boundary.
+pub(super) fn row_is_agent_context(row: &ChatMessageRow) -> bool {
+    metadata_is_agent_context(row.metadata.as_ref())
+}
+
+fn metadata_is_agent_context(metadata: Option<&serde_json::Value>) -> bool {
+    metadata
+        .and_then(|value| value.get("type"))
+        .and_then(serde_json::Value::as_str)
+        != Some("run_status")
+}
+
 fn db_role_to_model(role: &str) -> MessageRole {
     match role {
         "user" => MessageRole::User,
@@ -722,5 +739,28 @@ pub(super) fn derive_title(text: &str) -> String {
     } else {
         let truncated: String = trimmed.chars().take(30).collect();
         format!("{truncated}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metadata_is_agent_context;
+
+    #[test]
+    fn run_status_metadata_is_excluded_from_agent_context() {
+        let metadata = serde_json::json!({
+            "type": "run_status",
+            "status": "failed"
+        });
+
+        assert!(!metadata_is_agent_context(Some(&metadata)));
+    }
+
+    #[test]
+    fn conversational_metadata_remains_in_agent_context() {
+        let metadata = serde_json::json!({"type": "attachment"});
+
+        assert!(metadata_is_agent_context(None));
+        assert!(metadata_is_agent_context(Some(&metadata)));
     }
 }

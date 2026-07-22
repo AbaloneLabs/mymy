@@ -63,24 +63,28 @@ impl ChatCompletionsRequest {
         messages: &[Message],
         tools: &[ToolSchema],
     ) -> Self {
-        let mut openai_messages = Vec::with_capacity(messages.len() + 1);
+        let mut system_contents = Vec::new();
+        let mut conversation_messages = Vec::with_capacity(messages.len());
 
         if !system_prompt.is_empty() {
-            openai_messages.push(OpenAiMessage {
-                role: "system",
-                content: Some(system_prompt.replace(CACHE_BREAKPOINT, "\n\n")),
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            });
+            system_contents.push(system_prompt.replace(CACHE_BREAKPOINT, "\n\n"));
         }
 
         for message in messages {
-            openai_messages.push(OpenAiMessage {
+            if message.role == MessageRole::System {
+                if let Some(content) = message.content.as_deref().filter(|value| !value.is_empty())
+                {
+                    system_contents.push(content.replace(CACHE_BREAKPOINT, "\n\n"));
+                }
+                continue;
+            }
+
+            conversation_messages.push(OpenAiMessage {
                 role: match message.role {
-                    MessageRole::System => "system",
                     MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
                     MessageRole::Tool => "tool",
+                    MessageRole::System => unreachable!("system messages are normalized above"),
                 },
                 content: message.content.clone(),
                 tool_calls: message
@@ -98,6 +102,22 @@ impl ChatCompletionsRequest {
                 tool_call_id: message.tool_call_id.clone(),
             });
         }
+
+        // vLLM-backed OpenAI-compatible endpoints commonly use strict Jinja
+        // templates that reject system messages after the first position. A
+        // single provider-boundary normalization keeps the canonical history
+        // provider-neutral while guaranteeing the strongest compatible wire
+        // invariant for both current and previously persisted system context.
+        let mut openai_messages = Vec::with_capacity(conversation_messages.len() + 1);
+        if !system_contents.is_empty() {
+            openai_messages.push(OpenAiMessage {
+                role: "system",
+                content: Some(system_contents.join("\n\n")),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            });
+        }
+        openai_messages.extend(conversation_messages);
 
         ChatCompletionsRequest {
             model: model.to_string(),

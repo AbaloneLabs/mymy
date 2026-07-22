@@ -44,7 +44,7 @@ pub use self::repository::{
 };
 use self::repository::{
     derive_title, fetch_message_rows, fetch_session, insert_user_message,
-    insert_user_message_for_input, row_to_agent_message,
+    insert_user_message_for_input, row_is_agent_context, row_to_agent_message,
 };
 use self::skill_invocation::resolve_skill_invocation;
 
@@ -321,6 +321,7 @@ async fn prepare_native_turn_internal(
     let recent_message_tokens = rows
         .iter()
         .rev()
+        .filter(|row| row_is_agent_context(row))
         .take(20)
         .map(row_to_agent_message)
         .map(|message| estimate_message_tokens(&message))
@@ -367,7 +368,11 @@ async fn prepare_native_turn_internal(
         resolve_prompt_snapshot(state, &session, &prompt_parts, &tool_schema_fingerprint).await?;
     let system_prompt = assemble_system_prompt(&prompt_parts);
 
-    let mut messages = rows.iter().map(row_to_agent_message).collect::<Vec<_>>();
+    let mut messages = rows
+        .iter()
+        .filter(|row| row_is_agent_context(row))
+        .map(row_to_agent_message)
+        .collect::<Vec<_>>();
     let agent_user_text = resolve_skill_invocation(state, &text, id).await?;
 
     let (user_message, inserted) = match run_input_id {

@@ -4,6 +4,7 @@ use super::models::ModelsListResponse;
 use super::request::ChatCompletionsRequest;
 use super::sse::{parse_finish_reason, parse_sse_stream};
 use crate::agent::providers::types::{FinishReason, StreamDelta};
+use crate::agent::providers::{Message, MessageRole};
 use futures::StreamExt;
 
 #[test]
@@ -119,6 +120,40 @@ fn request_body_includes_system_prompt() {
     assert_eq!(
         body.messages[0].content.as_deref(),
         Some("You are helpful.")
+    );
+}
+
+#[test]
+fn request_body_merges_historical_system_messages_at_the_front() {
+    let messages = vec![
+        Message::user("First request"),
+        Message {
+            role: MessageRole::System,
+            content: Some("Historical policy".to_string()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
+        Message::assistant("First response"),
+        Message {
+            role: MessageRole::System,
+            content: Some("Later policy".to_string()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
+    ];
+
+    let body = ChatCompletionsRequest::build("gpt-4o", 1024, "Current policy", &messages, &[]);
+
+    assert_eq!(
+        body.messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        vec!["system", "user", "assistant"]
+    );
+    assert_eq!(
+        body.messages[0].content.as_deref(),
+        Some("Current policy\n\nHistorical policy\n\nLater policy")
     );
 }
 
