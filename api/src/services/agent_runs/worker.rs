@@ -475,6 +475,7 @@ async fn execute_chat_run(
         &turn.tool_schema_fingerprint,
         turn.system_prompt.chars().count(),
         turn.tool_count,
+        &turn.llm_selection,
     )
     .await?;
     crate::services::decisions::mark_inbox_delivered(

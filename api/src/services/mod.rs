@@ -1,5 +1,6 @@
 //! Application services.
 
+pub mod agent_llm;
 pub mod agent_permissions;
 pub mod agent_prompts;
 pub mod agent_runs;

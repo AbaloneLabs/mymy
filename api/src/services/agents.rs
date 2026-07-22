@@ -10,10 +10,10 @@ use sqlx::FromRow;
 
 use crate::error::{AppError, AppResult};
 use crate::models::agent::{
-    Agent, AgentModel, AgentResponse, AgentSource, AgentStatus, AgentsResponse, CreateAgentRequest,
-    DeleteAgentResponse, SandboxStatus, UpdateAgentRequest,
+    Agent, AgentLlmSettingsView, AgentModel, AgentResponse, AgentSource, AgentStatus,
+    AgentsResponse, CreateAgentRequest, DeleteAgentResponse, SandboxStatus, UpdateAgentRequest,
 };
-use crate::services::{agent_permissions, drive};
+use crate::services::{agent_llm, agent_permissions, drive};
 use crate::state::AppState;
 
 const MAX_AGENT_NAME_CHARS: usize = 80;
@@ -78,7 +78,8 @@ pub async fn list_agents(state: &AppState) -> AppResult<AgentsResponse> {
     let mut agents = Vec::new();
     for row in rows {
         let permissions = agent_permissions::list_permissions(state, &row.profile).await?;
-        agents.push(row_to_agent(row, permissions));
+        let llm_settings = agent_llm::settings_view(state, &row.profile).await?;
+        agents.push(row_to_agent(row, permissions, llm_settings));
     }
 
     Ok(AgentsResponse { agents })
@@ -136,9 +137,10 @@ pub async fn create_agent(state: &AppState, req: CreateAgentRequest) -> AppResul
     drive::ensure_agent_workspace(state, &profile, &name, Some(&role)).await?;
     agent_permissions::ensure_defaults(state, &profile).await?;
     let permissions = agent_permissions::list_permissions(state, &profile).await?;
+    let llm_settings = agent_llm::settings_view(state, &profile).await?;
 
     Ok(AgentResponse {
-        agent: row_to_agent(row, permissions),
+        agent: row_to_agent(row, permissions, llm_settings),
     })
 }
 
@@ -148,6 +150,10 @@ pub async fn update_agent(
     req: UpdateAgentRequest,
 ) -> AppResult<AgentResponse> {
     let profile = normalize_agent_profile(profile)?;
+    let validated_llm_settings = match req.llm_settings {
+        Some(settings) => Some(agent_llm::validate_settings(state, settings).await?),
+        None => None,
+    };
     let existing = sqlx::query_as::<_, NativeAgentRow>(
         r#"SELECT profile, name, role, description, status, model,
                   drive_path, sandbox_uid, sandbox_status,
@@ -205,9 +211,13 @@ pub async fn update_agent(
     } else {
         agent_permissions::list_permissions(state, &profile).await?
     };
+    if let Some(settings) = validated_llm_settings.as_ref() {
+        agent_llm::replace_settings(state, &profile, settings).await?;
+    }
+    let llm_settings = agent_llm::settings_view(state, &profile).await?;
 
     Ok(AgentResponse {
-        agent: row_to_agent(row, permissions),
+        agent: row_to_agent(row, permissions, llm_settings),
     })
 }
 
@@ -261,6 +271,7 @@ pub async fn first_agent_profile(state: &AppState) -> AppResult<Option<String>> 
 fn row_to_agent(
     row: NativeAgentRow,
     tool_permissions: Vec<crate::models::agent::AgentToolPermission>,
+    llm_settings: AgentLlmSettingsView,
 ) -> Agent {
     Agent {
         id: row.profile.clone(),
@@ -278,6 +289,7 @@ fn row_to_agent(
         sandbox_status: parse_sandbox_status(&row.sandbox_status),
         last_active_at: row.last_active_at.map(|dt| dt.to_rfc3339()),
         tool_permissions,
+        llm_settings,
     }
 }
 

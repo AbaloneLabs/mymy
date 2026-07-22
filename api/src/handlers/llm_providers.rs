@@ -45,6 +45,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             patch(update_credential).delete(delete_credential),
         )
         .route("/api/llm-providers/{id}/test", post(test_provider))
+        .route("/api/llm-providers/{id}/models", get(fetch_saved_models))
         .route("/api/llm-providers/{id}/default", post(set_default))
 }
 
@@ -91,6 +92,13 @@ pub async fn test_provider(
 ) -> AppResult<Json<TestConnectionResponse>> {
     let resp = svc::test_connection(&state, id).await?;
     Ok(Json(resp))
+}
+
+pub async fn fetch_saved_models(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<FetchModelsResponse>> {
+    Ok(Json(svc::fetch_saved_models(&state, id).await?))
 }
 
 /// POST /api/llm-providers/:id/default

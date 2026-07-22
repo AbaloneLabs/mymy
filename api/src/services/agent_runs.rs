@@ -182,6 +182,10 @@ pub(super) struct AgentRunRow {
     pub status: String,
     pub objective: String,
     pub prompt_version: String,
+    pub llm_provider_id: Option<Uuid>,
+    pub llm_provider_label: Option<String>,
+    pub llm_model: Option<String>,
+    pub llm_selection_source: Option<String>,
     pub authorization_context: Value,
     pub tool_schema_fingerprint: Option<String>,
     pub lease_owner: Option<String>,
@@ -600,21 +604,21 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
         tasks: &[DelegateTaskSpec],
     ) -> Result<Vec<DelegateRunHandle>, String> {
         let mut tx = self.state.db.begin().await.map_err(|err| err.to_string())?;
-        let parent_valid = sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM agent_runs
-                 WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
-                   AND cancel_requested_at IS NULL
-               )"#,
-        )
-        .bind(parent.run_id)
-        .bind(parent.lease_epoch)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| err.to_string())?;
-        if !parent_valid {
-            return Err("parent run is no longer an active lease owner".to_string());
-        }
+        let parent_llm =
+            sqlx::query_as::<_, (Option<Uuid>, Option<String>, Option<String>, Option<String>)>(
+                r#"SELECT llm_provider_id, llm_provider_label, llm_model,
+                      llm_selection_source
+               FROM agent_runs
+               WHERE id = $1 AND lease_epoch = $2 AND status = 'running'
+                 AND cancel_requested_at IS NULL"#,
+            )
+            .bind(parent.run_id)
+            .bind(parent.lease_epoch)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|err| err.to_string())?;
+        let parent_llm = parent_llm
+            .ok_or_else(|| "parent run is no longer an active lease owner".to_string())?;
         let parent_event_id = sqlx::query_scalar::<_, Uuid>(
             r#"SELECT id FROM agent_run_events
                WHERE run_id = $1 AND idempotency_key = $2"#,
@@ -645,10 +649,12 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
                      (session_id, agent_profile, trigger_type, trigger_ref,
                       parent_run_id, parent_event_id, delegate_index, project_id,
                       status, objective, prompt_version, authorization_context,
+                      llm_provider_id, llm_provider_label, llm_model,
+                      llm_selection_source,
                       lease_owner, lease_epoch, lease_expires_at, started_at, heartbeat_at)
                    VALUES ($1, $2, 'delegate', $3, $4, $5, $6, $7,
-                           'running', $8, $9, $10, $11, 1,
-                           now() + make_interval(secs => $12), now(), now())
+                           'running', $8, $9, $10, $11, $12, $13, $14, $15, 1,
+                           now() + make_interval(secs => $16), now(), now())
                    ON CONFLICT (parent_event_id, delegate_index)
                      WHERE parent_event_id IS NOT NULL
                    DO NOTHING
@@ -665,6 +671,10 @@ impl DelegateRunCoordinator for DurableDelegateRunCoordinator {
             .bind(truncate_chars(&redact_sensitive_text(&task.goal), 240))
             .bind(PROMPT_VERSION)
             .bind(&authorization)
+            .bind(parent_llm.0)
+            .bind(parent_llm.1.as_deref())
+            .bind(parent_llm.2.as_deref())
+            .bind(parent_llm.3.as_deref())
             .bind(&lease_owner)
             .bind(RUN_LEASE_SECONDS as f64)
             .fetch_optional(&mut *tx)
@@ -1163,12 +1173,16 @@ mod tests {
         .await
         .unwrap();
         let run_id = Uuid::parse_str(&enqueued.run.unwrap().id).unwrap();
+        let provider_id = Uuid::new_v4();
         sqlx::query(
             r#"UPDATE agent_runs SET status = 'running', lease_owner = 'parent-worker',
-                   lease_epoch = 1, lease_expires_at = now() + interval '30 seconds'
+                   lease_epoch = 1, lease_expires_at = now() + interval '30 seconds',
+                   llm_provider_id = $2, llm_provider_label = 'Parent provider',
+                   llm_model = 'parent-model', llm_selection_source = 'agent_override'
                WHERE id = $1"#,
         )
         .bind(run_id)
+        .bind(provider_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -1253,6 +1267,19 @@ mod tests {
                     .pointer("/budget/maxTotalTokens")
                     .and_then(Value::as_u64)
                     == Some(1_000)
+        }));
+        let child_llm = sqlx::query_as::<_, (Option<Uuid>, Option<String>, Option<String>)>(
+            r#"SELECT llm_provider_id, llm_model, llm_selection_source
+               FROM agent_runs WHERE parent_run_id = $1 ORDER BY delegate_index"#,
+        )
+        .bind(run_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(child_llm.iter().all(|snapshot| {
+            snapshot.0 == Some(provider_id)
+                && snapshot.1.as_deref() == Some("parent-model")
+                && snapshot.2.as_deref() == Some("agent_override")
         }));
 
         let cancelled = request_cancel(&state, run_id, "user").await.unwrap();

@@ -11,6 +11,7 @@ import {
 } from "./AgentsNativeShared";
 import { ProactivePanel } from "./AgentsProactivePanel";
 import { RunActivity } from "./AgentsRunActivity";
+import { AgentLlmSettingsPanel } from "./AgentsLlmSettingsPanel";
 
 export function AgentOverviewTab({
   agent,
@@ -69,6 +70,13 @@ export function AgentOverviewTab({
           value={t("agents.overview.configurable")}
         />
       </div>
+
+      {agent && (
+        <AgentLlmSettingsPanel
+          key={`${agent.profile}:${agent.llmSettings.providerId ?? "default"}:${agent.llmSettings.model ?? "default"}`}
+          agent={agent}
+        />
+      )}
 
       <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
         <div className="mb-3 text-sm font-medium text-[var(--text)]">

@@ -168,6 +168,10 @@ export interface AgentRun {
   status: AgentRunStatus;
   objective: string;
   promptVersion: string;
+  llmProviderId?: string;
+  llmProviderLabel?: string;
+  llmModel?: string;
+  llmSelectionSource?: "global_default" | "agent_override" | "moa";
   leaseEpoch: number;
   latestSequence: number;
   leaseExpiresAt?: string;

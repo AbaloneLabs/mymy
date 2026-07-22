@@ -35,6 +35,7 @@ const ja = {
     open: "開く",
     dismiss: "閉じる",
     reset: "リセット",
+    none: "なし",
   },
   browser: {
     forward: "進む",
@@ -1090,6 +1091,14 @@ const ja = {
       prompt: "プロンプト",
       configurable: "設定可能",
       recentSessions: "最近のセッション",
+      llmTitle: "LLM設定",
+      llmDescription: "個別設定がない場合は、グローバル既定のプロバイダーとモデルを使用します。",
+      inheritGlobalLlm: "グローバル既定値を使用",
+      globalProvider: "グローバル既定プロバイダー（{provider}）",
+      providerDefaultModel: "プロバイダーの既定モデルを使用",
+      effectiveLlm: "現在の適用値: {provider} · {model}",
+      providerUnavailable: "プロバイダーを利用できません",
+      llmSaveError: "LLM設定を保存できませんでした。",
     },
     cron: {
       schedulerRunning: "スケジューラーが実行中です",

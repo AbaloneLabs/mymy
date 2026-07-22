@@ -33,9 +33,7 @@ pub use key_rotation::{
 };
 use model_catalog::curated_models;
 use repository::{ensure_default_exists, fetch_row, require_encryption_key, row_to_provider};
-pub use runtime_config::{
-    resolve_default_provider_id, resolve_runtime_config, resolve_runtime_config_with_credential,
-};
+pub use runtime_config::{resolve_runtime_config, resolve_runtime_config_with_credential};
 
 /// GET /api/llm-providers
 pub async fn list_providers(state: &AppState) -> AppResult<LlmProvidersResponse> {
@@ -110,6 +108,26 @@ pub async fn update_provider(
     id: Uuid,
     req: UpdateLlmProviderRequest,
 ) -> AppResult<LlmProviderResponse> {
+    if req.enabled == Some(false) {
+        let state_row = sqlx::query_as::<_, (bool, bool, String)>(
+            "SELECT enabled, is_default, label FROM llm_providers WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider {id} not found")))?;
+        if state_row.0 && state_row.1 {
+            return Err(AppError::Conflict(
+                "set another enabled provider as the global default before disabling this provider"
+                    .to_string(),
+            ));
+        }
+        if state_row.0 {
+            ensure_provider_has_no_agent_assignments(state, id, "disable").await?;
+            ensure_provider_has_no_active_runs(state, id, "disable").await?;
+        }
+    }
+
     // Re-encrypt the key only if a new one was provided.
     let (cipher_col, nonce_col) = if let Some(ref new_key) = req.api_key {
         let key = require_encryption_key(state).await?;
@@ -165,6 +183,8 @@ pub async fn update_provider(
 
 /// DELETE /api/llm-providers/:id
 pub async fn delete_provider(state: &AppState, id: Uuid) -> AppResult<DeleteLlmProviderResponse> {
+    ensure_provider_has_no_agent_assignments(state, id, "delete").await?;
+    ensure_provider_has_no_active_runs(state, id, "delete").await?;
     sqlx::query!("DELETE FROM llm_providers WHERE id = $1", id)
         .execute(&state.db)
         .await?;
@@ -189,11 +209,16 @@ pub async fn delete_provider(state: &AppState, id: Uuid) -> AppResult<DeleteLlmP
 /// POST /api/llm-providers/:id/default
 pub async fn set_default(state: &AppState, id: Uuid) -> AppResult<SetDefaultResponse> {
     // Verify the provider exists.
-    let exists = sqlx::query!("SELECT 1 as _1 FROM llm_providers WHERE id = $1", id)
+    let exists = sqlx::query!("SELECT enabled FROM llm_providers WHERE id = $1", id)
         .fetch_optional(&state.db)
         .await?;
-    if exists.is_none() {
+    let Some(provider) = exists else {
         return Err(AppError::NotFound(format!("provider {id} not found")));
+    };
+    if !provider.enabled {
+        return Err(AppError::Conflict(
+            "a disabled provider cannot be the global default".to_string(),
+        ));
     }
 
     // Clear all defaults, then set this one.
@@ -219,6 +244,53 @@ pub async fn set_default(state: &AppState, id: Uuid) -> AppResult<SetDefaultResp
     .await;
 
     Ok(SetDefaultResponse { success: true })
+}
+
+async fn ensure_provider_has_no_agent_assignments(
+    state: &AppState,
+    provider_id: Uuid,
+    action: &str,
+) -> AppResult<()> {
+    let profiles = sqlx::query_scalar::<_, String>(
+        r#"SELECT agent_profile FROM agent_llm_settings
+           WHERE provider_id = $1 ORDER BY agent_profile LIMIT 6"#,
+    )
+    .bind(provider_id)
+    .fetch_all(&state.db)
+    .await?;
+    if profiles.is_empty() {
+        return Ok(());
+    }
+    let suffix = if profiles.len() > 5 { ", …" } else { "" };
+    let visible = profiles.into_iter().take(5).collect::<Vec<_>>().join(", ");
+    Err(AppError::Conflict(format!(
+        "cannot {action} provider while assigned to agents: {visible}{suffix}; clear or reassign those agent settings first"
+    )))
+}
+
+/// Historical run snapshots deliberately do not retain a provider foreign key,
+/// but unfinished work still needs its selected runtime to remain resolvable.
+/// This boundary allows cleanup after completion while preventing an operator
+/// change from stranding an active or durably retrying run mid-execution.
+async fn ensure_provider_has_no_active_runs(
+    state: &AppState,
+    provider_id: Uuid,
+    action: &str,
+) -> AppResult<()> {
+    let active_count = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM agent_runs
+           WHERE llm_provider_id = $1
+             AND status IN ('queued', 'running', 'waiting_decision')"#,
+    )
+    .bind(provider_id)
+    .fetch_one(&state.db)
+    .await?;
+    if active_count == 0 {
+        return Ok(());
+    }
+    Err(AppError::Conflict(format!(
+        "cannot {action} provider while used by {active_count} unfinished agent run(s); wait for completion or cancel those runs first"
+    )))
 }
 
 /// POST /api/llm-providers/:id/test
@@ -269,7 +341,19 @@ pub async fn fetch_models(
         model: String::new(), // not needed for listing
         max_tokens: 1,
     };
-    let provider = providers::create_provider(&config);
+    fetch_models_for_config(&config).await
+}
+
+pub async fn fetch_saved_models(
+    state: &AppState,
+    provider_id: Uuid,
+) -> AppResult<FetchModelsResponse> {
+    let config = resolve_runtime_config(state, provider_id).await?;
+    fetch_models_for_config(&config).await
+}
+
+async fn fetch_models_for_config(config: &ProviderConfig) -> AppResult<FetchModelsResponse> {
+    let provider = providers::create_provider(config);
 
     // Try the live API first.
     match provider.list_models().await {
@@ -292,7 +376,7 @@ pub async fn fetch_models(
         }
         Err(e) => {
             tracing::warn!("model list fetch failed, falling back to curated: {e}");
-            let curated = curated_models(&config);
+            let curated = curated_models(config);
             if curated.is_empty() {
                 Ok(FetchModelsResponse {
                     models: vec![],

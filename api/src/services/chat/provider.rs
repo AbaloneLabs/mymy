@@ -16,6 +16,7 @@ pub(super) fn parse_runtime_provider_id(id: &str) -> AppResult<Uuid> {
 pub(super) struct DbRotatingProvider {
     pub(super) state: AppState,
     pub(super) provider_id: Uuid,
+    pub(super) model_override: Option<String>,
 }
 
 #[async_trait]
@@ -28,19 +29,23 @@ impl LlmProvider for DbRotatingProvider {
     ) -> Result<BoxStream<'_, Result<StreamDelta, ProviderError>>, ProviderError> {
         let state = self.state.clone();
         let provider_id = self.provider_id;
+        let model_override = self.model_override.clone();
         let system_prompt = system_prompt.to_string();
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         let stream = async_stream::stream! {
             let mut last_error = None;
             for attempt in 1..=3 {
-                let resolved = match llm_providers::resolve_runtime_config_with_credential(&state, provider_id).await {
+                let mut resolved = match llm_providers::resolve_runtime_config_with_credential(&state, provider_id).await {
                     Ok(resolved) => resolved,
                     Err(err) => {
                         yield Err(ProviderError::InvalidResponse(format!("provider config resolution failed: {err}")));
                         return;
                     }
                 };
+                if let Some(model) = model_override.as_ref() {
+                    resolved.config.model = model.clone();
+                }
                 let credential_id = resolved.credential_id;
                 let provider = providers::create_provider(&resolved.config);
                 let mut inner = match provider.stream(&system_prompt, &messages, &tools).await {
@@ -94,7 +99,7 @@ impl LlmProvider for DbRotatingProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         let mut last_error = None;
         for attempt in 1..=3 {
-            let resolved = llm_providers::resolve_runtime_config_with_credential(
+            let mut resolved = llm_providers::resolve_runtime_config_with_credential(
                 &self.state,
                 self.provider_id,
             )
@@ -102,6 +107,9 @@ impl LlmProvider for DbRotatingProvider {
             .map_err(|err| {
                 ProviderError::InvalidResponse(format!("provider config resolution failed: {err}"))
             })?;
+            if let Some(model) = self.model_override.as_ref() {
+                resolved.config.model = model.clone();
+            }
             let credential_id = resolved.credential_id;
             let provider = providers::create_provider(&resolved.config);
             match provider.list_models().await {

@@ -305,6 +305,117 @@ async fn db_delete_promotes_new_default(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn db_assigned_or_active_provider_cannot_be_disabled_or_deleted(pool: sqlx::PgPool) {
+    let state = test_state(pool);
+    *state.encryption_key.write().await = Some(crypto::derive_key("test-pin"));
+    let assigned = create_provider(
+        &state,
+        CreateLlmProviderRequest {
+            label: "Assigned".to_string(),
+            api_format: ApiFormatOption::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-assigned-123456789".to_string(),
+            model: "gpt-4o".to_string(),
+            max_tokens: 4096,
+            preset: None,
+        },
+    )
+    .await
+    .expect("create assigned provider");
+    let replacement = create_provider(
+        &state,
+        CreateLlmProviderRequest {
+            label: "Replacement".to_string(),
+            api_format: ApiFormatOption::Openai,
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "sk-replacement-123456789".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            max_tokens: 4096,
+            preset: None,
+        },
+    )
+    .await
+    .expect("create replacement provider");
+    let assigned_id: Uuid = assigned.provider.id.parse().expect("assigned UUID");
+    let replacement_id: Uuid = replacement.provider.id.parse().expect("replacement UUID");
+    set_default(&state, replacement_id)
+        .await
+        .expect("replacement should become default");
+    sqlx::query(
+        r#"INSERT INTO native_agents
+             (profile, name, status, model, drive_path, sandbox_status)
+           VALUES ('assigned-agent', 'Assigned agent', 'idle', 'unknown',
+                   '/drive/agents/assigned-agent', 'ready')"#,
+    )
+    .execute(&state.db)
+    .await
+    .expect("agent fixture should insert");
+    sqlx::query(
+        "INSERT INTO agent_llm_settings (agent_profile, provider_id) VALUES ('assigned-agent', $1)",
+    )
+    .bind(assigned_id)
+    .execute(&state.db)
+    .await
+    .expect("assignment fixture should insert");
+
+    let disable = update_provider(
+        &state,
+        assigned_id,
+        UpdateLlmProviderRequest {
+            label: None,
+            api_format: None,
+            base_url: None,
+            api_key: None,
+            model: None,
+            max_tokens: None,
+            enabled: Some(false),
+        },
+    )
+    .await;
+    assert!(matches!(disable, Err(AppError::Conflict(_))));
+
+    let delete = delete_provider(&state, assigned_id).await;
+    assert!(matches!(delete, Err(AppError::Conflict(_))));
+
+    sqlx::query("DELETE FROM agent_llm_settings WHERE agent_profile = 'assigned-agent'")
+        .execute(&state.db)
+        .await
+        .expect("assignment fixture should delete");
+    sqlx::query(
+        r#"INSERT INTO agent_runs
+             (agent_profile, trigger_type, status, objective, prompt_version,
+              authorization_context, llm_provider_id, llm_provider_label,
+              llm_model, llm_selection_source)
+           VALUES ('assigned-agent', 'wake', 'queued', 'test active provider guard',
+                   'test', '{}'::jsonb, $1, 'Assigned', 'gpt-4o',
+                   'agent_override')"#,
+    )
+    .bind(assigned_id)
+    .execute(&state.db)
+    .await
+    .expect("active run fixture should insert");
+
+    let disable = update_provider(
+        &state,
+        assigned_id,
+        UpdateLlmProviderRequest {
+            label: None,
+            api_format: None,
+            base_url: None,
+            api_key: None,
+            model: None,
+            max_tokens: None,
+            enabled: Some(false),
+        },
+    )
+    .await;
+    assert!(matches!(disable, Err(AppError::Conflict(_))));
+
+    let delete = delete_provider(&state, assigned_id).await;
+    assert!(matches!(delete, Err(AppError::Conflict(_))));
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn db_pin_change_reencrypts_keys(pool: sqlx::PgPool) {
     let state = test_state(pool);
     let old_key = crypto::derive_key("old-pin");

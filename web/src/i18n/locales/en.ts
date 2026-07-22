@@ -35,6 +35,7 @@ const en = {
     open: "Open",
     dismiss: "Dismiss",
     reset: "Reset",
+    none: "None",
   },
   browser: {
     forward: "Forward",
@@ -1115,6 +1116,14 @@ const en = {
       prompt: "Prompt",
       configurable: "Configurable",
       recentSessions: "Recent sessions",
+      llmTitle: "LLM settings",
+      llmDescription: "Without an override, this agent uses the global default provider and model.",
+      inheritGlobalLlm: "Use global defaults",
+      globalProvider: "Global default provider ({provider})",
+      providerDefaultModel: "Use provider default model",
+      effectiveLlm: "Currently applied: {provider} · {model}",
+      providerUnavailable: "Provider unavailable",
+      llmSaveError: "Could not save LLM settings.",
     },
     cron: {
       schedulerRunning: "Scheduler is running",

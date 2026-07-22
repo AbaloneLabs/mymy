@@ -51,6 +51,37 @@ pub struct Agent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_active_at: Option<String>,
     pub tool_permissions: Vec<AgentToolPermission>,
+    pub llm_settings: AgentLlmSettingsView,
+}
+
+/// Effective LLM configuration alongside the optional agent-owned overrides.
+/// Provider credentials and endpoint details stay behind the provider service;
+/// agent APIs expose only identifiers and labels needed for configuration UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLlmSettingsView {
+    pub inherits_global: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_provider_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_provider_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateAgentLlmSettings {
+    #[serde(default)]
+    pub provider_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -123,6 +154,8 @@ pub struct UpdateAgentRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub tool_permissions: Option<Vec<AgentToolPermission>>,
+    #[serde(default)]
+    pub llm_settings: Option<UpdateAgentLlmSettings>,
 }
 
 #[derive(Debug, Serialize)]

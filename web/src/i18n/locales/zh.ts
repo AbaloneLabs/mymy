@@ -35,6 +35,7 @@ const zh = {
     open: "打开",
     dismiss: "关闭",
     reset: "重置",
+    none: "无",
   },
   browser: {
     forward: "前进",
@@ -1089,6 +1090,14 @@ const zh = {
       prompt: "提示词",
       configurable: "可配置",
       recentSessions: "最近会话",
+      llmTitle: "LLM 设置",
+      llmDescription: "未单独设置时，此智能体使用全局默认提供商和模型。",
+      inheritGlobalLlm: "使用全局默认值",
+      globalProvider: "全局默认提供商（{provider}）",
+      providerDefaultModel: "使用提供商默认模型",
+      effectiveLlm: "当前应用：{provider} · {model}",
+      providerUnavailable: "提供商不可用",
+      llmSaveError: "无法保存 LLM 设置。",
     },
     cron: {
       schedulerRunning: "调度器正在运行",

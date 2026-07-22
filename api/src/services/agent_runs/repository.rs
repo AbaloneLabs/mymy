@@ -16,7 +16,8 @@ pub(super) fn run_select() -> String {
 
 pub(super) fn run_columns() -> &'static str {
     "id, session_id, agent_profile, trigger_type, trigger_ref, parent_run_id, \
-     parent_event_id, delegate_index, project_id, status, objective, prompt_version, authorization_context, \
+     parent_event_id, delegate_index, project_id, status, objective, prompt_version, \
+     llm_provider_id, llm_provider_label, llm_model, llm_selection_source, authorization_context, \
      tool_schema_fingerprint, \
      lease_owner, lease_epoch, next_event_sequence, lease_expires_at, cancel_requested_at, started_at, \
      heartbeat_at, next_attempt_at, provider_retry_count, completed_at, error_code, usage, created_at"

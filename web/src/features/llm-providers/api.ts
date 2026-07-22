@@ -46,6 +46,18 @@ export function useLlmProviders() {
   });
 }
 
+export function useSavedProviderModels(providerId?: string) {
+  return useQuery({
+    queryKey: ["llm-providers", providerId, "models"],
+    queryFn: () =>
+      api.get<FetchModelsResponse>(
+        `/llm-providers/${encodeURIComponent(providerId!)}/models`,
+      ),
+    enabled: Boolean(providerId),
+    staleTime: 5 * 60_000,
+  });
+}
+
 interface RateLimitStatusResponse {
   providers: ProviderRateLimitStatus[];
 }
@@ -63,7 +75,10 @@ export function useCreateLlmProvider() {
   return useMutation({
     mutationFn: (body: CreateLlmProviderRequest) =>
       api.post<{ provider: LlmProvider }>("/llm-providers", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-providers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-providers"] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
   });
 }
 
@@ -75,7 +90,10 @@ export function useUpdateLlmProvider() {
         `/llm-providers/${vars.id}`,
         vars.body,
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-providers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-providers"] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
   });
 }
 
@@ -84,7 +102,10 @@ export function useDeleteLlmProvider() {
   return useMutation({
     mutationFn: (id: string) =>
       api.delete<{ success: boolean }>(`/llm-providers/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-providers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-providers"] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
   });
 }
 
@@ -93,7 +114,10 @@ export function useSetDefaultLlmProvider() {
   return useMutation({
     mutationFn: (id: string) =>
       api.post<{ success: boolean }>(`/llm-providers/${id}/default`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-providers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-providers"] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
   });
 }
 

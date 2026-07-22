@@ -27,6 +27,10 @@ export interface UpdateAgentRequest {
   role?: string;
   description?: string;
   toolPermissions?: AgentToolPermission[];
+  llmSettings?: {
+    providerId: string | null;
+    model: string | null;
+  };
 }
 
 export function useAgents() {

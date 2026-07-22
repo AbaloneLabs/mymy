@@ -29,10 +29,9 @@ use crate::agent::tools::builtin::{
 use crate::agent::tools::ToolRegistry;
 use crate::error::{AppError, AppResult};
 use crate::models::chat::{ChatMessage, SendMessageRequest};
-use crate::services::agent_permissions;
 use crate::services::drive;
-use crate::services::llm_providers;
 use crate::services::sandbox_runner::logical_path_for_runner;
+use crate::services::{agent_llm, agent_permissions};
 use crate::state::AppState;
 
 use self::prompt_snapshot::{fingerprint_tool_schemas, resolve_prompt_snapshot};
@@ -60,6 +59,15 @@ pub struct PreparedNativeTurn {
     pub tool_count: usize,
     pub permission_fingerprint: String,
     pub buffered_output_required: bool,
+    pub llm_selection: PreparedLlmSelection,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedLlmSelection {
+    pub provider_id: Uuid,
+    pub provider_label: String,
+    pub model: String,
+    pub source: String,
 }
 
 /// Materialize an admitted release-fixture input through the same idempotent
@@ -179,12 +187,11 @@ async fn prepare_native_turn_internal(
     } else {
         None
     };
-    let default_runtime = if moa_runtime.is_none() {
-        let provider_id = llm_providers::resolve_default_provider_id(state).await?;
-        Some((
-            provider_id,
-            llm_providers::resolve_runtime_config(state, provider_id).await?,
-        ))
+    let agent_runtime = if moa_runtime.is_none() {
+        let run_id = run_id.ok_or_else(|| {
+            AppError::Internal("durable run identity is required for LLM selection".to_string())
+        })?;
+        Some(agent_llm::resolve_for_run(state, &session.profile, run_id).await?)
     } else {
         None
     };
@@ -275,15 +282,11 @@ async fn prepare_native_turn_internal(
     let model = moa_runtime
         .as_ref()
         .map(|preset| preset.aggregator_provider.model.clone())
-        .or_else(|| {
-            default_runtime
-                .as_ref()
-                .map(|(_, config)| config.model.clone())
-        })
+        .or_else(|| agent_runtime.as_ref().map(|runtime| runtime.model.clone()))
         .unwrap_or_else(|| "unknown".to_string());
-    let max_output_tokens = default_runtime
+    let max_output_tokens = agent_runtime
         .as_ref()
-        .map(|(_, config)| config.max_tokens)
+        .map(|runtime| runtime.config.max_tokens)
         .unwrap_or(16_384);
     let rows = fetch_message_rows(state, id).await?;
     let mut optional_blocks = Vec::new();
@@ -401,7 +404,7 @@ async fn prepare_native_turn_internal(
         .await?;
     }
 
-    let execution = if let Some(runtime) = moa_runtime {
+    let execution = if let Some(runtime) = moa_runtime.as_ref() {
         let proposers = runtime
             .proposer_providers
             .iter()
@@ -411,6 +414,7 @@ async fn prepare_native_turn_internal(
                     provider: Arc::new(DbRotatingProvider {
                         state: state.clone(),
                         provider_id: parse_runtime_provider_id(&provider.id)?,
+                        model_override: Some(provider.model.clone()),
                     }),
                 })
             })
@@ -423,6 +427,7 @@ async fn prepare_native_turn_internal(
             provider: Arc::new(DbRotatingProvider {
                 state: state.clone(),
                 provider_id: parse_runtime_provider_id(&runtime.aggregator_provider.id)?,
+                model_override: Some(runtime.aggregator_provider.model.clone()),
             }),
         };
         PreparedExecution::Moa(PreparedMoaTurn {
@@ -430,18 +435,19 @@ async fn prepare_native_turn_internal(
             aggregator,
             config: MoaConfig {
                 max_concurrent: runtime.max_concurrent,
-                aggregation_prompt: runtime.aggregation_prompt,
+                aggregation_prompt: runtime.aggregation_prompt.clone(),
             },
         })
     } else {
-        let (provider_id, provider_config) = default_runtime
-            .ok_or_else(|| AppError::Internal("default provider resolution missing".into()))?;
+        let runtime = agent_runtime
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("agent provider resolution missing".into()))?;
         let provider: Arc<dyn LlmProvider> = Arc::new(DbRotatingProvider {
             state: state.clone(),
-            provider_id,
+            provider_id: runtime.provider_id,
+            model_override: Some(runtime.model.clone()),
         });
-        let context_manager =
-            ContextManager::for_model(&provider_config.model, provider_config.max_tokens);
+        let context_manager = ContextManager::for_model(&runtime.model, runtime.config.max_tokens);
         let agent_loop = AgentLoop::new(
             provider,
             registry,
@@ -459,10 +465,31 @@ async fn prepare_native_turn_internal(
         PreparedExecution::Agent(Box::new(agent_loop))
     };
 
+    let llm_selection = if let Some(runtime) = moa_runtime.as_ref() {
+        PreparedLlmSelection {
+            provider_id: parse_runtime_provider_id(&runtime.aggregator_provider.id)?,
+            provider_label: runtime.aggregator_provider.label.clone(),
+            model: runtime.aggregator_provider.model.clone(),
+            source: "moa".to_string(),
+        }
+    } else {
+        let runtime = agent_runtime
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("agent provider resolution missing".into()))?;
+        PreparedLlmSelection {
+            provider_id: runtime.provider_id,
+            provider_label: runtime.provider_label.clone(),
+            model: runtime.model.clone(),
+            source: runtime.selection_source.clone(),
+        }
+    };
+
     tracing::info!(
         session_id = %id,
         profile = %session.profile,
         moa = use_moa,
+        provider_id = %llm_selection.provider_id,
+        model = %llm_selection.model,
         "prepared native chat turn"
     );
 
@@ -476,6 +503,7 @@ async fn prepare_native_turn_internal(
         tool_count,
         permission_fingerprint: permission_policy.fingerprint(),
         buffered_output_required,
+        llm_selection,
     })
 }
 

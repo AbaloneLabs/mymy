@@ -331,10 +331,15 @@ pub(super) async fn update_run_snapshot(
     tool_schema_fingerprint: &str,
     prompt_chars: usize,
     tool_count: usize,
+    llm_selection: &crate::services::chat::PreparedLlmSelection,
 ) -> AppResult<()> {
     let updated = sqlx::query(
         r#"UPDATE agent_runs
            SET tool_schema_fingerprint = $4,
+               llm_provider_id = COALESCE(llm_provider_id, $7),
+               llm_provider_label = COALESCE(llm_provider_label, $8),
+               llm_model = COALESCE(llm_model, $9),
+               llm_selection_source = COALESCE(llm_selection_source, $10),
                usage = usage || jsonb_build_object(
                  'promptChars', $5::bigint,
                  'toolCount', $6::bigint
@@ -347,6 +352,10 @@ pub(super) async fn update_run_snapshot(
     .bind(tool_schema_fingerprint)
     .bind(i64::try_from(prompt_chars).unwrap_or(i64::MAX))
     .bind(i64::try_from(tool_count).unwrap_or(i64::MAX))
+    .bind(llm_selection.provider_id)
+    .bind(&llm_selection.provider_label)
+    .bind(&llm_selection.model)
+    .bind(&llm_selection.source)
     .execute(&state.db)
     .await?;
     if updated.rows_affected() != 1 {

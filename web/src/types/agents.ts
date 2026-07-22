@@ -31,6 +31,16 @@ export interface AgentToolPermission {
   access: AgentToolAccess;
 }
 
+export interface AgentLlmSettings {
+  inheritsGlobal: boolean;
+  providerId?: string;
+  model?: string;
+  resolvedProviderId?: string;
+  resolvedProviderLabel?: string;
+  resolvedModel?: string;
+  resolvedProviderEnabled?: boolean;
+}
+
 export interface Agent {
   id: string;
 
@@ -61,4 +71,6 @@ export interface Agent {
   lastActiveAt?: string;
 
   toolPermissions: AgentToolPermission[];
+
+  llmSettings: AgentLlmSettings;
 }

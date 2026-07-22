@@ -35,6 +35,7 @@ const ko = {
     open: "열기",
     dismiss: "닫기",
     reset: "초기화",
+    none: "없음",
   },
   browser: {
     forward: "앞으로",
@@ -1115,6 +1116,14 @@ const ko = {
       prompt: "프롬프트",
       configurable: "설정 가능",
       recentSessions: "최근 세션",
+      llmTitle: "LLM 설정",
+      llmDescription: "설정하지 않으면 전역 기본 provider와 모델을 사용합니다.",
+      inheritGlobalLlm: "전역 기본값 사용",
+      globalProvider: "전역 기본 provider ({provider})",
+      providerDefaultModel: "provider 기본 모델 사용",
+      effectiveLlm: "현재 적용: {provider} · {model}",
+      providerUnavailable: "provider를 사용할 수 없음",
+      llmSaveError: "LLM 설정을 저장하지 못했습니다.",
     },
     cron: {
       schedulerRunning: "스케줄러가 실행 중입니다",
