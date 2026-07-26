@@ -129,7 +129,7 @@ fn build_tool_guidance(tool_names: &[String]) -> String {
         .iter()
         .any(|name| name == "web_extract" || name == "web_search")
     {
-        parts.push("Use web tools only when current external information is required.");
+        parts.push("You have live web access. Prefer web_search for anything that depends on current, real-world, or non-workspace facts — recent events, library/API versions, documentation, prices, or anything you cannot verify from the workspace or your training cutoff. Use web_extract to read a specific URL. Do not state uncertain external facts from memory when a search could confirm them.");
     }
     parts.join("\n")
 }
