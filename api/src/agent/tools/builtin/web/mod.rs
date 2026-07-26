@@ -1,16 +1,20 @@
 //! Web tools.
 //!
-//! `web_extract` works with direct HTTP fetches. `web_search` uses Tavily
-//! when `TAVILY_API_KEY` is configured; without that key the registry marks
-//! the search tool unavailable instead of returning fake results.
+//! `web_extract` fetches a page directly and returns readable text.
+//! `web_search` resolves a backend at construction time and delegates to it:
+//! SearXNG (`MYMY_SEARXNG_URL`) is the default in Docker Compose, and
+//! DuckDuckGo is a zero-config fallback so the tool is always available
+//! without any API key or external service.
+
+mod search_backend;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use regex::Regex;
-use serde::Deserialize;
 use serde_json::Value;
 
+use self::search_backend::{resolve_backend, SearchBackend};
 use super::truncate_chars;
 use crate::agent::tools::{
     tool_result, tool_schema, ToolCapability, ToolEntry, ToolError, ToolHandler, ToolRegistry,
@@ -43,12 +47,15 @@ pub fn register(registry: &mut ToolRegistry) {
         handler: Arc::new(WebExtractTool { http: http.clone() }),
     });
 
+    let (backend, backend_name) = resolve_backend(http);
+    tracing::info!(backend = backend_name, "web_search backend resolved");
+
     registry.register(ToolEntry {
         name: "web_search".to_string(),
         toolset: "web".to_string(),
         schema: tool_schema(
             "web_search",
-            "Search the web using Tavily. Requires TAVILY_API_KEY.",
+            "Search the web for current information.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -59,7 +66,7 @@ pub fn register(registry: &mut ToolRegistry) {
             }),
         ),
         capability: ToolCapability::external("web_search"),
-        handler: Arc::new(WebSearchTool { http }),
+        handler: Arc::new(WebSearchTool { backend }),
     });
 }
 
@@ -95,14 +102,12 @@ impl ToolHandler for WebExtractTool {
 }
 
 struct WebSearchTool {
-    http: reqwest::Client,
+    backend: Box<dyn SearchBackend>,
 }
 
 #[async_trait]
 impl ToolHandler for WebSearchTool {
     async fn execute(&self, args: &Value) -> Result<String, ToolError> {
-        let api_key = std::env::var("TAVILY_API_KEY")
-            .map_err(|_| ToolError::Unavailable("TAVILY_API_KEY is not configured".to_string()))?;
         let query = args
             .get("query")
             .and_then(Value::as_str)
@@ -111,56 +116,14 @@ impl ToolHandler for WebSearchTool {
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(5)
-            .clamp(1, 10);
+            .clamp(1, 10) as usize;
 
-        let response = self
-            .http
-            .post("https://api.tavily.com/search")
-            .json(&serde_json::json!({
-                "api_key": api_key,
-                "query": query,
-                "max_results": limit,
-            }))
-            .send()
-            .await
-            .map_err(|err| ToolError::Execution(format!("search failed: {err}")))?;
-
-        if !response.status().is_success() {
-            return Err(ToolError::Execution(format!(
-                "search returned HTTP {}",
-                response.status().as_u16()
-            )));
-        }
-
-        let parsed = response
-            .json::<TavilyResponse>()
-            .await
-            .map_err(|err| ToolError::Execution(format!("search parse failed: {err}")))?;
+        let results = self.backend.search(query, limit).await?;
         Ok(tool_result(&serde_json::json!({
             "query": query,
-            "results": parsed.results,
+            "results": results,
         })))
     }
-
-    fn is_available(&self) -> bool {
-        std::env::var("TAVILY_API_KEY").is_ok()
-    }
-}
-
-#[derive(Debug, Deserialize, serde::Serialize)]
-struct TavilyResponse {
-    #[serde(default)]
-    results: Vec<TavilyResult>,
-}
-
-#[derive(Debug, Deserialize, serde::Serialize)]
-struct TavilyResult {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    content: String,
 }
 
 fn html_to_text(html: &str) -> String {

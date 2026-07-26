@@ -6,6 +6,7 @@
 #   - web  : frontend SPA served by nginx (port 33696)
 #   - api  : Rust backend (port 33697)
 #   - sandbox-runner : internal-only isolated agent process runner
+#   - searxng : internal-only meta-search engine for the web_search tool
 #
 # Port range: 33xxx, reserved for local mymy services.
 # ============================================================
@@ -90,6 +91,9 @@ services:
       MYMY_SANDBOX_RUNNER_URL: http://sandbox-runner:33698
       MYMY_SANDBOX_RUNNER_TOKEN_FILE: /run/mymy/runner-control.token
       MYMY_SANDBOX_PREVIEW_HOST: sandbox-runner
+      # Self-hosted meta-search backend for the agent web_search tool. When
+      # unset, the API falls back to DuckDuckGo scraping (no key required).
+      MYMY_SEARXNG_URL: ${MYMY_SEARXNG_URL:-http://searxng:8080}
       RUST_LOG: ${RUST_LOG:-mymy_api=info,tower_http=info}
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
@@ -107,6 +111,8 @@ services:
         condition: service_healthy
       sandbox-runner:
         condition: service_started
+      searxng:
+        condition: service_healthy
 
   # ----------------------------------------------------------
   # Sandboxed process runner.
@@ -166,10 +172,37 @@ services:
     networks:
       - runner-internal
 
+  # ----------------------------------------------------------
+  # SearXNG meta-search engine.
+  #
+  # Serves the agent web_search tool with a stable JSON API and no external
+  # API key. It must reach upstream search engines, so it stays on the default
+  # (internet-connected) network. No host port is published: only the API
+  # container calls it. When this service is unavailable the API automatically
+  # falls back to DuckDuckGo scraping.
+  # ----------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: mymy-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080
+    volumes:
+      - mymy-searxng-data:/etc/searxng
+      - ./scripts/searxng-settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
 volumes:
   mymy-db-data:
   mymy-api-data:
   mymy-runner-control:
+  mymy-searxng-data:
 
 networks:
   runner-internal:

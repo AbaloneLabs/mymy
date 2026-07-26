@@ -1,0 +1,40 @@
+# SearXNG settings for mymy.
+#
+# Tuned for internal API consumption by the agent web_search tool:
+#   - JSON output format enabled (required; the default config only serves HTML)
+#   - Rate limiting relaxed for trusted internal traffic
+#   - Outgoing request timeout kept short so a slow upstream engine cannot stall
+#     an agent turn
+#
+# Mounted read-only into the searxng container at /etc/searxng/settings.yml.
+
+use_default_settings: true
+
+general:
+  instance_name: mymy SearXNG
+  debug: false
+
+search:
+  # Must include "json" so the API backend can request format=json.
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: ""  # SearXNG auto-generates a secret when left empty.
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Internal service; image proxy and external client features are unnecessary.
+  image_proxy: false
+  # Relax the built-in bot protection for the trusted internal API caller.
+  # The service is not published to the host, so only the API container can
+  # reach it.
+  limiter: false
+
+redis:
+  # No Redis dependency; SearXNG runs stateless in this deployment.
+  url: false
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0

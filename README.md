@@ -88,6 +88,7 @@ It's designed for the **one-person business** — the developer-founder who wear
                     │  • Investments     │
                     │  • Process control │
                     │  • Notes + FTS      │
+                    │  • Web search       │
                     └──────────┬──────────┘
                                │
           ┌────────────────────┼────────────────────┐
@@ -102,6 +103,11 @@ It's designed for the **one-person business** — the developer-founder who wear
                         │   S3 sync   │      │ bubblewrap  │
                         │  provider   │      │ isolation   │
                         └─────────────┘      └─────────────┘
+                                              ┌──────▼──────┐
+                                              │  SearXNG    │
+                                              │ meta-search │
+                                              │ (internal)  │
+                                              └─────────────┘
 ```
 
 ## 📸 Screenshots
@@ -351,6 +357,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 | Web (frontend) | `33696` |
 | API (Rust) | `33697` |
 | Sandbox runner | `33698` (internal only) |
+| SearXNG (web search) | `8080` (internal only) |
 | PostgreSQL | `33432` |
 
 ## 🗺️ Roadmap
@@ -380,6 +387,7 @@ mymy uses the **33xxx** range to avoid conflicts with common services:
 - [x] Firecracker-backed sandbox runner for VM-isolated commands, managed processes, and preview forwarding
 - [x] Native file-write, terminal, code-execution, and managed process tools with permission-based exposure
 - [x] S3 object synchronization worker for Drive sync jobs
+- [x] Agent web search via self-hosted SearXNG (Docker) with DuckDuckGo fallback
 - [x] i18n (English, Korean, Chinese, Japanese)
 
 ### Planned
